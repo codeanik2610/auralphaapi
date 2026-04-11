@@ -1,0 +1,191 @@
+{
+  "decision": "ready",
+  "generatedAt": "2026-04-10T17:10:39.270Z",
+  "approver": "codex-phase9",
+  "releaseGateFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/global-system-schedulers-release-gate.json",
+  "signoffFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/global-system-schedulers-signoff.json",
+  "healthFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/global-system-schedulers-health.json",
+  "proofFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/global-system-schedulers-live-proof.json",
+  "evidenceOutputFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/global-system-schedulers-deployment-evidence.json",
+  "gateDecision": "ready",
+  "signoffDecision": "ready",
+  "liveChecksEnabled": true,
+  "productionPromotionReady": true,
+  "subsystemCoverageReady": true,
+  "gateTotals": {
+    "total": 17,
+    "passed": 17,
+    "failed": 0,
+    "skipped": 0
+  },
+  "evidence": {
+    "stagingWorkflowUrl": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/global-system-schedulers-workflow-evidence.json",
+    "dashboardUrl": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/global-system-schedulers-dashboard-evidence.json",
+    "runbookUrl": "/Users/apple/Documents/Project/Backend/aurAlpha/RUNBOOK.md",
+    "releaseNoteUrl": "/Users/apple/Documents/Project/Backend/aurAlpha/GLOBAL_SYSTEM_SCHEDULERS_PHASE9.md"
+  },
+  "evidenceClassification": {
+    "stagingWorkflowUrlKind": "local_path",
+    "dashboardUrlKind": "local_path",
+    "runbookUrlKind": "local_path",
+    "releaseNoteUrlKind": "local_path"
+  },
+  "environment": {
+    "requireLiveHealth": true,
+    "requireDeploymentEvidence": true
+  },
+  "checks": {
+    "gateReady": true,
+    "requiredSuitesPassed": true,
+    "crossRepoSuitesPassed": true,
+    "liveHealthReviewed": true,
+    "schedulerCoverageCaptured": true,
+    "operatorWorkspaceReviewed": true,
+    "systemScopeVerified": true,
+    "auditChainVerified": true,
+    "timezoneDisplayVerified": true,
+    "retentionScopeVerified": true,
+    "workerRuntimeVerified": true,
+    "deploymentEvidenceReady": true
+  },
+  "readiness": {
+    "liveGateReady": true,
+    "subsystemCoverageReady": true,
+    "crossRepoProofReady": true,
+    "deploymentEvidenceReady": true,
+    "productionPromotionReady": true
+  },
+  "coverage": {
+    "schedulerKeys": [
+      "broker-assets-sync",
+      "exchange-assets-sync",
+      "binance-candles-3m-1m-sync",
+      "system-health-sync"
+    ]
+  },
+  "healthSnapshot": {
+    "baseUrl": "http://127.0.0.1:3000/api/v1",
+    "queueStatus": "ok",
+    "queueName": "scheduler.exchange-assets.execute",
+    "queueLatencyMs": 0,
+    "workerStatus": "ok",
+    "workerHttpStatus": "ok",
+    "workerHeartbeatAgeMs": 3722,
+    "overviewCount": 11,
+    "overviewDisplayTimeZone": "Asia/Calcutta",
+    "overviewLocalized": true,
+    "schedulerKeys": [
+      "broker-assets-sync",
+      "exchange-assets-sync",
+      "binance-candles-3m-1m-sync",
+      "system-health-sync"
+    ],
+    "schedulers": {
+      "broker-assets-sync": {
+        "key": "broker-assets-sync",
+        "routeBase": "/scheduler/exchange-assets",
+        "schedulerType": "global",
+        "enabled": false,
+        "timezone": "UTC",
+        "sources": [
+          "mudrex",
+          "delta_exchange"
+        ],
+        "timeZoneDisplay": "Asia/Calcutta",
+        "overviewStatus": "idle",
+        "overviewHasQueuedWork": false,
+        "overviewExecutionContext": null,
+        "overviewInitiatedByType": null,
+        "recentRunId": null,
+        "recentRunStatus": null,
+        "recentRunExecutionContext": null,
+        "recentRunInitiatedByType": null,
+        "latestRunId": null,
+        "latestRunStatus": null,
+        "latestRunExecutionContext": null,
+        "latestRunInitiatedByType": null,
+        "latestRunProgressPercent": null,
+        "updateCount": null,
+        "syncStateCount": null
+      },
+      "exchange-assets-sync": {
+        "key": "exchange-assets-sync",
+        "routeBase": "/scheduler/binance-assets",
+        "schedulerType": "global",
+        "enabled": false,
+        "timezone": "UTC",
+        "sources": [
+          "binance-futures"
+        ],
+        "timeZoneDisplay": "Asia/Calcutta",
+        "overviewStatus": "idle",
+        "overviewHasQueuedWork": false,
+        "overviewExecutionContext": null,
+        "overviewInitiatedByType": null,
+        "recentRunId": null,
+        "recentRunStatus": null,
+        "recentRunExecutionContext": null,
+        "recentRunInitiatedByType": null,
+        "latestRunId": null,
+        "latestRunStatus": null,
+        "latestRunExecutionContext": null,
+        "latestRunInitiatedByType": null,
+        "latestRunProgressPercent": null,
+        "updateCount": null,
+        "syncStateCount": null
+      },
+      "binance-candles-3m-1m-sync": {
+        "key": "binance-candles-3m-1m-sync",
+        "routeBase": "/scheduler/candles",
+        "schedulerType": "global",
+        "enabled": true,
+        "timezone": "UTC",
+        "sources": [
+          "binance"
+        ],
+        "timeZoneDisplay": "Asia/Calcutta",
+        "overviewStatus": "idle",
+        "overviewHasQueuedWork": false,
+        "overviewExecutionContext": null,
+        "overviewInitiatedByType": null,
+        "recentRunId": null,
+        "recentRunStatus": null,
+        "recentRunExecutionContext": null,
+        "recentRunInitiatedByType": null,
+        "latestRunId": null,
+        "latestRunStatus": null,
+        "latestRunExecutionContext": null,
+        "latestRunInitiatedByType": null,
+        "latestRunProgressPercent": null,
+        "updateCount": null,
+        "syncStateCount": 0
+      },
+      "system-health-sync": {
+        "key": "system-health-sync",
+        "routeBase": "/scheduler/health",
+        "schedulerType": "global",
+        "enabled": false,
+        "timezone": "UTC",
+        "sources": [
+          "health"
+        ],
+        "timeZoneDisplay": "Asia/Calcutta",
+        "overviewStatus": "idle",
+        "overviewHasQueuedWork": false,
+        "overviewExecutionContext": null,
+        "overviewInitiatedByType": null,
+        "recentRunId": null,
+        "recentRunStatus": null,
+        "recentRunExecutionContext": null,
+        "recentRunInitiatedByType": null,
+        "latestRunId": null,
+        "latestRunStatus": null,
+        "latestRunExecutionContext": null,
+        "latestRunInitiatedByType": null,
+        "latestRunProgressPercent": null,
+        "updateCount": null,
+        "syncStateCount": null
+      }
+    }
+  }
+}

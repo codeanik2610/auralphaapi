@@ -1,0 +1,8 @@
+{
+  "port": null,
+  "entities": ["src/api/models/**/*{.js,.ts}"],
+  "migrations": ["src/database/migrations/**/*.ts"],
+  "cli": {
+    "migrationsDir": "src/database/migrations"
+  }
+}

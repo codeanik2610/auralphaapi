@@ -1,0 +1,142 @@
+name: Backend CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - 'codex/**'
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: mudrex
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: auralpha
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d auralpha"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare localhost env
+        run: |
+          mkdir -p environments/localhost
+          cat > environments/localhost/.env <<'ENVEOF'
+          PORT=3000
+          NODE_ENV=development
+          APP_NAME=trading-apis
+          APP_SCHEMA=http
+          APP_HOST=localhost
+          APP_BANNER=true
+          APP_ROUTE_PREFIX=/api/v1
+          APP_API_KEY=replace-with-local-api-key
+          APP_REQUIRE_API_KEY=true
+          APP_CORS_ORIGINS=
+          LOG_LEVEL=info
+          MUDREX_BASE_URL=https://trade.mudrex.com
+          MUDREX_API_SECRET=replace-with-mudrex-api-secret
+          MUDREX_SYNC_PAGE_SIZE=100
+          MUDREX_REQUEST_TIMEOUT_MS=10000
+          MUDREX_MAX_RETRIES=2
+          BINANCE_FUTURES_BASE_URL=https://fapi.binance.com
+          BINANCE_REQUEST_TIMEOUT_MS=10000
+          DB_HOST=127.0.0.1
+          DB_PORT=3306
+          DB_USERNAME=root
+          DB_PASSWORD=root
+          DB_NAME=mudrex
+          DB_SYNCHRONIZE=false
+          DB_LOGGING=false
+          PG_DB_ENABLED=true
+          PG_DB_HOST=127.0.0.1
+          PG_DB_PORT=5432
+          PG_DB_USERNAME=postgres
+          PG_DB_PASSWORD=postgres
+          PG_DB_NAME=auralpha
+          PG_DB_SSL=false
+          PG_DB_LOGGING=false
+          ENVEOF
+          cp environments/localhost/.env .env
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Lightweight regression suite
+        run: npm run test:all
+
+
+      - name: Bootstrap database
+        run: npm run db:bootstrap
+
+      - name: Seed Postgres chart fixtures
+        run: npm run db:seed:backtests-chart-smoke
+
+      - name: Start local API
+        run: nohup npm run serveLocal > backend-ci.log 2>&1 &
+
+      - name: Wait for API
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/api/v1/health -H 'x-api-key: replace-with-local-api-key' >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat backend-ci.log
+          exit 1
+
+      - name: Live smoke suite
+        env:
+          API_KEY: replace-with-local-api-key
+        run: npm run smoke:modules
+
+      - name: Backtests live proof
+        env:
+          APP_API_KEY: replace-with-local-api-key
+          SMOKE_REQUIRE_BACKTEST_CHART: "true"
+          BACKTESTS_MAX_STALE_RUNNING_RUNS: "0"
+          BACKTESTS_MAX_INCOMPLETE_TRADE_HISTORY_RUNS: "0"
+          BACKTESTS_MAX_OPEN_ALERTS: "0"
+          BACKTESTS_MAX_OPEN_RUNTIME_ALERTS: "0"
+          BACKTESTS_MAX_OPEN_RECOVERY_ALERTS: "0"
+          BACKTESTS_MAX_OPEN_PROMOTION_ALERTS: "0"
+          BACKTESTS_MAX_RECOVERABLE_RUNS: "0"
+          BACKTESTS_REQUIRE_FAILURE_ALERTS_ENABLED: "true"
+        run: npm run proof:backtests-live
+
+      - name: Automations lifecycle smoke
+        run: npm run smoke:automations-lifecycle

@@ -1,0 +1,102 @@
+{
+  "decision": "ready",
+  "generatedAt": "2026-04-09T20:59:06.001Z",
+  "gateFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/orders-scheduler-release-gate.json",
+  "approver": "Codex",
+  "checks": {
+    "gateReady": true,
+    "requiredSuitesPassed": true,
+    "liveHealthReviewed": true,
+    "operatorWalkthroughVerified": true,
+    "runbookReviewVerified": true,
+    "runtimeFoundationVerified": true,
+    "accessReviewVerified": true
+  },
+  "evidence": {
+    "stagingWorkflowUrl": null,
+    "dashboardUrl": null,
+    "runbookUrl": null,
+    "releaseNoteUrl": null,
+    "operatorWalkthroughUrl": null
+  },
+  "gate": {
+    "decision": "ready",
+    "startedAt": "2026-04-09T20:58:40.437Z",
+    "finishedAt": "2026-04-09T20:59:01.218Z",
+    "liveChecksEnabled": false,
+    "totals": {
+      "total": 13,
+      "passed": 12,
+      "failed": 0,
+      "skipped": 1
+    },
+    "results": [
+      {
+        "key": "backend-orders-scheduler-phase2",
+        "label": "Backend orders scheduler Phase 2 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-orders-scheduler-phase3",
+        "label": "Backend orders scheduler Phase 3 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-orders-scheduler-phase4",
+        "label": "Backend orders scheduler Phase 4 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-orders-scheduler-phase5",
+        "label": "Backend orders scheduler Phase 5 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-orders-scheduler-phase7",
+        "label": "Backend orders scheduler Phase 7 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-orders-scheduler-phase8",
+        "label": "Backend orders scheduler Phase 8 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-orders-scheduler-phase9",
+        "label": "Backend orders scheduler Phase 9 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-orders-scheduler-controllers",
+        "label": "Backend controller suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-orders-scheduler-eslint",
+        "label": "Backend orders scheduler lint check",
+        "status": "passed"
+      },
+      {
+        "key": "frontend-orders-scheduler-eslint",
+        "label": "Frontend orders scheduler lint check",
+        "status": "passed"
+      },
+      {
+        "key": "frontend-orders-scheduler-ui",
+        "label": "Frontend orders scheduler UI suite",
+        "status": "passed"
+      },
+      {
+        "key": "frontend-orders-scheduler-e2e",
+        "label": "Frontend orders scheduler operator journey E2E",
+        "status": "passed"
+      },
+      {
+        "key": "backend-orders-scheduler-live-health",
+        "label": "Backend orders scheduler live health check",
+        "status": "skipped",
+        "reason": "ORDERS_SCHEDULER_RUN_LIVE_CHECKS is not true"
+      }
+    ]
+  }
+}

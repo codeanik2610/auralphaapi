@@ -1,0 +1,287 @@
+{
+  "decision": "ready",
+  "startedAt": "2026-04-06T10:11:12.826Z",
+  "finishedAt": "2026-04-06T10:11:44.266Z",
+  "backendCwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+  "frontendCwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+  "liveChecksEnabled": false,
+  "optionalStrategyLibraryE2EEnabled": false,
+  "totals": {
+    "total": 16,
+    "passed": 12,
+    "failed": 0,
+    "skipped": 4
+  },
+  "results": [
+    {
+      "key": "backend-services",
+      "label": "Backend services test suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:services"
+      ],
+      "startedAt": "2026-04-06T10:11:12.827Z",
+      "finishedAt": "2026-04-06T10:11:14.315Z",
+      "durationMs": 1487,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-controllers",
+      "label": "Backend controllers test suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:controllers"
+      ],
+      "startedAt": "2026-04-06T10:11:14.315Z",
+      "finishedAt": "2026-04-06T10:11:15.238Z",
+      "durationMs": 923,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-operational-audit",
+      "label": "Backend operational audit suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:operational-audit"
+      ],
+      "startedAt": "2026-04-06T10:11:15.238Z",
+      "finishedAt": "2026-04-06T10:11:15.621Z",
+      "durationMs": 382,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-type-check",
+      "label": "Backend type-check",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "type-check"
+      ],
+      "startedAt": "2026-04-06T10:11:15.621Z",
+      "finishedAt": "2026-04-06T10:11:20.237Z",
+      "durationMs": 4615,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-ops-eslint",
+      "label": "Frontend ops surface lint check",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npx",
+        "eslint",
+        "src/pages/Alerts/index.jsx",
+        "src/pages/Schedulers/index.jsx",
+        "src/pages/EmailDeliveries/index.jsx",
+        "src/pages/Activity/index.jsx",
+        "src/pages/Discovery/index.jsx",
+        "tests/e2e/business-flows.spec.js",
+        "tests/e2e/discovery.spec.js"
+      ],
+      "startedAt": "2026-04-06T10:11:20.237Z",
+      "finishedAt": "2026-04-06T10:11:25.936Z",
+      "durationMs": 5699,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-alerts-ui",
+      "label": "Alerts UI gate",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:ui",
+        "--",
+        "src/pages/Alerts/index.test.jsx"
+      ],
+      "startedAt": "2026-04-06T10:11:25.936Z",
+      "finishedAt": "2026-04-06T10:11:28.554Z",
+      "durationMs": 2617,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-schedulers-ui",
+      "label": "Schedulers UI gate",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:ui",
+        "--",
+        "src/pages/Schedulers/index.test.jsx"
+      ],
+      "startedAt": "2026-04-06T10:11:28.554Z",
+      "finishedAt": "2026-04-06T10:11:30.682Z",
+      "durationMs": 2128,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-activity-ui",
+      "label": "Activity URL/filter UI gate",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:ui",
+        "--",
+        "src/pages/Activity/index.test.jsx",
+        "-t",
+        "hydrates server-side filters from the URL and keeps export/read actions aligned"
+      ],
+      "startedAt": "2026-04-06T10:11:30.682Z",
+      "finishedAt": "2026-04-06T10:11:32.598Z",
+      "durationMs": 1916,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-activity-links-ui",
+      "label": "Activity linked-context UI gate",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:ui",
+        "--",
+        "src/pages/Activity/index.test.jsx",
+        "-t",
+        "opens the detail drawer and surfaces linked backend activity context"
+      ],
+      "startedAt": "2026-04-06T10:11:32.598Z",
+      "finishedAt": "2026-04-06T10:11:34.425Z",
+      "durationMs": 1827,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-discovery-ui",
+      "label": "Discovery UI gate",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:ui",
+        "--",
+        "src/pages/Discovery/index.test.jsx"
+      ],
+      "startedAt": "2026-04-06T10:11:34.425Z",
+      "finishedAt": "2026-04-06T10:11:36.818Z",
+      "durationMs": 2392,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-business-flows-e2e",
+      "label": "Cross-module business flows E2E",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:e2e",
+        "--",
+        "tests/e2e/business-flows.spec.js"
+      ],
+      "startedAt": "2026-04-06T10:11:36.818Z",
+      "finishedAt": "2026-04-06T10:11:41.329Z",
+      "durationMs": 4510,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-discovery-e2e",
+      "label": "Discovery operator journey E2E",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:e2e",
+        "--",
+        "tests/e2e/discovery.spec.js"
+      ],
+      "startedAt": "2026-04-06T10:11:41.329Z",
+      "finishedAt": "2026-04-06T10:11:44.266Z",
+      "durationMs": 2937,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-strategy-library-e2e",
+      "label": "Strategy library lifecycle E2E",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:e2e",
+        "--",
+        "tests/e2e/strategy-library.spec.js"
+      ],
+      "startedAt": "2026-04-06T10:11:44.266Z",
+      "finishedAt": "2026-04-06T10:11:44.266Z",
+      "durationMs": 0,
+      "status": "skipped",
+      "exitCode": null,
+      "reason": "enable with FOUNDATION_RUN_STRATEGY_LIBRARY_E2E=true"
+    },
+    {
+      "key": "live-discovery-gate",
+      "label": "Live discovery release gate",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "release-gate:discovery"
+      ],
+      "startedAt": "2026-04-06T10:11:44.266Z",
+      "finishedAt": "2026-04-06T10:11:44.266Z",
+      "durationMs": 0,
+      "status": "skipped",
+      "exitCode": null,
+      "reason": "enable with FOUNDATION_RUN_LIVE_CHECKS=true"
+    },
+    {
+      "key": "live-scheduler-health",
+      "label": "Live scheduler health smoke",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "smoke:scheduler-health"
+      ],
+      "startedAt": "2026-04-06T10:11:44.266Z",
+      "finishedAt": "2026-04-06T10:11:44.266Z",
+      "durationMs": 0,
+      "status": "skipped",
+      "exitCode": null,
+      "reason": "enable with FOUNDATION_RUN_LIVE_CHECKS=true"
+    },
+    {
+      "key": "live-strategy-library-gate",
+      "label": "Live strategy-library release gate",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "release-gate:strategy-library"
+      ],
+      "startedAt": "2026-04-06T10:11:44.266Z",
+      "finishedAt": "2026-04-06T10:11:44.266Z",
+      "durationMs": 0,
+      "status": "skipped",
+      "exitCode": null,
+      "reason": "enable with FOUNDATION_RUN_LIVE_CHECKS=true"
+    }
+  ]
+}

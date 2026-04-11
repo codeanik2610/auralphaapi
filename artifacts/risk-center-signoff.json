@@ -1,0 +1,92 @@
+{
+  "decision": "ready",
+  "generatedAt": "2026-04-09T17:09:03.802Z",
+  "gateFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/risk-center-release-gate.json",
+  "approver": null,
+  "checks": {
+    "gateReady": true,
+    "requiredSuitesPassed": true,
+    "liveHealthReviewed": true,
+    "externalDashboardsVerified": true,
+    "dataProvenanceVerified": true,
+    "operatorHandoffsVerified": true,
+    "migrationRunVerified": true
+  },
+  "evidence": {
+    "stagingWorkflowUrl": null,
+    "dashboardUrl": null,
+    "runbookUrl": null,
+    "releaseNoteUrl": null,
+    "migrationRunUrl": null
+  },
+  "gate": {
+    "decision": "ready",
+    "startedAt": "2026-04-09T17:08:34.426Z",
+    "finishedAt": "2026-04-09T17:08:55.694Z",
+    "liveChecksEnabled": false,
+    "totals": {
+      "total": 11,
+      "passed": 10,
+      "failed": 0,
+      "skipped": 1
+    },
+    "results": [
+      {
+        "key": "backend-risk-center-contract",
+        "label": "Backend risk-center contract suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-risk-center-phase1",
+        "label": "Backend risk-center Phase 1 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-risk-center-phase2",
+        "label": "Backend risk-center Phase 2 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-risk-center-phase4",
+        "label": "Backend risk-center Phase 4 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-risk-center-phase5",
+        "label": "Backend risk-center Phase 5 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-risk-center-controllers",
+        "label": "Backend controller suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-type-check",
+        "label": "Backend type-check",
+        "status": "passed"
+      },
+      {
+        "key": "frontend-risk-center-eslint",
+        "label": "Frontend risk-center lint check",
+        "status": "passed"
+      },
+      {
+        "key": "frontend-risk-center-ui",
+        "label": "Frontend risk-center UI suite",
+        "status": "passed"
+      },
+      {
+        "key": "frontend-risk-center-e2e",
+        "label": "Frontend risk-center operator journey E2E",
+        "status": "passed"
+      },
+      {
+        "key": "backend-risk-center-live-health",
+        "label": "Backend risk-center live health check",
+        "status": "skipped",
+        "reason": "RISK_CENTER_RUN_LIVE_CHECKS is not true"
+      }
+    ]
+  }
+}

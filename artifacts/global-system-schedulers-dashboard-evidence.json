@@ -1,0 +1,406 @@
+{
+  "generatedAt": "2026-04-10T17:10:13.027Z",
+  "baseUrl": "http://127.0.0.1:3000/api/v1",
+  "evidenceType": "global-system-schedulers-dashboard",
+  "overview": {
+    "items": [
+      {
+        "key": "asset-price-sync",
+        "name": "Asset Price Sync",
+        "enabled": true,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-09T20:00:11.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T14:30:11.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-09T20:00:11.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T14:30:11.000Z"
+        }
+      },
+      {
+        "key": "broker-assets-sync",
+        "name": "Broker Assets Daily Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-09T11:00:58.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T05:30:58.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-09T11:00:58.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T05:30:58.000Z"
+        }
+      },
+      {
+        "key": "exchange-assets-sync",
+        "name": "Exchange Assets Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-09T11:00:54.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T05:30:54.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-09T11:00:54.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T05:30:54.000Z"
+        }
+      },
+      {
+        "key": "funds-sync",
+        "name": "Funds Snapshot Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false
+        }
+      },
+      {
+        "key": "binance-candles-3m-1m-sync",
+        "name": "OHLCV Data Sync",
+        "enabled": true,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Running",
+        "lastFinishedAt": "2026-04-09T18:07:52.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T12:37:52.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Running",
+          "latestOutcome": "Running",
+          "latestFinishedAt": "2026-04-09T18:07:52.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T12:37:52.000Z"
+        }
+      },
+      {
+        "key": "orders-sync",
+        "name": "Orders Sync",
+        "enabled": true,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-10T11:01:01.000+05:30",
+        "lastFinishedAtIso": "2026-04-10T05:31:01.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-10T11:01:01.000+05:30",
+          "latestFinishedAtIso": "2026-04-10T05:31:01.000Z"
+        }
+      },
+      {
+        "key": "paper-orders-execution",
+        "name": "Paper Order Execution",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false
+        }
+      },
+      {
+        "key": "positions-sync",
+        "name": "Positions Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false
+        }
+      },
+      {
+        "key": "risk-recompute-sync",
+        "name": "Risk Snapshot Refresh",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false
+        }
+      },
+      {
+        "key": "suggested-trades-execution-sync",
+        "name": "Suggested Trade Execution Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-09T11:12:43.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T05:42:43.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-09T11:12:43.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T05:42:43.000Z"
+        }
+      },
+      {
+        "key": "system-health-sync",
+        "name": "System Health Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-09T11:58:29.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T06:28:29.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-09T11:58:29.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T06:28:29.000Z"
+        }
+      }
+    ],
+    "time": {
+      "displayTimeZone": "Asia/Calcutta",
+      "storageTimeZone": "UTC",
+      "rawTimeFields": "iso-utc",
+      "displayTimesLocalized": true
+    }
+  },
+  "schedulers": {
+    "broker-assets-sync": {
+      "key": "broker-assets-sync",
+      "routeBase": "/scheduler/exchange-assets",
+      "config": {
+        "key": "broker-assets-sync",
+        "name": "Broker Assets Daily Sync",
+        "description": "Fetches provider assets for system broker accounts and updates the global broker assets catalog.",
+        "enabled": false,
+        "cronExpression": "0 1 * * *",
+        "timezone": "UTC",
+        "runAt": "01:00",
+        "intervalDays": 1,
+        "scheduleMode": "daily",
+        "intervalMinutes": 5,
+        "intervalSeconds": 1,
+        "hourlyMinute": 0,
+        "batchSize": 200,
+        "schedulerType": "global",
+        "sources": [
+          "mudrex",
+          "delta_exchange"
+        ],
+        "retentionDays": 30,
+        "time": {
+          "displayTimeZone": "Asia/Calcutta",
+          "storageTimeZone": "UTC",
+          "rawTimeFields": "iso-utc",
+          "displayTimesLocalized": true
+        },
+        "lastStartedAt": "2026-04-09T11:00:53.000+05:30",
+        "lastStartedAtIso": "2026-04-09T05:30:53.000Z",
+        "lastFinishedAt": "2026-04-09T11:00:58.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T05:30:58.000Z",
+        "lastStatus": "Success"
+      },
+      "runs": {
+        "items": [],
+        "total": 0,
+        "limit": 5,
+        "offset": 0,
+        "time": {
+          "displayTimeZone": "Asia/Calcutta",
+          "storageTimeZone": "UTC",
+          "rawTimeFields": "iso-utc",
+          "displayTimesLocalized": true
+        }
+      },
+      "latestRun": null,
+      "progress": null,
+      "updates": null,
+      "syncState": null
+    },
+    "exchange-assets-sync": {
+      "key": "exchange-assets-sync",
+      "routeBase": "/scheduler/binance-assets",
+      "config": {
+        "key": "exchange-assets-sync",
+        "name": "Exchange Assets Sync",
+        "description": "Syncs the global exchange assets catalog from Binance exchangeInfo using Binance base URL configured in system exchange metadata.",
+        "enabled": false,
+        "cronExpression": "0 1 * * *",
+        "timezone": "UTC",
+        "runAt": "04:00",
+        "intervalDays": 1,
+        "scheduleMode": "daily",
+        "intervalMinutes": 60,
+        "intervalSeconds": 1,
+        "hourlyMinute": 0,
+        "batchSize": 50,
+        "schedulerType": "global",
+        "sources": [
+          "binance-futures"
+        ],
+        "retentionDays": 30,
+        "time": {
+          "displayTimeZone": "Asia/Calcutta",
+          "storageTimeZone": "UTC",
+          "rawTimeFields": "iso-utc",
+          "displayTimesLocalized": true
+        },
+        "lastStartedAt": "2026-04-09T11:00:53.000+05:30",
+        "lastStartedAtIso": "2026-04-09T05:30:53.000Z",
+        "lastFinishedAt": "2026-04-09T11:00:54.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T05:30:54.000Z",
+        "lastStatus": "Success"
+      },
+      "runs": {
+        "items": [],
+        "total": 0,
+        "limit": 5,
+        "offset": 0,
+        "time": {
+          "displayTimeZone": "Asia/Calcutta",
+          "storageTimeZone": "UTC",
+          "rawTimeFields": "iso-utc",
+          "displayTimesLocalized": true
+        }
+      },
+      "latestRun": null,
+      "progress": null,
+      "updates": null,
+      "syncState": null
+    },
+    "binance-candles-3m-1m-sync": {
+      "key": "binance-candles-3m-1m-sync",
+      "routeBase": "/scheduler/candles",
+      "config": {
+        "key": "binance-candles-3m-1m-sync",
+        "name": "OHLCV Data Sync",
+        "description": "Fetches 3 months of 1m candles from Binance for global system exchange assets and stores them in Postgres.",
+        "enabled": true,
+        "cronExpression": "0 1 * * *",
+        "timezone": "UTC",
+        "runAt": "01:00",
+        "intervalDays": 1,
+        "scheduleMode": "every_n_minutes",
+        "intervalMinutes": 5,
+        "intervalSeconds": 1,
+        "hourlyMinute": 0,
+        "batchSize": 200,
+        "schedulerType": "global",
+        "sources": [
+          "binance"
+        ],
+        "retentionDays": 30,
+        "selectionMode": "all",
+        "selectedAssetIds": [],
+        "maxLookbackDays": 90,
+        "time": {
+          "displayTimeZone": "Asia/Calcutta",
+          "storageTimeZone": "UTC",
+          "rawTimeFields": "iso-utc",
+          "displayTimesLocalized": true
+        },
+        "lastStartedAt": "2026-04-09T18:07:55.000+05:30",
+        "lastStartedAtIso": "2026-04-09T12:37:55.000Z",
+        "lastFinishedAt": "2026-04-09T18:07:52.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T12:37:52.000Z",
+        "lastStatus": "Running"
+      },
+      "runs": {
+        "items": [],
+        "total": 0,
+        "limit": 5,
+        "offset": 0,
+        "time": {
+          "displayTimeZone": "Asia/Calcutta",
+          "storageTimeZone": "UTC",
+          "rawTimeFields": "iso-utc",
+          "displayTimesLocalized": true
+        }
+      },
+      "latestRun": null,
+      "progress": null,
+      "updates": null,
+      "syncState": {
+        "items": [],
+        "total": 0,
+        "limit": 5,
+        "offset": 0,
+        "time": {
+          "displayTimeZone": "Asia/Calcutta",
+          "storageTimeZone": "UTC",
+          "rawTimeFields": "iso-utc",
+          "displayTimesLocalized": true
+        }
+      }
+    },
+    "system-health-sync": {
+      "key": "system-health-sync",
+      "routeBase": "/scheduler/health",
+      "config": {
+        "key": "system-health-sync",
+        "name": "System Health Sync",
+        "description": "Checks aurAlpha API health, discovery-engine health, scheduler worker health, Binance exchange health, and system broker connection health.",
+        "enabled": false,
+        "cronExpression": "0 1 * * *",
+        "timezone": "UTC",
+        "runAt": "01:00",
+        "intervalDays": 1,
+        "scheduleMode": "every_n_minutes",
+        "intervalMinutes": 1,
+        "intervalSeconds": 1,
+        "hourlyMinute": 0,
+        "batchSize": 50,
+        "schedulerType": "global",
+        "sources": [
+          "health"
+        ],
+        "retentionDays": 30,
+        "time": {
+          "displayTimeZone": "Asia/Calcutta",
+          "storageTimeZone": "UTC",
+          "rawTimeFields": "iso-utc",
+          "displayTimesLocalized": true
+        },
+        "lastStartedAt": "2026-04-09T11:58:29.000+05:30",
+        "lastStartedAtIso": "2026-04-09T06:28:29.000Z",
+        "lastFinishedAt": "2026-04-09T11:58:29.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T06:28:29.000Z",
+        "lastStatus": "Success"
+      },
+      "runs": {
+        "items": [],
+        "total": 0,
+        "limit": 5,
+        "offset": 0,
+        "time": {
+          "displayTimeZone": "Asia/Calcutta",
+          "storageTimeZone": "UTC",
+          "rawTimeFields": "iso-utc",
+          "displayTimesLocalized": true
+        }
+      },
+      "latestRun": null,
+      "progress": null,
+      "updates": null,
+      "syncState": null
+    }
+  }
+}

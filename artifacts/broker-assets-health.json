@@ -1,0 +1,78 @@
+{
+  "baseUrl": "http://127.0.0.1:3102/api/v1",
+  "queueStatus": "ok",
+  "queueName": "scheduler.exchange-assets.execute",
+  "queueLatencyMs": 2,
+  "workerStatus": "ok",
+  "workerHttpStatus": "ok",
+  "workerHeartbeatAgeMs": 7838,
+  "schedulerKey": "broker-assets-sync",
+  "schedulerType": "global",
+  "schedulerEnabled": false,
+  "schedulerTimezone": "UTC",
+  "schedulerSources": [
+    "mudrex",
+    "delta_exchange"
+  ],
+  "adminCatalogLatencyMs": 7082,
+  "adminCatalogTotal": 480,
+  "adminCatalogCount": 10,
+  "adminCatalogFirstSymbol": "0GUSDT",
+  "adminSearchTerm": "BTC",
+  "adminSearchCount": 2,
+  "visibleLatencyMs": 46,
+  "visibleTotal": 919,
+  "visibleCount": 10,
+  "visibleFirstSource": "mudrex",
+  "visibleFirstSymbol": "ZRXUSDT",
+  "visibleQuerySource": null,
+  "visibleSearchTerm": "ZRX",
+  "visibleSearchCount": 1,
+  "mudrexVisibleCount": 7,
+  "mudrexMappedCount": 0,
+  "mudrexMappedConsistency": true,
+  "sourceVisibleSummaries": {
+    "mudrex": {
+      "source": "mudrex",
+      "total": 540,
+      "count": 10,
+      "latencyMs": 35,
+      "firstSymbol": "ZRXUSDT"
+    },
+    "delta_exchange": {
+      "source": "delta_exchange",
+      "total": 379,
+      "count": 10,
+      "latencyMs": 24,
+      "firstSymbol": "1000BONKUSD"
+    }
+  },
+  "thresholds": {
+    "maxAdminCatalogLatencyMs": 12000,
+    "maxVisibleLatencyMs": 500,
+    "minAdminCatalogResults": 400,
+    "minVisibleResults": 800,
+    "requiredVisibleSources": [
+      "mudrex",
+      "delta_exchange"
+    ],
+    "minVisibleResultsBySource": {
+      "mudrex": 400,
+      "delta_exchange": 300
+    }
+  },
+  "thresholdProfile": {
+    "mode": "bounded",
+    "configuredThresholdCount": 6,
+    "requiredThresholdCount": 6,
+    "configuredKeys": [
+      "maxAdminCatalogLatencyMs",
+      "maxVisibleLatencyMs",
+      "minAdminCatalogResults",
+      "minVisibleResults",
+      "minVisibleResultsBySource.mudrex",
+      "minVisibleResultsBySource.delta_exchange"
+    ],
+    "missingKeys": []
+  }
+}

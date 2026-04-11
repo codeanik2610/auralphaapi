@@ -1,0 +1,61 @@
+{
+  "decision": "ready",
+  "generatedAt": "2026-04-10T11:42:12.280Z",
+  "approver": "codex-phase12",
+  "releaseGateFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/funds-scheduler-release-gate.json",
+  "signoffFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/funds-scheduler-signoff.json",
+  "proofOutputFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/funds-scheduler-live-proof.json",
+  "deploymentEvidenceOutputFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/funds-scheduler-deployment-evidence.json",
+  "gateDecision": "ready",
+  "signoffDecision": "ready",
+  "liveChecksEnabled": true,
+  "gateTotals": {
+    "total": 17,
+    "passed": 17,
+    "failed": 0,
+    "skipped": 0
+  },
+  "evidence": {
+    "stagingWorkflowUrl": "http://127.0.0.1:3100/api/v1/scheduler/funds/summary",
+    "workflowUrl": "http://127.0.0.1:3100/api/v1/scheduler/funds/summary",
+    "dashboardUrl": "http://127.0.0.1:3100/api/v1/scheduler/funds/coverage?limit=200",
+    "runbookUrl": "/Users/apple/Documents/Project/Backend/aurAlpha/RUNBOOK.md",
+    "releaseNoteUrl": "/Users/apple/Documents/Project/Backend/aurAlpha/FUNDS_SCHEDULER_PHASE12.md"
+  },
+  "evidenceClassification": {
+    "stagingWorkflowUrlKind": "localhost_url",
+    "dashboardUrlKind": "localhost_url",
+    "runbookUrlKind": "local_path",
+    "releaseNoteUrlKind": "local_path"
+  },
+  "environment": {
+    "healthBaseUrl": "http://127.0.0.1:3100/api/v1",
+    "healthBaseUrlKind": "localhost_url",
+    "targetEnvironmentReady": false
+  },
+  "acknowledgements": {
+    "placeholderEvidenceUsed": true,
+    "unboundedThresholdsUsed": false
+  },
+  "checks": {
+    "gateReady": true,
+    "requiredSuitesPassed": true,
+    "liveHealthReviewed": true,
+    "thresholdPostureCaptured": true,
+    "placeholderEvidenceAcknowledged": true,
+    "unboundedThresholdsAcknowledged": true,
+    "diagnosticsVerified": true,
+    "coverageVerified": true,
+    "productTrustVerified": true,
+    "healthThresholdsVerified": true,
+    "recoveryDrillVerified": true,
+    "accessReviewVerified": true
+  },
+  "readiness": {
+    "deploymentEvidenceReady": false,
+    "thresholdProfileMode": "bounded",
+    "targetEnvironmentReady": false,
+    "healthBaseUrlKind": "localhost_url",
+    "productionPromotionReady": false
+  }
+}

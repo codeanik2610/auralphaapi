@@ -1,0 +1,212 @@
+{
+  "decision": "ready",
+  "startedAt": "2026-04-10T11:29:14.966Z",
+  "finishedAt": "2026-04-10T11:29:28.443Z",
+  "liveChecksEnabled": false,
+  "totals": {
+    "total": 12,
+    "passed": 10,
+    "failed": 0,
+    "skipped": 2
+  },
+  "results": [
+    {
+      "key": "backend-positions-scheduler-phase1",
+      "label": "Backend positions scheduler phase 1 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:positions-scheduler-phase1"
+      ],
+      "startedAt": "2026-04-10T11:29:14.967Z",
+      "finishedAt": "2026-04-10T11:29:16.098Z",
+      "durationMs": 1129,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-positions-scheduler-phase2",
+      "label": "Backend positions scheduler phase 2 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:positions-scheduler-phase2"
+      ],
+      "startedAt": "2026-04-10T11:29:16.098Z",
+      "finishedAt": "2026-04-10T11:29:17.266Z",
+      "durationMs": 1168,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-positions-scheduler-phase3",
+      "label": "Backend positions scheduler phase 3 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:positions-scheduler-phase3"
+      ],
+      "startedAt": "2026-04-10T11:29:17.266Z",
+      "finishedAt": "2026-04-10T11:29:18.341Z",
+      "durationMs": 1074,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-positions-scheduler-phase4",
+      "label": "Backend positions scheduler phase 4 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:positions-scheduler-phase4"
+      ],
+      "startedAt": "2026-04-10T11:29:18.341Z",
+      "finishedAt": "2026-04-10T11:29:19.516Z",
+      "durationMs": 1174,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-positions-scheduler-phase5",
+      "label": "Backend positions scheduler phase 5 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:positions-scheduler-phase5"
+      ],
+      "startedAt": "2026-04-10T11:29:19.516Z",
+      "finishedAt": "2026-04-10T11:29:20.519Z",
+      "durationMs": 1003,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-positions-scheduler-phase6",
+      "label": "Backend positions scheduler phase 6 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:positions-scheduler-phase6"
+      ],
+      "startedAt": "2026-04-10T11:29:20.519Z",
+      "finishedAt": "2026-04-10T11:29:21.368Z",
+      "durationMs": 849,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-positions-scheduler-phase7",
+      "label": "Backend positions scheduler phase 7 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:positions-scheduler-phase7"
+      ],
+      "startedAt": "2026-04-10T11:29:21.368Z",
+      "finishedAt": "2026-04-10T11:29:22.216Z",
+      "durationMs": 848,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-positions-scheduler-phase8",
+      "label": "Backend positions scheduler phase 8 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:positions-scheduler-phase8"
+      ],
+      "startedAt": "2026-04-10T11:29:22.216Z",
+      "finishedAt": "2026-04-10T11:29:24.495Z",
+      "durationMs": 2278,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-positions-scheduler-operational-audit",
+      "label": "Backend positions scheduler operational audit",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:operational-audit"
+      ],
+      "startedAt": "2026-04-10T11:29:24.495Z",
+      "finishedAt": "2026-04-10T11:29:24.885Z",
+      "durationMs": 389,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-positions-scheduler-eslint",
+      "label": "Backend positions scheduler lint check",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npx",
+        "eslint",
+        "src/api/controllers/PositionsSchedulerController.ts",
+        "src/api/contracts/Scheduler.ts",
+        "src/api/services/PositionsSchedulerService.ts",
+        "src/api/validators/scheduler.validator.ts",
+        "src/database/repositories/PositionReadModelRepository.ts",
+        "src/loaders/ExpressLoader.ts",
+        "scripts/test-operational-audit.ts",
+        "scripts/test-positions-scheduler-phase3.ts",
+        "scripts/test-positions-scheduler-phase5.ts",
+        "scripts/test-positions-scheduler-phase6.ts",
+        "scripts/test-positions-scheduler-phase7.ts",
+        "scripts/test-positions-scheduler-phase8.ts",
+        "scripts/check-positions-scheduler-health.ts",
+        "scripts/proof-positions-scheduler-live.ts",
+        "scripts/release-gate-positions-scheduler.ts",
+        "scripts/rebuild-positions-read-model.ts",
+        "scripts/signoff-positions-scheduler.ts"
+      ],
+      "startedAt": "2026-04-10T11:29:24.885Z",
+      "finishedAt": "2026-04-10T11:29:28.443Z",
+      "durationMs": 3557,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-positions-health",
+      "label": "Backend positions desk live health check",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "check:positions-health"
+      ],
+      "startedAt": "2026-04-10T11:29:28.443Z",
+      "finishedAt": "2026-04-10T11:29:28.443Z",
+      "durationMs": 0,
+      "status": "skipped",
+      "exitCode": null,
+      "reason": "POSITIONS_SCHEDULER_RUN_LIVE_CHECKS is not true"
+    },
+    {
+      "key": "backend-positions-scheduler-health",
+      "label": "Backend positions scheduler live health check",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "check:positions-scheduler-health"
+      ],
+      "startedAt": "2026-04-10T11:29:28.443Z",
+      "finishedAt": "2026-04-10T11:29:28.443Z",
+      "durationMs": 0,
+      "status": "skipped",
+      "exitCode": null,
+      "reason": "POSITIONS_SCHEDULER_RUN_LIVE_CHECKS is not true"
+    }
+  ]
+}

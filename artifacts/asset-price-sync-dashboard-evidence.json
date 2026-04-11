@@ -1,0 +1,285 @@
+{
+  "generatedAt": "2026-04-10T18:42:01.559Z",
+  "baseUrl": "http://127.0.0.1:3102/api/v1",
+  "evidenceType": "asset-price-sync-dashboard",
+  "endpoints": {
+    "queue": "/health/queue",
+    "worker": "/health/worker",
+    "overview": "/scheduler/overview",
+    "config": "/scheduler/asset-price/config",
+    "runs": "/scheduler/asset-price/runs?limit=10&offset=0"
+  },
+  "queueHealth": {
+    "status": "ok",
+    "queue": "scheduler.exchange-assets.execute",
+    "timestamp": "2026-04-10T18:42:01.518Z",
+    "latencyMs": 4
+  },
+  "workerHealth": {
+    "status": "ok",
+    "key": "scheduler:worker:heartbeat",
+    "endpoint": "http://localhost:3001",
+    "heartbeatStatus": "ok",
+    "workerHttpStatus": "ok",
+    "timestamp": "2026-04-10T18:42:01.535Z",
+    "workerId": "scheduler-worker-1",
+    "lastHeartbeatAt": "2026-04-10T18:41:58.477Z",
+    "heartbeatAgeMs": 3058,
+    "lastCommandPollAt": "2026-04-10T18:41:53.605Z",
+    "lastCommandPollDurationMs": 32,
+    "lastCommandPollProcessedCount": 0,
+    "commandPollLagMs": 7930
+  },
+  "overview": {
+    "items": [
+      {
+        "key": "asset-price-sync",
+        "name": "Asset Price Sync",
+        "enabled": true,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-09T20:00:11.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T14:30:11.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-09T20:00:11.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T14:30:11.000Z"
+        }
+      },
+      {
+        "key": "broker-assets-sync",
+        "name": "Broker Assets Daily Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-09T11:00:58.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T05:30:58.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-09T11:00:58.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T05:30:58.000Z"
+        }
+      },
+      {
+        "key": "exchange-assets-sync",
+        "name": "Exchange Assets Sync",
+        "enabled": true,
+        "status": "queued",
+        "hasQueuedWork": true,
+        "runId": "fe28885f-6330-44cb-86fe-316c505b90eb",
+        "initiatedBy": {
+          "type": "manual",
+          "userId": "21d144c4-30c7-11f1-9717-4dce254b0a53",
+          "label": "21d144c4-30c7-11f1-9717-4dce254b0a53"
+        },
+        "executionContext": "system",
+        "queuedAt": "2026-04-11T04:32:24.000+05:30",
+        "queuedAtIso": "2026-04-10T23:02:24.000Z",
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-09T11:00:54.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T05:30:54.000Z",
+        "recentRun": {
+          "id": "4e1da9e9-7491-42e1-85c5-ddc89ff49da3",
+          "status": "Queued",
+          "initiatedBy": {
+            "type": "manual",
+            "userId": "21d144c4-30c7-11f1-9717-4dce254b0a53",
+            "label": "21d144c4-30c7-11f1-9717-4dce254b0a53"
+          },
+          "executionContext": "system",
+          "startedAt": "2026-04-10T23:02:25.000+05:30",
+          "startedAtIso": "2026-04-10T17:32:25.000Z",
+          "durationMs": 0,
+          "processedAccounts": 0,
+          "insertedAssets": 0,
+          "updatedAssets": 0,
+          "skippedAssets": 0,
+          "progress": {
+            "total": 0,
+            "processed": 0,
+            "percent": 0,
+            "etaSeconds": 0
+          }
+        },
+        "ops": {
+          "activeStatus": "queued",
+          "hasQueuedWork": true,
+          "latestRunId": "4e1da9e9-7491-42e1-85c5-ddc89ff49da3",
+          "latestRunStatus": "Queued",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-09T11:00:54.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T05:30:54.000Z"
+        }
+      },
+      {
+        "key": "funds-sync",
+        "name": "Funds Snapshot Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false
+        }
+      },
+      {
+        "key": "binance-candles-3m-1m-sync",
+        "name": "OHLCV Data Sync",
+        "enabled": true,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Running",
+        "lastFinishedAt": "2026-04-09T18:07:52.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T12:37:52.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Running",
+          "latestOutcome": "Running",
+          "latestFinishedAt": "2026-04-09T18:07:52.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T12:37:52.000Z"
+        }
+      },
+      {
+        "key": "orders-sync",
+        "name": "Orders Sync",
+        "enabled": true,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-10T11:01:01.000+05:30",
+        "lastFinishedAtIso": "2026-04-10T05:31:01.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-10T11:01:01.000+05:30",
+          "latestFinishedAtIso": "2026-04-10T05:31:01.000Z"
+        }
+      },
+      {
+        "key": "paper-orders-execution",
+        "name": "Paper Order Execution",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false
+        }
+      },
+      {
+        "key": "positions-sync",
+        "name": "Positions Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false
+        }
+      },
+      {
+        "key": "risk-recompute-sync",
+        "name": "Risk Snapshot Refresh",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false
+        }
+      },
+      {
+        "key": "suggested-trades-execution-sync",
+        "name": "Suggested Trade Execution Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-09T11:12:43.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T05:42:43.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-09T11:12:43.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T05:42:43.000Z"
+        }
+      },
+      {
+        "key": "system-health-sync",
+        "name": "System Health Sync",
+        "enabled": false,
+        "status": "idle",
+        "hasQueuedWork": false,
+        "lastStatus": "Success",
+        "lastFinishedAt": "2026-04-09T11:58:29.000+05:30",
+        "lastFinishedAtIso": "2026-04-09T06:28:29.000Z",
+        "ops": {
+          "activeStatus": "idle",
+          "hasQueuedWork": false,
+          "latestRunStatus": "Success",
+          "latestOutcome": "Success",
+          "latestFinishedAt": "2026-04-09T11:58:29.000+05:30",
+          "latestFinishedAtIso": "2026-04-09T06:28:29.000Z"
+        }
+      }
+    ],
+    "time": {
+      "displayTimeZone": "Asia/Calcutta",
+      "storageTimeZone": "UTC",
+      "rawTimeFields": "iso-utc",
+      "displayTimesLocalized": true
+    }
+  },
+  "scheduler": {
+    "config": {
+      "key": "asset-price-sync",
+      "name": "Asset Price Sync",
+      "description": "Fetches latest prices for system broker assets from system market sources (Mudrex, Delta Exchange).",
+      "enabled": true,
+      "cronExpression": "0 1 * * *",
+      "timezone": "UTC",
+      "runAt": "01:00",
+      "intervalDays": 1,
+      "scheduleMode": "every_n_minutes",
+      "intervalMinutes": 1,
+      "intervalSeconds": 1,
+      "hourlyMinute": 0,
+      "batchSize": 200,
+      "schedulerType": "global",
+      "sources": [
+        "mudrex",
+        "delta_exchange"
+      ],
+      "retentionDays": 30,
+      "selectionMode": "all",
+      "selectedAssetIds": [],
+      "time": {
+        "displayTimeZone": "Asia/Calcutta",
+        "storageTimeZone": "UTC",
+        "rawTimeFields": "iso-utc",
+        "displayTimesLocalized": true
+      },
+      "lastStartedAt": "2026-04-09T20:00:09.000+05:30",
+      "lastStartedAtIso": "2026-04-09T14:30:09.000Z",
+      "lastFinishedAt": "2026-04-09T20:00:11.000+05:30",
+      "lastFinishedAtIso": "2026-04-09T14:30:11.000Z",
+      "lastStatus": "Success"
+    },
+    "latestRun": null,
+    "progress": null,
+    "updates": null
+  }
+}

@@ -1,0 +1,136 @@
+{
+  "decision": "ready",
+  "startedAt": "2026-04-10T21:17:58.209Z",
+  "finishedAt": "2026-04-10T21:18:00.189Z",
+  "backendCwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+  "liveProofEnabled": true,
+  "proofFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/scheduler-account-scope-live-proof.json",
+  "proofSummary": {
+    "decision": "ready",
+    "generatedAt": "2026-04-10T21:17:52.808Z",
+    "proofMode": "manual-smoke",
+    "contract": "broker_accounts.user_id IS NOT NULL",
+    "liveOutputFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/scheduler-account-scope-live.json",
+    "proofOutputFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/scheduler-account-scope-live-proof.json",
+    "baseUrl": "http://localhost:3000/api/v1",
+    "activeTotal": 6,
+    "activeUserOwned": 4,
+    "activeSystemOwned": 2,
+    "ownerlessAccountIds": [
+      "3dfcdba2-31f5-11f1-9717-4dce254b0a53",
+      "3dfd9132-31f5-11f1-9717-4dce254b0a53"
+    ],
+    "orders": {
+      "summaryTotalAccounts": 4,
+      "listTotalAccounts": 4
+    },
+    "positions": {
+      "summaryTotalAccounts": 4,
+      "listTotalAccounts": 4
+    },
+    "funds": {
+      "batchTotalAccounts": 4,
+      "batchFailureCount": 0,
+      "ownerlessScopedTotalAccounts": 0
+    },
+    "operationalDecision": "manual-smoke proof remains opt-in and is not wired into test:all or an automatic release gate"
+  },
+  "totals": {
+    "total": 6,
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0
+  },
+  "results": [
+    {
+      "key": "backend-scheduler-account-scope-phase3",
+      "label": "Backend scheduler account-scope Phase 3 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:scheduler-account-scope-phase3"
+      ],
+      "startedAt": "2026-04-10T21:17:58.210Z",
+      "finishedAt": "2026-04-10T21:17:58.567Z",
+      "durationMs": 356,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-scheduler-account-scope-phase5",
+      "label": "Backend scheduler account-scope Phase 5 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:scheduler-account-scope-phase5"
+      ],
+      "startedAt": "2026-04-10T21:17:58.567Z",
+      "finishedAt": "2026-04-10T21:17:58.916Z",
+      "durationMs": 348,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-scheduler-account-scope-phase6",
+      "label": "Backend scheduler account-scope Phase 6 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:scheduler-account-scope-phase6"
+      ],
+      "startedAt": "2026-04-10T21:17:58.916Z",
+      "finishedAt": "2026-04-10T21:17:59.270Z",
+      "durationMs": 353,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-scheduler-account-scope-phase7",
+      "label": "Backend scheduler account-scope Phase 7 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:scheduler-account-scope-phase7"
+      ],
+      "startedAt": "2026-04-10T21:17:59.270Z",
+      "finishedAt": "2026-04-10T21:17:59.821Z",
+      "durationMs": 550,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-scheduler-account-scope-operational-audit",
+      "label": "Backend operational audit",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:operational-audit"
+      ],
+      "startedAt": "2026-04-10T21:17:59.821Z",
+      "finishedAt": "2026-04-10T21:18:00.184Z",
+      "durationMs": 363,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-scheduler-account-scope-live-proof",
+      "label": "Backend scheduler account-scope live proof",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "internal",
+        "scheduler-account-scope-live-proof"
+      ],
+      "startedAt": "2026-04-10T21:18:00.184Z",
+      "finishedAt": "2026-04-10T21:18:00.188Z",
+      "durationMs": 4,
+      "status": "passed",
+      "exitCode": 0,
+      "reason": "reused existing ready proof artifact after direct execution fallback: connect EPERM 127.0.0.1:8889 - Local (0.0.0.0:0)"
+    }
+  ]
+}

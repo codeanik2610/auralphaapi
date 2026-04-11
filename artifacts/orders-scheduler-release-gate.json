@@ -1,0 +1,238 @@
+{
+  "decision": "ready",
+  "startedAt": "2026-04-09T20:58:40.437Z",
+  "finishedAt": "2026-04-09T20:59:01.218Z",
+  "liveChecksEnabled": false,
+  "totals": {
+    "total": 13,
+    "passed": 12,
+    "failed": 0,
+    "skipped": 1
+  },
+  "results": [
+    {
+      "key": "backend-orders-scheduler-phase2",
+      "label": "Backend orders scheduler Phase 2 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:schedulers-phase2"
+      ],
+      "startedAt": "2026-04-09T20:58:40.438Z",
+      "finishedAt": "2026-04-09T20:58:41.653Z",
+      "durationMs": 1214,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-scheduler-phase3",
+      "label": "Backend orders scheduler Phase 3 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:schedulers-phase3"
+      ],
+      "startedAt": "2026-04-09T20:58:41.653Z",
+      "finishedAt": "2026-04-09T20:58:42.477Z",
+      "durationMs": 824,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-scheduler-phase4",
+      "label": "Backend orders scheduler Phase 4 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:schedulers-phase4"
+      ],
+      "startedAt": "2026-04-09T20:58:42.477Z",
+      "finishedAt": "2026-04-09T20:58:43.406Z",
+      "durationMs": 928,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-scheduler-phase5",
+      "label": "Backend orders scheduler Phase 5 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:schedulers-phase5"
+      ],
+      "startedAt": "2026-04-09T20:58:43.406Z",
+      "finishedAt": "2026-04-09T20:58:44.246Z",
+      "durationMs": 839,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-scheduler-phase7",
+      "label": "Backend orders scheduler Phase 7 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:schedulers-phase7"
+      ],
+      "startedAt": "2026-04-09T20:58:44.246Z",
+      "finishedAt": "2026-04-09T20:58:45.177Z",
+      "durationMs": 931,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-scheduler-phase8",
+      "label": "Backend orders scheduler Phase 8 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:schedulers-phase8"
+      ],
+      "startedAt": "2026-04-09T20:58:45.177Z",
+      "finishedAt": "2026-04-09T20:58:46.142Z",
+      "durationMs": 964,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-scheduler-phase9",
+      "label": "Backend orders scheduler Phase 9 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:schedulers-phase9"
+      ],
+      "startedAt": "2026-04-09T20:58:46.142Z",
+      "finishedAt": "2026-04-09T20:58:47.614Z",
+      "durationMs": 1472,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-scheduler-controllers",
+      "label": "Backend controller suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:controllers"
+      ],
+      "startedAt": "2026-04-09T20:58:47.614Z",
+      "finishedAt": "2026-04-09T20:58:48.576Z",
+      "durationMs": 961,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-scheduler-eslint",
+      "label": "Backend orders scheduler lint check",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npx",
+        "eslint",
+        "src/api/contracts/Scheduler.ts",
+        "src/api/controllers/OrdersSchedulerController.ts",
+        "src/api/services/OrdersSchedulerService.ts",
+        "src/api/services/SchedulerRuntimeSchemaService.ts",
+        "src/api/validators/scheduler.validator.ts",
+        "scripts/test-schedulers-phase2.ts",
+        "scripts/test-schedulers-phase3.ts",
+        "scripts/test-schedulers-phase4.ts",
+        "scripts/test-schedulers-phase5.ts",
+        "scripts/test-schedulers-phase7.ts",
+        "scripts/test-schedulers-phase8.ts",
+        "scripts/test-schedulers-phase9.ts",
+        "scripts/check-orders-scheduler-health.ts",
+        "scripts/proof-orders-scheduler-live.ts",
+        "scripts/release-gate-orders-scheduler.ts",
+        "scripts/signoff-orders-scheduler.ts"
+      ],
+      "startedAt": "2026-04-09T20:58:48.576Z",
+      "finishedAt": "2026-04-09T20:58:51.865Z",
+      "durationMs": 3288,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-orders-scheduler-eslint",
+      "label": "Frontend orders scheduler lint check",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npx",
+        "eslint",
+        "src/pages/Schedulers/index.jsx",
+        "src/pages/Schedulers/index.test.jsx",
+        "src/pages/Schedulers/components/SchedulerOverviewWorkspace.jsx",
+        "src/pages/Schedulers/components/SchedulerConfigWorkspace.jsx",
+        "src/pages/Schedulers/components/SchedulerHistoryWorkspace.jsx",
+        "src/pages/Schedulers/components/SchedulerConfigSection.jsx",
+        "src/pages/Schedulers/components/SchedulerConfigSection.test.jsx",
+        "src/pages/Schedulers/components/SchedulerRecordSyncCoverage.jsx",
+        "tests/e2e/schedulers-orders.spec.js"
+      ],
+      "startedAt": "2026-04-09T20:58:51.865Z",
+      "finishedAt": "2026-04-09T20:58:54.785Z",
+      "durationMs": 2918,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-orders-scheduler-ui",
+      "label": "Frontend orders scheduler UI suite",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:ui",
+        "--",
+        "src/pages/Schedulers/index.test.jsx",
+        "src/pages/Schedulers/components/SchedulerConfigSection.test.jsx"
+      ],
+      "startedAt": "2026-04-09T20:58:54.785Z",
+      "finishedAt": "2026-04-09T20:58:57.632Z",
+      "durationMs": 2847,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-orders-scheduler-e2e",
+      "label": "Frontend orders scheduler operator journey E2E",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:e2e",
+        "--",
+        "tests/e2e/schedulers-orders.spec.js"
+      ],
+      "startedAt": "2026-04-09T20:58:57.632Z",
+      "finishedAt": "2026-04-09T20:59:01.217Z",
+      "durationMs": 3585,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-scheduler-live-health",
+      "label": "Backend orders scheduler live health check",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "check:orders-scheduler-health"
+      ],
+      "startedAt": "2026-04-09T20:59:01.217Z",
+      "finishedAt": "2026-04-09T20:59:01.217Z",
+      "durationMs": 0,
+      "status": "skipped",
+      "exitCode": null,
+      "reason": "ORDERS_SCHEDULER_RUN_LIVE_CHECKS is not true"
+    }
+  ]
+}

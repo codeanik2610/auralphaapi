@@ -1,0 +1,92 @@
+{
+  "decision": "ready",
+  "generatedAt": "2026-04-09T19:17:29.323Z",
+  "gateFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/positions-scheduler-release-gate.json",
+  "approver": "Codex",
+  "checks": {
+    "gateReady": true,
+    "requiredSuitesPassed": true,
+    "liveHealthReviewed": true,
+    "diagnosticsVerified": true,
+    "productTrustVerified": true,
+    "rebuildDrillVerified": true,
+    "accessReviewVerified": true
+  },
+  "evidence": {
+    "workflowUrl": null,
+    "dashboardUrl": null,
+    "runbookUrl": null,
+    "releaseNoteUrl": null
+  },
+  "gate": {
+    "decision": "ready",
+    "startedAt": "2026-04-09T19:17:11.625Z",
+    "finishedAt": "2026-04-09T19:17:21.748Z",
+    "liveChecksEnabled": false,
+    "totals": {
+      "total": 11,
+      "passed": 9,
+      "failed": 0,
+      "skipped": 2
+    },
+    "results": [
+      {
+        "key": "backend-positions-scheduler-phase1",
+        "label": "Backend positions scheduler phase 1 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-positions-scheduler-phase2",
+        "label": "Backend positions scheduler phase 2 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-positions-scheduler-phase3",
+        "label": "Backend positions scheduler phase 3 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-positions-scheduler-phase4",
+        "label": "Backend positions scheduler phase 4 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-positions-scheduler-phase6",
+        "label": "Backend positions scheduler phase 6 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-positions-scheduler-phase7",
+        "label": "Backend positions scheduler phase 7 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-positions-scheduler-phase8",
+        "label": "Backend positions scheduler phase 8 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-positions-scheduler-operational-audit",
+        "label": "Backend positions scheduler operational audit",
+        "status": "passed"
+      },
+      {
+        "key": "backend-positions-scheduler-eslint",
+        "label": "Backend positions scheduler lint check",
+        "status": "passed"
+      },
+      {
+        "key": "backend-positions-health",
+        "label": "Backend positions desk live health check",
+        "status": "skipped",
+        "reason": "POSITIONS_SCHEDULER_RUN_LIVE_CHECKS is not true"
+      },
+      {
+        "key": "backend-positions-scheduler-health",
+        "label": "Backend positions scheduler live health check",
+        "status": "skipped",
+        "reason": "POSITIONS_SCHEDULER_RUN_LIVE_CHECKS is not true"
+      }
+    ]
+  }
+}

@@ -1,0 +1,226 @@
+{
+  "decision": "ready",
+  "startedAt": "2026-04-09T18:48:14.626Z",
+  "finishedAt": "2026-04-09T18:48:37.675Z",
+  "backendCwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+  "frontendCwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+  "liveChecksEnabled": false,
+  "totals": {
+    "total": 13,
+    "passed": 12,
+    "failed": 0,
+    "skipped": 1
+  },
+  "results": [
+    {
+      "key": "backend-risk-center-contract",
+      "label": "Backend risk-center contract suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:risk-center-contract"
+      ],
+      "startedAt": "2026-04-09T18:48:14.626Z",
+      "finishedAt": "2026-04-09T18:48:15.866Z",
+      "durationMs": 1239,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-risk-center-phase1",
+      "label": "Backend risk-center Phase 1 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:risk-center-phase1"
+      ],
+      "startedAt": "2026-04-09T18:48:15.866Z",
+      "finishedAt": "2026-04-09T18:48:16.672Z",
+      "durationMs": 806,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-risk-center-phase2",
+      "label": "Backend risk-center Phase 2 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:risk-center-phase2"
+      ],
+      "startedAt": "2026-04-09T18:48:16.672Z",
+      "finishedAt": "2026-04-09T18:48:17.512Z",
+      "durationMs": 839,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-risk-center-phase4",
+      "label": "Backend risk-center Phase 4 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:risk-center-phase4"
+      ],
+      "startedAt": "2026-04-09T18:48:17.512Z",
+      "finishedAt": "2026-04-09T18:48:18.326Z",
+      "durationMs": 813,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-risk-center-phase5",
+      "label": "Backend risk-center Phase 5 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:risk-center-phase5"
+      ],
+      "startedAt": "2026-04-09T18:48:18.326Z",
+      "finishedAt": "2026-04-09T18:48:19.151Z",
+      "durationMs": 825,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-risk-center-phase8",
+      "label": "Backend risk-center Phase 8 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:risk-center-phase8"
+      ],
+      "startedAt": "2026-04-09T18:48:19.151Z",
+      "finishedAt": "2026-04-09T18:48:19.995Z",
+      "durationMs": 843,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-risk-center-phase9",
+      "label": "Backend risk-center Phase 9 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:risk-center-phase9"
+      ],
+      "startedAt": "2026-04-09T18:48:19.995Z",
+      "finishedAt": "2026-04-09T18:48:20.806Z",
+      "durationMs": 811,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-risk-center-controllers",
+      "label": "Backend controller suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:controllers"
+      ],
+      "startedAt": "2026-04-09T18:48:20.806Z",
+      "finishedAt": "2026-04-09T18:48:21.949Z",
+      "durationMs": 1143,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-type-check",
+      "label": "Backend type-check",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "type-check"
+      ],
+      "startedAt": "2026-04-09T18:48:21.949Z",
+      "finishedAt": "2026-04-09T18:48:27.285Z",
+      "durationMs": 5336,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-risk-center-eslint",
+      "label": "Frontend risk-center lint check",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npx",
+        "eslint",
+        "src/pages/RiskCenter/index.jsx",
+        "src/pages/RiskCenter/index.test.jsx",
+        "src/pages/RiskCenter/trust.js",
+        "src/pages/RiskCenter/RiskCenterActivityTrail.jsx",
+        "src/pages/RiskCenter/RiskCenterOverviewWorkspace.jsx",
+        "src/pages/RiskCenter/RiskCenterPoliciesWorkspace.jsx",
+        "src/pages/RiskCenter/RiskCenterOperationsWorkspace.jsx",
+        "src/pages/RiskCenter/RiskPolicyDrawer.jsx",
+        "src/store/slices/riskCenterSlice.js",
+        "src/services/tradingApi.js",
+        "tests/e2e/risk-center.spec.js"
+      ],
+      "startedAt": "2026-04-09T18:48:27.285Z",
+      "finishedAt": "2026-04-09T18:48:29.938Z",
+      "durationMs": 2652,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-risk-center-ui",
+      "label": "Frontend risk-center UI suite",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:ui",
+        "--",
+        "src/pages/RiskCenter/index.test.jsx"
+      ],
+      "startedAt": "2026-04-09T18:48:29.938Z",
+      "finishedAt": "2026-04-09T18:48:33.005Z",
+      "durationMs": 3067,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-risk-center-e2e",
+      "label": "Frontend risk-center operator journey E2E",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:e2e",
+        "--",
+        "tests/e2e/risk-center.spec.js"
+      ],
+      "startedAt": "2026-04-09T18:48:33.005Z",
+      "finishedAt": "2026-04-09T18:48:37.675Z",
+      "durationMs": 4670,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-risk-center-live-health",
+      "label": "Backend risk-center live health check",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "check:risk-center-health"
+      ],
+      "startedAt": "2026-04-09T18:48:37.675Z",
+      "finishedAt": "2026-04-09T18:48:37.675Z",
+      "durationMs": 0,
+      "status": "skipped",
+      "exitCode": null,
+      "reason": "RISK_CENTER_RUN_LIVE_CHECKS is not true"
+    }
+  ]
+}

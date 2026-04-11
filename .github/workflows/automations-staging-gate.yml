@@ -1,0 +1,81 @@
+name: Automations Staging Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      soak_duration_minutes:
+        description: Soak duration in minutes
+        required: true
+        default: '30'
+      soak_poll_seconds:
+        description: Soak poll interval in seconds
+        required: true
+        default: '60'
+      run_lifecycle_smoke:
+        description: Run lifecycle smoke before checking gate
+        required: true
+        default: 'true'
+      max_failed_runs_24h:
+        description: Max failed runs in the last 24h
+        required: true
+        default: '0'
+      max_overlap_skips_24h:
+        description: Max overlap skips in the last 24h
+        required: true
+        default: '0'
+      max_stale_cursors:
+        description: Max stale cursors allowed
+        required: true
+        default: '0'
+      max_open_alerts:
+        description: Max open automation alerts allowed
+        required: true
+        default: '0'
+
+concurrency:
+  group: automations-staging-gate
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Run staging release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: staging
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run automations staging release gate
+        env:
+          SMOKE_BASE_URL: ${{ secrets.STAGING_API_BASE_URL }}
+          SMOKE_LOGIN_EMAIL: ${{ secrets.STAGING_AUTOMATIONS_LOGIN_EMAIL }}
+          SMOKE_LOGIN_PASSWORD: ${{ secrets.STAGING_AUTOMATIONS_LOGIN_PASSWORD }}
+          APP_API_KEY: ${{ secrets.STAGING_APP_API_KEY }}
+          AUTOMATIONS_SOAK_DURATION_MINUTES: ${{ inputs.soak_duration_minutes }}
+          AUTOMATIONS_SOAK_POLL_SECONDS: ${{ inputs.soak_poll_seconds }}
+          AUTOMATIONS_RELEASE_GATE_RUN_SMOKE: ${{ inputs.run_lifecycle_smoke }}
+          AUTOMATIONS_MAX_FAILED_RUNS_24H: ${{ inputs.max_failed_runs_24h }}
+          AUTOMATIONS_MAX_OVERLAP_SKIPS_24H: ${{ inputs.max_overlap_skips_24h }}
+          AUTOMATIONS_MAX_STALE_CURSORS: ${{ inputs.max_stale_cursors }}
+          AUTOMATIONS_MAX_OPEN_ALERTS: ${{ inputs.max_open_alerts }}
+          AUTOMATIONS_RELEASE_GATE_OUTPUT_FILE: artifacts/automations-release-gate.json
+        run: npm run release-gate:automations
+
+      - name: Upload release gate artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automations-staging-gate
+          path: artifacts/automations-release-gate.json
+          if-no-files-found: warn

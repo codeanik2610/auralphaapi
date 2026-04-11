@@ -1,0 +1,123 @@
+{
+  "decision": "ready",
+  "generatedAt": "2026-04-10T21:18:06.380Z",
+  "approver": "codex-phase7",
+  "gateFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/scheduler-account-scope-release-gate.json",
+  "proofFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/scheduler-account-scope-live-proof.json",
+  "checks": {
+    "gateReady": true,
+    "requiredSuitesPassed": true,
+    "liveProofReviewed": true,
+    "ownershipSplitVerified": true,
+    "ordersDiagnosticsVerified": true,
+    "positionsDiagnosticsVerified": true,
+    "fundsOwnerlessExclusionVerified": true,
+    "placeholderEvidenceAcknowledged": true
+  },
+  "readiness": {
+    "liveProofReady": true,
+    "deploymentEvidenceReady": false,
+    "productionPromotionReady": true
+  },
+  "acknowledgements": {
+    "placeholderEvidenceUsed": true
+  },
+  "evidence": {
+    "stagingWorkflowUrl": null,
+    "dashboardUrl": null,
+    "runbookUrl": null,
+    "releaseNoteUrl": null
+  },
+  "evidenceClassification": {
+    "stagingWorkflowUrlKind": "missing",
+    "dashboardUrlKind": "missing",
+    "runbookUrlKind": "missing",
+    "releaseNoteUrlKind": "missing"
+  },
+  "environment": {
+    "requireLiveProof": true,
+    "requireDeploymentEvidence": false
+  },
+  "gate": {
+    "decision": "ready",
+    "startedAt": "2026-04-10T21:17:58.209Z",
+    "finishedAt": "2026-04-10T21:18:00.189Z",
+    "liveProofEnabled": true,
+    "proofFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/scheduler-account-scope-live-proof.json",
+    "proofSummary": {
+      "decision": "ready",
+      "generatedAt": "2026-04-10T21:17:52.808Z",
+      "proofMode": "manual-smoke",
+      "contract": "broker_accounts.user_id IS NOT NULL",
+      "liveOutputFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/scheduler-account-scope-live.json",
+      "proofOutputFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/scheduler-account-scope-live-proof.json",
+      "baseUrl": "http://localhost:3000/api/v1",
+      "activeTotal": 6,
+      "activeUserOwned": 4,
+      "activeSystemOwned": 2,
+      "ownerlessAccountIds": [
+        "3dfcdba2-31f5-11f1-9717-4dce254b0a53",
+        "3dfd9132-31f5-11f1-9717-4dce254b0a53"
+      ],
+      "orders": {
+        "summaryTotalAccounts": 4,
+        "listTotalAccounts": 4
+      },
+      "positions": {
+        "summaryTotalAccounts": 4,
+        "listTotalAccounts": 4
+      },
+      "funds": {
+        "batchTotalAccounts": 4,
+        "batchFailureCount": 0,
+        "ownerlessScopedTotalAccounts": 0
+      },
+      "operationalDecision": "manual-smoke proof remains opt-in and is not wired into test:all or an automatic release gate"
+    },
+    "totals": {
+      "total": 6,
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0
+    },
+    "results": [
+      {
+        "key": "backend-scheduler-account-scope-phase3",
+        "label": "Backend scheduler account-scope Phase 3 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-scheduler-account-scope-phase5",
+        "label": "Backend scheduler account-scope Phase 5 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-scheduler-account-scope-phase6",
+        "label": "Backend scheduler account-scope Phase 6 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-scheduler-account-scope-phase7",
+        "label": "Backend scheduler account-scope Phase 7 suite",
+        "status": "passed"
+      },
+      {
+        "key": "backend-scheduler-account-scope-operational-audit",
+        "label": "Backend operational audit",
+        "status": "passed"
+      },
+      {
+        "key": "backend-scheduler-account-scope-live-proof",
+        "label": "Backend scheduler account-scope live proof",
+        "status": "passed",
+        "reason": "reused existing ready proof artifact after direct execution fallback: connect EPERM 127.0.0.1:8889 - Local (0.0.0.0:0)"
+      }
+    ]
+  },
+  "proof": {
+    "decision": "ready",
+    "contract": "broker_accounts.user_id IS NOT NULL",
+    "activeUserOwned": 4,
+    "activeSystemOwned": 2
+  }
+}

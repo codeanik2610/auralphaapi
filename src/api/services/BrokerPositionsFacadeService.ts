@@ -1,0 +1,2356 @@
+import { Inject, Service } from 'typedi';
+import { BrokerAccountRoutingService } from '../../brokers';
+import { BrokerRuntimeRegistry } from '../../brokers';
+import {
+  ActivityRepository,
+  AssetPriceRepository,
+  AlertRepository,
+  BrokerAccountRepository,
+  PaperOrderRepository,
+  PositionReadModelRepository,
+  SuggestedTradeRepository,
+} from '../../database';
+import { PaperOrder, SuggestedTrade } from '../../database';
+import { ActivityLog } from '../../database/entities/ActivityLog';
+import { coreDataSource } from '../../database/data-source';
+import {
+  PositionLifecycleFreshness,
+  PositionLifecycleAccountContext,
+  PositionLifecycleActivityItem,
+  PositionLifecycleAlertItem,
+  PositionLifecycleOrderItem,
+  PositionLifecycleResponse,
+  PositionLifecycleSuggestedTradeItem,
+  PositionsAccountFreshness,
+  PositionsFreshnessIndicator,
+  PositionsFreshnessState,
+  PositionRecord,
+  PositionSummary,
+  PositionsAccountItem,
+  PositionsGroupedFreshnessSummary,
+  PositionsGroupedResponse,
+  PositionsRefreshRequestResponse,
+  PositionsSyncStatusItem,
+  PositionsSyncStatusResponse,
+} from '../contracts/Positions';
+import {
+  AddMarginBody,
+  ClosePartialPositionBody,
+  CreateRiskOrderBody,
+  PositionLiqPriceQuery,
+  PositionsQuery,
+  PositionsHistoryQuery,
+  PositionsRefreshBody,
+  UpdateRiskOrderBody,
+  validatePositionId,
+  validatePositionsQuery,
+  validatePositionsHistoryQuery,
+  validatePositionsRefreshBody,
+} from '../validators/positions.validator';
+import { InternalPositionsSyncService } from './InternalPositionsSyncService';
+import { MarketPriceRefreshService } from './MarketPriceRefreshService';
+import { OperationalEventService } from './OperationalEventService';
+import { UserTimeZoneService } from './UserTimeZoneService';
+import { getUtcDateRangeFromLocalDates } from '../utils/timezone';
+import { buildProductOwnedPositionsSyncRequest } from '../utils/positionsOrdersSyncScopeContract';
+import { NotFoundAppError } from '../errors/AppError';
+import { LinkedEntityReference } from '../contracts/UiState';
+import { env } from '../../env';
+
+@Service()
+export class BrokerPositionsFacadeService {
+  @Inject(() => BrokerRuntimeRegistry)
+  private brokerRuntimeRegistry!: BrokerRuntimeRegistry;
+
+  @Inject(() => BrokerAccountRoutingService)
+  private brokerAccountRoutingService!: BrokerAccountRoutingService;
+
+  @Inject(() => BrokerAccountRepository)
+  private brokerAccountRepository!: BrokerAccountRepository;
+
+  @Inject(() => PositionReadModelRepository)
+  private positionReadModelRepository!: PositionReadModelRepository;
+
+  @Inject(() => AlertRepository)
+  private alertRepository!: AlertRepository;
+
+  @Inject(() => ActivityRepository)
+  private activityRepository!: ActivityRepository;
+
+  @Inject(() => SuggestedTradeRepository)
+  private suggestedTradeRepository!: SuggestedTradeRepository;
+
+  @Inject(() => PaperOrderRepository)
+  private paperOrderRepository!: PaperOrderRepository;
+
+  @Inject(() => AssetPriceRepository)
+  private assetPriceRepository!: AssetPriceRepository;
+
+  @Inject(() => MarketPriceRefreshService)
+  private marketPriceRefreshService!: MarketPriceRefreshService;
+
+  @Inject(() => OperationalEventService)
+  private operationalEventService!: OperationalEventService;
+
+  @Inject(() => UserTimeZoneService)
+  private userTimeZoneService!: UserTimeZoneService;
+
+  @Inject(() => InternalPositionsSyncService)
+  private internalPositionsSyncService!: InternalPositionsSyncService;
+
+  private parsePayloadJson(value: unknown): unknown {
+    if (!value) {
+      return {};
+    }
+    if (typeof value === 'object') {
+      return value;
+    }
+    try {
+      return JSON.parse(String(value));
+    } catch {
+      return {};
+    }
+  }
+
+  private toRecord(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private pickFirst(record: Record<string, unknown>, keys: string[]): unknown {
+    for (const key of keys) {
+      if (record[key] !== undefined && record[key] !== null && record[key] !== '') {
+        return record[key];
+      }
+    }
+    return undefined;
+  }
+
+  private toNumber(value: unknown): number | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : null;
+    }
+    if (typeof value === 'bigint') {
+      return Number(value);
+    }
+    const raw = String(value).trim();
+    if (!raw || raw === '--') {
+      return null;
+    }
+    const cleaned = raw.replace(/[^0-9.+-]/g, '');
+    if (!cleaned) {
+      return null;
+    }
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private toIsoString(value: unknown): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return undefined;
+      }
+      const parsed = new Date(trimmed);
+      return Number.isNaN(parsed.getTime()) ? trimmed : parsed.toISOString();
+    }
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? undefined : value.toISOString();
+    }
+    const parsed = new Date(String(value));
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+  }
+
+  private readString(value: unknown): string {
+    return String(value || '').trim();
+  }
+
+  private applyLimit(raw: unknown, limit?: number): unknown {
+    if (!limit) return raw;
+
+    if (Array.isArray(raw)) {
+      return raw.slice(0, limit);
+    }
+
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const data = (raw as { data?: unknown }).data;
+      if (Array.isArray(data)) {
+        return { ...(raw as Record<string, unknown>), data: data.slice(0, limit) };
+      }
+    }
+
+    return raw;
+  }
+
+  private buildActivityRouteTarget(
+    brokerKey?: string | null,
+    accountId?: string | null
+  ): string | null {
+    const parts = [this.readString(brokerKey), this.readString(accountId)].filter(Boolean);
+    return parts.length ? parts.join(' · ') : null;
+  }
+
+  private extractActionResultData(result: unknown): unknown {
+    const record = this.toRecord(result);
+    if (!record) {
+      return result;
+    }
+
+    if (record.data !== undefined) {
+      return record.data;
+    }
+
+    return result;
+  }
+
+  private buildPositionActionFlag(
+    id: string,
+    channel: string,
+    message: string | null,
+    status: string
+  ): NonNullable<ActivityLog['flags']>[number] | null {
+    const normalizedMessage = this.readString(message);
+    if (!normalizedMessage) {
+      return null;
+    }
+
+    return {
+      id,
+      channel,
+      message: normalizedMessage,
+      time: new Date().toISOString(),
+      status,
+    };
+  }
+
+  private buildPositionActionRequestMessages(
+    actionKey:
+      | 'add-margin'
+      | 'risk-order-create'
+      | 'risk-order-update'
+      | 'reverse'
+      | 'close-partial'
+      | 'close',
+    payload?: Record<string, unknown> | null
+  ): string[] {
+    if (actionKey === 'reverse') {
+      return ['Requested direction reversal for the current position'];
+    }
+
+    if (actionKey === 'close') {
+      return ['Requested full close for the current position'];
+    }
+
+    if (!payload) {
+      return [];
+    }
+
+    if (actionKey === 'add-margin') {
+      return [this.readString(payload.margin) ? `Margin +${this.readString(payload.margin)}` : '']
+        .filter(Boolean);
+    }
+
+    if (actionKey === 'risk-order-create') {
+      return [
+        this.readString(payload.stoploss_price)
+          ? `Stop loss ${this.readString(payload.stoploss_price)}`
+          : '',
+        this.readString(payload.takeprofit_price)
+          ? `Take profit ${this.readString(payload.takeprofit_price)}`
+          : '',
+        this.readString(payload.order_source)
+          ? `Source ${this.readString(payload.order_source)}`
+          : '',
+      ].filter(Boolean);
+    }
+
+    if (actionKey === 'risk-order-update') {
+      return [
+        payload.order_price !== undefined && payload.order_price !== null
+          ? `Reference ${this.readString(payload.order_price)}`
+          : '',
+        payload.stoploss_price !== undefined && payload.stoploss_price !== null
+          ? `Stop loss ${this.readString(payload.stoploss_price)}`
+          : '',
+        payload.takeprofit_price !== undefined && payload.takeprofit_price !== null
+          ? `Take profit ${this.readString(payload.takeprofit_price)}`
+          : '',
+        this.readString(payload.trigger_type)
+          ? `Trigger ${this.readString(payload.trigger_type)}`
+          : '',
+      ].filter(Boolean);
+    }
+
+    if (actionKey === 'close-partial') {
+      return [
+        this.readString(payload.quantity)
+          ? `Quantity ${this.readString(payload.quantity)}`
+          : '',
+        this.readString(payload.order_type)
+          ? `Order ${this.readString(payload.order_type)}`
+          : '',
+        this.readString(payload.limit_price)
+          ? `Limit ${this.readString(payload.limit_price)}`
+          : '',
+      ].filter(Boolean);
+    }
+
+    return [];
+  }
+
+  private buildPositionActionResultMessages(result: unknown): string[] {
+    const resolvedResult = this.extractActionResultData(result);
+    const resultRecord = this.toRecord(resolvedResult);
+    if (!resultRecord) {
+      if (typeof resolvedResult === 'boolean') {
+        return [
+          resolvedResult
+            ? 'Broker acknowledged the request'
+            : 'Broker returned false',
+        ];
+      }
+      return this.readString(resolvedResult) ? [this.readString(resolvedResult)] : [];
+    }
+
+    const primaryMessage = this.readString(
+      this.pickFirst(resultRecord, ['message', 'detail', 'statusText'])
+    );
+    const status = this.readString(this.pickFirst(resultRecord, ['status', 'state']));
+    const reference = this.readString(
+      this.pickFirst(resultRecord, ['position_id', 'positionId', 'id'])
+    );
+    const liquidation = this.readString(
+      this.pickFirst(resultRecord, ['liquidation_price', 'liquidationPrice'])
+    );
+
+    const normalized: string[] = [];
+    if (primaryMessage) {
+      normalized.push(primaryMessage);
+    }
+    if (status) {
+      normalized.push(`Status ${status}`);
+    }
+    if (reference) {
+      normalized.push(`Reference ${reference}`);
+    }
+    if (liquidation) {
+      normalized.push(`Liquidation ${liquidation}`);
+    }
+    return normalized;
+  }
+
+  private async getPositionActionSnapshot(
+    userId: string,
+    positionId: string,
+    route: { brokerKey?: string | null; accountId?: string | null }
+  ): Promise<PositionRecord | null> {
+    const resolvedAccountId = this.readString(route.accountId);
+    const resolvedBrokerKey = this.readString(route.brokerKey).toLowerCase();
+    if (!resolvedAccountId || !resolvedBrokerKey) {
+      return null;
+    }
+
+    try {
+      await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, [
+        resolvedAccountId,
+      ]);
+      return (
+        (await this.positionReadModelRepository.getPositionByExternalId(
+          userId,
+          resolvedAccountId,
+          positionId,
+          resolvedBrokerKey
+        )) || null
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  private async executePositionActionWithAudit(params: {
+    actionKey:
+      | 'add-margin'
+      | 'risk-order-create'
+      | 'risk-order-update'
+      | 'reverse'
+      | 'close-partial'
+      | 'close';
+    successTitle: string;
+    successDescription: string;
+    failureTitle: string;
+    failureAlertLabel: string;
+    positionId: string;
+    payload?: Record<string, unknown> | null;
+    userId: string;
+    brokerKey?: string;
+    accountId?: string;
+    execute: (route: { brokerKey?: string; accountId?: string; userId?: string }) => Promise<unknown>;
+  }): Promise<unknown> {
+    const route = await this.brokerAccountRoutingService.resolve(
+      params.userId,
+      params.brokerKey,
+      params.accountId,
+      'mudrex'
+    );
+    const routeTarget =
+      this.buildActivityRouteTarget(route.brokerKey, route.accountId) ||
+      this.readString(route.brokerKey) ||
+      'positions';
+    const snapshot = await this.getPositionActionSnapshot(
+      params.userId,
+      params.positionId,
+      route
+    );
+    const symbol = this.readString(snapshot?.symbol);
+
+    try {
+      const result = await params.execute(route);
+      const flags = [
+        this.buildPositionActionFlag('route', 'Route', routeTarget, 'Success'),
+        this.buildPositionActionFlag(
+          'position',
+          'Context',
+          symbol ? `${params.positionId} · ${symbol}` : params.positionId,
+          'Success'
+        ),
+        ...this.buildPositionActionRequestMessages(params.actionKey, params.payload).map(
+          (message, index) =>
+            this.buildPositionActionFlag(
+              `request-${index + 1}`,
+              'Request',
+              message,
+              'Success'
+            )
+        ),
+        ...this.buildPositionActionResultMessages(result).map((message, index) =>
+          this.buildPositionActionFlag(`result-${index + 1}`, 'Result', message, 'Success')
+        ),
+      ].filter(
+        (
+          flag
+        ): flag is NonNullable<ActivityLog['flags']>[number] => Boolean(flag)
+      );
+
+      await this.operationalEventService.logActivity(params.userId, {
+        type: 'Position',
+        title: params.successTitle,
+        status: 'Success',
+        route: 'Positions',
+        stream: 'Execution',
+        related: routeTarget,
+        referenceId: params.positionId,
+        correlationId: routeTarget,
+        symbol: symbol || undefined,
+        description: params.successDescription,
+        flags,
+      });
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const flags = [
+        this.buildPositionActionFlag('route', 'Route', routeTarget, 'Failed'),
+        this.buildPositionActionFlag(
+          'position',
+          'Context',
+          symbol ? `${params.positionId} · ${symbol}` : params.positionId,
+          'Failed'
+        ),
+        ...this.buildPositionActionRequestMessages(params.actionKey, params.payload).map(
+          (flagMessage, index) =>
+            this.buildPositionActionFlag(
+              `request-${index + 1}`,
+              'Request',
+              flagMessage,
+              'Failed'
+            )
+        ),
+        this.buildPositionActionFlag('error', 'Result', message, 'Failed'),
+      ].filter(
+        (
+          flag
+        ): flag is NonNullable<ActivityLog['flags']>[number] => Boolean(flag)
+      );
+
+      await this.operationalEventService.logActivity(params.userId, {
+        type: 'Position',
+        title: params.failureTitle,
+        status: 'Failed',
+        route: 'Positions',
+        stream: 'Execution',
+        related: routeTarget,
+        referenceId: params.positionId,
+        correlationId: routeTarget,
+        symbol: symbol || undefined,
+        description: message,
+        flags,
+      });
+      await this.operationalEventService.emitFailureAlert(params.userId, {
+        channel: 'Trading',
+        source: this.readString(route.brokerKey) || params.brokerKey || 'positions',
+        message: `${params.failureAlertLabel} (${params.positionId}): ${message}`,
+        route: 'Risk review',
+        symbol: symbol || undefined,
+      });
+      throw error;
+    }
+  }
+
+  private normalizeMarketSymbol(value: unknown): string | null {
+    const raw = String(value || '').trim().toUpperCase();
+    if (!raw) return null;
+    if (raw.endsWith('USDT')) return raw;
+    if (raw.endsWith('USD')) return `${raw.slice(0, -3)}USDT`;
+    // Most futures symbols we track are quoted in USDT (BTCUSDT, ETHUSDT).
+    if (/^[A-Z0-9]{2,20}$/.test(raw)) return `${raw}USDT`;
+    return raw;
+  }
+
+  private resolvePositionDirection(position: Record<string, unknown>): number {
+    const side = String(position.side ?? '').trim().toLowerCase();
+    const positionType = String(position.position_type ?? '').trim().toLowerCase();
+    const orderType = String(position.order_type ?? '').trim().toLowerCase();
+
+    if (side === 'short' || positionType === 'short' || orderType === 'sell') return -1;
+    if (side === 'long' || positionType === 'long' || orderType === 'buy') return 1;
+
+    const size = Number(position.size ?? 0);
+    if (Number.isFinite(size) && size < 0) return -1;
+    return 1;
+  }
+
+  private resolvePositionSide(position: Record<string, unknown>): { label: string; raw: string | null; key: string } {
+    const raw = String(
+      this.pickFirst(position, ['side', 'position_type', 'order_type', 'orderType', 'positionSide', 'position_side']) || ''
+    )
+      .trim()
+      .toLowerCase();
+
+    if (raw === 'buy' || raw === 'long') {
+      return { label: 'Long', raw: raw || null, key: 'long' };
+    }
+    if (raw === 'sell' || raw === 'short') {
+      return { label: 'Short', raw: raw || null, key: 'short' };
+    }
+
+    const quantity = this.toNumber(
+      this.pickFirst(position, ['quantity', 'size', 'qty', 'position_size', 'net_quantity'])
+    );
+    if (quantity !== null && quantity < 0) {
+      return { label: 'Short', raw: raw || null, key: 'short' };
+    }
+    if (quantity !== null && quantity >= 0) {
+      return { label: 'Long', raw: raw || null, key: 'long' };
+    }
+    return { label: '--', raw: raw || null, key: 'unknown' };
+  }
+
+  private normalizeStatus(value: unknown): { label: string; raw: string | null; key: string } {
+    const rawText = String(value || '').trim();
+    const key = rawText
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/-+/g, '_');
+
+    if (['open', 'active', 'live', 'running'].includes(key)) {
+      return { label: 'Open', raw: rawText || null, key: 'open' };
+    }
+    if (['closed', 'filled', 'done', 'completed'].includes(key)) {
+      return { label: 'Closed', raw: rawText || null, key: 'closed' };
+    }
+    if (['liquidated', 'liquidation', 'forced'].includes(key)) {
+      return { label: 'Liquidated', raw: rawText || null, key: 'liquidated' };
+    }
+    return {
+      label: rawText || '--',
+      raw: rawText || null,
+      key: key || 'unknown',
+    };
+  }
+
+  private buildPositionSummary(record: Record<string, unknown>): PositionSummary {
+    const id = String(
+      this.pickFirst(record, ['id', 'external_id', 'externalId', 'position_id', 'positionId']) || ''
+    ).trim();
+    const externalId = String(
+      this.pickFirst(record, ['external_id', 'externalId', 'position_id', 'positionId', 'id']) || ''
+    ).trim();
+    const symbolValue = this.pickFirst(record, ['symbol', 'product_symbol', 'productSymbol', 'instrument', 'market']);
+    const symbol = symbolValue === undefined || symbolValue === null || String(symbolValue).trim() === ''
+      ? null
+      : String(symbolValue).trim();
+    const side = this.resolvePositionSide(record);
+    const status = this.normalizeStatus(this.pickFirst(record, ['status', 'state', 'position_status']));
+    const signedQuantity = this.toNumber(
+      this.pickFirst(record, ['quantity', 'size', 'qty', 'position_size', 'net_quantity'])
+    );
+    const quantity = signedQuantity === null ? null : Math.abs(signedQuantity);
+    const entryPrice = this.toNumber(
+      this.pickFirst(record, [
+        'entry_price',
+        'entry',
+        'avg_entry',
+        'avg_entry_price',
+        'average_entry_price',
+        'entryPrice',
+      ])
+    );
+    const currentPrice = this.toNumber(
+      this.pickFirst(record, ['current_price', 'mark_price', 'price', 'currentPrice', 'markPrice'])
+    );
+    const closedPrice = this.toNumber(
+      this.pickFirst(record, ['closed_price', 'close_price', 'exit_price', 'exitPrice', 'closedPrice'])
+    );
+    const leverage = this.toNumber(this.pickFirst(record, ['leverage', 'position_leverage', 'leverageValue']));
+    const liquidationPrice = this.toNumber(
+      this.pickFirst(record, ['liquidation_price', 'liq_price', 'liquidationPrice'])
+    );
+    const createdAt = this.toIsoString(this.pickFirst(record, ['created_at', 'createdAt']));
+    const closedAt = this.toIsoString(this.pickFirst(record, ['closed_at', 'closedAt']));
+    const updatedAt = this.toIsoString(
+      this.pickFirst(record, ['updated_at', 'updatedAt', 'closed_at', 'closedAt', 'created_at', 'createdAt'])
+    );
+    const unrealizedPnlExplicit = this.toNumber(
+      this.pickFirst(record, ['unrealized_pnl', 'unrealized', 'unrealizedPnl', 'pnl_unrealized'])
+    );
+    const realizedPnlExplicit = this.toNumber(
+      this.pickFirst(record, ['realized_pnl', 'realized', 'realizedPnl', 'pnl_realized'])
+    );
+    const fallbackRealized = status.key === 'closed' || status.key === 'liquidated'
+      ? this.toNumber(this.pickFirst(record, ['pnl']))
+      : null;
+    const exposure =
+      entryPrice !== null && quantity !== null ? Math.abs(entryPrice * quantity) : null;
+    const unrealizedPnl = (() => {
+      if (unrealizedPnlExplicit !== null) {
+        return unrealizedPnlExplicit;
+      }
+      if (entryPrice === null || currentPrice === null || quantity === null) {
+        return null;
+      }
+      const direction = side.key === 'short' ? -1 : 1;
+      return direction * (currentPrice - entryPrice) * quantity;
+    })();
+
+    return {
+      id: id || externalId,
+      externalId: externalId || undefined,
+      symbol,
+      side: side.label,
+      sideKey: side.key,
+      status: status.label,
+      statusKey: status.key,
+      quantity,
+      entryPrice,
+      currentPrice,
+      closedPrice,
+      unrealizedPnl,
+      realizedPnl: realizedPnlExplicit ?? fallbackRealized,
+      leverage,
+      liquidationPrice,
+      exposure,
+      createdAt,
+      updatedAt,
+      closedAt,
+    };
+  }
+
+  private normalizePositionRecord(
+    value: unknown,
+    metadata?: Partial<Pick<PositionRecord, 'accountId' | 'accountName' | 'accountKey' | 'brokerKey'>>
+  ): PositionRecord {
+    const record = this.toRecord(value) || {};
+    const summary = this.buildPositionSummary(record);
+    const normalizedId =
+      summary.id ||
+      [
+        summary.symbol || 'position',
+        metadata?.accountId || 'account',
+        summary.createdAt || summary.updatedAt || 'unknown',
+      ].join(':');
+
+    return {
+      ...record,
+      ...(metadata || {}),
+      id: normalizedId,
+      external_id: summary.externalId || String(record.external_id || record.externalId || normalizedId),
+      externalId: summary.externalId || String(record.externalId || record.external_id || normalizedId),
+      symbol: summary.symbol,
+      side: summary.side,
+      side_raw: this.resolvePositionSide(record).raw,
+      sideKey: summary.sideKey,
+      status: summary.status,
+      status_raw: this.normalizeStatus(this.pickFirst(record, ['status', 'state', 'position_status'])).raw,
+      statusKey: summary.statusKey,
+      quantity: summary.quantity,
+      quantity_raw: this.pickFirst(record, ['quantity', 'size', 'qty', 'position_size', 'net_quantity']),
+      entry_price: summary.entryPrice,
+      current_price: summary.currentPrice,
+      closed_price: summary.closedPrice,
+      unrealized_pnl: summary.unrealizedPnl,
+      realized_pnl: summary.realizedPnl,
+      realized: summary.realizedPnl,
+      leverage: summary.leverage,
+      liquidation_price: summary.liquidationPrice,
+      exposure: summary.exposure,
+      created_at: summary.createdAt,
+      updated_at: summary.updatedAt,
+      closed_at: summary.closedAt,
+      positionSummary: summary,
+    };
+  }
+
+  private toTimestamp(value: unknown): number | null {
+    if (!value) {
+      return null;
+    }
+
+    const timestamp =
+      value instanceof Date ? value.getTime() : new Date(String(value)).getTime();
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  private formatRelativeAge(freshnessMs: number | null): string | null {
+    if (freshnessMs === null || !Number.isFinite(freshnessMs)) {
+      return null;
+    }
+    if (freshnessMs < 60 * 1000) {
+      return 'just now';
+    }
+    if (freshnessMs < 60 * 60 * 1000) {
+      return `${Math.floor(freshnessMs / (60 * 1000))}m ago`;
+    }
+    if (freshnessMs < 24 * 60 * 60 * 1000) {
+      return `${Math.floor(freshnessMs / (60 * 60 * 1000))}h ago`;
+    }
+    return `${Math.floor(freshnessMs / (24 * 60 * 60 * 1000))}d ago`;
+  }
+
+  private buildFreshnessIndicator(
+    observedAt: unknown,
+    staleAfterMs: number | null,
+    criticalAfterMs: number | null,
+    source: string
+  ): PositionsFreshnessIndicator {
+    const observedIso = this.toIsoString(observedAt) || null;
+    const observedMs = observedIso ? this.toTimestamp(observedIso) : null;
+    const freshnessMs =
+      observedMs !== null ? Math.max(0, Date.now() - observedMs) : null;
+    const state: PositionsFreshnessState =
+      freshnessMs === null
+        ? 'unknown'
+        : criticalAfterMs !== null && freshnessMs > criticalAfterMs
+          ? 'critical'
+          : staleAfterMs !== null && freshnessMs > staleAfterMs
+            ? 'stale'
+            : 'fresh';
+
+    return {
+      state,
+      observedAt: observedIso,
+      freshnessMs,
+      staleAfterMs,
+      criticalAfterMs,
+      isStale: state === 'stale' || state === 'critical',
+      isCritical: state === 'critical',
+      source,
+    };
+  }
+
+  private getPositionObservedAt(position: PositionRecord): string | null {
+    return (
+      this.toIsoString(
+        position.last_seen_at ??
+          position.updated_at ??
+          position.closed_at ??
+          position.created_at
+      ) || null
+    );
+  }
+
+  private withPositionFreshness(
+    positions: PositionRecord[],
+    options: {
+      source: string;
+      staleAfterMs: number | null;
+      criticalAfterMs: number | null;
+    }
+  ): PositionRecord[] {
+    return positions.map((item) => ({
+      ...item,
+      freshness: this.buildFreshnessIndicator(
+        this.getPositionObservedAt(item),
+        options.staleAfterMs,
+        options.criticalAfterMs,
+        options.source
+      ),
+    }));
+  }
+
+  private buildAccountFreshness(
+    account: {
+      accountName?: string;
+      accountKey?: string;
+    },
+    freshnessRow?: {
+      observedAt?: Date | null;
+      checkpointAt?: Date | null;
+      openPositions?: number;
+      totalRows?: number;
+    } | null
+  ): PositionsAccountFreshness | null {
+    if (!freshnessRow?.observedAt && !freshnessRow?.checkpointAt) {
+      return null;
+    }
+
+    const accountFreshness = this.buildFreshnessIndicator(
+      freshnessRow?.observedAt || null,
+      env.positions.liveSnapshotStaleAfterMs,
+      env.positions.liveSnapshotCriticalAfterMs,
+      'position_snapshot'
+    );
+    const checkpointFreshness = this.buildFreshnessIndicator(
+      freshnessRow?.checkpointAt || null,
+      env.positions.syncCheckpointStaleAfterMs,
+      env.positions.syncCheckpointCriticalAfterMs,
+      'sync_checkpoint'
+    );
+    const accountLabel =
+      account.accountName || account.accountKey || 'this account';
+    let warning: string | null = null;
+
+    if (accountFreshness.state === 'critical') {
+      const age = this.formatRelativeAge(accountFreshness.freshnessMs) || 'a while ago';
+      warning = `Live snapshot for ${accountLabel} was last observed ${age}. This desk may be materially behind the broker route.`;
+    } else if (accountFreshness.state === 'stale') {
+      const age = this.formatRelativeAge(accountFreshness.freshnessMs) || 'recently';
+      warning = `Live snapshot for ${accountLabel} was last observed ${age}. Recent broker writes can still be catching up.`;
+    } else if (
+      accountFreshness.state === 'unknown' &&
+      checkpointFreshness.state !== 'unknown'
+    ) {
+      const age = this.formatRelativeAge(checkpointFreshness.freshnessMs) || 'recently';
+      warning = `No visible position snapshot timestamp is available for ${accountLabel} yet. The latest sync checkpoint was ${age}.`;
+    }
+
+    return {
+      account: accountFreshness,
+      checkpoint: checkpointFreshness.state === 'unknown' ? null : checkpointFreshness,
+      warning,
+    };
+  }
+
+  private summarizeGroupedFreshness(
+    items: PositionsAccountItem[]
+  ): PositionsGroupedFreshnessSummary | null {
+    if (!items.length) {
+      return {
+        observedAt: null,
+        freshAccounts: 0,
+        staleAccounts: 0,
+        criticalAccounts: 0,
+        unknownAccounts: 0,
+        warning: null,
+      };
+    }
+
+    let observedAt: string | null = null;
+    let observedTimestamp = 0;
+    let freshAccounts = 0;
+    let staleAccounts = 0;
+    let criticalAccounts = 0;
+    let unknownAccounts = 0;
+
+    items.forEach((item) => {
+      const state = item.freshness?.account?.state || 'unknown';
+      if (state === 'critical') {
+        criticalAccounts += 1;
+      } else if (state === 'stale') {
+        staleAccounts += 1;
+      } else if (state === 'fresh') {
+        freshAccounts += 1;
+      } else {
+        unknownAccounts += 1;
+      }
+
+      const candidate = item.freshness?.account?.observedAt || null;
+      const candidateTimestamp = candidate ? this.toTimestamp(candidate) : null;
+      if (candidate && candidateTimestamp !== null && candidateTimestamp > observedTimestamp) {
+        observedTimestamp = candidateTimestamp;
+        observedAt = candidate;
+      }
+    });
+
+    const warning =
+      criticalAccounts > 0
+        ? `${criticalAccounts} account${criticalAccounts === 1 ? ' has' : 's have'} critically old position snapshots on the live desk.`
+        : staleAccounts > 0
+          ? `${staleAccounts} account${staleAccounts === 1 ? ' has' : 's have'} lagging position snapshots on the live desk.`
+          : unknownAccounts > 0
+            ? `${unknownAccounts} account${unknownAccounts === 1 ? ' has' : 's have'} no visible position snapshot timestamp yet.`
+            : null;
+
+    return {
+      observedAt,
+      freshAccounts,
+      staleAccounts,
+      criticalAccounts,
+      unknownAccounts,
+      warning,
+    };
+  }
+
+  private isMissingTableError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+
+    return String((error as { code?: unknown }).code || '') === 'ER_NO_SUCH_TABLE';
+  }
+
+  private async listPendingSyncStateByAccountId(
+    accountIds: string[]
+  ): Promise<
+    Map<
+      string,
+      {
+        pendingRecords: number;
+        failedRecords: number;
+        resolvedRecords: number;
+        nextRetryAt: string | null;
+        lastPendingUpdateAt: string | null;
+      }
+    >
+  > {
+    const normalizedAccountIds = Array.from(
+      new Set(accountIds.map((item) => this.readString(item)).filter(Boolean))
+    );
+    if (!normalizedAccountIds.length) {
+      return new Map();
+    }
+
+    try {
+      const rows = (await coreDataSource.query(
+        `SELECT
+           account_id AS accountId,
+           COALESCE(SUM(CASE WHEN LOWER(status) IN ('pending', 'failed') THEN 1 ELSE 0 END), 0) AS pendingRecords,
+           COALESCE(SUM(CASE WHEN LOWER(status) = 'failed' THEN 1 ELSE 0 END), 0) AS failedRecords,
+           COALESCE(SUM(CASE WHEN LOWER(status) = 'resolved' THEN 1 ELSE 0 END), 0) AS resolvedRecords,
+           MIN(CASE WHEN LOWER(status) IN ('pending', 'failed') THEN next_retry_at ELSE NULL END) AS nextRetryAt,
+           MAX(updated_at) AS lastPendingUpdateAt
+         FROM scheduler_sync_pending_records
+         WHERE scheduler_key = ?
+           AND account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})
+         GROUP BY account_id`,
+        ['positions-sync', ...normalizedAccountIds]
+      )) as Array<{
+        accountId?: string;
+        pendingRecords?: number | string;
+        failedRecords?: number | string;
+        resolvedRecords?: number | string;
+        nextRetryAt?: Date | string | null;
+        lastPendingUpdateAt?: Date | string | null;
+      }>;
+
+      return new Map(
+        rows
+          .map((row) => {
+            const accountId = this.readString(row.accountId);
+            if (!accountId) {
+              return null;
+            }
+
+            return [
+              accountId,
+              {
+                pendingRecords: Number(row.pendingRecords || 0),
+                failedRecords: Number(row.failedRecords || 0),
+                resolvedRecords: Number(row.resolvedRecords || 0),
+                nextRetryAt: this.toIsoString(row.nextRetryAt) || null,
+                lastPendingUpdateAt: this.toIsoString(row.lastPendingUpdateAt) || null,
+              },
+            ] as const;
+          })
+          .filter((entry): entry is readonly [string, {
+            pendingRecords: number;
+            failedRecords: number;
+            resolvedRecords: number;
+            nextRetryAt: string | null;
+            lastPendingUpdateAt: string | null;
+          }] => Boolean(entry))
+      );
+    } catch (error) {
+      if (!this.isMissingTableError(error)) {
+        throw error;
+      }
+      return new Map();
+    }
+  }
+
+  private getPositionsSyncScope(
+    brokerKey?: string,
+    accountId?: string
+  ): 'desk' | 'broker' | 'account' {
+    if (accountId) {
+      return 'account';
+    }
+    if (brokerKey) {
+      return 'broker';
+    }
+    return 'desk';
+  }
+
+  private buildPositionsSyncSummary(
+    items: PositionsSyncStatusItem[],
+    freshness: PositionsGroupedResponse['freshness'] | null,
+    failedRecords: number,
+    pendingRecords: number
+  ): {
+    state: PositionsSyncStatusResponse['state'];
+    label: string;
+    summary: string;
+  } {
+    if (!items.length) {
+      return {
+        state: 'idle',
+        label: 'No routes',
+        summary: 'No connected or idle broker routes are available for positions sync on this desk.',
+      };
+    }
+
+    const criticalAccounts = freshness?.criticalAccounts || 0;
+    const staleAccounts = freshness?.staleAccounts || 0;
+
+    if (failedRecords > 0 || criticalAccounts > 0) {
+      return {
+        state: 'attention',
+        label: 'Needs attention',
+        summary:
+          failedRecords > 0
+            ? `${failedRecords} sync record${failedRecords === 1 ? '' : 's'} still need operator attention on the live desk.`
+            : `${criticalAccounts} route${criticalAccounts === 1 ? ' is' : 's are'} backed by critically old position snapshots.`,
+      };
+    }
+
+    if (pendingRecords > 0 || staleAccounts > 0) {
+      return {
+        state: 'attention',
+        label: 'Catching up',
+        summary:
+          pendingRecords > 0
+            ? `${pendingRecords} sync record${pendingRecords === 1 ? '' : 's'} are still retrying in the background.`
+            : `${staleAccounts} route${staleAccounts === 1 ? ' is' : 's are'} lagging and still catching up to broker state.`,
+      };
+    }
+
+    return {
+      state: 'healthy',
+      label: 'Healthy',
+      summary: 'Connected broker routes are aligned with the latest visible position snapshots and checkpoints.',
+    };
+  }
+
+  private readBoolean(value: unknown): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+
+  private getTrackedOrderIds(position: PositionRecord): string[] {
+    return Array.from(
+      new Set(
+        [
+          this.readString(position.stoploss_order_id),
+          this.readString(position.takeprofit_order_id),
+          this.readString(position.stopLossOrderId),
+          this.readString(position.takeProfitOrderId),
+        ].filter((value): value is string => Boolean(value))
+      )
+    );
+  }
+
+  private getLifecycleWindowStart(position: PositionRecord): Date | null {
+    const candidates = [
+      this.toIsoString(position.created_at),
+      this.toIsoString(position.updated_at),
+      this.toIsoString(position.closed_at),
+    ].filter((value): value is string => Boolean(value));
+    const pivot = candidates[0] ? new Date(candidates[0]) : null;
+    if (!pivot || Number.isNaN(pivot.getTime())) {
+      return null;
+    }
+    return new Date(pivot.getTime() - 1000 * 60 * 60 * 24 * 30);
+  }
+
+  private mapRelatedLiveOrderSnapshot(
+    row: {
+      externalId?: string;
+      symbol?: string | null;
+      orderStatus?: string | null;
+      statusRank?: number | null;
+      payload?: unknown;
+      firstSeenAt?: Date | string | null;
+      lastSeenAt?: Date | string | null;
+    },
+    position: PositionRecord,
+    trackedOrderIds: string[]
+  ): PositionLifecycleOrderItem {
+    const payload = this.toRecord(this.parsePayloadJson(row.payload)) || {};
+    const orderId =
+      this.readString(row.externalId) ||
+      this.readString(payload.external_id) ||
+      this.readString(payload.externalId) ||
+      this.readString(payload.id) ||
+      '';
+    const linkedPositionId = this.readString(
+      this.pickFirst(payload, ['position_id', 'positionId'])
+    );
+    const relation =
+      linkedPositionId && linkedPositionId === position.id
+        ? 'position'
+        : trackedOrderIds.includes(orderId)
+          ? 'protection'
+          : 'symbol';
+
+    return {
+      id: orderId,
+      externalId: orderId || undefined,
+      kind: 'live',
+      relation,
+      symbol:
+        this.readString(row.symbol) ||
+        this.readString(payload.symbol) ||
+        this.readString(payload.product_symbol),
+      status:
+        this.readString(row.orderStatus) ||
+        this.readString(this.pickFirst(payload, ['status', 'order_status'])) ||
+        null,
+      side: this.readString(this.pickFirst(payload, ['side', 'order_type', 'position_type'])),
+      orderType: this.readString(this.pickFirst(payload, ['order_type', 'orderType'])),
+      triggerType: this.readString(this.pickFirst(payload, ['trigger_type', 'triggerType'])),
+      quantity: this.toNumber(this.pickFirst(payload, ['quantity', 'qty', 'size'])),
+      orderPrice: this.toNumber(
+        this.pickFirst(payload, ['order_price', 'orderPrice', 'price'])
+      ),
+      stopLossPrice: this.toNumber(
+        this.pickFirst(payload, ['stoploss_price', 'stopLossPrice'])
+      ),
+      takeProfitPrice: this.toNumber(
+        this.pickFirst(payload, ['takeprofit_price', 'takeProfitPrice'])
+      ),
+      reduceOnly: this.readBoolean(
+        this.pickFirst(payload, ['reduce_only', 'reduceOnly'])
+      ),
+      linkedPositionId,
+      createdAt:
+        this.toIsoString(this.pickFirst(payload, ['created_at', 'createdAt'])) ||
+        this.toIsoString(row.firstSeenAt) ||
+        null,
+      updatedAt:
+        this.toIsoString(this.pickFirst(payload, ['updated_at', 'updatedAt'])) ||
+        this.toIsoString(row.lastSeenAt) ||
+        null,
+      detailUrl: orderId ? `/orders?selected=${encodeURIComponent(orderId)}` : undefined,
+    };
+  }
+
+  private mapPaperLifecycleOrder(
+    item: PaperOrder,
+    position: PositionRecord
+  ): PositionLifecycleOrderItem {
+    const payload = this.toRecord(item.payload) || {};
+    const simulation = this.toRecord(payload.simulation) || {};
+    const linkedPositionId = this.readString(simulation.positionId);
+    const normalizedPositionSymbol = this.readString(position.symbol)?.toUpperCase() || null;
+    const relation =
+      linkedPositionId && linkedPositionId === position.id
+        ? 'position'
+        : normalizedPositionSymbol &&
+            normalizedPositionSymbol === (this.readString(item.symbol)?.toUpperCase() || null)
+          ? 'symbol'
+          : 'symbol';
+
+    return {
+      id: item.id,
+      kind: 'paper',
+      relation,
+      symbol: this.readString(item.symbol),
+      status: this.readString(item.status),
+      side: this.readString(item.side),
+      orderType: this.readString(item.orderType),
+      triggerType: this.readString(item.triggerType),
+      quantity: this.toNumber(item.quantity),
+      orderPrice: this.toNumber(item.orderPrice),
+      stopLossPrice: this.toNumber(item.stoplossPrice),
+      takeProfitPrice: this.toNumber(item.takeprofitPrice),
+      reduceOnly: item.reduceOnly === true,
+      linkedPositionId,
+      createdAt: this.toIsoString(item.createdAt) || null,
+      updatedAt:
+        this.toIsoString(item.updatedAt) ||
+        this.toIsoString(simulation.lastPriceSeenAt) ||
+        null,
+      detailUrl: `/orders?selected=${encodeURIComponent(item.id)}`,
+    };
+  }
+
+  private mapLifecycleAlert(item: {
+    id: string;
+    severity: string;
+    channel: string;
+    status: string;
+    message: string;
+    route?: string | null;
+    source?: string | null;
+    createdAt: Date;
+  }): PositionLifecycleAlertItem {
+    return {
+      id: item.id,
+      severity: item.severity,
+      channel: item.channel,
+      status: item.status,
+      message: item.message,
+      route: item.route ?? null,
+      source: item.source ?? null,
+      createdAt: item.createdAt.toISOString(),
+      detailUrl: `/alerts?selected=${encodeURIComponent(item.id)}`,
+    };
+  }
+
+  private buildSuggestedTradeLinks(item: SuggestedTrade): LinkedEntityReference[] {
+    const linkedEntities: LinkedEntityReference[] = [];
+    const seen = new Set<string>();
+    const execution = item.executionRecord || null;
+    const meta = item.meta && typeof item.meta === 'object' ? item.meta : {};
+    const signalId = this.readString((meta as Record<string, unknown>).signalId);
+
+    const push = (entity: string, id: string | null, extras: Partial<LinkedEntityReference> = {}) => {
+      const normalizedId = this.readString(id);
+      if (!normalizedId) {
+        return;
+      }
+      const key = `${entity}:${normalizedId}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      linkedEntities.push({
+        entity,
+        id: normalizedId,
+        label: extras.label,
+        url: extras.url,
+        relation: extras.relation,
+        status: extras.status ?? null,
+      });
+    };
+
+    push('automation', this.readString(item.automationId), {
+      label: 'Automation',
+      url: `/automations?selected=${encodeURIComponent(item.automationId)}`,
+      relation: 'source',
+    });
+    push('automation_run', this.readString(item.automationRunId), {
+      label: 'Automation run',
+      url: `/automations?selected=${encodeURIComponent(
+        item.automationId
+      )}&runId=${encodeURIComponent(item.automationRunId)}`,
+      relation: 'run',
+    });
+    push('strategy_template', this.readString(item.sourceTemplateId), {
+      label: 'Strategy template',
+      url: item.sourceTemplateId
+        ? `/strategy-templates?selected=${encodeURIComponent(item.sourceTemplateId)}`
+        : undefined,
+      relation: 'template',
+    });
+    push('backtest', this.readString(item.sourceBacktestId), {
+      label: 'Backtest',
+      url: item.sourceBacktestId
+        ? `/backtests?selected=${encodeURIComponent(item.sourceBacktestId)}`
+        : undefined,
+      relation: 'backtest',
+    });
+    push('signal', signalId, {
+      label: 'Source signal',
+      url: signalId ? `/signals?selected=${encodeURIComponent(signalId)}` : undefined,
+      relation: 'source',
+    });
+    push('live_order', this.readString(execution?.orderId), {
+      label: 'Live order',
+      url: execution?.orderId ? `/orders?selected=${encodeURIComponent(execution.orderId)}` : undefined,
+      relation: 'execution',
+      status: execution?.orderStatus ?? null,
+    });
+    push('paper_order', this.readString(execution?.paperOrderId), {
+      label: 'Paper order',
+      url: execution?.paperOrderId
+        ? `/orders?selected=${encodeURIComponent(execution.paperOrderId)}`
+        : undefined,
+      relation: 'execution',
+      status: execution?.paperOrderStatus ?? execution?.orderStatus ?? null,
+    });
+    push('position', this.readString(execution?.positionId), {
+      label: 'Position',
+      url: execution?.positionId
+        ? `/positions?selected=${encodeURIComponent(execution.positionId)}`
+        : undefined,
+      relation: 'execution',
+      status: execution?.positionStatus ?? null,
+    });
+
+    return linkedEntities;
+  }
+
+  private mapLifecycleSuggestedTrade(item: SuggestedTrade): PositionLifecycleSuggestedTradeItem {
+    const execution = item.executionRecord || null;
+    return {
+      id: item.id,
+      symbol: item.symbol,
+      timeframe: item.timeframe,
+      side: item.side,
+      status: item.status,
+      signalTime: item.signalTime.toISOString(),
+      confidence: item.confidence ?? null,
+      score: item.score ?? null,
+      executionMode:
+        execution?.executionMode === 'live' || execution?.executionMode === 'paper'
+          ? execution.executionMode
+          : null,
+      executionState: execution?.executionState ?? null,
+      linkedPositionId: execution?.positionId ?? null,
+      linkedOrderId: execution?.orderId ?? null,
+      linkedPaperOrderId: execution?.paperOrderId ?? null,
+      sourceTemplateId: item.sourceTemplateId ?? null,
+      sourceBacktestId: item.sourceBacktestId ?? null,
+      detailUrl: `/suggested-trades?selected=${encodeURIComponent(item.id)}`,
+      linkedEntities: this.buildSuggestedTradeLinks(item),
+    };
+  }
+
+  private mapLifecycleActivity(item: ActivityLog): PositionLifecycleActivityItem {
+    return {
+      id: item.id,
+      type: item.type,
+      title: item.title,
+      status: item.status,
+      actor: item.actor ?? null,
+      symbol: item.symbol ?? null,
+      stream: item.stream ?? null,
+      route: item.route ?? null,
+      related: item.related ?? null,
+      referenceId: item.referenceId ?? null,
+      correlationId: item.correlationId ?? null,
+      description: item.description ?? null,
+      flags: item.flags ?? null,
+      createdAt: item.createdAt.toISOString(),
+    };
+  }
+
+  private dedupeLinks(items: LinkedEntityReference[]): LinkedEntityReference[] {
+    const seen = new Set<string>();
+    const output: LinkedEntityReference[] = [];
+    items.forEach((item) => {
+      const id = this.readString(item.id);
+      if (!id) {
+        return;
+      }
+      const key = `${item.entity}:${id}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      output.push({
+        entity: item.entity,
+        id,
+        label: item.label,
+        url: item.url,
+        relation: item.relation,
+        status: item.status ?? null,
+      });
+    });
+    return output;
+  }
+
+  private mapLifecycleAccountContext(item: {
+    id: string;
+    accountName: string;
+    accountKey: string;
+    brokerKey: string;
+    status: string;
+    mode?: string | null;
+    purpose?: string | null;
+    capabilities?: string | null;
+    isDefault?: boolean;
+    lastSyncAt?: Date | null;
+  } | null): PositionLifecycleAccountContext | null {
+    if (!item) {
+      return null;
+    }
+    return {
+      id: item.id,
+      accountName: item.accountName,
+      accountKey: item.accountKey,
+      brokerKey: item.brokerKey,
+      status: item.status,
+      mode: item.mode ?? null,
+      purpose: item.purpose ?? null,
+      capabilities: item.capabilities ?? null,
+      isDefault: item.isDefault === true,
+      lastSyncAt: this.toIsoString(item.lastSyncAt) || null,
+    };
+  }
+
+  private async listRelatedLiveOrderSnapshots(
+    userId: string,
+    brokerKey: string,
+    accountId: string,
+    position: PositionRecord
+  ): Promise<PositionLifecycleOrderItem[]> {
+    const trackedOrderIds = this.getTrackedOrderIds(position);
+    const normalizedSymbol = this.readString(position.symbol)?.toLowerCase() || null;
+    if (!trackedOrderIds.length && !normalizedSymbol) {
+      return [];
+    }
+
+    const clauses: string[] = [];
+    const params: Array<unknown> = [userId, accountId, brokerKey.toLowerCase()];
+    if (trackedOrderIds.length) {
+      clauses.push(`external_id IN (${trackedOrderIds.map(() => '?').join(', ')})`);
+      params.push(...trackedOrderIds);
+    }
+    if (normalizedSymbol) {
+      clauses.push('LOWER(COALESCE(symbol, \'\')) = ?');
+      params.push(normalizedSymbol);
+    }
+
+    const windowStart = this.getLifecycleWindowStart(position);
+    let windowSql = '';
+    if (windowStart && Number.isFinite(windowStart.getTime())) {
+      windowSql = ' AND last_seen_at >= ?';
+      params.push(windowStart);
+    }
+
+    const rows = (await coreDataSource.query(
+      `SELECT external_id AS externalId,
+              symbol,
+              order_status AS orderStatus,
+              status_rank AS statusRank,
+              payload_json AS payload,
+              first_seen_at AS firstSeenAt,
+              last_seen_at AS lastSeenAt
+         FROM scheduler_orders_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND (${clauses.join(' OR ')})${windowSql}
+        ORDER BY last_seen_at DESC
+        LIMIT 20`,
+      params
+    )) as Array<{
+      externalId?: string;
+      symbol?: string | null;
+      orderStatus?: string | null;
+      statusRank?: number | null;
+      payload?: unknown;
+      firstSeenAt?: Date | string | null;
+      lastSeenAt?: Date | string | null;
+    }>;
+
+    return rows
+      .map((row) => this.mapRelatedLiveOrderSnapshot(row, position, trackedOrderIds))
+      .sort((left, right) => {
+        const rank = (item: PositionLifecycleOrderItem): number =>
+          item.relation === 'position' ? 0 : item.relation === 'protection' ? 1 : 2;
+        const leftUpdated = Date.parse(String(left.updatedAt || left.createdAt || ''));
+        const rightUpdated = Date.parse(String(right.updatedAt || right.createdAt || ''));
+        return rank(left) - rank(right) || (Number.isFinite(rightUpdated) ? rightUpdated : 0) - (Number.isFinite(leftUpdated) ? leftUpdated : 0);
+      })
+      .slice(0, 8);
+  }
+
+  private async listRelatedPaperOrders(
+    userId: string,
+    brokerKey: string,
+    accountId: string,
+    position: PositionRecord
+  ): Promise<PositionLifecycleOrderItem[]> {
+    const normalizedSymbol = this.readString(position.symbol)?.toUpperCase() || null;
+    if (!normalizedSymbol) {
+      return [];
+    }
+
+    const windowStart = this.getLifecycleWindowStart(position);
+    const items = await this.paperOrderRepository.listPaperOrders(userId, {
+      brokerKey,
+      accountId,
+      limit: 20,
+      startDate: windowStart,
+      endDate: null,
+    });
+
+    return items
+      .filter((item) => (this.readString(item.symbol)?.toUpperCase() || null) === normalizedSymbol)
+      .map((item) => this.mapPaperLifecycleOrder(item, position))
+      .slice(0, 6);
+  }
+
+  private computeUnrealizedPnl(position: Record<string, unknown>, markPrice: number): number | null {
+    const entry = Number(
+      position.entry_price ?? position.avg_entry_price ?? position.average_entry_price ?? 0
+    );
+    const qty = Math.abs(Number(position.quantity ?? position.size ?? 0));
+    if (!Number.isFinite(entry) || !Number.isFinite(qty) || qty <= 0) {
+      return null;
+    }
+    if (!Number.isFinite(markPrice) || markPrice <= 0) {
+      return null;
+    }
+    const direction = this.resolvePositionDirection(position);
+    // Long: (mark - entry) * qty. Short: (entry - mark) * qty.
+    return direction * (markPrice - entry) * qty;
+  }
+
+  private async enrichOpenPositionsWithMarketPnl(items: unknown[]): Promise<void> {
+    const records = items
+      .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+      .map((item) => item as Record<string, unknown>);
+
+    if (records.length === 0) {
+      return;
+    }
+
+    const symbols = new Set<string>();
+    for (const record of records) {
+      const symbol = this.normalizeMarketSymbol(record.symbol ?? record.product_symbol);
+      if (symbol) symbols.add(symbol);
+    }
+
+    if (symbols.size === 0) {
+      return;
+    }
+
+    let rows: Array<{ symbol?: string; price?: unknown; retrievedAt?: Date | string; source?: string }> = [];
+    try {
+      rows = (await this.assetPriceRepository.getBySymbols(Array.from(symbols), {
+        sources: ['mudrex'],
+      })) as Array<{ symbol?: string; price?: unknown; retrievedAt?: Date | string; source?: string }>;
+    } catch {
+      // If reference pricing table is missing or temporarily unavailable, do not fail positions reads.
+      return;
+    }
+    const priceMap = new Map<string, { price: number; retrievedAt?: string; source?: string }>();
+    for (const row of rows) {
+      const symbol = String(row.symbol || '').trim().toUpperCase();
+      const price = Number(row.price);
+      if (!symbol || !Number.isFinite(price)) continue;
+      priceMap.set(symbol, {
+        price,
+        retrievedAt: (() => {
+          if (!row.retrievedAt) return undefined;
+          const date =
+            row.retrievedAt instanceof Date
+              ? row.retrievedAt
+              : new Date(String(row.retrievedAt));
+          if (Number.isNaN(date.getTime())) return undefined;
+          return date.toISOString();
+        })(),
+        source: row.source || 'binance',
+      });
+    }
+
+    for (const record of records) {
+      const symbol = this.normalizeMarketSymbol(record.symbol ?? record.product_symbol);
+      if (!symbol) continue;
+      const market = priceMap.get(symbol);
+      if (!market) continue;
+
+      // Update mark price to latest market data and recompute PnL.
+      record.mark_price = market.price;
+      record.current_price = market.price;
+      record.market_price_source = market.source;
+      if (market.retrievedAt) {
+        record.market_price_retrieved_at = market.retrievedAt;
+      }
+
+      const pnl = this.computeUnrealizedPnl(record, market.price);
+      if (pnl !== null) {
+        record.unrealized_pnl = pnl;
+        record.pnl = pnl + Number(record.realized ?? 0);
+      }
+    }
+  }
+
+  async getFuturesPositions(
+    userId: string,
+    brokerKey?: string,
+    accountId?: string,
+    query: PositionsQuery = {}
+  ): Promise<PositionRecord[]> {
+    const params = validatePositionsQuery(query);
+    const route = await this.brokerAccountRoutingService.resolve(userId, brokerKey, accountId, 'mudrex');
+    const resolvedBrokerKey = String(route.brokerKey || '').trim() || 'mudrex';
+    const resolvedAccountId = String(route.accountId || '').trim();
+    const limit = params.limit ? Number(params.limit) : undefined;
+    await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, [resolvedAccountId]);
+    const items = await this.positionReadModelRepository.listLivePositionsForAccount(
+      userId,
+      resolvedAccountId,
+      resolvedBrokerKey.toLowerCase(),
+      limit
+    );
+    if (items.length) {
+      await this.marketPriceRefreshService.refreshPricesForUser(userId);
+      await this.enrichOpenPositionsWithMarketPnl(items);
+    }
+    const freshItems = this.withPositionFreshness(items, {
+      source: 'position_snapshot',
+      staleAfterMs: env.positions.liveSnapshotStaleAfterMs,
+      criticalAfterMs: env.positions.liveSnapshotCriticalAfterMs,
+    });
+    return this.applyLimit(
+      freshItems.map((item) => ({
+        ...item,
+        accountId: item.accountId || resolvedAccountId || undefined,
+        brokerKey: item.brokerKey || resolvedBrokerKey,
+      })),
+      limit
+    ) as PositionRecord[];
+  }
+
+  async requestPositionsRefresh(
+    userId: string,
+    body: PositionsRefreshBody = {}
+  ): Promise<PositionsRefreshRequestResponse> {
+    const filters = validatePositionsRefreshBody(body);
+    const scope = this.getPositionsSyncScope(filters.brokerKey, filters.accountId);
+    const activeAccounts = await this.brokerAccountRepository.getActiveBrokerAccounts(
+      userId,
+      filters.brokerKey
+    );
+    const scopedAccounts = filters.accountId
+      ? activeAccounts.filter((item) => item.id === filters.accountId)
+      : activeAccounts;
+
+    if (filters.accountId && !scopedAccounts.length) {
+      throw new NotFoundAppError('Broker account not found for the requested positions refresh scope');
+    }
+
+    if (!scopedAccounts.length) {
+      return {
+        requested: false,
+        state: 'idle',
+        scope,
+        brokerKey: filters.brokerKey,
+        accountId: filters.accountId,
+        requestedAt: new Date().toISOString(),
+        summary: 'No connected or idle broker routes are available for positions refresh on this desk.',
+        processedAccounts: 0,
+        failedAccounts: 0,
+        fetchedRecords: 0,
+        insertedRecords: 0,
+        updatedRecords: 0,
+        skippedRecords: 0,
+        failures: [],
+      };
+    }
+
+    const result = await this.internalPositionsSyncService.runBatch(
+      buildProductOwnedPositionsSyncRequest(userId, {
+        targetUserIds: [userId],
+        brokerKeys: filters.brokerKey ? [filters.brokerKey] : undefined,
+        accountIds: scopedAccounts.map((item) => item.id),
+      })
+    );
+
+    const failedAccounts = Math.max(0, Number(result.failedAccounts || 0));
+    const processedAccounts = Math.max(0, Number(result.processedAccounts || 0));
+    const summary =
+      failedAccounts > 0
+        ? `Reconciled ${processedAccounts} route${processedAccounts === 1 ? '' : 's'}, with ${failedAccounts} reporting issues.`
+        : `Reconciled ${processedAccounts} route${processedAccounts === 1 ? '' : 's'} for the live positions desk.`;
+
+    return {
+      requested: true,
+      state: failedAccounts > 0 ? 'warning' : 'completed',
+      scope,
+      brokerKey: filters.brokerKey,
+      accountId: filters.accountId,
+      requestedAt: new Date().toISOString(),
+      summary,
+      processedAccounts,
+      failedAccounts,
+      fetchedRecords: Math.max(0, Number(result.fetchedRecords || 0)),
+      insertedRecords: Math.max(0, Number(result.insertedRecords || 0)),
+      updatedRecords: Math.max(0, Number(result.updatedRecords || 0)),
+      skippedRecords: Math.max(0, Number(result.skippedRecords || 0)),
+      failures: Array.isArray(result.failures)
+        ? result.failures
+            .map((item) => this.readString(item?.error))
+            .filter(Boolean)
+            .slice(0, 10)
+        : [],
+    };
+  }
+
+  async getPositionsSyncStatus(
+    userId: string,
+    query: {
+      brokerKey?: string;
+      accountId?: string;
+    } = {}
+  ): Promise<PositionsSyncStatusResponse> {
+    const brokerKey = this.readString(query.brokerKey) || undefined;
+    const accountId = this.readString(query.accountId) || undefined;
+    const scope = this.getPositionsSyncScope(brokerKey, accountId);
+    const activeAccounts = await this.brokerAccountRepository.getActiveBrokerAccounts(
+      userId,
+      brokerKey
+    );
+    const scopedAccounts = accountId
+      ? activeAccounts.filter((item) => item.id === accountId)
+      : activeAccounts;
+
+    if (accountId && !scopedAccounts.length) {
+      throw new NotFoundAppError('Broker account not found for the requested positions sync scope');
+    }
+
+    const accountIds = scopedAccounts.map((item) => item.id);
+    if (accountIds.length) {
+      await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, accountIds);
+    }
+
+    const [freshnessByAccountId, pendingStateByAccountId] = await Promise.all([
+      this.positionReadModelRepository.getAccountFreshness(userId, accountIds),
+      this.listPendingSyncStateByAccountId(accountIds),
+    ]);
+
+    let latestCheckpointAt: string | null = null;
+    let latestCheckpointTimestamp = 0;
+    let nextRetryAt: string | null = null;
+    let nextRetryTimestamp: number | null = null;
+    let pendingRecords = 0;
+    let failedRecords = 0;
+    let resolvedRecords = 0;
+
+    const items: PositionsSyncStatusItem[] = scopedAccounts.map((account) => {
+      const freshness = this.buildAccountFreshness(
+        {
+          accountName: account.accountName,
+          accountKey: account.accountKey,
+        },
+        freshnessByAccountId.get(account.id) || null
+      );
+      const pendingState =
+        pendingStateByAccountId.get(account.id) || {
+          pendingRecords: 0,
+          failedRecords: 0,
+          resolvedRecords: 0,
+          nextRetryAt: null,
+          lastPendingUpdateAt: null,
+        };
+
+      pendingRecords += pendingState.pendingRecords;
+      failedRecords += pendingState.failedRecords;
+      resolvedRecords += pendingState.resolvedRecords;
+
+      const checkpointAt = freshness?.checkpoint?.observedAt || null;
+      const checkpointTimestamp = checkpointAt ? this.toTimestamp(checkpointAt) : null;
+      if (checkpointAt && checkpointTimestamp !== null && checkpointTimestamp > latestCheckpointTimestamp) {
+        latestCheckpointTimestamp = checkpointTimestamp;
+        latestCheckpointAt = checkpointAt;
+      }
+
+      const retryTimestamp = pendingState.nextRetryAt
+        ? this.toTimestamp(pendingState.nextRetryAt)
+        : null;
+      if (
+        pendingState.nextRetryAt &&
+        retryTimestamp !== null &&
+        (nextRetryTimestamp === null || retryTimestamp < nextRetryTimestamp)
+      ) {
+        nextRetryTimestamp = retryTimestamp;
+        nextRetryAt = pendingState.nextRetryAt;
+      }
+
+      const warning =
+        pendingState.failedRecords > 0
+          ? `${pendingState.failedRecords} failed sync record${pendingState.failedRecords === 1 ? '' : 's'} still need review.`
+          : pendingState.pendingRecords > 0
+            ? `${pendingState.pendingRecords} sync record${pendingState.pendingRecords === 1 ? '' : 's'} are still pending or retrying.`
+            : freshness?.warning || null;
+
+      return {
+        accountId: account.id,
+        accountName: account.accountName,
+        accountKey: account.accountKey,
+        brokerKey: account.brokerKey,
+        status: account.status,
+        freshness,
+        pendingRecords: pendingState.pendingRecords,
+        failedRecords: pendingState.failedRecords,
+        resolvedRecords: pendingState.resolvedRecords,
+        nextRetryAt: pendingState.nextRetryAt,
+        lastPendingUpdateAt: pendingState.lastPendingUpdateAt,
+        warning,
+      };
+    });
+
+    const freshness = this.summarizeGroupedFreshness(
+      items.map((item) => ({
+        accountId: item.accountId,
+        accountName: item.accountName,
+        accountKey: item.accountKey,
+        brokerKey: item.brokerKey,
+        status: item.status,
+        data: [],
+        positions: [],
+        history: [],
+        freshness: item.freshness,
+        openOrders: [],
+        closedOrders: [],
+        error: null,
+      }))
+    );
+
+    const presentation = this.buildPositionsSyncSummary(
+      items,
+      freshness,
+      failedRecords,
+      pendingRecords
+    );
+
+    return {
+      state: presentation.state,
+      label: presentation.label,
+      summary: presentation.summary,
+      generatedAt: new Date().toISOString(),
+      scope,
+      brokerKey,
+      accountId,
+      totalAccounts: items.length,
+      pendingRecords,
+      failedRecords,
+      resolvedRecords,
+      items,
+      freshness,
+      latestCheckpointAt,
+      nextRetryAt,
+    };
+  }
+
+  async getFuturesPositionsForActiveAccounts(userId: string, brokerKey?: string): Promise<PositionsGroupedResponse> {
+    const activeAccounts = await this.brokerAccountRepository.getActiveBrokerAccounts(
+      userId,
+      brokerKey
+    );
+    return this.getFuturesPositionsForActiveAccountsFromReadModel(userId, activeAccounts);
+  }
+
+  async getPositionLifecycle(
+    userId: string,
+    positionId: string,
+    brokerKey?: string,
+    accountId?: string
+  ): Promise<PositionLifecycleResponse> {
+    const validatedPositionId = validatePositionId(positionId);
+    const route = await this.brokerAccountRoutingService.resolve(
+      userId,
+      brokerKey,
+      accountId,
+      'mudrex'
+    );
+    const resolvedBrokerKey = String(route.brokerKey || '').trim() || 'mudrex';
+    const resolvedAccountId = String(route.accountId || '').trim();
+    await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, [resolvedAccountId]);
+
+    const position = await this.positionReadModelRepository.getPositionByExternalId(
+      userId,
+      resolvedAccountId,
+      validatedPositionId,
+      resolvedBrokerKey.toLowerCase()
+    );
+    if (!position) {
+      throw new NotFoundAppError('Position not found');
+    }
+
+    const [account, accountFreshnessById, liveOrders, paperOrders, alerts, activities, exactTrades, recentTrades] =
+      await Promise.all([
+        this.brokerAccountRepository.getBrokerAccountById(userId, resolvedAccountId),
+        this.positionReadModelRepository.getAccountFreshness(userId, [resolvedAccountId]),
+        this.listRelatedLiveOrderSnapshots(
+          userId,
+          resolvedBrokerKey,
+          resolvedAccountId,
+          position
+        ).catch(() => []),
+        this.listRelatedPaperOrders(userId, resolvedBrokerKey, resolvedAccountId, position).catch(
+          () => []
+        ),
+        position.symbol
+          ? this.alertRepository.listRelatedAlerts(userId, {
+              symbol: position.symbol,
+              limit: 6,
+            })
+          : Promise.resolve([]),
+        this.activityRepository.listActivityWindow(
+          userId,
+          { limit: 8, referenceId: validatedPositionId },
+          undefined
+        ),
+        this.suggestedTradeRepository.findLinkedTradesByPositionIds(
+          userId,
+          resolvedBrokerKey,
+          resolvedAccountId,
+          [validatedPositionId]
+        ),
+        position.symbol
+          ? this.suggestedTradeRepository.findRecentTradesBySymbol(
+              userId,
+              resolvedBrokerKey,
+              resolvedAccountId,
+              position.symbol,
+              6
+            )
+          : Promise.resolve([]),
+      ]);
+
+    const positionFreshness = this.buildFreshnessIndicator(
+      this.getPositionObservedAt(position),
+      env.positions.liveSnapshotStaleAfterMs,
+      env.positions.liveSnapshotCriticalAfterMs,
+      'position_snapshot'
+    );
+    const accountFreshness = this.buildAccountFreshness(
+      {
+        accountName: account?.accountName || position.accountName,
+        accountKey: account?.accountKey || position.accountKey,
+      },
+      accountFreshnessById.get(resolvedAccountId) || null
+    );
+    const lifecyclePosition: PositionRecord = {
+      ...position,
+      accountId: resolvedAccountId,
+      brokerKey: resolvedBrokerKey,
+      accountName: account?.accountName || position.accountName,
+      accountKey: account?.accountKey || position.accountKey,
+      freshness: positionFreshness,
+    };
+    const lifecycleFreshness: PositionLifecycleFreshness = {
+      position: positionFreshness,
+      account: accountFreshness?.account || null,
+      checkpoint: accountFreshness?.checkpoint || null,
+      warning:
+        accountFreshness?.warning ||
+        (positionFreshness.state === 'critical'
+          ? 'This position is backed by a critically old broker snapshot. Recent route changes may not be reflected yet.'
+          : positionFreshness.state === 'stale'
+            ? 'This position is backed by a lagging broker snapshot. Recent route changes may still be catching up.'
+            : null),
+    };
+
+    const relatedOrders = [...liveOrders, ...paperOrders]
+      .sort((left, right) => {
+        const leftTime = Date.parse(String(left.updatedAt || left.createdAt || ''));
+        const rightTime = Date.parse(String(right.updatedAt || right.createdAt || ''));
+        return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+      })
+      .slice(0, 10);
+
+    const seenTradeIds = new Set<string>();
+    const relatedSuggestedTrades = [...exactTrades, ...recentTrades]
+      .filter((item) => {
+        if (seenTradeIds.has(item.id)) {
+          return false;
+        }
+        seenTradeIds.add(item.id);
+        return true;
+      })
+      .map((item) => this.mapLifecycleSuggestedTrade(item))
+      .slice(0, 6);
+
+    const relatedLinks = this.dedupeLinks([
+      ...(account
+        ? [
+            {
+              entity: 'account',
+              id: account.id,
+              label: 'Broker account',
+              url: `/brokers-data?accountId=${encodeURIComponent(account.id)}`,
+              relation: 'route',
+              status: account.status,
+            } satisfies LinkedEntityReference,
+          ]
+        : []),
+      ...relatedOrders
+        .filter((item) => item.detailUrl)
+        .map((item) => ({
+          entity: item.kind === 'paper' ? 'paper_order' : 'order',
+          id: item.id,
+          label: item.kind === 'paper' ? 'Paper order' : 'Live order',
+          url: item.detailUrl,
+          relation: item.relation,
+          status: item.status ?? null,
+        })),
+      ...relatedSuggestedTrades.flatMap((item) => item.linkedEntities || []),
+      ...alerts.map((item) => ({
+        entity: 'alert',
+        id: item.id,
+        label: 'Alert',
+        url: `/alerts?selected=${encodeURIComponent(item.id)}`,
+        relation: 'signal',
+        status: item.status,
+      })),
+    ]);
+
+    return {
+      position: lifecyclePosition,
+      account: this.mapLifecycleAccountContext(account),
+      summary: {
+        relatedOrders: relatedOrders.length,
+        openAlerts: alerts.filter((item) => String(item.status || '').trim() === 'Open').length,
+        linkedSuggestedTrades: relatedSuggestedTrades.length,
+        recentActivity: activities.length,
+      },
+      freshness: lifecycleFreshness,
+      relatedOrders,
+      relatedAlerts: alerts.map((item) => this.mapLifecycleAlert(item)),
+      relatedSuggestedTrades,
+      recentActivity: activities.map((item) => this.mapLifecycleActivity(item as ActivityLog)),
+      relatedLinks,
+    };
+  }
+
+  private async getFuturesPositionsForActiveAccountsFromReadModel(
+    userId: string,
+    activeAccounts: Array<{
+      id: string;
+      accountName: string;
+      accountKey: string;
+      brokerKey: string;
+      status: string;
+    }>
+  ): Promise<PositionsGroupedResponse> {
+    if (!activeAccounts.length) {
+      return {
+        totalActiveAccounts: 0,
+        successCount: 0,
+        failureCount: 0,
+        items: [],
+        openOrders: [],
+        closedOrders: [],
+      };
+    }
+    const accountIds = activeAccounts.map((item) => item.id);
+    await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, accountIds);
+    const [grouped, freshnessByAccountId] = await Promise.all([
+      this.positionReadModelRepository.listLivePositionsForAccounts(
+        userId,
+        accountIds
+      ),
+      this.positionReadModelRepository.getAccountFreshness(userId, accountIds),
+    ]);
+
+    const flattened: PositionRecord[] = [];
+    for (const data of grouped.values()) {
+      flattened.push(...data);
+    }
+    if (flattened.length) {
+      await this.marketPriceRefreshService.refreshPricesForUser(userId);
+      await this.enrichOpenPositionsWithMarketPnl(flattened);
+    }
+
+    const items: PositionsAccountItem[] = activeAccounts.map((account) => {
+      const data = this.withPositionFreshness(
+        (grouped.get(account.id) || []).map((item) => ({
+          ...item,
+          accountId: account.id,
+          accountName: account.accountName,
+          accountKey: account.accountKey,
+          brokerKey: account.brokerKey,
+        })),
+        {
+          source: 'position_snapshot',
+          staleAfterMs: env.positions.liveSnapshotStaleAfterMs,
+          criticalAfterMs: env.positions.liveSnapshotCriticalAfterMs,
+        }
+      );
+      return {
+        accountId: account.id,
+        accountName: account.accountName,
+        accountKey: account.accountKey,
+        brokerKey: account.brokerKey,
+        status: account.status,
+        totalPositions: data.length,
+        data,
+        positions: data,
+        freshness: this.buildAccountFreshness(
+          {
+            accountName: account.accountName,
+            accountKey: account.accountKey,
+          },
+          freshnessByAccountId.get(account.id) || null
+        ),
+        openOrders: [],
+        closedOrders: [],
+        error: null,
+      };
+    });
+
+    return {
+      totalActiveAccounts: activeAccounts.length,
+      successCount: items.length,
+      failureCount: 0,
+      items,
+      freshness: this.summarizeGroupedFreshness(items),
+      openOrders: [],
+      closedOrders: [],
+    };
+  }
+
+  // parsePayloadJson moved above to support both single-account and active-account snapshot reads.
+
+  async getPositionLiquidationPrice(positionId: string, query: PositionLiqPriceQuery, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+    const route = await this.brokerAccountRoutingService.resolve(userId, brokerKey, accountId, 'mudrex');
+    return this.brokerRuntimeRegistry.getPositionsAdapter(route.brokerKey).getLiquidationPrice(positionId, query, route);
+  }
+
+  async addPositionMargin(positionId: string, body: AddMarginBody, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+    return this.executePositionActionWithAudit({
+      actionKey: 'add-margin',
+      successTitle: `Margin added: ${positionId}`,
+      successDescription: 'Position margin updated',
+      failureTitle: 'Add margin failed',
+      failureAlertLabel: 'Add margin failed',
+      positionId,
+      payload: body as Record<string, unknown>,
+      userId,
+      brokerKey,
+      accountId,
+      execute: async (route) =>
+        this.brokerRuntimeRegistry
+          .getPositionsAdapter(route.brokerKey)
+          .addMargin(positionId, body, route),
+    });
+  }
+
+  async createPositionRiskOrder(positionId: string, body: CreateRiskOrderBody, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+    return this.executePositionActionWithAudit({
+      actionKey: 'risk-order-create',
+      successTitle: `Risk order created: ${positionId}`,
+      successDescription: 'Position risk order created',
+      failureTitle: 'Create risk order failed',
+      failureAlertLabel: 'Create risk order failed',
+      positionId,
+      payload: body as Record<string, unknown>,
+      userId,
+      brokerKey,
+      accountId,
+      execute: async (route) =>
+        this.brokerRuntimeRegistry
+          .getPositionsAdapter(route.brokerKey)
+          .createRiskOrder(positionId, body, route),
+    });
+  }
+
+  async updatePositionRiskOrder(positionId: string, body: UpdateRiskOrderBody, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+    return this.executePositionActionWithAudit({
+      actionKey: 'risk-order-update',
+      successTitle: `Risk order updated: ${positionId}`,
+      successDescription: 'Position risk order updated',
+      failureTitle: 'Update risk order failed',
+      failureAlertLabel: 'Update risk order failed',
+      positionId,
+      payload: body as Record<string, unknown>,
+      userId,
+      brokerKey,
+      accountId,
+      execute: async (route) =>
+        this.brokerRuntimeRegistry
+          .getPositionsAdapter(route.brokerKey)
+          .updateRiskOrder(positionId, body, route),
+    });
+  }
+
+  async reversePosition(positionId: string, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+    return this.executePositionActionWithAudit({
+      actionKey: 'reverse',
+      successTitle: `Position reversed: ${positionId}`,
+      successDescription: 'Position reverse action completed',
+      failureTitle: 'Reverse position failed',
+      failureAlertLabel: 'Reverse position failed',
+      positionId,
+      payload: null,
+      userId,
+      brokerKey,
+      accountId,
+      execute: async (route) =>
+        this.brokerRuntimeRegistry
+          .getPositionsAdapter(route.brokerKey)
+          .reversePosition(positionId, route),
+    });
+  }
+
+  async closePositionPartial(positionId: string, body: ClosePartialPositionBody, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+    return this.executePositionActionWithAudit({
+      actionKey: 'close-partial',
+      successTitle: `Position partially closed: ${positionId}`,
+      successDescription: 'Partial close executed',
+      failureTitle: 'Partial close failed',
+      failureAlertLabel: 'Partial close failed',
+      positionId,
+      payload: body as Record<string, unknown>,
+      userId,
+      brokerKey,
+      accountId,
+      execute: async (route) =>
+        this.brokerRuntimeRegistry
+          .getPositionsAdapter(route.brokerKey)
+          .closePartial(positionId, body, route),
+    });
+  }
+
+  async closePosition(positionId: string, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+    return this.executePositionActionWithAudit({
+      actionKey: 'close',
+      successTitle: `Position closed: ${positionId}`,
+      successDescription: 'Position close executed',
+      failureTitle: 'Close position failed',
+      failureAlertLabel: 'Close position failed',
+      positionId,
+      payload: null,
+      userId,
+      brokerKey,
+      accountId,
+      execute: async (route) =>
+        this.brokerRuntimeRegistry
+          .getPositionsAdapter(route.brokerKey)
+          .closePosition(positionId, route),
+    });
+  }
+
+  async getPositionHistory(query: PositionsHistoryQuery, userId: string, brokerKey?: string, accountId?: string): Promise<PositionRecord[]> {
+    const params = validatePositionsHistoryQuery(query);
+    const route = await this.brokerAccountRoutingService.resolve(
+      userId,
+      brokerKey || params.brokerKey,
+      accountId || params.accountId,
+      'mudrex'
+    );
+    const resolvedBrokerKey = String(route.brokerKey || '').trim() || 'mudrex';
+    const resolvedAccountId = String(route.accountId || '').trim();
+    const limit = params.limit ? Math.max(1, Math.floor(Number(params.limit))) : 100;
+    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(params.startDate, params.endDate, timeZone);
+    await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, [resolvedAccountId]);
+    const records = await this.positionReadModelRepository.listHistoryForAccount(
+      userId,
+      resolvedAccountId,
+      resolvedBrokerKey.toLowerCase(),
+      {
+        limit,
+        startUtc,
+        endUtc,
+      }
+    );
+    return this.withPositionFreshness(
+      records.map((item) => ({
+        ...item,
+        accountId: item.accountId || resolvedAccountId || undefined,
+        brokerKey: item.brokerKey || resolvedBrokerKey,
+      })),
+      {
+        source: 'position_archive',
+        staleAfterMs: null,
+        criticalAfterMs: null,
+      }
+    );
+  }
+
+  async getPositionHistoryForActiveAccounts(
+    query: PositionsHistoryQuery,
+    userId: string,
+    brokerKey?: string
+  ): Promise<PositionsGroupedResponse> {
+    const params = validatePositionsHistoryQuery(query);
+    const activeAccounts = await this.brokerAccountRepository.getActiveBrokerAccounts(
+      userId,
+      brokerKey || params.brokerKey
+    );
+    if (!activeAccounts.length) {
+      return {
+        totalActiveAccounts: 0,
+        successCount: 0,
+        failureCount: 0,
+        items: [],
+        openOrders: [],
+        closedOrders: [],
+      };
+    }
+
+    const accountIds = activeAccounts.map((item) => item.id);
+    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(params.startDate, params.endDate, timeZone);
+    await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, accountIds);
+    const grouped = await this.positionReadModelRepository.listHistoryForAccounts(
+      userId,
+      accountIds,
+      {
+        startUtc,
+        endUtc,
+        limit: 50000,
+      }
+    );
+
+    const items: PositionsAccountItem[] = activeAccounts.map((account) => {
+      const data = this.withPositionFreshness(
+        (grouped.get(account.id) || []).map((item) => ({
+          ...item,
+          accountId: account.id,
+          accountName: account.accountName,
+          accountKey: account.accountKey,
+          brokerKey: account.brokerKey,
+        })),
+        {
+          source: 'position_archive',
+          staleAfterMs: null,
+          criticalAfterMs: null,
+        }
+      );
+      return {
+        accountId: account.id,
+        accountName: account.accountName,
+        accountKey: account.accountKey,
+        brokerKey: account.brokerKey,
+        status: account.status,
+        totalHistory: data.length,
+        data,
+        history: data,
+        openOrders: [],
+        closedOrders: [],
+        error: null,
+      };
+    });
+
+    return {
+      totalActiveAccounts: activeAccounts.length,
+      successCount: items.length,
+      failureCount: 0,
+      items,
+      freshness: null,
+      openOrders: [],
+      closedOrders: [],
+    };
+  }
+
+}

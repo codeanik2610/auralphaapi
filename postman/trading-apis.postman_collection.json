@@ -1,0 +1,610 @@
+{
+  "info": {
+    "_postman_id": "b1e3d7f4-6bc7-4f03-a263-2d3348b5dbb2",
+    "name": "Trading APIs",
+    "description": "Postman collection for the trading-apis service covering Mudrex account APIs, Binance futures market candles, and strategy execution.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000/api/v1"
+    },
+    {
+      "key": "apiKey",
+      "value": "0c9983cac3b4ee43f09922810568669729637a72448f5d5755872ee60d40b9c7"
+    },
+    {
+      "key": "assetId",
+      "value": "01903bc9-973a-7106-99e2-08287b632806"
+    },
+    {
+      "key": "assetSymbol",
+      "value": "BTCUSDT"
+    },
+    {
+      "key": "positionId",
+      "value": "01999e74-27a6-76d5-880b-4cab5eac78f1"
+    },
+    {
+      "key": "orderId",
+      "value": "0199c39f-e866-7d6b-947e-ed2f09c90b8e"
+    },
+    {
+      "key": "stoplossOrderId",
+      "value": "<order_id>"
+    },
+    {
+      "key": "takeprofitOrderId",
+      "value": "<order_id>"
+    },
+    {
+      "key": "symbols",
+      "value": "BTCUSDT,ETHUSDT,SOLUSDT"
+    },
+    {
+      "key": "strategyId",
+      "value": "alert-confirm-v1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Get Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Assets",
+      "item": [
+        {
+          "name": "List Futures Assets",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/assets/futures?sort=price&order=desc&offset=0&limit=3",
+              "host": ["{{baseUrl}}"],
+              "path": ["assets", "futures"],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "price"
+                },
+                {
+                  "key": "order",
+                  "value": "desc"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "3"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Futures Asset By Id",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/assets/futures/{{assetId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["assets", "futures", "{{assetId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Futures Asset By Symbol",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/assets/futures/symbol/{{assetSymbol}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["assets", "futures", "symbol", "{{assetSymbol}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Wallet",
+      "item": [
+        {
+          "name": "Get Wallet Funds",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallet/funds",
+              "host": ["{{baseUrl}}"],
+              "path": ["wallet", "funds"]
+            }
+          }
+        },
+        {
+          "name": "Get Futures Funds",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallet/futures/funds",
+              "host": ["{{baseUrl}}"],
+              "path": ["wallet", "futures", "funds"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Market",
+      "item": [
+        {
+          "name": "Get Binance Futures Candles",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"{{assetSymbol}}\",\n  \"interval\": \"1h\",\n  \"limit\": \"100\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/market/candles",
+              "host": ["{{baseUrl}}"],
+              "path": ["market", "candles"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Strategy",
+      "item": [
+        {
+          "name": "List Strategies",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/strategy",
+              "host": ["{{baseUrl}}"],
+              "path": ["strategy"]
+            }
+          }
+        },
+        {
+          "name": "Get Strategy Trades",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"strategyId\": \"{{strategyId}}\",\n  \"symbols\": \"{{symbols}}\",\n  \"interval\": \"1h\",\n  \"limit\": \"200\",\n  \"params\": {\n    \"maxWaitBars\": 20\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/strategy/get-trades",
+              "host": ["{{baseUrl}}"],
+              "path": ["strategy", "get-trades"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Leverage",
+      "item": [
+        {
+          "name": "Get Leverage By Asset Id",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/leverage/futures/{{assetId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["leverage", "futures", "{{assetId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Leverage By Symbol",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/leverage/futures/symbol/{{assetSymbol}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["leverage", "futures", "symbol", "{{assetSymbol}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Orders",
+      "item": [
+        {
+          "name": "List Futures Orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/futures?limit=2",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders", "futures"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Futures Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"leverage\": 50,\n  \"quantity\": 0.01,\n  \"order_price\": 12445627,\n  \"order_type\": \"LONG\",\n  \"trigger_type\": \"MARKET\",\n  \"is_takeprofit\": true,\n  \"is_stoploss\": true,\n  \"stoploss_price\": 3800,\n  \"takeprofit_price\": 5000,\n  \"reduce_only\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/orders/futures/{{assetId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders", "futures", "{{assetId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Futures Order Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/futures/detail/{{orderId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders", "futures", "detail", "{{orderId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Futures Order History",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/futures/history?limit=2",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders", "futures", "history"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cancel Futures Order",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/futures/{{orderId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders", "futures", "{{orderId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Positions",
+      "item": [
+        {
+          "name": "List Futures Positions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/positions/futures",
+              "host": ["{{baseUrl}}"],
+              "path": ["positions", "futures"]
+            }
+          }
+        },
+        {
+          "name": "Get Position Liq Price",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/positions/futures/{{positionId}}/liq-price?ext_margin=2.1",
+              "host": ["{{baseUrl}}"],
+              "path": ["positions", "futures", "{{positionId}}", "liq-price"],
+              "query": [
+                {
+                  "key": "ext_margin",
+                  "value": "2.1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Add Position Margin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"margin\": 10.2\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/positions/futures/{{positionId}}/add-margin",
+              "host": ["{{baseUrl}}"],
+              "path": ["positions", "futures", "{{positionId}}", "add-margin"]
+            }
+          }
+        },
+        {
+          "name": "Create Position Risk Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stoploss_price\": \"5289.5\",\n  \"takeprofit_price\": \"50713.00\",\n  \"order_source\": \"API\",\n  \"is_stoploss\": true,\n  \"is_takeprofit\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/positions/futures/{{positionId}}/riskorder",
+              "host": ["{{baseUrl}}"],
+              "path": ["positions", "futures", "{{positionId}}", "riskorder"]
+            }
+          }
+        },
+        {
+          "name": "Update Position Risk Order",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_price\": 107526,\n  \"stoploss_price\": 106900,\n  \"takeprofit_price\": 110000,\n  \"stoploss_order_id\": \"{{stoplossOrderId}}\",\n  \"takeprofit_order_id\": \"{{takeprofitOrderId}}\",\n  \"trigger_type\": \"MARKET\",\n  \"is_takeprofit\": true,\n  \"is_stoploss\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/positions/futures/{{positionId}}/riskorder",
+              "host": ["{{baseUrl}}"],
+              "path": ["positions", "futures", "{{positionId}}", "riskorder"]
+            }
+          }
+        },
+        {
+          "name": "Reverse Position",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/positions/futures/{{positionId}}/reverse",
+              "host": ["{{baseUrl}}"],
+              "path": ["positions", "futures", "{{positionId}}", "reverse"]
+            }
+          }
+        },
+        {
+          "name": "Close Position Partially",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_type\": \"LIMIT\",\n  \"quantity\": \"0.01\",\n  \"limit_price\": \"102.75\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/positions/futures/{{positionId}}/close/partial",
+              "host": ["{{baseUrl}}"],
+              "path": ["positions", "futures", "{{positionId}}", "close", "partial"]
+            }
+          }
+        },
+        {
+          "name": "Close Position",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/positions/futures/{{positionId}}/close",
+              "host": ["{{baseUrl}}"],
+              "path": ["positions", "futures", "{{positionId}}", "close"]
+            }
+          }
+        },
+        {
+          "name": "Get Position History",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/positions/futures/history?limit=2",
+              "host": ["{{baseUrl}}"],
+              "path": ["positions", "futures", "history"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+export const EMAIL_DELIVERY_DEFAULT_RETENTION_DAYS = 30;
+export const EMAIL_DELIVERY_MAX_RETENTION_DAYS = 365;
+export const EMAIL_DELIVERY_EXPORT_MAX_ROWS = 5000;
+export const EMAIL_DELIVERY_BODY_VISIBILITY = 'redacted-preview' as const;
+export const EMAIL_DELIVERY_BODY_PREVIEW_MAX_CHARS = 600;
+export const EMAIL_DELIVERY_BODY_PREVIEW_MAX_LINES = 8;
+export const EMAIL_DELIVERY_CLEANUP_ELIGIBLE_STATUSES = ['Sent', 'Failed'] as const;
+export const EMAIL_DELIVERY_CLEANUP_PROTECTED_STATUSES = ['Queued', 'Sending'] as const;
+export const EMAIL_DELIVERY_RETENTION_FIELD = 'updatedAt' as const;

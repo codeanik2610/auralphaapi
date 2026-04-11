@@ -1,0 +1,86 @@
+name: Backtests Staging Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      soak_duration_minutes:
+        description: Soak duration in minutes
+        required: true
+        default: '30'
+      soak_poll_seconds:
+        description: Soak poll interval in seconds
+        required: true
+        default: '60'
+      run_lifecycle_smoke:
+        description: Run lifecycle smoke before checking gate
+        required: true
+        default: 'true'
+      require_chart:
+        description: Require chart candles during lifecycle smoke
+        required: true
+        default: 'true'
+      max_stale_running_runs:
+        description: Max stale running runs allowed
+        required: true
+        default: '0'
+      max_incomplete_trade_history_runs:
+        description: Max incomplete trade-history runs allowed
+        required: true
+        default: '0'
+      max_open_alerts:
+        description: Max open backtests alerts allowed
+        required: true
+        default: '0'
+      max_recoverable_runs:
+        description: Max recoverable runs allowed
+        required: true
+        default: '0'
+
+concurrency:
+  group: backtests-staging-gate
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Run staging release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: staging
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run backtests staging release gate
+        env:
+          SMOKE_BASE_URL: ${{ secrets.STAGING_API_BASE_URL }}
+          SMOKE_LOGIN_EMAIL: ${{ secrets.STAGING_BACKTESTS_LOGIN_EMAIL }}
+          SMOKE_LOGIN_PASSWORD: ${{ secrets.STAGING_BACKTESTS_LOGIN_PASSWORD }}
+          APP_API_KEY: ${{ secrets.STAGING_APP_API_KEY }}
+          BACKTESTS_SOAK_DURATION_MINUTES: ${{ inputs.soak_duration_minutes }}
+          BACKTESTS_SOAK_POLL_SECONDS: ${{ inputs.soak_poll_seconds }}
+          BACKTESTS_RELEASE_GATE_RUN_SMOKE: ${{ inputs.run_lifecycle_smoke }}
+          BACKTESTS_RELEASE_GATE_REQUIRE_CHART: ${{ inputs.require_chart }}
+          BACKTESTS_MAX_STALE_RUNNING_RUNS: ${{ inputs.max_stale_running_runs }}
+          BACKTESTS_MAX_INCOMPLETE_TRADE_HISTORY_RUNS: ${{ inputs.max_incomplete_trade_history_runs }}
+          BACKTESTS_MAX_OPEN_ALERTS: ${{ inputs.max_open_alerts }}
+          BACKTESTS_MAX_RECOVERABLE_RUNS: ${{ inputs.max_recoverable_runs }}
+          BACKTESTS_RELEASE_GATE_OUTPUT_FILE: artifacts/backtests-release-gate.json
+        run: npm run release-gate:backtests
+
+      - name: Upload release gate artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtests-staging-gate
+          path: artifacts/backtests-release-gate.json
+          if-no-files-found: warn

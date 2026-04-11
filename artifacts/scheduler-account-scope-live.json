@@ -1,0 +1,23 @@
+{
+  "baseUrl": "http://localhost:3000/api/v1",
+  "activeTotal": 6,
+  "activeUserOwned": 4,
+  "activeSystemOwned": 2,
+  "ownerlessAccountIds": [
+    "3dfcdba2-31f5-11f1-9717-4dce254b0a53",
+    "3dfd9132-31f5-11f1-9717-4dce254b0a53"
+  ],
+  "orders": {
+    "summaryTotalAccounts": 4,
+    "listTotalAccounts": 4
+  },
+  "positions": {
+    "summaryTotalAccounts": 4,
+    "listTotalAccounts": 4
+  },
+  "funds": {
+    "batchTotalAccounts": 4,
+    "batchFailureCount": 0,
+    "ownerlessScopedTotalAccounts": 0
+  }
+}

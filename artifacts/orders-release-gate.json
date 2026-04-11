@@ -1,0 +1,173 @@
+{
+  "decision": "blocked",
+  "startedAt": "2026-04-10T11:50:43.509Z",
+  "finishedAt": "2026-04-10T11:51:26.919Z",
+  "liveChecksEnabled": false,
+  "totals": {
+    "total": 9,
+    "passed": 7,
+    "failed": 1,
+    "skipped": 1
+  },
+  "results": [
+    {
+      "key": "backend-orders-contract",
+      "label": "Backend orders contract suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:orders-contract"
+      ],
+      "startedAt": "2026-04-10T11:50:43.510Z",
+      "finishedAt": "2026-04-10T11:50:44.662Z",
+      "durationMs": 1151,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-phase7",
+      "label": "Backend orders Phase 7 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:orders-phase7"
+      ],
+      "startedAt": "2026-04-10T11:50:44.662Z",
+      "finishedAt": "2026-04-10T11:50:45.245Z",
+      "durationMs": 583,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-phase8",
+      "label": "Backend orders Phase 8 suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:orders-phase8"
+      ],
+      "startedAt": "2026-04-10T11:50:45.245Z",
+      "finishedAt": "2026-04-10T11:50:46.061Z",
+      "durationMs": 815,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-controllers",
+      "label": "Backend orders controller suite",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "test:controllers"
+      ],
+      "startedAt": "2026-04-10T11:50:46.061Z",
+      "finishedAt": "2026-04-10T11:50:47.035Z",
+      "durationMs": 973,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "backend-orders-eslint",
+      "label": "Backend orders lint check",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npx",
+        "eslint",
+        "src/api/contracts/Orders.ts",
+        "src/api/contracts/OrdersOverview.ts",
+        "src/api/controllers/OrdersController.ts",
+        "src/api/controllers/OrdersOverviewController.ts",
+        "src/api/services/OrdersSyncDiagnosticsService.ts",
+        "src/api/services/OrdersOverviewService.ts",
+        "src/api/services/BrokerOrdersFacadeService.ts",
+        "src/api/validators/orders.validator.ts",
+        "scripts/test-orders-contract.ts",
+        "scripts/test-orders-phase7.ts",
+        "scripts/test-orders-phase8.ts",
+        "scripts/test-controllers.ts",
+        "scripts/check-orders-health.ts",
+        "scripts/release-gate-orders.ts",
+        "scripts/signoff-orders.ts"
+      ],
+      "startedAt": "2026-04-10T11:50:47.035Z",
+      "finishedAt": "2026-04-10T11:50:50.263Z",
+      "durationMs": 3228,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-orders-eslint",
+      "label": "Frontend orders lint check",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npx",
+        "eslint",
+        "src/pages/Orders/index.jsx",
+        "src/pages/Orders/index.test.jsx",
+        "src/store/slices/ordersSlice.js",
+        "src/store/slices/ordersSlice.test.js",
+        "tests/e2e/orders.spec.js"
+      ],
+      "startedAt": "2026-04-10T11:50:50.263Z",
+      "finishedAt": "2026-04-10T11:50:52.021Z",
+      "durationMs": 1757,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-orders-ui",
+      "label": "Frontend orders UI suite",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:ui",
+        "--",
+        "src/store/slices/ordersSlice.test.js",
+        "src/pages/Orders/index.test.jsx"
+      ],
+      "startedAt": "2026-04-10T11:50:52.021Z",
+      "finishedAt": "2026-04-10T11:50:53.871Z",
+      "durationMs": 1849,
+      "status": "passed",
+      "exitCode": 0
+    },
+    {
+      "key": "frontend-orders-e2e",
+      "label": "Frontend orders operator journey E2E",
+      "cwd": "/Users/apple/Documents/Project/Frontend/aurAlphaApp",
+      "command": [
+        "npm",
+        "run",
+        "test:e2e",
+        "--",
+        "tests/e2e/orders.spec.js"
+      ],
+      "startedAt": "2026-04-10T11:50:53.871Z",
+      "finishedAt": "2026-04-10T11:51:26.919Z",
+      "durationMs": 33048,
+      "status": "failed",
+      "exitCode": 1
+    },
+    {
+      "key": "backend-orders-live-health",
+      "label": "Backend orders live health check",
+      "cwd": "/Users/apple/Documents/Project/Backend/aurAlpha",
+      "command": [
+        "npm",
+        "run",
+        "check:orders-health"
+      ],
+      "startedAt": "2026-04-10T11:51:26.919Z",
+      "finishedAt": "2026-04-10T11:51:26.919Z",
+      "durationMs": 0,
+      "status": "skipped",
+      "exitCode": null,
+      "reason": "ORDERS_RUN_LIVE_CHECKS is not true"
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "baseUrl": "http://127.0.0.1:3100/api/v1",
+  "configDurationMs": 10,
+  "summaryDurationMs": 11,
+  "coverageDurationMs": 10,
+  "runsDurationMs": 6,
+  "queueDurationMs": 4,
+  "workerDurationMs": 14,
+  "scheduler": {
+    "key": "funds-sync",
+    "schedulerType": "user",
+    "enabled": false,
+    "timezone": "UTC",
+    "localDate": "2026-04-10",
+    "totalConnectedAccounts": 2,
+    "accountsWithFreshSnapshot": 0,
+    "accountsWithStaleSnapshot": 0,
+    "accountsMissingSnapshot": 2,
+    "accountsWithFailedLatestAttempt": 0,
+    "accountsWithSuccessfulLatestAttempt": 0,
+    "latestObservedSnapshotAt": null,
+    "latestObservedSnapshotAgeMinutes": 0,
+    "latestAttemptAt": null,
+    "latestAttemptAgeMinutes": 0,
+    "runtimeFoundation": {
+      "status": "ready",
+      "migrationName": "1770707000000-HardenFundsSnapshotsRuntime"
+    },
+    "recoveryRunSupported": true,
+    "recoveryRunScope": "account",
+    "lastSuccessfulRun": {
+      "id": null,
+      "status": null,
+      "targetedAccounts": 0,
+      "refreshedAccounts": 0,
+      "failedAccounts": 0
+    }
+  },
+  "firstCoverageItem": {
+    "accountId": "ca03e8a8-31d6-11f1-9717-4dce254b0a53",
+    "brokerKey": "mudrex",
+    "freshnessState": "missing",
+    "latestFetchStatus": null,
+    "latestObservedAt": null,
+    "latestAttemptAt": null,
+    "needsAttention": true
+  },
+  "worker": {
+    "queueStatus": "ok",
+    "workerStatus": "ok"
+  },
+  "thresholds": {
+    "maxStaleAccounts": null,
+    "maxMissingAccounts": null,
+    "maxFailedLatestAttempts": null,
+    "maxLatestSnapshotAgeMinutes": null,
+    "maxLatestAttemptAgeMinutes": null
+  },
+  "thresholdProfile": {
+    "mode": "unbounded",
+    "configuredThresholdCount": 0,
+    "requiredThresholdCount": 5,
+    "configuredKeys": [],
+    "missingKeys": [
+      "maxStaleAccounts",
+      "maxMissingAccounts",
+      "maxFailedLatestAttempts",
+      "maxLatestSnapshotAgeMinutes",
+      "maxLatestAttemptAgeMinutes"
+    ]
+  },
+  "scopedRecovery": null,
+  "productSnapshot": {
+    "latestSnapshotId": null,
+    "latestSnapshotDate": null,
+    "latestObservedAt": null,
+    "snapshotsCount": 0,
+    "walletActiveAccounts": 0,
+    "walletActiveSuccessCount": 0,
+    "futuresActiveAccounts": 0,
+    "futuresActiveSuccessCount": 0,
+    "firstWalletAccountObservedAt": null,
+    "firstFuturesAccountObservedAt": null,
+    "snapshotsDurationMs": 6,
+    "walletActiveDurationMs": 5,
+    "futuresActiveDurationMs": 5
+  }
+}

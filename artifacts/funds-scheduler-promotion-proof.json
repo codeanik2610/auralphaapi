@@ -1,0 +1,68 @@
+{
+  "decision": "blocked",
+  "generatedAt": "2026-04-10T11:43:02.120Z",
+  "approver": "codex-phase12",
+  "releaseGateFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/funds-scheduler-release-gate.json",
+  "signoffFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/funds-scheduler-signoff.json",
+  "promotionProofFile": "/Users/apple/Documents/Project/Backend/aurAlpha/artifacts/funds-scheduler-promotion-proof.json",
+  "gateDecision": "ready",
+  "signoffDecision": "blocked",
+  "liveChecksEnabled": true,
+  "reason": "final signoff with promotion-ready requirement exited with code 1",
+  "evidence": {
+    "stagingWorkflowUrl": "https://staging.example.com/workflows/funds-sync",
+    "workflowUrl": "https://staging.example.com/workflows/funds-sync",
+    "dashboardUrl": "https://staging.example.com/dashboards/funds-sync",
+    "runbookUrl": "https://staging.example.com/runbooks/funds-sync",
+    "releaseNoteUrl": "https://staging.example.com/releases/funds-sync-phase12"
+  },
+  "evidenceClassification": {
+    "stagingWorkflowUrlKind": "remote_url",
+    "dashboardUrlKind": "remote_url",
+    "runbookUrlKind": "remote_url",
+    "releaseNoteUrlKind": "remote_url"
+  },
+  "environment": {
+    "healthBaseUrl": "http://127.0.0.1:3100/api/v1",
+    "healthBaseUrlKind": "localhost_url",
+    "targetEnvironmentReady": false
+  },
+  "acknowledgements": {
+    "placeholderEvidenceUsed": false,
+    "unboundedThresholdsUsed": false
+  },
+  "checks": {
+    "gateReady": true,
+    "requiredSuitesPassed": true,
+    "liveHealthReviewed": true,
+    "thresholdPostureCaptured": true,
+    "placeholderEvidenceAcknowledged": true,
+    "unboundedThresholdsAcknowledged": true,
+    "diagnosticsVerified": true,
+    "coverageVerified": true,
+    "productTrustVerified": true,
+    "healthThresholdsVerified": true,
+    "recoveryDrillVerified": true,
+    "accessReviewVerified": true
+  },
+  "readiness": {
+    "deploymentEvidenceReady": true,
+    "thresholdProfileMode": "bounded",
+    "targetEnvironmentReady": false,
+    "healthBaseUrlKind": "localhost_url",
+    "productionPromotionReady": false
+  },
+  "thresholdProfile": {
+    "mode": "bounded",
+    "configuredThresholdCount": 5,
+    "requiredThresholdCount": 5,
+    "configuredKeys": [
+      "maxStaleAccounts",
+      "maxMissingAccounts",
+      "maxFailedLatestAttempts",
+      "maxLatestSnapshotAgeMinutes",
+      "maxLatestAttemptAgeMinutes"
+    ],
+    "missingKeys": []
+  }
+}
