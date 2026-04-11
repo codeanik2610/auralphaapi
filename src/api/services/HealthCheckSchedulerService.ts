@@ -32,6 +32,7 @@ import {
 } from '../utils/schedulerTimeContract';
 import {
   buildSystemSchedulerManualAudit,
+  resolveSchedulerAuditDisplayLabels,
   toSchedulerAuditContract,
 } from '../utils/schedulerAuditContract';
 import { BadRequestAppError, ServiceUnavailableAppError } from '../errors/AppError';
@@ -516,7 +517,7 @@ export class HealthCheckSchedulerService {
     );
 
     return successResponse({
-      items: items.map((item) => this.mapRun(item, timeZone)),
+      items: await resolveSchedulerAuditDisplayLabels(items.map((item) => this.mapRun(item, timeZone))),
       total,
       limit,
       offset,
@@ -542,7 +543,7 @@ export class HealthCheckSchedulerService {
     }
 
     return successResponse({
-      run: this.mapRun(run, timeZone),
+      run: await resolveSchedulerAuditDisplayLabels(this.mapRun(run, timeZone)),
       time: buildSchedulerTimeContract(timeZone),
     });
   }

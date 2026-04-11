@@ -36,6 +36,7 @@ import {
 } from '../utils/schedulerTimeContract';
 import {
   buildSystemSchedulerManualAudit,
+  resolveSchedulerAuditDisplayLabels,
   toSchedulerAuditContract,
 } from '../utils/schedulerAuditContract';
 import { BadRequestAppError, ServiceUnavailableAppError } from '../errors/AppError';
@@ -579,7 +580,9 @@ export class CandlesSchedulerService {
       params.offset
     );
     return successResponse({
-      items: items.map((item): SchedulerRunLogItem => this.toRunLogItem(item, timeZone)),
+      items: await resolveSchedulerAuditDisplayLabels(
+        items.map((item): SchedulerRunLogItem => this.toRunLogItem(item, timeZone))
+      ),
       total,
       limit: params.limit,
       offset: params.offset,
@@ -604,7 +607,7 @@ export class CandlesSchedulerService {
       return successResponse({ run: null, time: buildSchedulerTimeContract(timeZone) });
     }
     return successResponse({
-      run: this.toRunLogItem(run, timeZone),
+      run: await resolveSchedulerAuditDisplayLabels(this.toRunLogItem(run, timeZone)),
       time: buildSchedulerTimeContract(timeZone),
     });
   }

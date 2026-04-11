@@ -34,6 +34,7 @@ import {
 } from '../utils/schedulerTimeContract';
 import {
   buildSystemSchedulerManualAudit,
+  resolveSchedulerAuditDisplayLabels,
   toSchedulerAuditContract,
 } from '../utils/schedulerAuditContract';
 import {
@@ -575,7 +576,7 @@ export class AssetPriceSchedulerService {
       params.offset
     );
     return successResponse({
-      items: items.map((item) => this.mapRun(item, timeZone)),
+      items: await resolveSchedulerAuditDisplayLabels(items.map((item) => this.mapRun(item, timeZone))),
       total,
       limit: params.limit,
       offset: params.offset,
@@ -708,7 +709,7 @@ export class AssetPriceSchedulerService {
       return successResponse({ run: null, time: buildSchedulerTimeContract(timeZone) });
     }
     return successResponse({
-      run: this.mapRun(run, timeZone),
+      run: await resolveSchedulerAuditDisplayLabels(this.mapRun(run, timeZone)),
       time: buildSchedulerTimeContract(timeZone),
     });
   }

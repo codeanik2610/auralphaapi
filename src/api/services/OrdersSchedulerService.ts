@@ -30,6 +30,7 @@ import {
 import { successResponse } from '../utils/response';
 import {
   buildSystemSchedulerManualAudit,
+  resolveSchedulerAuditDisplayLabels,
   toSchedulerAuditContract,
 } from '../utils/schedulerAuditContract';
 import {
@@ -705,15 +706,14 @@ export class OrdersSchedulerService {
     const timeZone = await this.resolveUserTimeZone(actorUserId);
     const { limit, offset } = validateListQuery(query);
     await this.ensureSchedulerConfig(actorUserId, timeZone);
-    const { items, total } = await this.schedulerRunLogRepository.listRunsBySchedulerKeyAndActor(
+    const { items, total } = await this.schedulerRunLogRepository.listRunsBySchedulerKey(
       SCHEDULER_KEY,
-      actorUserId,
       limit,
       offset
     );
 
     return successResponse({
-      items: items.map((item) => this.mapRun(item, timeZone)),
+      items: await resolveSchedulerAuditDisplayLabels(items.map((item) => this.mapRun(item, timeZone))),
       total,
       limit,
       offset,
@@ -730,17 +730,16 @@ export class OrdersSchedulerService {
     if (!normalizedRunId) {
       throw new BadRequestAppError('runId is required');
     }
-    const run = await this.schedulerRunLogRepository.findByIdAndSchedulerKeyAndActor(
+    const run = await this.schedulerRunLogRepository.findByIdAndSchedulerKey(
       normalizedRunId,
-      SCHEDULER_KEY,
-      actorUserId
+      SCHEDULER_KEY
     );
     if (!run) {
       return successResponse({ run: null, time: buildSchedulerTimeContract(timeZone) });
     }
 
     return successResponse({
-      run: this.mapRun(run, timeZone),
+      run: await resolveSchedulerAuditDisplayLabels(this.mapRun(run, timeZone)),
       time: buildSchedulerTimeContract(timeZone),
     });
   }
@@ -808,12 +807,8 @@ export class OrdersSchedulerService {
     }
   ): Promise<ApiSuccessResponse<SchedulerRunUpdateLogListResponse>> {
     const timeZone = await this.resolveUserTimeZone(actorUserId);
-    await this.assertRunBelongsToOrdersScheduler(actorUserId, runId);
-    const run = await this.schedulerRunLogRepository.findByIdAndSchedulerKeyAndActor(
-      runId,
-      SCHEDULER_KEY,
-      actorUserId
-    );
+    await this.assertRunBelongsToOrdersScheduler(runId);
+    const run = await this.schedulerRunLogRepository.findByIdAndSchedulerKey(runId, SCHEDULER_KEY);
     const runMeta = this.parseMeta(run?.meta);
     const params = validateListQuery(query);
     const sort = validateUpdateLogSortQuery(query);
@@ -873,12 +868,8 @@ export class OrdersSchedulerService {
     }
   ): Promise<ApiSuccessResponse<SchedulerRunUpdatesExportResponse>> {
     const timeZone = await this.resolveUserTimeZone(actorUserId);
-    await this.assertRunBelongsToOrdersScheduler(actorUserId, runId);
-    const run = await this.schedulerRunLogRepository.findByIdAndSchedulerKeyAndActor(
-      runId,
-      SCHEDULER_KEY,
-      actorUserId
-    );
+    await this.assertRunBelongsToOrdersScheduler(runId);
+    const run = await this.schedulerRunLogRepository.findByIdAndSchedulerKey(runId, SCHEDULER_KEY);
     const runMeta = this.parseMeta(run?.meta);
     const sort = validateUpdateLogSortQuery(query);
     const actionType = query.actionType ? String(query.actionType).trim() : undefined;
@@ -1381,18 +1372,14 @@ export class OrdersSchedulerService {
     };
   }
 
-  private async assertRunBelongsToOrdersScheduler(
-    actorUserId: string,
-    runId: string
-  ): Promise<void> {
+  private async assertRunBelongsToOrdersScheduler(runId: string): Promise<void> {
     const normalizedRunId = String(runId || '').trim();
     if (!normalizedRunId) {
       throw new BadRequestAppError('runId is required');
     }
-    const run = await this.schedulerRunLogRepository.findByIdAndSchedulerKeyAndActor(
+    const run = await this.schedulerRunLogRepository.findByIdAndSchedulerKey(
       normalizedRunId,
-      SCHEDULER_KEY,
-      actorUserId
+      SCHEDULER_KEY
     );
     if (!run) {
       throw new NotFoundAppError('Orders scheduler run not found');

@@ -7,7 +7,10 @@ import {
   formatSchedulerDisplayTime,
   formatSchedulerRawIso,
 } from '../utils/schedulerTimeContract';
-import { toSchedulerAuditContract } from '../utils/schedulerAuditContract';
+import {
+  resolveSchedulerAuditDisplayLabels,
+  toSchedulerAuditContract,
+} from '../utils/schedulerAuditContract';
 import { ALL_USERS_SYSTEM_SYNC_SCHEDULERS } from '../utils/positionsOrdersSyncScopeContract';
 import { coreDataSource } from '../../database/data-source';
 import { UserTimeZoneService } from './UserTimeZoneService';
@@ -312,7 +315,10 @@ export class SchedulerOverviewService {
       };
     });
 
-    return successResponse({ items, time });
+    return successResponse({
+      items: await resolveSchedulerAuditDisplayLabels(items),
+      time,
+    });
   }
 
   private buildEffectiveConfigRows(
