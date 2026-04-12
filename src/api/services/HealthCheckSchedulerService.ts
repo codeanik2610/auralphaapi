@@ -41,6 +41,8 @@ import {
   SchedulerCommandRepository,
   SchedulerConfig,
   SchedulerConfigRepository,
+  SchedulerHealthCheckResult,
+  SchedulerHealthCheckResultRepository,
   SchedulerRunLogRepository,
   ActivityRepository,
   AlertRepository,
@@ -63,6 +65,9 @@ export class HealthCheckSchedulerService {
 
   @Inject(() => ExchangeAssetUpdateLogRepository)
   private exchangeAssetUpdateLogRepository!: ExchangeAssetUpdateLogRepository;
+
+  @Inject(() => SchedulerHealthCheckResultRepository)
+  private schedulerHealthCheckResultRepository!: SchedulerHealthCheckResultRepository;
 
   @Inject(() => SchedulerCommandRepository)
   private schedulerCommandRepository!: SchedulerCommandRepository;
@@ -458,23 +463,23 @@ export class HealthCheckSchedulerService {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(actorUserId);
     const config = await this.ensureSchedulerConfig(timeZone);
     const retentionDays = this.readRetentionDays(config);
-    const updateLogsDeleted =
-      await this.exchangeAssetUpdateLogRepository.deleteOlderThanDaysBySchedulerKey(
+    const [legacyUpdateLogsDeleted, dedicatedHealthResultsDeleted] = await Promise.all([
+      this.exchangeAssetUpdateLogRepository.deleteOlderThanDaysBySchedulerKey(
         SCHEDULER_KEY,
         retentionDays
-      );
-    const runLogsDeleted = await this.schedulerRunLogRepository.deleteOlderThanDays(
-      SCHEDULER_KEY,
-      retentionDays
-    );
+      ),
+      this.schedulerHealthCheckResultRepository.deleteOlderThanDays(retentionDays),
+    ]);
+    const runLogsDeleted = await this.schedulerRunLogRepository.deleteOlderThanDays(SCHEDULER_KEY, retentionDays);
+    const updateLogsDeleted = legacyUpdateLogsDeleted + dedicatedHealthResultsDeleted;
     await this.logSchedulerActivity(
       actorUserId,
       'Health scheduler logs purged',
       'Success',
-      `Purged ${runLogsDeleted} run logs and ${updateLogsDeleted} update logs for ${SCHEDULER_KEY}`
+      `Purged ${runLogsDeleted} run logs and ${updateLogsDeleted} health detail rows for ${SCHEDULER_KEY}`
     );
     return successResponse({
-      message: `Health scheduler logs purged. Deleted ${runLogsDeleted} run logs and ${updateLogsDeleted} update logs.`,
+      message: `Health scheduler logs purged. Deleted ${runLogsDeleted} run logs and ${updateLogsDeleted} health detail rows.`,
       retentionDays,
       runLogsDeleted,
       updateLogsDeleted,
@@ -490,17 +495,18 @@ export class HealthCheckSchedulerService {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(actorUserId);
     const config = await this.ensureSchedulerConfig(timeZone);
     const retentionDays = this.readRetentionDays(config);
-    const [runLogsToDelete, updateLogsToDelete] = await Promise.all([
+    const [runLogsToDelete, legacyUpdateLogsToDelete, dedicatedHealthResultsToDelete] = await Promise.all([
       this.schedulerRunLogRepository.countOlderThanDays(SCHEDULER_KEY, retentionDays),
       this.exchangeAssetUpdateLogRepository.countOlderThanDaysBySchedulerKey(
         SCHEDULER_KEY,
         retentionDays
       ),
+      this.schedulerHealthCheckResultRepository.countOlderThanDays(retentionDays),
     ]);
     return successResponse({
       retentionDays,
       runLogsToDelete,
-      updateLogsToDelete,
+      updateLogsToDelete: legacyUpdateLogsToDelete + dedicatedHealthResultsToDelete,
     });
   }
 
@@ -562,31 +568,69 @@ export class HealthCheckSchedulerService {
     }
   ): Promise<ApiSuccessResponse<SchedulerAssetUpdateLogListResponse>> {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(actorUserId);
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) {
+      throw new BadRequestAppError('runId is required');
+    }
     const params = validateListQuery(query);
     const sort = validateUpdateLogSortQuery(query);
     const actionType = query.actionType ? String(query.actionType).trim() : undefined;
     const source = query.source ? String(query.source).trim() : undefined;
     const symbol = query.symbol ? String(query.symbol).trim() : undefined;
     const run = await this.schedulerRunLogRepository.findByIdAndSchedulerKey(
-      runId,
+      normalizedRunId,
       SCHEDULER_KEY
     );
+    if (!run) {
+      return successResponse({
+        items: [],
+        total: 0,
+        limit: params.limit,
+        offset: params.offset,
+        time: buildSchedulerTimeContract(timeZone),
+      });
+    }
     const runMeta =
       run?.meta && typeof run.meta === 'object' && !Array.isArray(run.meta)
         ? (run.meta as Record<string, unknown>)
         : null;
-    const { items, total } = await this.exchangeAssetUpdateLogRepository.listByRunLogId(
-      runId,
-      params.limit,
-      params.offset,
-      {
-        actionType: actionType || undefined,
-        source: source || undefined,
-        symbol: symbol || undefined,
+    const hasDedicatedResults =
+      await this.schedulerHealthCheckResultRepository.hasResultsForRunLogId(normalizedRunId);
+
+    if (hasDedicatedResults) {
+      const { items, total } = await this.listDedicatedHealthCheckRunUpdates(normalizedRunId, {
+        limit: params.limit,
+        offset: params.offset,
+        actionType,
+        source,
+        symbol,
         sortBy: sort.sortBy,
         sortOrder: sort.sortOrder,
-      }
-    );
+      });
+
+      return successResponse({
+        items: items.map((item) =>
+          this.mapDedicatedHealthCheckResult(
+            item,
+            run as unknown as Record<string, unknown>,
+            runMeta,
+            timeZone
+          )
+        ),
+        total,
+        limit: params.limit,
+        offset: params.offset,
+        time: buildSchedulerTimeContract(timeZone),
+      });
+    }
+
+    const { items, total } = await this.exchangeAssetUpdateLogRepository.listByRunLogId(normalizedRunId, params.limit, params.offset, {
+      actionType: actionType || undefined,
+      source: source || undefined,
+      symbol: symbol || undefined,
+      sortBy: sort.sortBy,
+      sortOrder: sort.sortOrder,
+    });
 
     return successResponse({
       items: items.map((item): SchedulerAssetUpdateLogItem => ({
@@ -605,6 +649,7 @@ export class HealthCheckSchedulerService {
         externalId: item.externalId || undefined,
         assetId: item.assetId || undefined,
         message: item.message || undefined,
+        ...(item.detail ? { detail: item.detail } : {}),
         createdAt: this.formatDisplayDate(item.createdAt, timeZone) || this.formatDate(item.createdAt)!,
         createdAtIso: formatSchedulerRawIso(item.createdAt),
       })),
@@ -627,10 +672,21 @@ export class HealthCheckSchedulerService {
     }
   ): Promise<ApiSuccessResponse<SchedulerRunUpdatesExportResponse>> {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(actorUserId);
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) {
+      throw new BadRequestAppError('runId is required');
+    }
     const run = await this.schedulerRunLogRepository.findByIdAndSchedulerKey(
-      runId,
+      normalizedRunId,
       SCHEDULER_KEY
     );
+    if (!run) {
+      return successResponse({
+        fileName: `scheduler-run-${normalizedRunId}-updates.csv`,
+        rowCount: 0,
+        csv: '',
+      });
+    }
     const sort = validateUpdateLogSortQuery(query);
     const actionType = query.actionType ? String(query.actionType).trim() : undefined;
     const source = query.source ? String(query.source).trim() : undefined;
@@ -639,8 +695,61 @@ export class HealthCheckSchedulerService {
       run?.meta && typeof run.meta === 'object' && !Array.isArray(run.meta)
         ? (run.meta as Record<string, unknown>)
         : null;
+    const hasDedicatedResults =
+      await this.schedulerHealthCheckResultRepository.hasResultsForRunLogId(normalizedRunId);
 
-    const { items } = await this.exchangeAssetUpdateLogRepository.listByRunLogId(runId, 100000, 0, {
+    if (hasDedicatedResults) {
+      const { items } = await this.listDedicatedHealthCheckRunUpdates(normalizedRunId, {
+        limit: 100000,
+        offset: 0,
+        actionType,
+        source,
+        symbol,
+        sortBy: sort.sortBy,
+        sortOrder: sort.sortOrder,
+      });
+      const header = [
+        'id',
+        'runLogId',
+        'initiatedByType',
+        'initiatedByUserId',
+        'initiatedByLabel',
+        'executionContext',
+        'source',
+        'accountId',
+        'connectionId',
+        'actionType',
+        'symbol',
+        'externalId',
+        'assetId',
+        'message',
+        'createdAt',
+        'createdAtIso',
+      ];
+      const rows = items.map((item) =>
+        this.mapDedicatedHealthCheckExportRow(
+          item,
+          run as unknown as Record<string, unknown>,
+          runMeta,
+          timeZone
+        )
+      );
+      const csv = [header, ...rows]
+        .map((row) =>
+          row
+            .map((value) => `"${String(value ?? '').replace(/"/g, '""')}"`)
+            .join(',')
+        )
+        .join('\n');
+
+      return successResponse({
+        fileName: `scheduler-run-${normalizedRunId}-updates.csv`,
+        rowCount: rows.length,
+        csv,
+      });
+    }
+
+    const { items } = await this.exchangeAssetUpdateLogRepository.listByRunLogId(normalizedRunId, 100000, 0, {
       actionType: actionType || undefined,
       source: source || undefined,
       symbol: symbol || undefined,
@@ -701,10 +810,93 @@ export class HealthCheckSchedulerService {
       .join('\n');
 
     return successResponse({
-      fileName: `scheduler-run-${runId}-updates.csv`,
+      fileName: `scheduler-run-${normalizedRunId}-updates.csv`,
       rowCount: rows.length,
       csv,
     });
+  }
+
+  private async listDedicatedHealthCheckRunUpdates(
+    runId: string,
+    query: {
+      limit: number;
+      offset: number;
+      actionType?: string;
+      source?: string;
+      symbol?: string;
+      sortBy: 'createdAt' | 'actionType' | 'source' | 'symbol';
+      sortOrder: 'asc' | 'desc';
+    }
+  ): Promise<{ items: SchedulerHealthCheckResult[]; total: number }> {
+    const normalizedSource = String(query.source || '').trim().toLowerCase();
+    if (normalizedSource && normalizedSource !== 'health') {
+      return { items: [], total: 0 };
+    }
+
+    return this.schedulerHealthCheckResultRepository.listByRunLogId(runId, query.limit, query.offset, {
+      ...(query.actionType ? { status: query.actionType } : {}),
+      ...(query.symbol ? { checkId: query.symbol } : {}),
+      sortBy:
+        query.sortBy === 'actionType'
+          ? 'status'
+          : query.sortBy === 'symbol'
+            ? 'checkId'
+            : 'createdAt',
+      sortOrder: query.sortOrder,
+    });
+  }
+
+  private mapDedicatedHealthCheckResult(
+    item: SchedulerHealthCheckResult,
+    run: Record<string, unknown>,
+    runMeta: Record<string, unknown> | null,
+    timeZone: string
+  ): SchedulerAssetUpdateLogItem {
+    return {
+      id: item.id,
+      runLogId: item.runLogId,
+      ...toSchedulerAuditContract(run, runMeta),
+      source: 'health',
+      actionType: item.status,
+      symbol: item.checkId,
+      externalId: item.checkId,
+      assetId: item.checkId,
+      message: item.detail || undefined,
+      detail: {
+        checkId: item.checkId,
+        checkLabel: item.checkLabel,
+        status: item.status,
+      },
+      createdAt: this.formatDisplayDate(item.createdAt, timeZone) || this.formatDate(item.createdAt)!,
+      createdAtIso: formatSchedulerRawIso(item.createdAt),
+    };
+  }
+
+  private mapDedicatedHealthCheckExportRow(
+    item: SchedulerHealthCheckResult,
+    run: Record<string, unknown>,
+    runMeta: Record<string, unknown> | null,
+    timeZone: string
+  ): string[] {
+    const audit = toSchedulerAuditContract(run, runMeta);
+    return [
+      item.id,
+      item.runLogId,
+      audit.initiatedBy?.type || '',
+      audit.initiatedBy?.userId || '',
+      audit.initiatedBy?.label || '',
+      audit.executionContext || '',
+      'health',
+      '',
+      '',
+      item.status,
+      item.checkId,
+      item.checkId,
+      item.checkId,
+      item.detail || '',
+      this.formatDisplayDate(item.createdAt, timeZone) || '',
+      formatSchedulerRawIso(item.createdAt) || '',
+    ];
   }
 
   private async ensureSchedulerConfig(_timeZone?: string): Promise<SchedulerConfig> {

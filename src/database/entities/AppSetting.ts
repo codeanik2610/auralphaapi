@@ -6,6 +6,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import type { BacktestPromotionRules } from '../../api/contracts/Settings';
 
 type NotificationChannel = 'both' | 'in-app' | 'email' | 'disabled';
 type NotificationSeverity = 'all' | 'medium' | 'high' | 'critical';
@@ -43,6 +44,9 @@ export class AppSetting {
 
   @Column({ type: 'int', default: 15 })
   escalationSlaMinutes!: number;
+
+  @Column({ type: 'json', nullable: true })
+  backtestPromotionRules!: BacktestPromotionRules | null;
 
   @CreateDateColumn({ type: 'timestamp' })
   createdAt!: Date;

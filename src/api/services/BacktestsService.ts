@@ -34,6 +34,7 @@ import {
 } from '../validators/backtests.validator';
 import {
   Backtest,
+  AppSettingsRepository,
   BacktestRepository,
   BacktestTradeRepository,
 } from '../../database';
@@ -45,9 +46,14 @@ import { BacktestReadModelService } from './BacktestReadModelService';
 import { BacktestRecoveryService } from './BacktestRecoveryService';
 import { BacktestSnapshotService } from './BacktestSnapshotService';
 import { BacktestTopSetupsService } from './BacktestTopSetupsService';
+import type { BacktestPromotionRules } from '../contracts/Settings';
+import { resolveBacktestPromotionRules } from '../utils/backtestPromotionRules';
 
 @Service()
 export class BacktestsService {
+  @Inject(() => AppSettingsRepository)
+  private appSettingsRepository!: AppSettingsRepository;
+
   @Inject(() => BacktestRepository)
   private backtestRepository!: BacktestRepository;
 
@@ -115,7 +121,10 @@ export class BacktestsService {
     query: BacktestTopSetupsQuery
   ): Promise<ApiSuccessResponse<BacktestsTopSetupsResponse>> {
     const params = validateBacktestTopSetupsQuery(query || {});
-    const backtests = await this.backtestRepository.listTopSetupCandidateBacktests(userId, params);
+    const [backtests, promotionRules] = await Promise.all([
+      this.backtestRepository.listTopSetupCandidateBacktests(userId, params),
+      this.getUserBacktestPromotionRules(userId),
+    ]);
     const storedTradeCounts = await this.backtestTradeRepository.getTradeCountsByBacktest(
       userId,
       backtests.map((backtest) => backtest.id)
@@ -127,7 +136,13 @@ export class BacktestsService {
       })
     );
 
-    return successResponse(this.backtestTopSetupsService.buildResponse(mappedBacktests, params));
+    return successResponse(
+      this.backtestTopSetupsService.buildResponse(
+        mappedBacktests,
+        params,
+        promotionRules
+      )
+    );
   }
 
   async getBacktestById(userId: string, backtestId: string): Promise<ApiSuccessResponse<BacktestItem>> {
@@ -361,12 +376,14 @@ export class BacktestsService {
       const storedTradeCount = (
         await this.backtestTradeRepository.getTradeCountsByBacktest(userId, [backtest.id])
       ).get(backtest.id) ?? 0;
+      const promotionRules = await this.getUserBacktestPromotionRules(userId);
       const mappedBacktest = this.mapBacktest(backtest, {
         includeSurface: true,
         storedTradeCount,
       });
       const rankedTopSetups = this.backtestTopSetupsService.rankBacktestTopSetups(
-        mappedBacktest
+        mappedBacktest,
+        promotionRules
       );
       const selectedTopSetup =
         payload.symbol && payload.timeframe
@@ -442,6 +459,13 @@ export class BacktestsService {
     options: { includeSurface?: boolean; storedTradeCount?: number | null } = {}
   ): BacktestItem {
     return this.backtestReadModelService.mapBacktest(backtest, options);
+  }
+
+  private async getUserBacktestPromotionRules(
+    userId: string
+  ): Promise<BacktestPromotionRules> {
+    const settings = await this.appSettingsRepository.getSettings(userId);
+    return resolveBacktestPromotionRules(settings?.backtestPromotionRules);
   }
 
   private resolveRunStatus(backtest: Backtest): BacktestRunStatus {

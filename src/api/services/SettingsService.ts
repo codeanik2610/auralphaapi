@@ -1,6 +1,7 @@
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import {
+  BacktestPromotionRules,
   SettingsAuditChangeType,
   SettingsAuditItem,
   SettingsAuditResponse,
@@ -18,11 +19,19 @@ import { DEFAULT_TIMEZONE, normalizeTimeZone } from '../utils/timezone';
 import { env } from '../../env';
 import { coreDataSource } from '../../database/data-source';
 import { BadRequestAppError, ConflictAppError } from '../errors/AppError';
+import {
+  createDefaultBacktestPromotionRules,
+  formatBacktestPromotionRulesForDisplay,
+  resolveBacktestPromotionRules,
+} from '../utils/backtestPromotionRules';
 
 type SettingsFieldKey = keyof UpdateSettingsBody;
+type PromotionRuleFieldKey = keyof BacktestPromotionRules;
+type PromotionRuleAuditFieldName = `backtestPromotionRules.${PromotionRuleFieldKey}`;
+type SettingsAuditFieldName = SettingsFieldKey | PromotionRuleAuditFieldName;
 
 type SettingsAuditEntry = {
-  fieldName: SettingsFieldKey;
+  fieldName: SettingsAuditFieldName;
   oldValue: SettingsValue;
   newValue: SettingsValue;
 };
@@ -39,7 +48,59 @@ type SerializedAuditValue = {
   json: SettingsValue;
 };
 
-const SETTINGS_FIELD_METADATA: Record<SettingsFieldKey, SettingsFieldMetadata> = {
+const SETTINGS_FIELD_KEYS: SettingsFieldKey[] = [
+  'timezone',
+  'notifyEmail',
+  'notifyInApp',
+  'confirmDestructive',
+  'notificationChannel',
+  'notificationSeverity',
+  'escalationRoute',
+  'escalationSlaMinutes',
+  'backtestPromotionRules',
+];
+
+const BACKTEST_PROMOTION_RULE_FIELD_METADATA: Record<
+  PromotionRuleFieldKey,
+  {
+    label: string;
+    valueType: Exclude<SettingsValueType, 'json' | 'null'>;
+  }
+> = {
+  minScore: { label: 'Promotion rule: Minimum score', valueType: 'number' },
+  minTrades: { label: 'Promotion rule: Minimum trades', valueType: 'number' },
+  requireCompleteHistory: {
+    label: 'Promotion rule: Complete history gate',
+    valueType: 'boolean',
+  },
+  requireLineage: { label: 'Promotion rule: Lineage gate', valueType: 'boolean' },
+  requireTemplateAutomationReady: {
+    label: 'Promotion rule: Template automation-ready gate',
+    valueType: 'boolean',
+  },
+  requireRobustness: {
+    label: 'Promotion rule: Robustness validation gate',
+    valueType: 'boolean',
+  },
+  requiredRobustnessModel: {
+    label: 'Promotion rule: Required robustness model',
+    valueType: 'string',
+  },
+  minPortfolioPressureScore: {
+    label: 'Promotion rule: Minimum portfolio pressure score',
+    valueType: 'number',
+  },
+  minExecutedTradeRatio: {
+    label: 'Promotion rule: Minimum executed trade ratio',
+    valueType: 'number',
+  },
+  blockCapitalDepletionRisk: {
+    label: 'Promotion rule: Capital depletion risk block',
+    valueType: 'boolean',
+  },
+};
+
+const SETTINGS_FIELD_METADATA: Record<SettingsAuditFieldName, SettingsFieldMetadata> = {
   timezone: { label: 'Time zone', valueType: 'string' },
   notifyEmail: { label: 'Email notifications', valueType: 'boolean' },
   notifyInApp: { label: 'In-app notifications', valueType: 'boolean' },
@@ -48,9 +109,28 @@ const SETTINGS_FIELD_METADATA: Record<SettingsFieldKey, SettingsFieldMetadata> =
   notificationSeverity: { label: 'Minimum severity', valueType: 'string' },
   escalationRoute: { label: 'Escalation route', valueType: 'string' },
   escalationSlaMinutes: { label: 'Escalation SLA (minutes)', valueType: 'number' },
+  backtestPromotionRules: { label: 'Backtests promotion rules', valueType: 'json' },
+  'backtestPromotionRules.minScore': BACKTEST_PROMOTION_RULE_FIELD_METADATA.minScore,
+  'backtestPromotionRules.minTrades': BACKTEST_PROMOTION_RULE_FIELD_METADATA.minTrades,
+  'backtestPromotionRules.requireCompleteHistory':
+    BACKTEST_PROMOTION_RULE_FIELD_METADATA.requireCompleteHistory,
+  'backtestPromotionRules.requireLineage':
+    BACKTEST_PROMOTION_RULE_FIELD_METADATA.requireLineage,
+  'backtestPromotionRules.requireTemplateAutomationReady':
+    BACKTEST_PROMOTION_RULE_FIELD_METADATA.requireTemplateAutomationReady,
+  'backtestPromotionRules.requireRobustness':
+    BACKTEST_PROMOTION_RULE_FIELD_METADATA.requireRobustness,
+  'backtestPromotionRules.requiredRobustnessModel':
+    BACKTEST_PROMOTION_RULE_FIELD_METADATA.requiredRobustnessModel,
+  'backtestPromotionRules.minPortfolioPressureScore':
+    BACKTEST_PROMOTION_RULE_FIELD_METADATA.minPortfolioPressureScore,
+  'backtestPromotionRules.minExecutedTradeRatio':
+    BACKTEST_PROMOTION_RULE_FIELD_METADATA.minExecutedTradeRatio,
+  'backtestPromotionRules.blockCapitalDepletionRisk':
+    BACKTEST_PROMOTION_RULE_FIELD_METADATA.blockCapitalDepletionRisk,
 };
 
-const SETTINGS_OPTION_DISPLAY: Partial<Record<SettingsFieldKey, Record<string, string>>> = {
+const SETTINGS_OPTION_DISPLAY: Partial<Record<SettingsAuditFieldName, Record<string, string>>> = {
   notificationChannel: {
     both: 'In-app + Email',
     'in-app': 'In-app only',
@@ -68,10 +148,40 @@ const SETTINGS_OPTION_DISPLAY: Partial<Record<SettingsFieldKey, Record<string, s
     'on-call': 'On-call engineer',
     manual: 'Manual triage',
   },
+  'backtestPromotionRules.requireCompleteHistory': {
+    true: 'Required',
+    false: 'Optional',
+  },
+  'backtestPromotionRules.requireLineage': {
+    true: 'Required',
+    false: 'Optional',
+  },
+  'backtestPromotionRules.requireTemplateAutomationReady': {
+    true: 'Required',
+    false: 'Optional',
+  },
+  'backtestPromotionRules.requireRobustness': {
+    true: 'Required',
+    false: 'Optional',
+  },
+  'backtestPromotionRules.blockCapitalDepletionRisk': {
+    true: 'Blocked',
+    false: 'Allowed',
+  },
 };
 
 function isSettingsFieldKey(fieldName: string): fieldName is SettingsFieldKey {
-  return Object.prototype.hasOwnProperty.call(SETTINGS_FIELD_METADATA, fieldName);
+  return SETTINGS_FIELD_KEYS.includes(fieldName as SettingsFieldKey);
+}
+
+function isPromotionRuleFieldKey(fieldName: string): fieldName is PromotionRuleFieldKey {
+  return Object.prototype.hasOwnProperty.call(BACKTEST_PROMOTION_RULE_FIELD_METADATA, fieldName);
+}
+
+function getPromotionRuleAuditFieldName(
+  fieldName: PromotionRuleFieldKey
+): PromotionRuleAuditFieldName {
+  return `backtestPromotionRules.${fieldName}`;
 }
 
 function buildSettingsDefaults(existing: AppSetting | null): UpdateSettingsBody {
@@ -84,6 +194,7 @@ function buildSettingsDefaults(existing: AppSetting | null): UpdateSettingsBody 
     notificationSeverity: existing ? existing.notificationSeverity : 'all',
     escalationRoute: existing ? existing.escalationRoute : 'risk-review',
     escalationSlaMinutes: existing ? existing.escalationSlaMinutes : 15,
+    backtestPromotionRules: resolveBacktestPromotionRules(existing?.backtestPromotionRules),
   };
 }
 
@@ -100,30 +211,77 @@ function buildSettingsAuditEntries(existing: AppSetting | null, settings: AppSet
   ];
 }
 
+function buildBacktestPromotionRuleAuditEntries(
+  existing: AppSetting | null,
+  settings: AppSetting,
+  providedPromotionRuleFields: Set<PromotionRuleFieldKey>
+): SettingsAuditEntry[] {
+  if (!providedPromotionRuleFields.size) {
+    return [];
+  }
+
+  const previousRules = existing
+    ? resolveBacktestPromotionRules(existing.backtestPromotionRules)
+    : null;
+  const nextRules = resolveBacktestPromotionRules(settings.backtestPromotionRules);
+
+  return Array.from(providedPromotionRuleFields).map((fieldName) => ({
+    fieldName: getPromotionRuleAuditFieldName(fieldName),
+    oldValue: previousRules ? previousRules[fieldName] : null,
+    newValue: nextRules[fieldName],
+  }));
+}
+
+function settingsValuesEqual(left: SettingsValue, right: SettingsValue): boolean {
+  if (left === right) {
+    return true;
+  }
+
+  if (left === null || right === null) {
+    return false;
+  }
+
+  if (typeof left === 'object' && typeof right === 'object') {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  return false;
+}
+
 function filterChangedSettingsAuditEntries(
   existing: AppSetting | null,
   settings: AppSetting,
-  providedFields: Set<SettingsFieldKey>
+  providedFields: Set<SettingsFieldKey>,
+  providedPromotionRuleFields: Set<PromotionRuleFieldKey>
 ): SettingsAuditEntry[] {
-  return buildSettingsAuditEntries(existing, settings).filter((entry) => {
+  const entries = [
+    ...buildSettingsAuditEntries(existing, settings).filter((entry) =>
+      providedFields.has(entry.fieldName as SettingsFieldKey)
+    ),
+    ...buildBacktestPromotionRuleAuditEntries(
+      existing,
+      settings,
+      providedPromotionRuleFields
+    ),
+  ];
+
+  return entries.filter((entry) => {
     if (!existing) {
-      return providedFields.has(entry.fieldName);
+      return true;
     }
 
-    return entry.oldValue !== entry.newValue;
+    return !settingsValuesEqual(entry.oldValue, entry.newValue);
   });
 }
 
 function getSettingsFieldLabel(fieldName: string): string {
-  return isSettingsFieldKey(fieldName)
-    ? SETTINGS_FIELD_METADATA[fieldName].label
-    : fieldName || 'Setting';
+  return SETTINGS_FIELD_METADATA[fieldName as SettingsAuditFieldName]?.label
+    || fieldName
+    || 'Setting';
 }
 
 function getSettingsFieldValueType(fieldName: string): Exclude<SettingsValueType, 'null'> {
-  return isSettingsFieldKey(fieldName)
-    ? SETTINGS_FIELD_METADATA[fieldName].valueType
-    : 'string';
+  return SETTINGS_FIELD_METADATA[fieldName as SettingsAuditFieldName]?.valueType || 'string';
 }
 
 function coerceSettingsValue(fieldName: string, value: unknown): SettingsValue {
@@ -152,6 +310,9 @@ function coerceSettingsValue(fieldName: string, value: unknown): SettingsValue {
       const parsed = Number(value);
       return Number.isFinite(parsed) ? parsed : null;
     }
+    case 'json': {
+      return resolveBacktestPromotionRules(value);
+    }
     case 'string':
     default:
       return String(value);
@@ -171,7 +332,12 @@ function serializeAuditValue(fieldName: string, value: unknown): SerializedAudit
   return {
     value: normalizedValue,
     valueType,
-    text: normalizedValue === null ? null : String(normalizedValue),
+    text:
+      normalizedValue === null
+        ? null
+        : typeof normalizedValue === 'object'
+          ? JSON.stringify(normalizedValue)
+          : String(normalizedValue),
     json: normalizedValue,
   };
 }
@@ -216,6 +382,7 @@ function resolveStoredAuditValueType(
     storedType === 'string' ||
     storedType === 'boolean' ||
     storedType === 'number' ||
+    storedType === 'json' ||
     storedType === 'null'
   ) {
     return storedType;
@@ -239,11 +406,28 @@ function formatSettingsValueForDisplay(fieldName: string, value: SettingsValue):
     return '—';
   }
 
+  if (typeof value === 'object') {
+    if (fieldName === 'backtestPromotionRules') {
+      return formatBacktestPromotionRulesForDisplay(resolveBacktestPromotionRules(value));
+    }
+
+    return JSON.stringify(value);
+  }
+
   if (typeof value === 'boolean') {
-    return value ? 'Enabled' : 'Disabled';
+    const mappedDisplay =
+      SETTINGS_OPTION_DISPLAY[fieldName as SettingsAuditFieldName]?.[String(value)];
+    return mappedDisplay || (value ? 'Enabled' : 'Disabled');
   }
 
   if (typeof value === 'number') {
+    if (
+      fieldName === 'backtestPromotionRules.minScore' ||
+      fieldName === 'backtestPromotionRules.minPortfolioPressureScore' ||
+      fieldName === 'backtestPromotionRules.minExecutedTradeRatio'
+    ) {
+      return value.toFixed(2);
+    }
     return String(value);
   }
 
@@ -327,6 +511,7 @@ function mapSettingsResponse(userId: string, settings: AppSetting): SettingsResp
     notificationSeverity: settings.notificationSeverity,
     escalationRoute: settings.escalationRoute,
     escalationSlaMinutes: settings.escalationSlaMinutes,
+    backtestPromotionRules: resolveBacktestPromotionRules(settings.backtestPromotionRules),
     updatedAt,
     versionToken: updatedAt,
   };
@@ -362,6 +547,7 @@ export class SettingsService {
       notificationSeverity: 'all',
       escalationRoute: 'risk-review',
       escalationSlaMinutes: 15,
+      backtestPromotionRules: createDefaultBacktestPromotionRules(),
       updatedAt: undefined,
       versionToken: undefined
     });
@@ -383,6 +569,16 @@ export class SettingsService {
       const { expectedUpdatedAt, ...settingsBody } = body || {};
       const normalizedExpectedUpdatedAt = normalizeExpectedUpdatedAt(expectedUpdatedAt);
       const providedFields = new Set<keyof UpdateSettingsBody>(Object.keys(settingsBody) as Array<keyof UpdateSettingsBody>);
+      const providedPromotionRuleFields = new Set<PromotionRuleFieldKey>(
+        isSettingsFieldKey('backtestPromotionRules') &&
+        settingsBody.backtestPromotionRules &&
+        typeof settingsBody.backtestPromotionRules === 'object' &&
+        !Array.isArray(settingsBody.backtestPromotionRules)
+          ? Object.keys(settingsBody.backtestPromotionRules).filter((fieldName) =>
+              isPromotionRuleFieldKey(fieldName)
+            ) as PromotionRuleFieldKey[]
+          : []
+      );
       const settings = await coreDataSource.transaction(async (manager) => {
         const appSettingsRepository = manager.getRepository(AppSetting);
         const settingsAuditRepository = manager.getRepository(SettingsAuditLog);
@@ -403,7 +599,8 @@ export class SettingsService {
         const changedEntries = filterChangedSettingsAuditEntries(
           existing,
           candidateSettings,
-          providedFields
+          providedFields,
+          providedPromotionRuleFields
         );
 
         if (existing && changedEntries.length === 0) {

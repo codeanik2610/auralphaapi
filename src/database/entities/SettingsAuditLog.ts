@@ -5,6 +5,7 @@ import {
   Index,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import type { BacktestPromotionRules } from '../../api/contracts/Settings';
 
 @Entity({ name: 'settings_audit_logs' })
 @Index('idx_settings_audit_logs_user_created_at', ['userId', 'createdAt'])
@@ -25,7 +26,7 @@ export class SettingsAuditLog {
   oldValueType!: string | null;
 
   @Column({ type: 'json', nullable: true })
-  oldValueJson!: string | boolean | number | null;
+  oldValueJson!: string | boolean | number | BacktestPromotionRules | null;
 
   @Column({ type: 'text', nullable: true })
   newValue!: string | null;
@@ -34,7 +35,7 @@ export class SettingsAuditLog {
   newValueType!: string | null;
 
   @Column({ type: 'json', nullable: true })
-  newValueJson!: string | boolean | number | null;
+  newValueJson!: string | boolean | number | BacktestPromotionRules | null;
 
   @Column({ type: 'varchar', length: 16, nullable: true })
   changeType!: string | null;

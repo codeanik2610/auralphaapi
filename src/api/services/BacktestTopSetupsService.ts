@@ -11,28 +11,25 @@ import {
   ValidatedBacktestTopSetupsQuery,
   validateBacktestTopSetupsQuery,
 } from '../validators/backtests.validator';
+import type { BacktestPromotionRules } from '../contracts/Settings';
+import { createDefaultBacktestPromotionRules } from '../utils/backtestPromotionRules';
 
 @Service()
 export class BacktestTopSetupsService {
-  private static readonly MIN_SCORE_FOR_AUTOMATION = 0.6;
-  private static readonly MIN_TRADES_FOR_AUTOMATION = 5;
-  private static readonly MIN_PORTFOLIO_PRESSURE_SCORE = 0.7;
-  private static readonly MIN_EXECUTED_TRADE_RATIO = 0.75;
-
   buildResponse(
     backtests: BacktestItem[],
-    query: BacktestTopSetupsQuery | ValidatedBacktestTopSetupsQuery
+    query: BacktestTopSetupsQuery | ValidatedBacktestTopSetupsQuery,
+    promotionRules: BacktestPromotionRules = createDefaultBacktestPromotionRules()
   ): BacktestsTopSetupsResponse {
     const params = validateBacktestTopSetupsQuery(query);
     const search = String(params.search || '').trim().toLowerCase();
 
-    const flattened = backtests.flatMap((backtest) => this.extractTopSetupItems(backtest));
+    const flattened = backtests.flatMap((backtest) =>
+      this.extractTopSetupItems(backtest, promotionRules)
+    );
 
     const filtered = flattened
       .filter((item) => {
-        if (item.hasIncompleteTradeHistory) {
-          return false;
-        }
         if (params.timeframe && item.timeframe !== params.timeframe) {
           return false;
         }
@@ -85,13 +82,19 @@ export class BacktestTopSetupsService {
     };
   }
 
-  rankBacktestTopSetups(backtest: BacktestItem): BacktestTopSetupItem[] {
-    return this.extractTopSetupItems(backtest).sort((left, right) =>
+  rankBacktestTopSetups(
+    backtest: BacktestItem,
+    promotionRules: BacktestPromotionRules = createDefaultBacktestPromotionRules()
+  ): BacktestTopSetupItem[] {
+    return this.extractTopSetupItems(backtest, promotionRules).sort((left, right) =>
       this.compareTopSetupItems(left, right)
     );
   }
 
-  private extractTopSetupItems(backtest: BacktestItem): BacktestTopSetupItem[] {
+  private extractTopSetupItems(
+    backtest: BacktestItem,
+    promotionRules: BacktestPromotionRules
+  ): BacktestTopSetupItem[] {
     if (backtest.runStatus !== 'Completed') {
       return [];
     }
@@ -148,6 +151,7 @@ export class BacktestTopSetupsService {
         trades,
         robustness,
         portfolioPressure,
+        promotionRules,
       });
       const eligibleForAutomation = automationEligibilityReasons.length === 0;
       const lineage = backtest.lineage ?? this.buildBacktestLineageFallback(backtest);
@@ -355,16 +359,18 @@ export class BacktestTopSetupsService {
     trades,
     robustness,
     portfolioPressure,
+    promotionRules,
   }: {
     backtest: BacktestItem;
     score: number | null;
     trades: number;
     robustness: BacktestRobustness | null;
     portfolioPressure: BacktestPortfolioPressure | null;
+    promotionRules: BacktestPromotionRules;
   }): string[] {
     const reasons: string[] = [];
 
-    if (backtest.hasIncompleteTradeHistory) {
+    if (promotionRules.requireCompleteHistory && backtest.hasIncompleteTradeHistory) {
       reasons.push('incomplete-history');
     }
 
@@ -375,30 +381,35 @@ export class BacktestTopSetupsService {
         backtest.libraryId ||
         backtest.sourceId
     );
-    if (!hasLineage) {
+    if (promotionRules.requireLineage && !hasLineage) {
       reasons.push('missing-lineage');
     }
 
-    if (backtest.templateAutomationReady === false) {
+    if (
+      promotionRules.requireTemplateAutomationReady &&
+      backtest.templateAutomationReady === false
+    ) {
       reasons.push('template-not-automation-ready');
     }
 
-    if (score === null || score < BacktestTopSetupsService.MIN_SCORE_FOR_AUTOMATION) {
+    if (score === null || score < promotionRules.minScore) {
       reasons.push('low-score');
     }
 
-    if (trades < BacktestTopSetupsService.MIN_TRADES_FOR_AUTOMATION) {
+    if (trades < promotionRules.minTrades) {
       reasons.push('low-trade-count');
     }
 
-    if (!robustness) {
-      reasons.push('missing-robustness-validation');
-    } else {
-      if (robustness.evaluationMethod !== 'walk-forward-multi-split') {
-        reasons.push('outdated-robustness-model');
-      }
-      if (robustness.promotionReady === false) {
-        reasons.push(...(Array.isArray(robustness.reasons) ? robustness.reasons : []));
+    if (promotionRules.requireRobustness) {
+      if (!robustness) {
+        reasons.push('missing-robustness-validation');
+      } else {
+        if (robustness.evaluationMethod !== promotionRules.requiredRobustnessModel) {
+          reasons.push('outdated-robustness-model');
+        }
+        if (robustness.promotionReady === false) {
+          reasons.push(...(Array.isArray(robustness.reasons) ? robustness.reasons : []));
+        }
       }
     }
 
@@ -406,20 +417,18 @@ export class BacktestTopSetupsService {
       if (
         portfolioPressure.pressureScore !== null &&
         portfolioPressure.pressureScore !== undefined &&
-        portfolioPressure.pressureScore <
-          BacktestTopSetupsService.MIN_PORTFOLIO_PRESSURE_SCORE
+        portfolioPressure.pressureScore < promotionRules.minPortfolioPressureScore
       ) {
         reasons.push('high-portfolio-capital-pressure');
       }
       if (
         portfolioPressure.executedTradeRatio !== null &&
         portfolioPressure.executedTradeRatio !== undefined &&
-        portfolioPressure.executedTradeRatio <
-          BacktestTopSetupsService.MIN_EXECUTED_TRADE_RATIO
+        portfolioPressure.executedTradeRatio < promotionRules.minExecutedTradeRatio
       ) {
         reasons.push('portfolio-capital-skips');
       }
-      if (portfolioPressure.capitalDepletionRisk) {
+      if (promotionRules.blockCapitalDepletionRisk && portfolioPressure.capitalDepletionRisk) {
         reasons.push('capital-depletion-risk');
       }
     }

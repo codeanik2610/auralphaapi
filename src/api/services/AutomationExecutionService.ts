@@ -1147,6 +1147,14 @@ export class AutomationExecutionService {
       return fromStability;
     }
 
+    const progressState = this.readString(
+      this.parseRecord(this.parseRecord(backtest.result?.config)?.progress)?.state
+    );
+    const fromProgress = this.normalizeChildBacktestStatus(progressState);
+    if (fromProgress) {
+      return fromProgress;
+    }
+
     return 'Queued';
   }
 
@@ -1176,7 +1184,9 @@ export class AutomationExecutionService {
       normalized === 'finished' ||
       normalized === 'done' ||
       normalized === 'success' ||
-      normalized === 'succeeded'
+      normalized === 'succeeded' ||
+      normalized === 'stable' ||
+      normalized === 'review'
     ) {
       return 'Completed';
     }

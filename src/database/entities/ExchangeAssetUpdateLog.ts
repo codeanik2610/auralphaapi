@@ -3,6 +3,7 @@ import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 
 @Entity({ name: 'exchange_asset_update_logs' })
 @Index('idx_exchange_asset_update_logs_run_created', ['runLogId', 'createdAt'])
 @Index('idx_exchange_asset_update_logs_source_symbol', ['source', 'symbol'])
+@Index('idx_exchange_asset_update_logs_created_at', ['createdAt'])
 export class ExchangeAssetUpdateLog {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

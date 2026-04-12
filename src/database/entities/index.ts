@@ -40,6 +40,7 @@ export * from './SuggestedTradeExecution';
 export * from './SchedulerConfig';
 export * from './SchedulerCommand';
 export * from './SchedulerRunLog';
+export * from './SchedulerHealthCheckResult';
 export * from './SchedulerUserConfig';
 export * from './StrategyLabProject';
 export * from './StrategyTemplate';

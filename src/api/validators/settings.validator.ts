@@ -1,6 +1,13 @@
 import { BadRequestAppError } from '../errors/AppError';
-import { UpdateSettingsBody } from '../contracts/Settings';
+import {
+  UpdateSettingsBody,
+  UpdateSettingsRequestBody,
+} from '../contracts/Settings';
 import { isValidIanaTimeZone, normalizeTimeZone } from '../utils/timezone';
+import {
+  resolveBacktestPromotionRules,
+  validateBacktestPromotionRulesInput,
+} from '../utils/backtestPromotionRules';
 
 export interface SettingsAuditQuery {
   limit?: string;
@@ -13,7 +20,7 @@ export interface ValidatedSettingsAuditQuery {
 }
 
 export const validateUpdateSettingsBody = (
-  body: Partial<UpdateSettingsBody> = {},
+  body: UpdateSettingsRequestBody = {},
   defaults: Partial<UpdateSettingsBody> = {}
 ): UpdateSettingsBody => {
   const allowedFields = new Set([
@@ -24,7 +31,8 @@ export const validateUpdateSettingsBody = (
     'notificationChannel',
     'notificationSeverity',
     'escalationRoute',
-    'escalationSlaMinutes'
+    'escalationSlaMinutes',
+    'backtestPromotionRules',
   ]);
   const allowedChannels = new Set(['both', 'in-app', 'email', 'disabled']);
   const allowedSeverities = new Set(['all', 'medium', 'high', 'critical']);
@@ -37,15 +45,25 @@ export const validateUpdateSettingsBody = (
     );
   }
 
-  const candidate: Partial<UpdateSettingsBody> = {
-    timezone: body.timezone ?? defaults.timezone,
-    notifyEmail: body.notifyEmail ?? defaults.notifyEmail,
-    notifyInApp: body.notifyInApp ?? defaults.notifyInApp,
-    confirmDestructive: body.confirmDestructive ?? defaults.confirmDestructive,
-    notificationChannel: body.notificationChannel ?? defaults.notificationChannel,
-    notificationSeverity: body.notificationSeverity ?? defaults.notificationSeverity,
-    escalationRoute: body.escalationRoute ?? defaults.escalationRoute,
-    escalationSlaMinutes: body.escalationSlaMinutes ?? defaults.escalationSlaMinutes
+  const defaultPromotionRules = resolveBacktestPromotionRules(defaults.backtestPromotionRules);
+  const candidate: UpdateSettingsBody = {
+    timezone: body.timezone ?? defaults.timezone ?? 'UTC',
+    notifyEmail: body.notifyEmail ?? defaults.notifyEmail ?? true,
+    notifyInApp: body.notifyInApp ?? defaults.notifyInApp ?? true,
+    confirmDestructive: body.confirmDestructive ?? defaults.confirmDestructive ?? true,
+    notificationChannel:
+      body.notificationChannel ?? defaults.notificationChannel ?? 'both',
+    notificationSeverity:
+      body.notificationSeverity ?? defaults.notificationSeverity ?? 'all',
+    escalationRoute: body.escalationRoute ?? defaults.escalationRoute ?? 'risk-review',
+    escalationSlaMinutes: body.escalationSlaMinutes ?? defaults.escalationSlaMinutes ?? 15,
+    backtestPromotionRules:
+      body.backtestPromotionRules === undefined
+        ? defaultPromotionRules
+        : validateBacktestPromotionRulesInput(
+            body.backtestPromotionRules,
+            defaultPromotionRules
+          ),
   };
 
   if (typeof candidate.timezone !== 'string' || !isValidIanaTimeZone(candidate.timezone)) {
@@ -108,7 +126,8 @@ export const validateUpdateSettingsBody = (
     notificationChannel: candidate.notificationChannel,
     notificationSeverity: candidate.notificationSeverity,
     escalationRoute: candidate.escalationRoute,
-    escalationSlaMinutes: candidate.escalationSlaMinutes
+    escalationSlaMinutes: candidate.escalationSlaMinutes,
+    backtestPromotionRules: candidate.backtestPromotionRules,
   };
 };
 

@@ -98,6 +98,7 @@ import { SuggestedTrade } from '../src/database/entities/SuggestedTrade';
 import { SuggestedTradeExecution } from '../src/database/entities/SuggestedTradeExecution';
 import { CreateAppSettingsTable1741474200000 } from '../src/database/migrations/1741474200000-CreateAppSettingsTable';
 import { NormalizeAppSettingsPrimaryKey1765401000000 } from '../src/database/migrations/1765401000000-NormalizeAppSettingsPrimaryKey';
+import { AddBacktestPromotionRulesToAppSettings1770715000000 } from '../src/database/migrations/1770715000000-AddBacktestPromotionRulesToAppSettings';
 import { HardenSuggestedTradeExecutionStorage1767300010000 } from '../src/database/migrations/1767300010000-HardenSuggestedTradeExecutionStorage';
 import { CleanupBrokerExchangeMasters1769800000000 } from '../src/database/migrations/1769800000000-CleanupBrokerExchangeMasters';
 import { DropConnectionExchangeId1770000000000 } from '../src/database/migrations/1770000000000-DropConnectionExchangeId';
@@ -112,6 +113,7 @@ import {
   normalizeAutomationScheduleRecord,
   resolveAutomationSchedule,
 } from '../src/api/utils/automationSchedule';
+import { createDefaultBacktestPromotionRules } from '../src/api/utils/backtestPromotionRules';
 
 type ServiceCtor = new (...args: never[]) => object;
 type MigrationColumn = {
@@ -177,6 +179,11 @@ function runServiceSmokeAssertions(): void {
 function createBacktestsService(): any {
   const service = new BacktestsService() as any;
   service.backtestReadModelService = new BacktestReadModelService();
+  service.appSettingsRepository = {
+    async getSettings() {
+      return null;
+    },
+  };
   return service;
 }
 
@@ -2763,6 +2770,14 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     assert.equal(created.data.notifyEmail, false);
     assert.equal(created.data.notifyInApp, true);
     assert.deepEqual(
+      created.data.backtestPromotionRules,
+      createDefaultBacktestPromotionRules()
+    );
+    assert.deepEqual(
+      committedSettings.get('user-1')?.backtestPromotionRules,
+      createDefaultBacktestPromotionRules()
+    );
+    assert.deepEqual(
       committedAudits
         .filter((item) => item.userId === 'user-1')
         .map((item) => item.fieldName)
@@ -2799,6 +2814,40 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
         (item) => item.userId === 'user-1' && item.title === 'User settings updated'
       ).length,
       1
+    );
+    const customizedRules = await service.updateSettings('user-5', {
+      backtestPromotionRules: {
+        minScore: 0.82,
+        minTrades: 9,
+        requireRobustness: false,
+      },
+    });
+    assert.equal(customizedRules.data.backtestPromotionRules.minScore, 0.82);
+    assert.equal(customizedRules.data.backtestPromotionRules.minTrades, 9);
+    assert.equal(customizedRules.data.backtestPromotionRules.requireRobustness, false);
+    const customizedRulesAudits = committedAudits.filter(
+      (item) => item.userId === 'user-5'
+    );
+    assert.deepEqual(
+      customizedRulesAudits.map((item) => item.fieldName).sort(),
+      [
+        'backtestPromotionRules.minScore',
+        'backtestPromotionRules.minTrades',
+        'backtestPromotionRules.requireRobustness',
+      ]
+    );
+    const customizedMinScoreAudit = customizedRulesAudits.find(
+      (item) => item.fieldName === 'backtestPromotionRules.minScore'
+    );
+    const customizedRobustnessAudit = customizedRulesAudits.find(
+      (item) => item.fieldName === 'backtestPromotionRules.requireRobustness'
+    );
+    assert.equal(customizedMinScoreAudit?.newValueType, 'number');
+    assert.equal(customizedMinScoreAudit?.newValueJson, 0.82);
+    assert.equal(customizedRobustnessAudit?.newValueType, 'boolean');
+    assert.equal(
+      customizedRobustnessAudit?.newValueJson,
+      false
     );
     await assert.rejects(
       service.updateSettings('user-1', {
@@ -5623,6 +5672,19 @@ async function runBrokerDefinitionStartupValidatorAssertions(): Promise<void> {
 }
 
 function runSettingsValidationAssertions(): void {
+  const defaultPromotionRules = createDefaultBacktestPromotionRules();
+  const defaultSettings = {
+    timezone: 'UTC',
+    notifyEmail: true,
+    notifyInApp: true,
+    confirmDestructive: true,
+    notificationChannel: 'both' as const,
+    notificationSeverity: 'all' as const,
+    escalationRoute: 'risk-review' as const,
+    escalationSlaMinutes: 15,
+    backtestPromotionRules: defaultPromotionRules,
+  };
+
   assert.deepEqual(validateSettingsAuditQuery(), { limit: 20, offset: 0 });
   assert.deepEqual(validateSettingsAuditQuery({ limit: '5', offset: '2' }), {
     limit: 5,
@@ -5648,18 +5710,41 @@ function runSettingsValidationAssertions(): void {
           timezone: 'UTC',
           unknownField: true,
         } as any,
-        {
-          timezone: 'UTC',
-          notifyEmail: true,
-          notifyInApp: true,
-          confirmDestructive: true,
-          notificationChannel: 'both',
-          notificationSeverity: 'all',
-          escalationRoute: 'risk-review',
-          escalationSlaMinutes: 15,
-        }
+        defaultSettings
       ),
     /Unknown settings fields: unknownField/
+  );
+
+  assert.deepEqual(
+    validateUpdateSettingsBody(
+      {
+        backtestPromotionRules: {
+          minScore: 0.82,
+          minTrades: 9,
+          requireRobustness: false,
+        },
+      },
+      defaultSettings
+    ).backtestPromotionRules,
+    {
+      ...defaultPromotionRules,
+      minScore: 0.82,
+      minTrades: 9,
+      requireRobustness: false,
+    }
+  );
+
+  assert.throws(
+    () =>
+      validateUpdateSettingsBody(
+        {
+          backtestPromotionRules: {
+            minScore: 1.2,
+          },
+        },
+        defaultSettings
+      ),
+    /backtestPromotionRules.minScore must be a number between 0 and 1/
   );
 }
 
@@ -6172,8 +6257,53 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
             actor: null,
             createdAt: new Date('2026-04-04T00:10:00.000Z'),
           },
+          {
+            id: 'audit-4',
+            fieldName: 'backtestPromotionRules.minScore',
+            oldValue: '0.6',
+            oldValueType: 'number',
+            oldValueJson: 0.6,
+            newValue: '0.8',
+            newValueType: 'number',
+            newValueJson: 0.8,
+            changeType: 'updated',
+            actor: 'user-1',
+            createdAt: new Date('2026-04-04T00:11:00.000Z'),
+          },
+          {
+            id: 'audit-5',
+            fieldName: 'backtestPromotionRules.requireRobustness',
+            oldValue: 'true',
+            oldValueType: 'boolean',
+            oldValueJson: true,
+            newValue: 'false',
+            newValueType: 'boolean',
+            newValueJson: false,
+            changeType: 'updated',
+            actor: 'user-1',
+            createdAt: new Date('2026-04-04T00:12:00.000Z'),
+          },
+          {
+            id: 'audit-6',
+            fieldName: 'backtestPromotionRules',
+            oldValue: JSON.stringify(createDefaultBacktestPromotionRules()),
+            oldValueType: 'json',
+            oldValueJson: createDefaultBacktestPromotionRules(),
+            newValue: JSON.stringify({
+              ...createDefaultBacktestPromotionRules(),
+              minScore: 0.8,
+            }),
+            newValueType: 'json',
+            newValueJson: {
+              ...createDefaultBacktestPromotionRules(),
+              minScore: 0.8,
+            },
+            changeType: 'updated',
+            actor: 'user-1',
+            createdAt: new Date('2026-04-04T00:13:00.000Z'),
+          },
         ],
-        total: 3,
+        total: 6,
       };
     },
   };
@@ -6181,6 +6311,7 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
   const settingsResponse = await service.getSettings('user-1');
   assert.equal(settingsResponse.data.hasSavedSettings, false);
   assert.equal(settingsResponse.data.versionToken, undefined);
+  assert.equal(settingsResponse.data.backtestPromotionRules.minScore, 0.6);
 
   const defaultAuditResponse = await service.getSettingsAudit('user-1', {});
   assert.equal(defaultAuditResponse.data.limit, 20);
@@ -6192,7 +6323,7 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
   });
 
   assert.deepEqual(auditQueries, [{ limit: 20, offset: 0 }, { limit: 10, offset: 0 }]);
-  assert.equal(auditResponse.data.total, 3);
+  assert.equal(auditResponse.data.total, 6);
   assert.equal(auditResponse.data.items[0]?.fieldLabel, 'Email notifications');
   assert.equal(auditResponse.data.items[0]?.fieldKey, 'notifyEmail');
   assert.equal(auditResponse.data.items[0]?.oldValue, true);
@@ -6207,6 +6338,27 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
   assert.equal(auditResponse.data.items[2]?.newValue, 30);
   assert.equal(auditResponse.data.items[2]?.newValueType, 'number');
   assert.equal(auditResponse.data.items[2]?.changeType, 'created');
+  assert.equal(
+    auditResponse.data.items[3]?.fieldLabel,
+    'Promotion rule: Minimum score'
+  );
+  assert.equal(auditResponse.data.items[3]?.oldValueType, 'number');
+  assert.equal(auditResponse.data.items[3]?.newValueType, 'number');
+  assert.equal(auditResponse.data.items[3]?.oldValueDisplay, '0.60');
+  assert.equal(auditResponse.data.items[3]?.newValueDisplay, '0.80');
+  assert.equal(
+    auditResponse.data.items[4]?.fieldLabel,
+    'Promotion rule: Robustness validation gate'
+  );
+  assert.equal(auditResponse.data.items[4]?.oldValueDisplay, 'Required');
+  assert.equal(auditResponse.data.items[4]?.newValueDisplay, 'Optional');
+  assert.equal(auditResponse.data.items[5]?.fieldLabel, 'Backtests promotion rules');
+  assert.equal(auditResponse.data.items[5]?.newValueType, 'json');
+  assert.equal(
+    (auditResponse.data.items[5]?.newValue as Record<string, unknown>)?.minScore,
+    0.8
+  );
+  assert.match(auditResponse.data.items[5]?.newValueDisplay || '', /score >= 0\.80/);
 }
 
 async function runSettingsSchemaNormalizationAssertions(): Promise<void> {
@@ -6271,6 +6423,35 @@ async function runSettingsSchemaNormalizationAssertions(): Promise<void> {
     ),
     false
   );
+
+  const promotionRulesMigration = new AddBacktestPromotionRulesToAppSettings1770715000000();
+  const addedColumns: string[] = [];
+  await promotionRulesMigration.up({
+    async hasTable() {
+      return true;
+    },
+    async hasColumn() {
+      return false;
+    },
+    async addColumn(_tableName: string, column: { name: string }) {
+      addedColumns.push(column.name);
+    },
+  } as any);
+  assert.deepEqual(addedColumns, ['backtestPromotionRules']);
+
+  const droppedColumns: string[] = [];
+  await promotionRulesMigration.down({
+    async hasTable() {
+      return true;
+    },
+    async hasColumn() {
+      return true;
+    },
+    async dropColumn(_tableName: string, columnName: string) {
+      droppedColumns.push(columnName);
+    },
+  } as any);
+  assert.deepEqual(droppedColumns, ['backtestPromotionRules']);
 }
 
 async function runSuggestedTradeExecutionStorageMigrationAssertions(): Promise<void> {
@@ -8024,6 +8205,16 @@ function runBacktestTopSetupsServiceAssertions(): void {
     'missing-robustness-validation',
   ]);
 
+  const relaxedRanked = service.rankBacktestTopSetups(primaryBacktest, {
+    ...createDefaultBacktestPromotionRules(),
+    minScore: 0.4,
+    minTrades: 3,
+    requireRobustness: false,
+  });
+  const relaxedEthSetup = relaxedRanked.find((item) => item.symbol === 'ETHUSDT');
+  assert.equal(relaxedEthSetup?.eligibleForAutomation, true);
+  assert.deepEqual(relaxedEthSetup?.automationEligibilityReasons, []);
+
   const response = service.buildResponse([primaryBacktest, duplicateBacktest], {
     limit: '10',
     offset: '0',
@@ -8040,8 +8231,28 @@ function runBacktestTopSetupsServiceAssertions(): void {
 
 async function runBacktestTopSetupsDelegationAssertions(): Promise<void> {
   const service = createBacktestsService();
-  const capturedCalls: Array<{ backtests: Record<string, unknown>[]; query: Record<string, unknown> }> = [];
+  type PromotionRulesCapture = {
+    minScore?: number;
+    minTrades?: number;
+    requireRobustness?: boolean;
+  };
+  const capturedCalls: Array<{
+    backtests: Record<string, unknown>[];
+    query: Record<string, unknown>;
+    promotionRules?: PromotionRulesCapture;
+  }> = [];
   const capturedRepositoryQueries: Array<Record<string, unknown>> = [];
+  service.appSettingsRepository = {
+    async getSettings() {
+      return {
+        backtestPromotionRules: {
+          minScore: 0.82,
+          minTrades: 7,
+          requireRobustness: false,
+        },
+      };
+    },
+  };
   const backtest = {
     id: 'backtest-delegate-1',
     name: 'Delegated Top Setup',
@@ -8086,8 +8297,12 @@ async function runBacktestTopSetupsDelegationAssertions(): Promise<void> {
     getTradeCountsByBacktest: async () => new Map([[backtest.id, 9]]),
   };
   service.backtestTopSetupsService = {
-    buildResponse: (mappedBacktests: Record<string, unknown>[], query: Record<string, unknown>) => {
-      capturedCalls.push({ backtests: mappedBacktests, query });
+    buildResponse: (
+      mappedBacktests: Record<string, unknown>[],
+      query: Record<string, unknown>,
+      promotionRules?: PromotionRulesCapture
+    ) => {
+      capturedCalls.push({ backtests: mappedBacktests, query, promotionRules });
       return {
         items: [],
         total: 0,
@@ -8111,6 +8326,9 @@ async function runBacktestTopSetupsDelegationAssertions(): Promise<void> {
   assert.equal(capturedCalls.length, 1);
   assert.equal(capturedCalls[0].query.eligibleOnly, true);
   assert.equal(capturedCalls[0].query.minTrades, 5);
+  assert.equal(capturedCalls[0].promotionRules?.minScore, 0.82);
+  assert.equal(capturedCalls[0].promotionRules?.minTrades, 7);
+  assert.equal(capturedCalls[0].promotionRules?.requireRobustness, false);
   assert.equal(capturedCalls[0].backtests.length, 1);
   assert.equal(capturedCalls[0].backtests[0].id, 'backtest-delegate-1');
   assert.equal(capturedCalls[0].backtests[0].runStatus, 'Completed');
@@ -10004,6 +10222,12 @@ async function runBacktestPromotionServiceFailureAlertAssertions(): Promise<void
 async function runBacktestPromotionDelegationAssertions(): Promise<void> {
   const service = createBacktestsService();
   const capturedCalls: Array<Record<string, unknown>> = [];
+  type PromotionRulesCapture = {
+    minScore?: number;
+    minTrades?: number;
+    requireRobustness?: boolean;
+  };
+  let capturedPromotionRules: PromotionRulesCapture | null = null;
   const backtest = {
     id: 'backtest-promotion-delegate-1',
     name: 'Delegated Promotion Winner',
@@ -10043,40 +10267,57 @@ async function runBacktestPromotionDelegationAssertions(): Promise<void> {
   service.backtestRepository = {
     getBacktestById: async () => backtest,
   };
+  service.appSettingsRepository = {
+    async getSettings() {
+      return {
+        backtestPromotionRules: {
+          minScore: 0.82,
+          minTrades: 7,
+          requireRobustness: false,
+        },
+      };
+    },
+  };
   service.backtestTradeRepository = {
     getTradeCountsByBacktest: async () => new Map([[backtest.id, 18]]),
   };
   service.backtestTopSetupsService = {
-    rankBacktestTopSetups: () => [
-      {
-        id: 'setup-delegate-1',
-        dedupeKey: 'setup-delegate-1',
-        backtestId: backtest.id,
-        backtestName: backtest.name,
-        strategy: backtest.strategy,
-        parameter: backtest.parameter,
-        symbol: 'BTCUSDT',
-        timeframe: '1h',
-        score: 0.93,
-        trades: 18,
-        winRate: 59,
-        profitFactor: 1.84,
-        returnPct: 14.6,
-        maxDrawdownPct: 5.7,
-        hasIncompleteTradeHistory: false,
-        eligibleForAutomation: true,
-        automationEligibilityReasons: [],
-        templateAutomationReady: true,
-        templateAutomationReasons: [],
-        robustness: {
-          robustnessScore: 0.9,
-          walkForwardPassRate: 0.8,
-          averageOutOfSampleReturnPct: 10.1,
-          worstOutOfSampleReturnPct: 2.9,
+    rankBacktestTopSetups: (
+      _mappedBacktest: Record<string, unknown>,
+      promotionRules?: PromotionRulesCapture
+    ) => {
+      capturedPromotionRules = promotionRules ?? null;
+      return [
+        {
+          id: 'setup-delegate-1',
+          dedupeKey: 'setup-delegate-1',
+          backtestId: backtest.id,
+          backtestName: backtest.name,
+          strategy: backtest.strategy,
+          parameter: backtest.parameter,
+          symbol: 'BTCUSDT',
+          timeframe: '1h',
+          score: 0.93,
+          trades: 18,
+          winRate: 59,
+          profitFactor: 1.84,
+          returnPct: 14.6,
+          maxDrawdownPct: 5.7,
+          hasIncompleteTradeHistory: false,
+          eligibleForAutomation: true,
+          automationEligibilityReasons: [],
+          templateAutomationReady: true,
+          templateAutomationReasons: [],
+          robustness: {
+            robustnessScore: 0.9,
+            walkForwardPassRate: 0.8,
+            averageOutOfSampleReturnPct: 10.1,
+            worstOutOfSampleReturnPct: 2.9,
+          },
+          createdAt: '2026-04-05T00:00:00.000Z',
         },
-        createdAt: '2026-04-05T00:00:00.000Z',
-      },
-    ],
+      ];
+    },
   };
   service.backtestPromotionService = {
     promoteResolvedTopSetup: async (payload: Record<string, unknown>) => {
@@ -10111,6 +10352,10 @@ async function runBacktestPromotionDelegationAssertions(): Promise<void> {
     ((capturedCalls[0].selectedTopSetup as Record<string, unknown>).timeframe),
     '1h'
   );
+  const promotionRulesSnapshot = capturedPromotionRules as PromotionRulesCapture | null;
+  assert.equal(promotionRulesSnapshot?.minScore, 0.82);
+  assert.equal(promotionRulesSnapshot?.minTrades, 7);
+  assert.equal(promotionRulesSnapshot?.requireRobustness, false);
 }
 
 async function runBacktestPromotionFailureAlertAssertions(): Promise<void> {
@@ -12289,6 +12534,109 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       assert.equal(commits, 0);
       assert.equal(rollbacks, 1);
       assert.equal(releases, 1);
+    }
+
+    {
+      const { service, events } = createService();
+      const runUpdates: Array<{ id: string; payload: Record<string, unknown> }> = [];
+      const outputs: Array<Record<string, unknown>> = [];
+      const automationRunner = {
+        ...automation,
+        automationType: 'backtest-runner',
+        config: {
+          backtestRunner: {
+            kind: 'backtest-runner',
+            source: 'backtest',
+            backtestId: 'source-backtest-1',
+          },
+        },
+      };
+      const childFinishedAt = new Date('2026-04-02T10:05:00.000Z');
+
+      service.automationRepository = {
+        ...service.automationRepository,
+        getAutomationById: async () => automationRunner,
+        createAutomationEvent: async (payload: Record<string, unknown>) => {
+          events.push(payload);
+          return payload;
+        },
+      };
+      service.automationRunRepository = {
+        ...service.automationRunRepository,
+        findById: async () => ({
+          id: 'run-backtest-1',
+          automationId: automationRunner.id,
+          userId: automationRunner.userId,
+          status: 'Running',
+          startedAt: new Date('2026-04-02T10:00:00.000Z'),
+          meta: {
+            backtestId: 'child-backtest-1',
+            lineage: {
+              backtestId: 'child-backtest-1',
+            },
+          },
+        }),
+        updateRun: async (id: string, payload: Record<string, unknown>) => {
+          runUpdates.push({ id, payload });
+        },
+      };
+      service.automationRunOutputRepository = {
+        createOutput: async (payload: Record<string, unknown>) => {
+          outputs.push(payload);
+          return payload;
+        },
+      };
+      service.backtestRepository = {
+        ...service.backtestRepository,
+        getBacktestByIdAny: async () => ({
+          id: 'child-backtest-1',
+          userId: automationRunner.userId,
+          status: 'Review',
+          stability: 'Review',
+          updatedAt: childFinishedAt,
+          trades: 12,
+          result: {
+            cagr: 5.2,
+            sharpe: 1.18,
+            drawdown: 2.1,
+            winRate: 61,
+            profitFactor: 1.44,
+            config: {
+              progress: {
+                state: 'completed',
+                processed: 9,
+                total: 9,
+                percent: 100,
+              },
+            },
+          },
+        }),
+      };
+
+      const syncResult = await service.syncBacktestRunnerLifecycleByBacktestId(
+        'child-backtest-1'
+      );
+
+      assert.equal(syncResult.synced, true);
+      assert.equal(runUpdates.length, 1);
+      assert.equal(runUpdates[0]?.id, 'run-backtest-1');
+      assert.equal(runUpdates[0]?.payload.status, 'Success');
+      assert.equal(
+        (runUpdates[0]?.payload.finishedAt as Date | undefined)?.toISOString(),
+        childFinishedAt.toISOString()
+      );
+      assert.equal(
+        ((runUpdates[0]?.payload.meta as Record<string, unknown> | undefined)?.childBacktestStatus as string | undefined) ?? null,
+        'Completed'
+      );
+      assert.equal(
+        ((runUpdates[0]?.payload.meta as Record<string, unknown> | undefined)?.backtestLifecycle as string | undefined) ?? null,
+        'finalized'
+      );
+      assert.equal(events.some((item) => item.type === 'Run completed'), true);
+      assert.equal(outputs.length, 1);
+      assert.equal(outputs[0]?.outputType, 'backtest-runner.summary');
+      assert.equal(outputs[0]?.status, 'Created');
     }
   } finally {
     coreDataSource.createQueryRunner = originalCreateQueryRunner as typeof coreDataSource.createQueryRunner;

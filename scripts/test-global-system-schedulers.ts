@@ -20,6 +20,10 @@ type GlobalSchedulerCase = {
   supportsPhaseTwoAudit?: boolean;
 };
 
+function isHealthSchedulerCase(testCase: GlobalSchedulerCase): boolean {
+  return testCase.key === 'system-health-sync';
+}
+
 function createConfig(
   key: string,
   description: string,
@@ -324,6 +328,39 @@ async function assertPhaseThreeLocalizedTimeContract(
     },
   } as any;
 
+  service.schedulerHealthCheckResultRepository = {
+    async hasResultsForRunLogId(runLogId: string) {
+      assert.equal(runLogId, `${testCase.key}-run-1`);
+      return isHealthSchedulerCase(testCase);
+    },
+    async listByRunLogId(runLogId: string) {
+      assert.equal(runLogId, `${testCase.key}-run-1`);
+      if (!isHealthSchedulerCase(testCase)) {
+        return { items: [], total: 0 };
+      }
+      return {
+        items: [
+          {
+            id: `${testCase.key}-health-1`,
+            runLogId,
+            checkId: 'binance-exchange-health',
+            checkLabel: 'Binance exchange health',
+            status: 'passed',
+            detail: 'ok',
+            createdAt: new Date('2026-04-10T01:02:00.000Z'),
+          },
+        ],
+        total: 1,
+      };
+    },
+    async countOlderThanDays() {
+      return 0;
+    },
+    async deleteOlderThanDays() {
+      return 0;
+    },
+  } as any;
+
   service.exchangeAssetUpdateLogRepository = {
     async listByRunLogId(runLogId: string) {
       assert.equal(runLogId, `${testCase.key}-run-1`);
@@ -382,6 +419,11 @@ async function assertPhaseThreeLocalizedTimeContract(
   assert.equal(updatesResponse.data.time?.displayTimesLocalized, true);
   assert.equal(updatesResponse.data.items[0]?.createdAt, '2026-04-10T06:32:00.000+05:30');
   assert.equal(updatesResponse.data.items[0]?.createdAtIso, '2026-04-10T01:02:00.000Z');
+  if (isHealthSchedulerCase(testCase)) {
+    assert.equal(updatesResponse.data.items[0]?.source, 'health');
+    assert.equal(updatesResponse.data.items[0]?.actionType, 'passed');
+    assert.equal(updatesResponse.data.items[0]?.symbol, 'binance-exchange-health');
+  }
 
   const exportResponse = await service.exportSchedulerRunUpdates(
     'admin-user-1',
@@ -448,6 +490,39 @@ async function assertPhaseTwoAuditContract(testCase: GlobalSchedulerCase): Promi
       assert.equal(runId, `${testCase.key}-run-2`);
       assert.equal(schedulerKey, testCase.key);
       return run;
+    },
+  } as any;
+
+  service.schedulerHealthCheckResultRepository = {
+    async hasResultsForRunLogId(runLogId: string) {
+      assert.equal(runLogId, `${testCase.key}-run-2`);
+      return isHealthSchedulerCase(testCase);
+    },
+    async listByRunLogId(runLogId: string) {
+      assert.equal(runLogId, `${testCase.key}-run-2`);
+      if (!isHealthSchedulerCase(testCase)) {
+        return { items: [], total: 0 };
+      }
+      return {
+        items: [
+          {
+            id: `${testCase.key}-health-2`,
+            runLogId,
+            checkId: 'auralpha-health',
+            checkLabel: 'aurAlpha API health',
+            status: 'passed',
+            detail: 'ok',
+            createdAt: new Date('2026-04-10T01:02:00.000Z'),
+          },
+        ],
+        total: 1,
+      };
+    },
+    async countOlderThanDays() {
+      return 0;
+    },
+    async deleteOlderThanDays() {
+      return 0;
     },
   } as any;
 
@@ -543,6 +618,8 @@ async function assertPhaseFourRetentionContract(testCase: GlobalSchedulerCase): 
   const callOrder: string[] = [];
   let genericCountCalls = 0;
   let genericDeleteCalls = 0;
+  let dedicatedCountCalls = 0;
+  let dedicatedDeleteCalls = 0;
 
   service.userTimeZoneService = {
     async resolveUserTimeZone(userId: string) {
@@ -597,6 +674,20 @@ async function assertPhaseFourRetentionContract(testCase: GlobalSchedulerCase): 
     },
   } as any;
 
+  service.schedulerHealthCheckResultRepository = {
+    async countOlderThanDays(retentionDays: number) {
+      dedicatedCountCalls += 1;
+      assert.equal(retentionDays, 45);
+      return isHealthSchedulerCase(testCase) ? 2 : 0;
+    },
+    async deleteOlderThanDays(retentionDays: number) {
+      dedicatedDeleteCalls += 1;
+      assert.equal(retentionDays, 45);
+      callOrder.push('health');
+      return isHealthSchedulerCase(testCase) ? 3 : 0;
+    },
+  } as any;
+
   service.activityRepository = {
     async createActivityLog(payload: Record<string, unknown>) {
       activityCalls.push(payload);
@@ -615,19 +706,26 @@ async function assertPhaseFourRetentionContract(testCase: GlobalSchedulerCase): 
   assert.deepEqual(previewResponse.data, {
     retentionDays: 45,
     runLogsToDelete: 5,
-    updateLogsToDelete: 8,
+    updateLogsToDelete: isHealthSchedulerCase(testCase) ? 10 : 8,
   });
   assert.equal(genericCountCalls, 0);
+  assert.equal(dedicatedCountCalls, isHealthSchedulerCase(testCase) ? 1 : 0);
 
   const purgeResponse = await service.purgeSchedulerLogs('admin-user-1');
   assert.equal(purgeResponse.data.retentionDays, 45);
   assert.equal(purgeResponse.data.runLogsDeleted, 4);
-  assert.equal(purgeResponse.data.updateLogsDeleted, 7);
-  assert.deepEqual(callOrder, ['update', 'run']);
+  assert.equal(purgeResponse.data.updateLogsDeleted, isHealthSchedulerCase(testCase) ? 10 : 7);
+  assert.deepEqual(callOrder, isHealthSchedulerCase(testCase) ? ['update', 'health', 'run'] : ['update', 'run']);
   assert.equal(genericDeleteCalls, 0);
+  assert.equal(dedicatedDeleteCalls, isHealthSchedulerCase(testCase) ? 1 : 0);
   assert.equal(activityCalls.length, 1);
   assert.equal(activityCalls[0].status, 'Success');
-  assert.match(String(activityCalls[0].description || ''), /4 run logs and 7 update logs/);
+  assert.match(
+    String(activityCalls[0].description || ''),
+    isHealthSchedulerCase(testCase)
+      ? /4 run logs and 10 health detail rows/
+      : /4 run logs and 7 update logs/
+  );
 }
 
 async function testSchedulerOverviewKeepsSystemGlobalsGlobal(): Promise<void> {

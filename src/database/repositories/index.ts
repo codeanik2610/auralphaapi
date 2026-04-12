@@ -38,6 +38,7 @@ export * from './SuggestedTradeRepository';
 export * from './SchedulerConfigRepository';
 export * from './SchedulerCommandRepository';
 export * from './SchedulerRunLogRepository';
+export * from './SchedulerHealthCheckResultRepository';
 export * from './SchedulerUserConfigRepository';
 export * from './StrategyLabRepository';
 export * from './StrategyTemplateRepository';

@@ -17,6 +17,7 @@ function run(): void {
     '`system-health-sync`',
     'Update-log retention and purge behavior is now scoped by `scheduler_key`.',
     'Update logs are deleted before run logs for these schedulers.',
+    'new health detail rows in `scheduler_health_check_results` purge before the matching run logs',
     'Phase 5 should build on this stable cleanup contract',
   ]) {
     if (!phaseDoc.includes(marker)) {
@@ -70,9 +71,12 @@ function run(): void {
   const runtimeTestSource = read('scripts/test-global-system-schedulers.ts');
   for (const marker of [
     'assertPhaseFourRetentionContract',
-    "callOrder, ['update', 'run']",
+    "callOrder, isHealthSchedulerCase(testCase) ? ['update', 'health', 'run'] : ['update', 'run']",
     'genericCountCalls',
     'genericDeleteCalls',
+    'dedicatedCountCalls',
+    'dedicatedDeleteCalls',
+    'isHealthSchedulerCase(testCase) ? 10 : 7',
   ]) {
     if (!runtimeTestSource.includes(marker)) {
       findings.push(`test-global-system-schedulers.ts: missing Phase 4 runtime marker ${marker}`);

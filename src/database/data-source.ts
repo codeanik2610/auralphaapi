@@ -40,6 +40,7 @@ import { SchedulerConfig } from './entities/SchedulerConfig';
 import { SchedulerRunLog } from './entities/SchedulerRunLog';
 import { SchedulerUserConfig } from './entities/SchedulerUserConfig';
 import { ExchangeAssetUpdateLog } from './entities/ExchangeAssetUpdateLog';
+import { SchedulerHealthCheckResult } from './entities/SchedulerHealthCheckResult';
 import { SchedulerCommand } from './entities/SchedulerCommand';
 import { MarketSymbolSnapshot } from './entities/MarketSymbolSnapshot';
 import { OrderSubmissionRequest } from './entities/OrderSubmissionRequest';
@@ -55,6 +56,6 @@ export const coreDataSource = new DataSource({
   timezone: 'Z',
   synchronize: env.db.synchronize,
   logging: env.db.logging,
-  entities: [Trade, ActivityExport, ActivityLog, ActivitySavedView, Alert, AlertAction, AssetPrice, Asset, ExchangeAsset, ExchangeAssetUpdateLog, MarketSymbolSnapshot, Signal, SignalAction, SignalAlertLink, SuggestedTrade, SuggestedTradeExecution, Automation, AutomationCursor, AutomationEvent, AutomationAlert, AutomationRun, AutomationRunOutput, Watchlist, WatchlistItem, Connection, BrokerAccount, Broker, Exchange, EmailDelivery, AppSetting, SettingsAuditLog, SchedulerConfig, SchedulerCommand, SchedulerRunLog, SchedulerUserConfig, PortfolioSnapshot, PortfolioHolding, PaperOrder, OrderSubmissionRequest, RiskSnapshot, RiskPolicy, RiskPolicyVersion, User, RefreshToken],
+  entities: [Trade, ActivityExport, ActivityLog, ActivitySavedView, Alert, AlertAction, AssetPrice, Asset, ExchangeAsset, ExchangeAssetUpdateLog, SchedulerHealthCheckResult, MarketSymbolSnapshot, Signal, SignalAction, SignalAlertLink, SuggestedTrade, SuggestedTradeExecution, Automation, AutomationCursor, AutomationEvent, AutomationAlert, AutomationRun, AutomationRunOutput, Watchlist, WatchlistItem, Connection, BrokerAccount, Broker, Exchange, EmailDelivery, AppSetting, SettingsAuditLog, SchedulerConfig, SchedulerCommand, SchedulerRunLog, SchedulerUserConfig, PortfolioSnapshot, PortfolioHolding, PaperOrder, OrderSubmissionRequest, RiskSnapshot, RiskPolicy, RiskPolicyVersion, User, RefreshToken],
   migrations: [`${__dirname}/migrations/*.{ts,js}`],
 });

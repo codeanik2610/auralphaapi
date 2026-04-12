@@ -81,7 +81,7 @@ function run(): void {
     'runGlobalSystemCommandAuditPropagationAssertions',
     "payload.initiatedByType, 'cron'",
     'activityLogs[0].actorUserId',
-    'params[2], null',
+    'executedPayloads[0].actorUserId, env.scheduler.systemUserId',
   ]) {
     if (!workerReconciliationTest.includes(marker)) {
       findings.push(`worker test-reconciliation.js: missing Phase 6 marker ${marker}`);

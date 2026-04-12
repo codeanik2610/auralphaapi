@@ -2,6 +2,7 @@ import { Service } from 'typedi';
 import { Repository } from 'typeorm';
 import { coreDataSource } from '../data-source';
 import { AppSetting } from '../entities/AppSetting';
+import type { BacktestPromotionRules } from '../../api/contracts/Settings';
 
 export interface AppSettingsPayload {
   timezone: string;
@@ -12,6 +13,7 @@ export interface AppSettingsPayload {
   notificationSeverity: 'all' | 'medium' | 'high' | 'critical';
   escalationRoute: 'risk-review' | 'on-call' | 'manual';
   escalationSlaMinutes: number;
+  backtestPromotionRules: BacktestPromotionRules;
 }
 
 @Service()

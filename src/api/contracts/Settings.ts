@@ -1,8 +1,22 @@
 export type SettingsNotificationChannel = 'both' | 'in-app' | 'email' | 'disabled';
 export type SettingsNotificationSeverity = 'all' | 'medium' | 'high' | 'critical';
 export type SettingsEscalationRoute = 'risk-review' | 'on-call' | 'manual';
-export type SettingsValue = string | boolean | number | null;
-export type SettingsValueType = 'string' | 'boolean' | 'number' | 'null';
+export interface BacktestPromotionRules {
+  minScore: number;
+  minTrades: number;
+  requireCompleteHistory: boolean;
+  requireLineage: boolean;
+  requireTemplateAutomationReady: boolean;
+  requireRobustness: boolean;
+  requiredRobustnessModel: string;
+  minPortfolioPressureScore: number;
+  minExecutedTradeRatio: number;
+  blockCapitalDepletionRisk: boolean;
+}
+
+export type BacktestPromotionRulesInput = Partial<BacktestPromotionRules>;
+export type SettingsValue = string | boolean | number | BacktestPromotionRules | null;
+export type SettingsValueType = 'string' | 'boolean' | 'number' | 'json' | 'null';
 export type SettingsAuditChangeType = 'created' | 'updated' | 'cleared';
 
 export interface SettingsResponse {
@@ -18,6 +32,7 @@ export interface SettingsResponse {
   notificationSeverity: SettingsNotificationSeverity;
   escalationRoute: SettingsEscalationRoute;
   escalationSlaMinutes: number;
+  backtestPromotionRules: BacktestPromotionRules;
   updatedAt?: string;
   versionToken?: string;
 }
@@ -31,9 +46,12 @@ export interface UpdateSettingsBody {
   notificationSeverity: SettingsNotificationSeverity;
   escalationRoute: SettingsEscalationRoute;
   escalationSlaMinutes: number;
+  backtestPromotionRules: BacktestPromotionRules;
 }
 
-export interface UpdateSettingsRequestBody extends Partial<UpdateSettingsBody> {
+export interface UpdateSettingsRequestBody
+  extends Omit<Partial<UpdateSettingsBody>, 'backtestPromotionRules'> {
+  backtestPromotionRules?: BacktestPromotionRulesInput;
   expectedUpdatedAt?: string;
 }
 
