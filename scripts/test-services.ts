@@ -6974,6 +6974,37 @@ RISK max_per_trade=1.5 signal_threshold=0.82`,
   assert.equal(normalizedAuthored.compiledCodeTarget, 'python');
   assert.match(String(normalizedAuthored.codeDefinition || ''), /class StrategyDraft\(Strategy\):/);
 
+  const normalizedPythonRisk = service.coerceTemplateConfigToPython(
+    {
+      codeTarget: 'python',
+      codeDefinition: `from auralpha import Strategy
+
+class BreakoutRisk(Strategy):
+    name = "Breakout Risk"
+    market = "crypto-futures"
+
+    def entry(self, ctx):
+        return True
+
+    def exit(self, ctx):
+        return False
+
+    risk = {
+        "stop_loss_pct": 1.2,
+        "take_profit_pct": 2.6,
+    }`,
+      risk: {
+        maxRisk: '1.5',
+        sizingNotes: 'Preserve execution risk',
+      },
+    },
+    'Breakout Risk'
+  );
+
+  assert.equal(normalizedPythonRisk.risk.stop_loss_pct, 1.2);
+  assert.equal(normalizedPythonRisk.risk.take_profit_pct, 2.6);
+  assert.equal(normalizedPythonRisk.risk.maxRisk, '1.5');
+
   const normalizedShort = service.coerceTemplateConfigToPython(
     {
       codeTarget: 'dsl',
@@ -8833,6 +8864,8 @@ class StrategyDraft(Strategy):
     risk = {
         "max_per_trade": 1.5,
         "signal_threshold": 0.82,
+        "stop_loss_pct": 1.2,
+        "take_profit_pct": 2.6,
     }`,
     parameters: {
       signalThreshold: '0.88',
@@ -8870,6 +8903,8 @@ class StrategyDraft(Strategy):
     risk = {
         "max_per_trade": 1.5,
         "signal_threshold": 0.82,
+        "stop_loss_pct": 1.2,
+        "take_profit_pct": 2.6,
     }`,
       codeTarget: 'python',
       market: 'crypto-futures',
@@ -9000,6 +9035,8 @@ class StrategyDraft(Strategy):
   const risk = templateConfig?.risk as Record<string, unknown>;
   const parameters = templateConfig?.parameters as Record<string, unknown>;
   assert.equal(risk?.maxRisk, '1.75');
+  assert.equal(risk?.stop_loss_pct, 1.2);
+  assert.equal(risk?.take_profit_pct, 2.6);
   assert.equal(parameters?.signalThreshold, '0.88');
   assert.equal(templateConfig?.shortEnabled, true);
   assert.equal(templateConfig?.entryShortLogic, 'ema(20) < ema(50)');

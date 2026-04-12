@@ -442,6 +442,7 @@ export class StrategyTemplatesService {
         : {};
     const maxRisk = this.cleanText(risk.maxRisk ?? risk.max_per_trade);
     const sizingNotes = this.cleanText(risk.sizingNotes);
+    const executionRisk = this.extractExecutionRiskFromCodeDefinition(rawCode);
     const signalThreshold = this.cleanText(parameters.signalThreshold ?? parameters.signal_threshold);
     const notes = this.cleanText(mutable.notes);
     const description = this.cleanText(mutable.description);
@@ -538,6 +539,7 @@ export class StrategyTemplatesService {
       risk: {
         maxRisk: maxRisk || '',
         sizingNotes: sizingNotes || '',
+        ...executionRisk,
       },
       parameters: {
         signalThreshold: signalThreshold || '',
@@ -621,6 +623,143 @@ export class StrategyTemplatesService {
     if (/^from\s+\w+/i.test(trimmed) || /class\s+\w+\(Strategy\)/i.test(trimmed)) return 'python';
     if (/^STRATEGY\s+/i.test(trimmed)) return 'dsl';
     return '';
+  }
+
+  private extractExecutionRiskFromCodeDefinition(codeDefinition: string): Record<string, unknown> {
+    if (!String(codeDefinition || '').trim()) {
+      return {};
+    }
+
+    const riskBlock = this.extractRiskBlock(codeDefinition);
+    if (!riskBlock) {
+      return {};
+    }
+
+    const risk: Record<string, unknown> = {};
+    const stopLoss = this.extractRiskLiteralValue(riskBlock, [
+      'stop_loss_pct',
+      'stopLossPct',
+      'stop_loss',
+      'stopLoss',
+    ]);
+    const takeProfit = this.extractRiskLiteralValue(riskBlock, [
+      'take_profit_pct',
+      'takeProfitPct',
+      'take_profit',
+      'takeProfit',
+    ]);
+
+    if (stopLoss !== null) {
+      risk.stop_loss_pct = stopLoss;
+    }
+    if (takeProfit !== null) {
+      risk.take_profit_pct = takeProfit;
+    }
+
+    return risk;
+  }
+
+  private extractRiskBlock(codeDefinition: string): string {
+    const source = String(codeDefinition || '');
+    const match = /\brisk\s*[:=]\s*\{/.exec(source);
+    if (!match) {
+      return '';
+    }
+
+    const openingBraceIndex = source.indexOf('{', match.index);
+    if (openingBraceIndex < 0) {
+      return '';
+    }
+
+    let depth = 0;
+    let quote: '"' | "'" | null = null;
+    let escaped = false;
+
+    for (let index = openingBraceIndex; index < source.length; index += 1) {
+      const char = source[index];
+
+      if (quote) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (char === quote) {
+          quote = null;
+        }
+        continue;
+      }
+
+      if (char === '"' || char === "'") {
+        quote = char as '"' | "'";
+        continue;
+      }
+
+      if (char === '{') {
+        depth += 1;
+        continue;
+      }
+
+      if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return source.slice(openingBraceIndex + 1, index);
+        }
+      }
+    }
+
+    return '';
+  }
+
+  private extractRiskLiteralValue(
+    block: string,
+    keys: string[]
+  ): string | number | boolean | null {
+    for (const key of keys) {
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const patterns = [
+        new RegExp(`["']${escapedKey}["']\\s*:\\s*([^,\\n}]+)`, 'm'),
+        new RegExp(`\\b${escapedKey}\\b\\s*:\\s*([^,\\n}]+)`, 'm'),
+      ];
+
+      for (const pattern of patterns) {
+        const match = pattern.exec(block);
+        if (!match) {
+          continue;
+        }
+        const parsed = this.parseRiskLiteralValue(match[1]);
+        if (parsed !== null) {
+          return parsed;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private parseRiskLiteralValue(value: string | undefined): string | number | boolean | null {
+    const trimmed = String(value || '').trim().replace(/,$/, '');
+    if (!trimmed) {
+      return null;
+    }
+
+    const quoted = trimmed.match(/^['"]([\s\S]*)['"]$/);
+    if (quoted) {
+      return quoted[1];
+    }
+
+    if (/^(true|false)$/i.test(trimmed)) {
+      return trimmed.toLowerCase() === 'true';
+    }
+
+    if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+      return Number(trimmed);
+    }
+
+    return null;
   }
 
   private normalizeCodeTarget(value: unknown): string {

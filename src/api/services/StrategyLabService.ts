@@ -309,7 +309,7 @@ export class StrategyLabService {
           config.entryShortLogic || config.entry_short_logic || null,
         exitShortLogic:
           config.exitShortLogic || config.exit_short_logic || null,
-        risk: config.risk || project.riskConfig || config.riskConfig || null,
+        risk: this.resolveTemplateRiskConfig(project, config),
         parameters: config.parameters || project.parameters || null,
         filters: config.filters || null,
         projectVersion: Number(project.projectVersion || config.projectVersion || 1),
@@ -824,5 +824,189 @@ export class StrategyLabService {
       return null;
     }
     return (value as Record<string, unknown>)[key] ?? null;
+  }
+
+  private resolveTemplateRiskConfig(
+    project: StrategyLabProject,
+    config: Record<string, unknown>
+  ): Record<string, unknown> | null {
+    const baseRisk = {
+      ...this.toRecord(config.risk),
+      ...this.toRecord(project.riskConfig),
+      ...this.toRecord(config.riskConfig),
+    };
+    const inferredRisk = this.extractExecutionRiskFromCodeDefinition(
+      project.codeTarget || config.codeTarget,
+      project.codeDefinition || config.codeDefinition
+    );
+    const resolvedRisk = {
+      ...baseRisk,
+      ...inferredRisk,
+    };
+
+    return Object.keys(resolvedRisk).length ? resolvedRisk : null;
+  }
+
+  private extractExecutionRiskFromCodeDefinition(
+    codeTarget: unknown,
+    codeDefinition: unknown
+  ): Record<string, unknown> {
+    if (typeof codeDefinition !== 'string' || !codeDefinition.trim()) {
+      return {};
+    }
+
+    const resolvedCodeTarget = this.resolveCodeTarget(codeTarget, codeDefinition);
+    if (!resolvedCodeTarget || !['python', 'javascript'].includes(resolvedCodeTarget)) {
+      return {};
+    }
+
+    const riskBlock = this.extractRiskBlock(codeDefinition);
+    if (!riskBlock) {
+      return {};
+    }
+
+    const inferredRisk: Record<string, unknown> = {};
+    const stopLoss = this.extractRiskLiteralValue(riskBlock, [
+      'stop_loss_pct',
+      'stopLossPct',
+      'stop_loss',
+      'stopLoss',
+    ]);
+    const takeProfit = this.extractRiskLiteralValue(riskBlock, [
+      'take_profit_pct',
+      'takeProfitPct',
+      'take_profit',
+      'takeProfit',
+    ]);
+
+    if (stopLoss !== null) {
+      inferredRisk.stop_loss_pct = stopLoss;
+    }
+    if (takeProfit !== null) {
+      inferredRisk.take_profit_pct = takeProfit;
+    }
+
+    return inferredRisk;
+  }
+
+  private resolveCodeTarget(codeTarget: unknown, codeDefinition: string): string | null {
+    const normalizedCodeTarget = String(codeTarget || '').trim().toLowerCase();
+    if (normalizedCodeTarget) {
+      return normalizedCodeTarget;
+    }
+
+    return /class\s+\w+\s*\(\s*Strategy\s*\)\s*:/.test(codeDefinition) ? 'python' : null;
+  }
+
+  private extractRiskBlock(codeDefinition: string): string | null {
+    const match = /\brisk\s*[:=]\s*\{/.exec(codeDefinition);
+    if (!match) {
+      return null;
+    }
+
+    const openingBraceIndex = codeDefinition.indexOf('{', match.index);
+    if (openingBraceIndex < 0) {
+      return null;
+    }
+
+    let depth = 0;
+    let quote: '"' | "'" | null = null;
+    let isEscaped = false;
+
+    for (let index = openingBraceIndex; index < codeDefinition.length; index += 1) {
+      const char = codeDefinition[index];
+
+      if (quote) {
+        if (isEscaped) {
+          isEscaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          isEscaped = true;
+          continue;
+        }
+        if (char === quote) {
+          quote = null;
+        }
+        continue;
+      }
+
+      if (char === '"' || char === "'") {
+        quote = char as '"' | "'";
+        continue;
+      }
+
+      if (char === '{') {
+        depth += 1;
+        continue;
+      }
+
+      if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return codeDefinition.slice(openingBraceIndex + 1, index);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private extractRiskLiteralValue(block: string, keys: string[]): string | number | boolean | null {
+    for (const key of keys) {
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const patterns = [
+        new RegExp(`["']${escapedKey}["']\\s*:\\s*([^,\\n}]+)`, 'm'),
+        new RegExp(`\\b${escapedKey}\\b\\s*:\\s*([^,\\n}]+)`, 'm'),
+      ];
+
+      for (const pattern of patterns) {
+        const match = pattern.exec(block);
+        if (!match) {
+          continue;
+        }
+
+        const rawValue = match[1]?.trim();
+        const parsedValue = this.parseLiteralValue(rawValue);
+        if (parsedValue !== null) {
+          return parsedValue;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private parseLiteralValue(value: string | undefined): string | number | boolean | null {
+    if (!value) {
+      return null;
+    }
+
+    const trimmedValue = value.trim().replace(/,$/, '');
+    if (!trimmedValue) {
+      return null;
+    }
+
+    const quotedMatch = trimmedValue.match(/^['"]([\s\S]*)['"]$/);
+    if (quotedMatch) {
+      return quotedMatch[1];
+    }
+
+    if (/^(true|false)$/i.test(trimmedValue)) {
+      return trimmedValue.toLowerCase() === 'true';
+    }
+
+    if (/^-?\d+(\.\d+)?$/.test(trimmedValue)) {
+      return Number(trimmedValue);
+    }
+
+    return null;
+  }
+
+  private toRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return { ...(value as Record<string, unknown>) };
   }
 }
