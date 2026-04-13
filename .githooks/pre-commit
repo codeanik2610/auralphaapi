@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+
+npm run coverage:changed -- --staged --strict
+npm run test:changed -- --staged
