@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "nps serve",
     "dev:localhost": "nps copyLocalhostDotEnv && nps serve",
+    "dev-localhost": "npm run dev:localhost",
     "email:worker:dev": "nodemon --watch src --watch app.email-worker.ts --ext ts,js,json --exec \"node --import tsx app.email-worker.ts\"",
     "build": "nps build",
     "build:localhost": "nps copyLocalhostDotEnv && nps build",

@@ -74,6 +74,15 @@ function asRecord(value: unknown): JsonRecord {
   return value as JsonRecord;
 }
 
+function asArray(value: unknown): JsonRecord[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (item): item is JsonRecord => Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+  );
+}
+
 function readString(value: unknown): string {
   return String(value || '').trim();
 }
