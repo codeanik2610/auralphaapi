@@ -79,7 +79,7 @@ export class AutomationSignalEvaluatorService {
       };
     }
 
-    const scriptPath = path.resolve(process.cwd(), 'scripts', 'automation_signal_eval.py');
+    const scriptPath = path.resolve(process.cwd(), 'scripts', '_runtime', 'automation_signal_eval.py');
     if (!existsSync(scriptPath)) {
       throw new ServiceUnavailableAppError(
         `Automation signal evaluator script was not found at ${scriptPath}`

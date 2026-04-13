@@ -36,15 +36,13 @@ async function runOrdersLiveProofAssertions(): Promise<void> {
     generatedAt: '2026-04-10T12:00:00.000Z',
     liveChecksEnabled: true,
     totals: {
-      total: 9,
-      passed: 9,
+      total: 7,
+      passed: 7,
       failed: 0,
       skipped: 0,
     },
     results: [
-      'backend-orders-contract',
-      'backend-orders-phase7',
-      'backend-orders-phase8',
+      'backend-orders-suite',
       'backend-orders-controllers',
       'backend-orders-eslint',
       'frontend-orders-eslint',
@@ -135,7 +133,7 @@ run().catch((error) => {
 
   const exitCode = await runCommand(
     process.execPath,
-    ['--import', 'tsx', 'scripts/proof-orders-live.ts'],
+    ['--import', 'tsx', 'scripts/proofs/proof-orders-live.ts'],
     {
       ...process.env,
       ORDERS_PROOF_RELEASE_GATE_SCRIPT: gateScript,
@@ -179,7 +177,7 @@ run().catch((error) => {
 
 async function runSourceMarkerAssertions(): Promise<void> {
   const releaseGateSource = await readFile(
-    path.join(process.cwd(), 'scripts', 'release-gate-orders.ts'),
+    path.join(process.cwd(), 'scripts', 'release-gates', 'release-gate-orders.ts'),
     'utf8'
   );
   const packageSource = await readFile(path.join(process.cwd(), 'package.json'), 'utf8');
@@ -189,7 +187,7 @@ async function runSourceMarkerAssertions(): Promise<void> {
   );
 
   assert.equal(
-    releaseGateSource.includes('scripts/proof-orders-live.ts'),
+    releaseGateSource.includes('scripts/proofs/proof-orders-live.ts'),
     true,
     'release gate lint coverage must include the orders live proof script'
   );
