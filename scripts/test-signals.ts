@@ -748,7 +748,7 @@ async function runSignalPresentationAssertions(): Promise<void> {
 async function runSignalsSchedulerConfigAssertions(): Promise<void> {
   const service = new SignalsSchedulerService() as any;
   const updateCalls: Array<Record<string, unknown>> = [];
-  let storedConfig = {
+  let storedConfig: Record<string, any> = {
     id: 'signals-user-config-1',
     schedulerKey: 'signals-scan-sync',
     userId: 'user-1',
@@ -855,8 +855,8 @@ async function runSignalsSchedulerConfigAssertions(): Promise<void> {
 async function runSignalsSchedulerRunNowAssertions(): Promise<void> {
   const service = new SignalsSchedulerService() as any;
   const originalExecutionMode = env.scheduler.executionMode;
-  let createdRun: Record<string, unknown> | null = null;
-  let createdCommand: Record<string, unknown> | null = null;
+  let createdRun: Record<string, any> | null = null;
+  let createdCommand: Record<string, any> | null = null;
 
   env.scheduler.executionMode = 'queue';
 
@@ -933,17 +933,21 @@ async function runSignalsSchedulerRunNowAssertions(): Promise<void> {
     assert.equal(response.data.started, false);
     assert.equal(response.data.jobId, 'cmd-1');
     assert.equal(response.data.message, 'Signals scheduler command queued for 1 source(s)');
-    assert.equal(createdRun?.schedulerKey, 'signals-scan-sync');
-    assert.equal(createdRun?.actorUserId, 'user-1');
-    assert.deepEqual((createdRun?.meta as Record<string, any>).signals, {
+    assert.ok(createdRun);
+    assert.ok(createdCommand);
+    const queuedRun = createdRun as Record<string, any>;
+    const queuedCommand = createdCommand as Record<string, any>;
+    assert.equal(queuedRun.schedulerKey, 'signals-scan-sync');
+    assert.equal(queuedRun.actorUserId, 'user-1');
+    assert.deepEqual(queuedRun.meta.signals, {
       sources: ['strategy_library'],
       maxSources: 7,
     });
-    assert.equal(createdCommand?.schedulerKey, 'signals-scan-sync');
-    assert.equal(createdCommand?.commandType, 'run_now');
-    assert.equal(createdCommand?.actorUserId, 'user-1');
-    assert.deepEqual((createdCommand?.payload as Record<string, any>).sources, ['strategy_library']);
-    assert.equal((createdCommand?.payload as Record<string, any>).maxSources, 7);
+    assert.equal(queuedCommand.schedulerKey, 'signals-scan-sync');
+    assert.equal(queuedCommand.commandType, 'run_now');
+    assert.equal(queuedCommand.actorUserId, 'user-1');
+    assert.deepEqual(queuedCommand.payload.sources, ['strategy_library']);
+    assert.equal(queuedCommand.payload.maxSources, 7);
   } finally {
     env.scheduler.executionMode = originalExecutionMode;
   }

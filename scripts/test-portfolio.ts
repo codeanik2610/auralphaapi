@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function portfolioGuard01(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PortfolioService } = await import("../src/api/services/PortfolioService");
 
 const RealDate = Date;
@@ -252,7 +252,6 @@ async function main(): Promise<void> {
 }
 
 async function portfolioGuard02(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PortfolioOverviewService } = await import("../src/api/services/PortfolioOverviewService");
 
 function createSuccess<T>(data: T) {
@@ -499,7 +498,6 @@ async function main(): Promise<void> {
 }
 
 async function portfolioGuard03(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PortfolioService } = await import("../src/api/services/PortfolioService");
   const { PortfolioOverviewService } = await import("../src/api/services/PortfolioOverviewService");
 
@@ -684,7 +682,6 @@ async function main(): Promise<void> {
 }
 
 async function portfolioGuard04(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PortfolioOverviewService } = await import("../src/api/services/PortfolioOverviewService");
 
 function createSuccess<T>(data: T) {
@@ -895,7 +892,6 @@ async function main(): Promise<void> {
 }
 
 async function portfolioGuard05(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PortfolioOverviewService } = await import("../src/api/services/PortfolioOverviewService");
   const { PortfolioService } = await import("../src/api/services/PortfolioService");
   const { buildPositionReadModelUpsert } = await import("../src/api/utils/positionsReadModel");
@@ -1299,7 +1295,6 @@ async function main(): Promise<void> {
 }
 
 async function portfolioGuard06(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PortfolioOverviewService } = await import("../src/api/services/PortfolioOverviewService");
   const { PortfolioService } = await import("../src/api/services/PortfolioService");
   const { buildApiTimeContract, formatApiDisplayTime, } = await import("../src/api/utils/apiTimeContract");
@@ -1308,7 +1303,7 @@ function createSuccess<T>(data: T) {
   return { success: true as const, data };
 }
 
-function createWorkspaceReviewStubs(service: PortfolioService & Record<string, unknown>) {
+function createWorkspaceReviewStubs(service: Record<string, any>) {
   const activityLogCalls: Array<{ userId: string; payload: unknown }> = [];
 
   (service as any).appSettingsRepository = {
@@ -1376,7 +1371,7 @@ function createWorkspaceReviewStubs(service: PortfolioService & Record<string, u
     });
 
   service.getPortfolioPerformance = async (_userId: string, timeframe: string) => {
-    const resolvedTimeframe: PortfolioTimeframe =
+    const resolvedTimeframe: 'daily' | 'weekly' | 'monthly' =
       timeframe === 'weekly' || timeframe === 'monthly' ? timeframe : 'daily';
     return createSuccess({
       timeframe: resolvedTimeframe,
@@ -1449,7 +1444,7 @@ function createWorkspaceReviewStubs(service: PortfolioService & Record<string, u
 }
 
 async function runWorkspaceReviewAssertions(): Promise<void> {
-  const service = new PortfolioService() as PortfolioService & Record<string, unknown>;
+  const service = new PortfolioService() as Record<string, any>;
   const { activityLogCalls } = createWorkspaceReviewStubs(service);
 
   const response = await service.rebalancePortfolio('user-1', {
@@ -1471,16 +1466,16 @@ async function runWorkspaceReviewAssertions(): Promise<void> {
   assert.equal(review.context.selectedHoldingSymbol, 'ETHUSDT');
   assert.match(review.summary, /watch holdings workspace/i);
   assert.match(review.note, /manual/i);
-  assert.ok(review.highlights.some((item) => item.label === 'Selected holding'));
-  assert.ok(review.actions.some((item) => item.code === 'review_watchlist'));
-  assert.ok(review.actions.some((item) => item.code === 'align_capital_routes'));
-  assert.ok(review.actions.some((item) => item.code === 'review_recent_activity'));
+  assert.ok(review.highlights.some((item: { label: string }) => item.label === 'Selected holding'));
+  assert.ok(review.actions.some((item: { code: string }) => item.code === 'review_watchlist'));
+  assert.ok(review.actions.some((item: { code: string }) => item.code === 'align_capital_routes'));
+  assert.ok(review.actions.some((item: { code: string }) => item.code === 'review_recent_activity'));
   assert.equal(activityLogCalls.length, 1);
   assert.equal(activityLogCalls[0]?.userId, 'user-1');
 }
 
 async function runWorkspaceReportAssertions(): Promise<void> {
-  const service = new PortfolioService() as PortfolioService & Record<string, unknown>;
+  const service = new PortfolioService() as Record<string, any>;
   createWorkspaceReviewStubs(service);
 
   const markdownResponse = await service.generateWorkspaceReport('user-1', {
@@ -1518,7 +1513,7 @@ async function runWorkspaceReportAssertions(): Promise<void> {
 }
 
 async function runOverviewCapabilityAssertions(): Promise<void> {
-  const service = new PortfolioOverviewService() as PortfolioOverviewService & Record<string, unknown>;
+  const service = new PortfolioOverviewService() as Record<string, any>;
   const timeZone = 'Asia/Calcutta';
 
   (service as any).userTimeZoneService = {
@@ -1676,7 +1671,6 @@ async function main(): Promise<void> {
 }
 
 async function portfolioGuard07(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");
@@ -1833,7 +1827,6 @@ async function main(): Promise<void> {
 }
 
 async function portfolioGuard08(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");

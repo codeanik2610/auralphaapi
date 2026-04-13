@@ -10,6 +10,7 @@ import { BacktestRecoveryService } from '../src/api/services/BacktestRecoverySer
 import { BacktestSnapshotService } from '../src/api/services/BacktestSnapshotService';
 import { BacktestTopSetupsService } from '../src/api/services/BacktestTopSetupsService';
 import { BacktestsService } from '../src/api/services/BacktestsService';
+import type { BacktestPromotionRules } from '../src/api/contracts/Settings';
 import { buildSignedSchedulerHeaders } from '../src/api/utils/schedulerRequestAuth';
 import { createDefaultBacktestPromotionRules } from '../src/api/utils/backtestPromotionRules';
 import { validateUpdateBacktestResultBody } from '../src/api/validators/backtests.validator';
@@ -1689,7 +1690,7 @@ async function runBacktestPromotionServiceFailureAlertAssertions(): Promise<void
 async function runBacktestPromotionDelegationAssertions(): Promise<void> {
   const service = createBacktestsService();
   const capturedCalls: Array<Record<string, unknown>> = [];
-  let capturedPromotionRules: Record<string, unknown> | null = null;
+  let capturedPromotionRules: BacktestPromotionRules | null = null;
   const backtest = {
     id: 'backtest-promotion-delegate-1',
     name: 'Delegated Promotion Winner',
@@ -1746,7 +1747,7 @@ async function runBacktestPromotionDelegationAssertions(): Promise<void> {
   service.backtestTopSetupsService = {
     rankBacktestTopSetups: (
       _mappedBacktest: Record<string, unknown>,
-      promotionRules?: Record<string, unknown>
+      promotionRules?: BacktestPromotionRules
     ) => {
       capturedPromotionRules = promotionRules ?? null;
       return [
@@ -1808,8 +1809,10 @@ async function runBacktestPromotionDelegationAssertions(): Promise<void> {
     (capturedCalls[0].selectedTopSetup as Record<string, unknown>).timeframe,
     '1h'
   );
-  assert.equal(capturedPromotionRules?.minScore, 0.82);
-  assert.equal(capturedPromotionRules?.minTrades, 7);
+  assert.ok(capturedPromotionRules);
+  const promotionRules = capturedPromotionRules as BacktestPromotionRules;
+  assert.equal(promotionRules.minScore, 0.82);
+  assert.equal(promotionRules.minTrades, 7);
 }
 
 async function runBacktestPromotionFailureAlertAssertions(): Promise<void> {

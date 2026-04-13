@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function positionsGuard01(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { BrokerPositionsFacadeService } = await import("../src/api/services/BrokerPositionsFacadeService");
   const { buildPositionRecordFromReadModelRow } = await import("../src/api/utils/positionsReadModel");
 
@@ -242,7 +242,6 @@ async function run(): Promise<void> {
 }
 
 async function positionsGuard04(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { BrokerPositionsFacadeService } = await import("../src/api/services/BrokerPositionsFacadeService");
   const { buildPositionReadModelUpsert, buildPositionRecordFromReadModelRow, } = await import("../src/api/utils/positionsReadModel");
   const { PositionSnapshotRepository } = await import("../src/database/repositories/PositionSnapshotRepository");
@@ -563,7 +562,6 @@ async function run(): Promise<void> {
 }
 
 async function positionsGuard05(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { BrokerPositionsFacadeService } = await import("../src/api/services/BrokerPositionsFacadeService");
   const { buildPositionRecordFromReadModelRow } = await import("../src/api/utils/positionsReadModel");
   const { coreDataSource } = await import("../src/database/data-source");
@@ -906,7 +904,6 @@ async function run(): Promise<void> {
 }
 
 async function positionsGuard06(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { BrokerPositionsFacadeService } = await import("../src/api/services/BrokerPositionsFacadeService");
   const { buildPositionRecordFromReadModelRow } = await import("../src/api/utils/positionsReadModel");
 
@@ -1102,7 +1099,6 @@ async function run(): Promise<void> {
 }
 
 async function positionsGuard08(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { BrokerPositionsFacadeService } = await import("../src/api/services/BrokerPositionsFacadeService");
 
 type LoggedEvent = {

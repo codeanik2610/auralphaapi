@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function positions_orders_syncGuard01(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -155,7 +155,6 @@ function run(): void {
 }
 
 async function positions_orders_syncGuard02(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { env } = await import("../src/env");
@@ -297,7 +296,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_orders_syncGuard03(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { BrokerOrdersFacadeService } = await import("../src/api/services/BrokerOrdersFacadeService");
@@ -823,7 +821,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_orders_syncGuard04(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { OrdersSchedulerService } = await import("../src/api/services/OrdersSchedulerService");
@@ -1450,7 +1447,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_orders_syncGuard05(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { OrdersSchedulerService } = await import("../src/api/services/OrdersSchedulerService");
@@ -2146,7 +2142,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_orders_syncGuard06(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { PositionsSchedulerService } = await import("../src/api/services/PositionsSchedulerService");
@@ -2815,7 +2810,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_orders_syncGuard07(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { PositionsSchedulerService } = await import("../src/api/services/PositionsSchedulerService");
@@ -3120,7 +3114,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_orders_syncGuard08(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { OrdersSchedulerService } = await import("../src/api/services/OrdersSchedulerService");
@@ -3618,7 +3611,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_orders_syncGuard09(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");

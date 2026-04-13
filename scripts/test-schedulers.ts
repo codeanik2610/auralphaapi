@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function schedulersGuard02(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { OrdersSchedulerController } = await import("../src/api/controllers/OrdersSchedulerController");
   const { OrdersSchedulerService } = await import("../src/api/services/OrdersSchedulerService");
   const { validateOrdersSchedulerConfigBody, validateOrdersSchedulerSyncStateQuery, } = await import("../src/api/validators/scheduler.validator");
@@ -317,7 +317,6 @@ async function run(): Promise<void> {
 }
 
 async function schedulersGuard03(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { OrdersSchedulerService } = await import("../src/api/services/OrdersSchedulerService");
 
 function createOrdersConfig(overrides: Record<string, unknown> = {}) {
@@ -506,7 +505,6 @@ async function run(): Promise<void> {
 }
 
 async function schedulersGuard04(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { OrdersSchedulerService } = await import("../src/api/services/OrdersSchedulerService");
   const { coreDataSource } = await import("../src/database/data-source");
   const { env } = await import("../src/env");
@@ -801,7 +799,6 @@ async function run(): Promise<void> {
 }
 
 async function schedulersGuard05(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { InternalOrdersSyncService } = await import("../src/api/services/InternalOrdersSyncService");
   const { OrdersSchedulerService } = await import("../src/api/services/OrdersSchedulerService");
   const { SchedulerRuntimeSchemaService } = await import("../src/api/services/SchedulerRuntimeSchemaService");
@@ -1214,7 +1211,6 @@ async function run(): Promise<void> {
 }
 
 async function schedulersGuard07(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { OrdersSchedulerService } = await import("../src/api/services/OrdersSchedulerService");
   const { SchedulerRuntimeSchemaService } = await import("../src/api/services/SchedulerRuntimeSchemaService");
   const { coreDataSource } = await import("../src/database/data-source");
@@ -1403,7 +1399,6 @@ async function run(): Promise<void> {
 }
 
 async function schedulersGuard08(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");
   const { default: path } = await import("node:path");
@@ -1756,7 +1751,6 @@ async function run(): Promise<void> {
 }
 
 async function schedulersGuard09(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");

@@ -31,7 +31,7 @@ async function main(): Promise<void> {
 
   const originalReadFileSync = fs.readFileSync.bind(fs);
   const originalReadFile = readFilePromise.bind(null);
-  const require = createRequire(import.meta.url);
+  const require = createRequire(__filename);
   const fsPromises = require('node:fs/promises') as typeof import('node:fs/promises');
 
   fs.readFileSync = ((filePath: fs.PathOrFileDescriptor, options?: ReadFileSyncOptions) => {

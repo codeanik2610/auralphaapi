@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function positions_schedulerGuard01(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PositionsSchedulerService } = await import("../src/api/services/PositionsSchedulerService");
   const { SchedulerOverviewService } = await import("../src/api/services/SchedulerOverviewService");
   const { coreDataSource } = await import("../src/database/data-source");
@@ -202,7 +202,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_schedulerGuard02(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { InternalPositionsSyncService } = await import("../src/api/services/InternalPositionsSyncService");
   const { coreDataSource } = await import("../src/database/data-source");
   const { env } = await import("../src/env");
@@ -364,7 +363,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_schedulerGuard03(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PositionsSchedulerService } = await import("../src/api/services/PositionsSchedulerService");
   const { coreDataSource } = await import("../src/database/data-source");
 
@@ -502,7 +500,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_schedulerGuard04(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { BrokerPositionsFacadeService } = await import("../src/api/services/BrokerPositionsFacadeService");
   const { coreDataSource } = await import("../src/database/data-source");
 
@@ -649,7 +646,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_schedulerGuard05(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PositionsSchedulerService } = await import("../src/api/services/PositionsSchedulerService");
   const { validatePositionsSchedulerReadModelRebuildBody } = await import("../src/api/validators/scheduler.validator");
   const { coreDataSource } = await import("../src/database/data-source");
@@ -968,7 +964,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_schedulerGuard06(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PositionsSchedulerService } = await import("../src/api/services/PositionsSchedulerService");
   const { coreDataSource } = await import("../src/database/data-source");
   const { PositionReadModelRepository } = await import("../src/database/repositories/PositionReadModelRepository");
@@ -1298,7 +1293,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_schedulerGuard07(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { PositionsSchedulerService } = await import("../src/api/services/PositionsSchedulerService");
   const { coreDataSource } = await import("../src/database/data-source");
 
@@ -1583,7 +1577,6 @@ async function run(): Promise<void> {
 }
 
 async function positions_schedulerGuard08(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");
   const { default: path } = await import("node:path");

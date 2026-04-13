@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function scheduler_account_scopeGuard03(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -143,7 +143,6 @@ function run(): void {
 }
 
 async function scheduler_account_scopeGuard05(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -248,7 +247,6 @@ function run(): void {
 }
 
 async function scheduler_account_scopeGuard06(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -349,7 +347,6 @@ function run(): void {
 }
 
 async function scheduler_account_scopeGuard07(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");

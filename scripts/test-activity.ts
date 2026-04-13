@@ -286,7 +286,7 @@ function runActivityValidationAssertions(): void {
       sortOrder: 'asc',
       view: 'grouped',
       groupBy: 'route',
-      readState: ' unread ',
+      readState: 'unread',
       stream: ' controls ',
       route: ' Brokers data ',
     }),
@@ -318,7 +318,7 @@ function runActivityValidationAssertions(): void {
     validateActivityActionFilterBody({
       stream: ' controls ',
       route: ' Risk ',
-      readState: ' read ',
+      readState: 'read',
     }),
     {
       type: undefined,
@@ -753,7 +753,7 @@ async function runActivityExportRepositorySignatureAssertions(): Promise<void> {
     exportedCount: 0,
     filters: {
       route: ' Risk ',
-      readState: ' unread ',
+      readState: 'unread',
     },
   });
 

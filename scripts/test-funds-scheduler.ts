@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function funds_schedulerGuard01(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { BrokerWalletLiveFetchService } = await import("../src/api/services/BrokerWalletLiveFetchService");
@@ -337,7 +337,6 @@ async function run(): Promise<void> {
 }
 
 async function funds_schedulerGuard02(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { FundsSchedulerService } = await import("../src/api/services/FundsSchedulerService");
   const { env } = await import("../src/env");
 
@@ -731,7 +730,6 @@ async function run(): Promise<void> {
 }
 
 async function funds_schedulerGuard03(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { FundsSchedulerService } = await import("../src/api/services/FundsSchedulerService");
   const { FundsSnapshotRepository } = await import("../src/database/repositories/FundsSnapshotRepository");
   const { coreDataSource } = await import("../src/database/data-source");
@@ -1008,7 +1006,6 @@ async function run(): Promise<void> {
 }
 
 async function funds_schedulerGuard04(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { FundsSchedulerService } = await import("../src/api/services/FundsSchedulerService");
 
 function createAnchorConfig() {
@@ -1425,7 +1422,6 @@ async function run(): Promise<void> {
 }
 
 async function funds_schedulerGuard06(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { FundsSchedulerService } = await import("../src/api/services/FundsSchedulerService");
   const { env } = await import("../src/env");
 
@@ -1661,7 +1657,6 @@ async function run(): Promise<void> {
 }
 
 async function funds_schedulerGuard07(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");
@@ -1994,7 +1989,6 @@ async function run(): Promise<void> {
 }
 
 async function funds_schedulerGuard08(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");
@@ -2240,7 +2234,6 @@ async function main(): Promise<void> {
 }
 
 async function funds_schedulerGuard10(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");
@@ -2660,7 +2653,6 @@ async function main(): Promise<void> {
 }
 
 async function funds_schedulerGuard11(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");
@@ -3202,7 +3194,6 @@ async function main(): Promise<void> {
 }
 
 async function funds_schedulerGuard12(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");

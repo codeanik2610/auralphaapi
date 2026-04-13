@@ -1,9 +1,11 @@
+import assert from 'node:assert/strict';
 import { runScriptSuite, runSuiteSteps } from './_support/run-script-suite';
+import type { UpsertRiskPolicyBody } from '../src/api/contracts/Risk';
+import type { RiskBrokerOverviewItem } from '../src/api/contracts/RiskOverview';
 
 // Consolidated module suite.
 
 async function risk_centerGuard01(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { RiskService } = await import("../src/api/services/RiskService");
   const { RiskPolicyRepository } = await import("../src/database/repositories/RiskPolicyRepository");
 
@@ -375,7 +377,6 @@ async function main(): Promise<void> {
 }
 
 async function risk_centerGuard02(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { RiskOverviewService } = await import("../src/api/services/RiskOverviewService");
 
 function createSuccess<T>(data: T) {
@@ -665,7 +666,6 @@ async function main(): Promise<void> {
 }
 
 async function risk_centerGuard04(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { RiskService } = await import("../src/api/services/RiskService");
 
 function createPolicy(overrides: Record<string, unknown> = {}) {
@@ -940,7 +940,6 @@ async function main(): Promise<void> {
 }
 
 async function risk_centerGuard05(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { BadRequestAppError } = await import("../src/api/errors/AppError");
   const { BrokerOrdersFacadeService } = await import("../src/api/services/BrokerOrdersFacadeService");
   const { RemoveRiskCenterTables1763800000000 } = await import("../src/database/migrations/1763800000000-RemoveRiskCenterTables");
@@ -1334,7 +1333,6 @@ async function main(): Promise<void> {
 }
 
 async function risk_centerGuard06(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { RiskOverviewService } = await import("../src/api/services/RiskOverviewService");
   const { buildApiTimeContract, formatApiDisplayTime, } = await import("../src/api/utils/apiTimeContract");
 
@@ -1497,7 +1495,6 @@ async function main(): Promise<void> {
 }
 
 async function risk_centerGuard08(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { RiskService } = await import("../src/api/services/RiskService");
 
 function createPolicy(overrides: Record<string, unknown> = {}) {
@@ -1924,7 +1921,6 @@ async function main(): Promise<void> {
 }
 
 async function risk_centerGuard09(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { RiskOverviewService } = await import("../src/api/services/RiskOverviewService");
   const { formatApiDisplayTime } = await import("../src/api/utils/apiTimeContract");
 

@@ -2353,12 +2353,20 @@ async function runSchedulerOverviewUserScopeAssertions(): Promise<void> {
       ];
     }
 
-    if (sql.includes('FROM scheduler_run_logs') && sql.includes('actor_user_id = ?')) {
+    if (
+      sql.includes('FROM scheduler_run_logs') &&
+      sql.includes('actor_user_id = ?') &&
+      sql.includes('WHERE status = ?')
+    ) {
       assert.deepEqual(params, ['Running', 'user-7']);
       return [];
     }
 
-    if (sql.includes('FROM scheduler_run_logs') && sql.includes('actor_user_id IS NULL')) {
+    if (
+      sql.includes('FROM scheduler_run_logs') &&
+      sql.includes('actor_user_id IS NULL') &&
+      sql.includes('WHERE status = ?')
+    ) {
       assert.deepEqual(params, ['Running']);
       return [
         {
@@ -2378,6 +2386,45 @@ async function runSchedulerOverviewUserScopeAssertions(): Promise<void> {
           finishedAt: null,
           errorMessage: null,
           meta: { progress: { total: 4, processed: 1, percent: 25 } },
+        },
+      ];
+    }
+
+    if (sql.includes('FROM scheduler_run_logs') && sql.includes('actor_user_id = ?')) {
+      assert.deepEqual(params, ['user-7']);
+      return [
+        {
+          id: 'run-signals-user-1',
+          schedulerKey: 'signals-scan-sync',
+          status: 'Failed',
+          startedAt: '2026-04-05T02:25:00.000Z',
+          finishedAt: '2026-04-05T02:30:00.000Z',
+          errorMessage: 'Inbox sync failed',
+          meta: { progress: { total: 4, processed: 4, percent: 100 } },
+        },
+      ];
+    }
+
+    if (sql.includes('FROM scheduler_run_logs') && sql.includes('actor_user_id IS NULL')) {
+      assert.deepEqual(params, []);
+      return [
+        {
+          id: 'run-broker-last-1',
+          schedulerKey: 'broker-assets-sync',
+          status: 'Completed',
+          startedAt: '2026-04-04T17:45:00.000Z',
+          finishedAt: '2026-04-04T18:00:00.000Z',
+          errorMessage: null,
+          meta: { progress: { total: 10, processed: 10, percent: 100 } },
+        },
+        {
+          id: 'run-discovery-global-1',
+          schedulerKey: 'discovery-self-identify-sync',
+          status: 'Failed',
+          startedAt: '2026-04-04T16:45:00.000Z',
+          finishedAt: '2026-04-04T17:00:00.000Z',
+          errorMessage: 'Global discovery stale',
+          meta: { progress: { total: 2, processed: 2, percent: 100 } },
         },
       ];
     }
@@ -2410,7 +2457,7 @@ async function runSchedulerOverviewUserScopeAssertions(): Promise<void> {
   try {
     const response = await service.getOverview('user-7');
 
-    assert.equal(capturedQueries.length, 6);
+    assert.equal(capturedQueries.length, 8);
     assert.deepEqual(
       response.data.items.map((item: any) => item.key),
       ['broker-assets-sync']
@@ -7249,6 +7296,7 @@ async function runStrategyTemplateVersionLifecycleAssertions(): Promise<void> {
     userId: 'user-1',
     strategyId: 'template-1',
     name: 'Momentum Core Copy',
+    targetUserId: undefined,
   });
   assert.equal(duplicateResult.data.name, 'Momentum Core Copy');
   assert.equal(duplicateResult.data.status, 'Draft');
@@ -12639,6 +12687,41 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
             winRate: 61,
             profitFactor: 1.44,
             config: {
+              automationId: automationRunner.id,
+              automationRunId: 'run-backtest-1',
+              inputSnapshot: {
+                automationId: automationRunner.id,
+                automationRunId: 'run-backtest-1',
+              },
+              progress: {
+                state: 'completed',
+                processed: 9,
+                total: 9,
+                percent: 100,
+              },
+            },
+          },
+        }),
+        getBacktestById: async () => ({
+          id: 'child-backtest-1',
+          userId: automationRunner.userId,
+          status: 'Review',
+          stability: 'Review',
+          updatedAt: childFinishedAt,
+          trades: 12,
+          result: {
+            cagr: 5.2,
+            sharpe: 1.18,
+            drawdown: 2.1,
+            winRate: 61,
+            profitFactor: 1.44,
+            config: {
+              automationId: automationRunner.id,
+              automationRunId: 'run-backtest-1',
+              inputSnapshot: {
+                automationId: automationRunner.id,
+                automationRunId: 'run-backtest-1',
+              },
               progress: {
                 state: 'completed',
                 processed: 9,

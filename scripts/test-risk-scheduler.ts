@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function risk_schedulerGuard01(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { RiskSchedulerService } = await import("../src/api/services/RiskSchedulerService");
@@ -420,7 +420,6 @@ async function run(): Promise<void> {
 }
 
 async function risk_schedulerGuard02(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { RiskSchedulerService } = await import("../src/api/services/RiskSchedulerService");
@@ -1134,7 +1133,6 @@ async function main(): Promise<void> {
 }
 
 async function risk_schedulerGuard03(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { InternalRiskSchedulerController } = await import("../src/api/controllers/InternalRiskSchedulerController");
@@ -1381,7 +1379,6 @@ async function main(): Promise<void> {
 }
 
 async function risk_schedulerGuard04(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { RiskSchedulerService } = await import("../src/api/services/RiskSchedulerService");
@@ -1907,7 +1904,6 @@ async function main(): Promise<void> {
 }
 
 async function risk_schedulerGuard05(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { RiskSchedulerService } = await import("../src/api/services/RiskSchedulerService");
@@ -2421,7 +2417,6 @@ async function main(): Promise<void> {
 }
 
 async function risk_schedulerGuard06(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
   const { RiskSchedulerService } = await import("../src/api/services/RiskSchedulerService");
@@ -2831,7 +2826,6 @@ async function run(): Promise<void> {
 }
 
 async function risk_schedulerGuard08(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");
   const { default: path } = await import("node:path");

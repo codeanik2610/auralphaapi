@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runScriptSuite, runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function global_system_schedulersGuard01(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -164,7 +164,6 @@ function run(): void {
 }
 
 async function global_system_schedulersGuard02(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -319,7 +318,6 @@ function run(): void {
 }
 
 async function global_system_schedulersGuard03(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -452,7 +450,6 @@ function run(): void {
 }
 
 async function global_system_schedulersGuard04(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -557,7 +554,6 @@ function run(): void {
 }
 
 async function global_system_schedulersGuard05(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -652,7 +648,6 @@ function run(): void {
 }
 
 async function global_system_schedulersGuard06(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -773,7 +768,6 @@ function run(): void {
 }
 
 async function global_system_schedulersGuard07(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { default: fs } = await import("node:fs");
   const { default: path } = await import("node:path");
 
@@ -880,7 +874,6 @@ function run(): void {
 }
 
 async function global_system_schedulersGuard08(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");
@@ -1264,7 +1257,6 @@ async function main(): Promise<void> {
 }
 
 async function global_system_schedulersGuard09(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { readFile } = await import("node:fs/promises");
   const { default: path } = await import("node:path");
 

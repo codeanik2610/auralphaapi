@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runScriptSuite, runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function ordersGuard07(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile, writeFile } = await import("node:fs/promises");
   const { default: os } = await import("node:os");
@@ -304,7 +304,6 @@ async function main(): Promise<void> {
 }
 
 async function ordersGuard08(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { BadRequestAppError } = await import("../src/api/errors/AppError");
   const { BrokerOrdersFacadeService } = await import("../src/api/services/BrokerOrdersFacadeService");
 

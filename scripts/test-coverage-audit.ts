@@ -173,15 +173,15 @@ function auditScriptFiles(findings: string[]): void {
     ...SYSTEM_SCRIPT_SURFACE.tests.map((surface) => ({ ...surface, owner: 'system' })),
   ]
     .map((surface) => surface.file)
-    .filter((file): file is string => Boolean(file) && file.startsWith('scripts/test-'));
+    .filter((file): file is string => typeof file === 'string' && file.startsWith('scripts/test-'));
 
   const expectedChecks = flattenSurfaces((module) => module.checks)
     .map((surface) => surface.file)
-    .filter((file): file is string => Boolean(file));
+    .filter((file): file is string => typeof file === 'string');
 
   const expectedProofs = flattenSurfaces((module) => module.proofs)
     .map((surface) => surface.file)
-    .filter((file): file is string => Boolean(file));
+    .filter((file): file is string => typeof file === 'string');
 
   const expectedReleaseGates = [
     ...flattenSurfaces((module) => module.releaseGates),

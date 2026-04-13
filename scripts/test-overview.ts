@@ -1,9 +1,9 @@
+import assert from 'node:assert/strict';
 import { runScriptSuite, runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
 
 async function overviewGuard04(): Promise<void> {
-  const { default: assert } = await import("node:assert/strict");
   const { OverviewService } = await import("../src/api/services/OverviewService");
 
 function createSuccess<T>(data: T) {
