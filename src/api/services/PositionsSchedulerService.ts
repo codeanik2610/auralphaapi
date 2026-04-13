@@ -224,6 +224,7 @@ export class PositionsSchedulerService {
         throw new BadRequestAppError('actorUserId is required');
       }
       const manualAudit = this.buildManualAudit(actorUserId);
+      const executionActorUserId = this.resolveSystemExecutionActorUserId(actorUserId);
       const requestedAt = this.formatDate(new Date());
       const timeZone = await this.resolveUserTimeZone(actorUserId);
       const config = await this.ensureSchedulerConfig(actorUserId, timeZone);
@@ -286,7 +287,8 @@ export class PositionsSchedulerService {
         errorMessage: null,
         meta: {
           trigger: 'manual',
-          actorUserId,
+          actorUserId: executionActorUserId,
+          requestedByUserId: actorUserId,
           requestedAt,
           initiatedByType: manualAudit.initiatedByType,
           initiatedByUserId: manualAudit.initiatedByUserId,
@@ -310,7 +312,8 @@ export class PositionsSchedulerService {
         payload: {
           runId,
           trigger: 'manual',
-          actorUserId,
+          actorUserId: executionActorUserId,
+          requestedByUserId: actorUserId,
           requestedAt,
           initiatedByType: manualAudit.initiatedByType,
           initiatedByUserId: manualAudit.initiatedByUserId,
@@ -751,6 +754,7 @@ export class PositionsSchedulerService {
       throw new ServiceUnavailableAppError('Restart is supported only in queue mode');
     }
     const manualAudit = this.buildManualAudit(actorUserId);
+    const executionActorUserId = this.resolveSystemExecutionActorUserId(actorUserId);
     await this.schedulerCommandRepository.cancelPendingBySchedulerKeyAndTypeAndActor(
       SCHEDULER_KEY,
       'run_now',
@@ -795,7 +799,8 @@ export class PositionsSchedulerService {
       executionContext: manualAudit.executionContext,
       payload: {
         trigger: 'manual',
-        actorUserId,
+        actorUserId: executionActorUserId,
+        requestedByUserId: actorUserId,
         requestedAt: this.formatDate(new Date()),
         initiatedByType: manualAudit.initiatedByType,
         initiatedByUserId: manualAudit.initiatedByUserId,
@@ -2432,6 +2437,11 @@ export class PositionsSchedulerService {
 
   private buildManualAudit(actorUserId: string) {
     return buildSystemSchedulerManualAudit(actorUserId);
+  }
+
+  private resolveSystemExecutionActorUserId(actorUserId: string): string {
+    const systemUserId = String(env.scheduler.systemUserId || '').trim();
+    return systemUserId || actorUserId;
   }
 
   private readRetentionDays(config: PositionsSchedulerConfigLike): number {

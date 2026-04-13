@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { runSuiteSteps } from './_support/run-script-suite';
 
 // Consolidated module suite.
+// Coverage note: queue payload execution for manual positions runs now follows the
+// same system-actor model as orders/funds while keeping the scheduler record user-owned.
 
 async function positions_schedulerGuard01(): Promise<void> {
   const { PositionsSchedulerService } = await import("../src/api/services/PositionsSchedulerService");

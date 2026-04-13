@@ -519,7 +519,14 @@ async function testPositionsSchedulerRuntimeMigratesToUserScope(): Promise<void>
   assert.equal(createdRuns[0]?.actorUserId, 'ops-admin');
   assert.equal(createdRuns[0]?.executionContext, 'system');
   assert.equal(createdCommands[0]?.actorUserId, 'ops-admin');
-  assert.equal((createdCommands[0]?.payload as Record<string, unknown>)?.actorUserId, 'ops-admin');
+  assert.equal(
+    (createdCommands[0]?.payload as Record<string, unknown>)?.actorUserId,
+    env.scheduler.systemUserId
+  );
+  assert.equal(
+    (createdCommands[0]?.payload as Record<string, unknown>)?.requestedByUserId,
+    'ops-admin'
+  );
 
   await service.pauseScheduler('ops-admin');
   assert.equal(actorCancelChecks >= 1, true);
@@ -1451,6 +1458,7 @@ async function positions_orders_syncGuard05(): Promise<void> {
   const { default: path } = await import("node:path");
   const { OrdersSchedulerService } = await import("../src/api/services/OrdersSchedulerService");
   const { PositionsSchedulerService } = await import("../src/api/services/PositionsSchedulerService");
+  const { env } = await import("../src/env");
 
 function read(relativePath: string): string {
   return fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
@@ -1727,7 +1735,11 @@ async function runPositionsRuntimeAssertions(): Promise<void> {
   assert.equal(createdRunPayload.initiatedByUserId, 'admin-user-1');
   assert.equal(createdRunPayload.executionContext, 'system');
   assert.equal(createdRunPayload.meta.initiatedByType, 'manual');
+  assert.equal(createdRunPayload.meta.actorUserId, env.scheduler.systemUserId);
+  assert.equal(createdRunPayload.meta.requestedByUserId, 'admin-user-1');
   assert.equal(createdCommands[0].initiatedByType, 'manual');
+  assert.equal(createdCommands[0].payload.actorUserId, env.scheduler.systemUserId);
+  assert.equal(createdCommands[0].payload.requestedByUserId, 'admin-user-1');
   assert.equal(createdCommands[0].payload.executionContext, 'system');
 
   running = true;
@@ -1741,6 +1753,8 @@ async function runPositionsRuntimeAssertions(): Promise<void> {
   assert.equal(createdCommands[0].commandType, 'stop_now');
   assert.equal(createdCommands[1].commandType, 'run_now');
   assert.equal(createdCommands[1].initiatedByType, 'manual');
+  assert.equal(createdCommands[1].payload.actorUserId, env.scheduler.systemUserId);
+  assert.equal(createdCommands[1].payload.requestedByUserId, 'admin-user-1');
 
   const runsResponse = await service.listSchedulerRuns('admin-user-1', {
     limit: '10',

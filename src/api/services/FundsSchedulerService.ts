@@ -34,6 +34,7 @@ import {
   normalizeTimeZone,
 } from '../utils/timezone';
 import {
+  buildSystemSchedulerManualAudit,
   resolveSchedulerAuditDisplayLabels,
   toSchedulerAuditContract,
 } from '../utils/schedulerAuditContract';
@@ -270,6 +271,7 @@ export class FundsSchedulerService {
       const config = await this.ensureSchedulerConfig(actorUserId, timeZone);
       const runRequest = validateFundsSchedulerRunBody(body);
       const manualAudit = this.buildManualAudit(actorUserId);
+      const executionActorUserId = this.resolveSystemExecutionActorUserId(actorUserId);
       if (!config.enabled) {
         throw new BadRequestAppError('Funds scheduler is paused. Resume it before running now.');
       }
@@ -339,7 +341,7 @@ export class FundsSchedulerService {
         errorMessage: null,
         meta: {
           trigger,
-          actorUserId,
+          actorUserId: executionActorUserId,
           requestedByUserId: actorUserId,
           requestedAt,
           initiatedByType: manualAudit.initiatedByType,
@@ -365,7 +367,7 @@ export class FundsSchedulerService {
         payload: {
           runId,
           trigger,
-          actorUserId,
+          actorUserId: executionActorUserId,
           requestedByUserId: actorUserId,
           requestedAt,
           initiatedByType: manualAudit.initiatedByType,
@@ -545,6 +547,7 @@ export class FundsSchedulerService {
       throw new ServiceUnavailableAppError('Restart is supported only in queue mode');
     }
     const manualAudit = this.buildManualAudit(actorUserId);
+    const executionActorUserId = this.resolveSystemExecutionActorUserId(actorUserId);
     await this.schedulerCommandRepository.cancelPendingBySchedulerKeyAndTypeAndActor(
       SCHEDULER_KEY,
       'run_now',
@@ -594,7 +597,8 @@ export class FundsSchedulerService {
       executionContext: manualAudit.executionContext,
       payload: {
         trigger: 'manual',
-        actorUserId,
+        actorUserId: executionActorUserId,
+        requestedByUserId: actorUserId,
         requestedAt: this.formatDate(new Date()),
         initiatedByType: manualAudit.initiatedByType,
         initiatedByUserId: manualAudit.initiatedByUserId,
@@ -1795,13 +1799,12 @@ export class FundsSchedulerService {
   }
 
   private buildManualAudit(actorUserId: string) {
-    const normalizedActorUserId = String(actorUserId || '').trim();
-    return {
-      initiatedByType: 'manual' as const,
-      ...(normalizedActorUserId ? { initiatedByUserId: normalizedActorUserId } : {}),
-      ...(normalizedActorUserId ? { initiatedByLabel: normalizedActorUserId } : {}),
-      executionContext: 'user' as const,
-    };
+    return buildSystemSchedulerManualAudit(actorUserId);
+  }
+
+  private resolveSystemExecutionActorUserId(actorUserId: string): string {
+    const systemUserId = String(env.scheduler.systemUserId || '').trim();
+    return systemUserId || actorUserId;
   }
 
   private formatDisplayDate(
