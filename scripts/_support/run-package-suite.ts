@@ -51,6 +51,7 @@ const SUITE_ROLES: Record<string, SuiteRole> = {
   'risk-center': 'cross-cutting',
   overview: 'baseline',
   operational: 'cross-cutting',
+  'runtime-recovery': 'cross-cutting',
 };
 
 const SUITES: Record<string, SuiteEntry[]> = {
@@ -92,6 +93,7 @@ const SUITES: Record<string, SuiteEntry[]> = {
     'test:asset-price-sync',
     'test:risk-scheduler',
     'test:global-system-schedulers',
+    'test:runtime-recovery',
   ],
   'module-only': [
     'test:signals',
@@ -134,7 +136,13 @@ const SUITES: Record<string, SuiteEntry[]> = {
   portfolio: ['test:portfolio'],
   'risk-center': ['test:risk-center'],
   overview: ['test:overview'],
-  operational: ['test:auth-security', 'test:operational-events', 'test:operational-audit'],
+  operational: [
+    'test:auth-security',
+    'test:operational-events',
+    'test:operational-audit',
+    'test:runtime-recovery',
+  ],
+  'runtime-recovery': ['test:runtime-recovery'],
 };
 
 function runEntry(entry: SuiteEntry): Promise<void> {

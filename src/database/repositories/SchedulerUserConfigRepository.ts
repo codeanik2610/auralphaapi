@@ -44,6 +44,15 @@ export class SchedulerUserConfigRepository {
     });
   }
 
+  async listLockedBefore(olderThan: Date): Promise<SchedulerUserConfig[]> {
+    return this.repository
+      .createQueryBuilder('config')
+      .where('config.running_lock_until IS NOT NULL')
+      .andWhere('config.running_lock_until < :olderThan', { olderThan })
+      .orderBy('config.running_lock_until', 'ASC')
+      .getMany();
+  }
+
   async createIfMissing(payload: Partial<SchedulerUserConfig>): Promise<SchedulerUserConfig> {
     const schedulerKey = String(payload.schedulerKey || '').trim();
     const userId = String(payload.userId || '').trim();

@@ -6,6 +6,7 @@ import {
 } from '../../database';
 import { env } from '../../env';
 import { Logger } from '../../lib/logger';
+import { RuntimeLoopSnapshot } from '../contracts/Runtime';
 import { OperationalEventService } from './OperationalEventService';
 import { PaperOrderExecutionService } from './PaperOrderExecutionService';
 import { SuggestedTradesService } from './SuggestedTradesService';
@@ -39,6 +40,11 @@ export class PaperOrdersSchedulerService {
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private stopRequested = false;
+  private activeRunPromise: Promise<void> | null = null;
+  private lastStartedAt: Date | null = null;
+  private lastFinishedAt: Date | null = null;
+  private lastError: string | null = null;
 
   async start(): Promise<void> {
     await this.ensureSchedulerConfig();
@@ -54,6 +60,7 @@ export class PaperOrdersSchedulerService {
       return;
     }
 
+    this.stopRequested = false;
     log.info(
       `Starting ${SCHEDULER_KEY} background loop with poll interval ${env.paperOrders.pollIntervalMs}ms`
     );
@@ -64,34 +71,88 @@ export class PaperOrdersSchedulerService {
     this.timer.unref?.();
   }
 
-  stop(): void {
-    if (!this.timer) {
-      return;
+  async stop(): Promise<void> {
+    this.stopRequested = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
     }
-    clearInterval(this.timer);
-    this.timer = null;
+    await this.activeRunPromise;
+  }
+
+  async runBatchOnce(): Promise<void> {
+    await this.runBatch();
+  }
+
+  getRuntimeSnapshot(): RuntimeLoopSnapshot {
+    const state = !env.paperOrders.backgroundEnabled
+      ? 'disabled'
+      : this.stopRequested
+        ? 'draining'
+        : this.running
+          ? 'running'
+          : this.timer
+            ? 'idle'
+            : 'stopped';
+
+    return {
+      key: SCHEDULER_KEY,
+      label: SCHEDULER_NAME,
+      enabled: env.paperOrders.backgroundEnabled,
+      state,
+      timerActive: Boolean(this.timer),
+      running: this.running,
+      stopRequested: this.stopRequested,
+      pollIntervalMs: env.paperOrders.pollIntervalMs,
+      lastStartedAt: this.lastStartedAt?.toISOString() ?? null,
+      lastFinishedAt: this.lastFinishedAt?.toISOString() ?? null,
+      lastError: this.lastError,
+      detail:
+        state === 'disabled'
+          ? 'Paper order execution background loop is disabled in configuration.'
+          : this.lastError,
+    };
   }
 
   private async tick(): Promise<void> {
-    if (this.running) {
+    if (this.running || this.stopRequested) {
       return;
     }
-    this.running = true;
+    const runPromise = (async () => {
+      this.running = true;
+      this.lastStartedAt = new Date();
 
+      try {
+        await this.runBatch();
+        this.lastError = null;
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+        log.error(
+          `Paper order execution batch failed: ${
+            error instanceof Error ? error.stack || error.message : String(error)
+          }`
+        );
+      } finally {
+        this.lastFinishedAt = new Date();
+        this.running = false;
+      }
+    })();
+
+    this.activeRunPromise = runPromise;
     try {
-      await this.runBatch();
-    } catch (error) {
-      log.error(
-        `Paper order execution batch failed: ${
-          error instanceof Error ? error.stack || error.message : String(error)
-        }`
-      );
+      await runPromise;
     } finally {
-      this.running = false;
+      if (this.activeRunPromise === runPromise) {
+        this.activeRunPromise = null;
+      }
     }
   }
 
   private async runBatch(): Promise<void> {
+    if (this.stopRequested) {
+      return;
+    }
+
     const config = await this.ensureSchedulerConfig();
     if (!config.enabled) {
       return;
@@ -103,6 +164,9 @@ export class PaperOrdersSchedulerService {
     }
 
     const lockTtlMs = Math.max(60_000, env.paperOrders.pollIntervalMs * 2);
+    if (this.stopRequested) {
+      return;
+    }
     const acquired = await this.schedulerConfigRepository.tryAcquireRunLock(
       SCHEDULER_KEY,
       new Date(Date.now() + lockTtlMs)

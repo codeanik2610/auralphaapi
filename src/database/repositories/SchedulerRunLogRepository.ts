@@ -4,6 +4,23 @@ import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity
 import { coreDataSource } from '../data-source';
 import { SchedulerRunLog } from '../entities/SchedulerRunLog';
 
+export interface SchedulerRunStaleQuery {
+  olderThan: Date;
+  limit?: number;
+  schedulerKey?: string;
+  actorUserId?: string | null;
+  workerId?: string | null;
+  statuses?: string[];
+}
+
+export interface SchedulerRunRepairPayload {
+  status: string;
+  reason: string;
+  finishedAt?: Date;
+  repairedAt?: Date;
+  workerId?: string | null;
+}
+
 @Service()
 export class SchedulerRunLogRepository {
   private get repository(): Repository<SchedulerRunLog> {
@@ -12,11 +29,163 @@ export class SchedulerRunLogRepository {
 
   async createRun(payload: Partial<SchedulerRunLog>): Promise<SchedulerRunLog> {
     const created = this.repository.create(payload);
+    if (!created.lastProgressAt && created.status === 'Running') {
+      created.lastProgressAt = created.startedAt ?? new Date();
+    }
     return this.repository.save(created);
+  }
+
+  async findById(runId: string): Promise<SchedulerRunLog | null> {
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) {
+      return null;
+    }
+
+    return this.repository.findOne({
+      where: {
+        id: normalizedRunId,
+      },
+    });
   }
 
   async updateRun(runId: string, payload: QueryDeepPartialEntity<SchedulerRunLog>): Promise<void> {
     await this.repository.update({ id: runId }, payload);
+  }
+
+  async assignRunOwnership(
+    runId: string,
+    ownership: {
+      commandId?: string | null;
+      workerId?: string | null;
+      lastProgressAt?: Date | null;
+    }
+  ): Promise<void> {
+    const updatePayload: QueryDeepPartialEntity<SchedulerRunLog> = {};
+
+    if (ownership.commandId !== undefined) {
+      updatePayload.commandId = ownership.commandId;
+    }
+    if (ownership.workerId !== undefined) {
+      updatePayload.workerId = ownership.workerId;
+    }
+    if (ownership.lastProgressAt !== undefined) {
+      updatePayload.lastProgressAt = ownership.lastProgressAt;
+    }
+
+    if (!Object.keys(updatePayload).length) {
+      return;
+    }
+
+    await this.updateRun(runId, updatePayload);
+  }
+
+  async touchRunProgress(
+    runId: string,
+    lastProgressAt = new Date(),
+    workerId?: string | null
+  ): Promise<void> {
+    const payload: QueryDeepPartialEntity<SchedulerRunLog> = {
+      lastProgressAt,
+    };
+
+    if (workerId !== undefined) {
+      payload.workerId = workerId;
+    }
+
+    await this.updateRun(runId, payload);
+  }
+
+  async findStaleRuns(query: SchedulerRunStaleQuery): Promise<SchedulerRunLog[]> {
+    const statuses = Array.isArray(query.statuses) && query.statuses.length
+      ? query.statuses
+      : ['Running'];
+
+    const builder = this.repository
+      .createQueryBuilder('run')
+      .where('run.status IN (:...statuses)', { statuses })
+      .andWhere('(run.last_progress_at IS NULL OR run.last_progress_at < :olderThan)', {
+        olderThan: query.olderThan,
+      });
+
+    if (query.schedulerKey) {
+      builder.andWhere('run.scheduler_key = :schedulerKey', {
+        schedulerKey: query.schedulerKey,
+      });
+    }
+
+    const normalizedActorUserId = String(query.actorUserId || '').trim();
+    if (normalizedActorUserId) {
+      builder.andWhere('run.actor_user_id = :actorUserId', {
+        actorUserId: normalizedActorUserId,
+      });
+    }
+
+    if (query.workerId === null) {
+      builder.andWhere('run.worker_id IS NULL');
+    } else if (typeof query.workerId === 'string' && query.workerId.trim()) {
+      builder.andWhere('run.worker_id = :workerId', {
+        workerId: query.workerId.trim(),
+      });
+    }
+
+    return builder
+      .orderBy('run.last_progress_at', 'ASC')
+      .addOrderBy('run.started_at', 'ASC')
+      .take(query.limit ?? 100)
+      .getMany();
+  }
+
+  async markRunRepaired(
+    runId: string,
+    payload: SchedulerRunRepairPayload
+  ): Promise<SchedulerRunLog | null> {
+    const existing = await this.findById(runId);
+    if (!existing) {
+      return null;
+    }
+
+    const repairedAt = payload.repairedAt ?? new Date();
+    const finishedAt = payload.finishedAt ?? repairedAt;
+    const durationMs = Math.max(0, finishedAt.getTime() - existing.startedAt.getTime());
+
+    await this.repository.update(
+      { id: runId },
+      {
+        status: payload.status,
+        finishedAt,
+        durationMs,
+        errorMessage: payload.reason,
+        repairedAt,
+        repairReason: payload.reason,
+        workerId: payload.workerId ?? null,
+        lastProgressAt: finishedAt,
+      }
+    );
+
+    return this.findById(runId);
+  }
+
+  async findLatestActiveByCommandId(commandId: string): Promise<SchedulerRunLog | null> {
+    const normalizedCommandId = String(commandId || '').trim();
+    if (!normalizedCommandId) {
+      return null;
+    }
+
+    return this.repository.findOne({
+      where: [
+        {
+          commandId: normalizedCommandId,
+          status: 'Queued',
+        },
+        {
+          commandId: normalizedCommandId,
+          status: 'Running',
+        },
+      ],
+      order: {
+        startedAt: 'DESC',
+      },
+    });
   }
 
   async listRunsBySchedulerKey(
@@ -194,6 +363,9 @@ export class SchedulerRunLogRepository {
         finishedAt: () => 'NOW()',
         durationMs: 0,
         errorMessage: reason,
+        repairedAt: () => 'NOW()',
+        repairReason: reason,
+        lastProgressAt: () => 'NOW()',
       })
       .where('scheduler_key = :schedulerKey', { schedulerKey })
       .andWhere('actor_user_id = :actorUserId', { actorUserId: normalizedActorUserId })

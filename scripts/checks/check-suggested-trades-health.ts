@@ -144,11 +144,15 @@ async function run(): Promise<void> {
   );
 
   const healthResponse = await requestJson('/health/suggested-trades', {}, accessToken);
+  const runtimeResponse = await requestJson('/health/runtime', {}, accessToken);
   const health = asRecord(healthResponse.data);
+  const runtime = asRecord(runtimeResponse.data);
+  const runtimeLoops = asArray(runtime.apiLoops).map((item) => readString(item.key)).filter(Boolean);
 
   const snapshot = {
     baseUrl: BASE_URL,
     status: readString(health.status || 'unknown'),
+    runtimeStatus: readString(asRecord(runtime.automations).status || 'unknown'),
     rolloutEnabled: Boolean(health.rolloutEnabled),
     rolloutStage: readString(health.rolloutStage || 'unknown'),
     syncState: readString(health.syncState || 'unknown'),
@@ -179,6 +183,7 @@ async function run(): Promise<void> {
       health.syncStatusLatencyMs === null || health.syncStatusLatencyMs === undefined
         ? null
         : readNumber(health.syncStatusLatencyMs),
+    runtimeLoops,
     probeUserId: readString(health.probeUserId) || null,
     detail: readString(health.detail) || null,
   };
@@ -187,6 +192,12 @@ async function run(): Promise<void> {
 
   if (snapshot.status.toLowerCase() === 'down') {
     throw new Error('suggested trades health is down');
+  }
+  if (snapshot.runtimeStatus.toLowerCase() === 'down') {
+    throw new Error('runtime overview reports automations as down for suggested trades');
+  }
+  if (!snapshot.runtimeLoops.includes('suggested-trades-execution-sync')) {
+    throw new Error('runtime overview is missing suggested-trades-execution-sync loop');
   }
   if (REQUIRE_ROLLOUT_ENABLED && snapshot.rolloutEnabled !== true) {
     throw new Error('suggested trades rollout is disabled');

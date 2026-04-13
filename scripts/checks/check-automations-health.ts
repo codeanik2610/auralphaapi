@@ -80,13 +80,16 @@ async function run(): Promise<void> {
 
   const automationsHealthResponse = await requestJson('/health/automations');
   const opsHealthResponse = await requestJson('/health/ops');
+  const runtimeResponse = await requestJson('/health/runtime');
   const health = asRecord(automationsHealthResponse.data);
   const ops = asRecord(opsHealthResponse.data);
   const opsConfig = asRecord(ops.config);
+  const runtimeAutomations = asRecord(asRecord(runtimeResponse.data).automations);
 
   const snapshot = {
     baseUrl: BASE_URL,
     status: readString(health.status || 'unknown'),
+    runtimeStatus: readString(runtimeAutomations.status || 'unknown'),
     workerStatus: readString(health.workerStatus || 'unknown'),
     queueStatus: readString(health.queueStatus || 'unknown'),
     failedRuns24h: readNumber(health.failedRuns24h),
@@ -104,6 +107,9 @@ async function run(): Promise<void> {
 
   if (snapshot.status.toLowerCase() === 'down') {
     throw new Error('automations health is down');
+  }
+  if (snapshot.runtimeStatus.toLowerCase() === 'down') {
+    throw new Error('runtime overview reports automations as down');
   }
   if (snapshot.queueStatus.toLowerCase() !== 'ok') {
     throw new Error(`automation queue status is ${snapshot.queueStatus || 'unknown'}`);

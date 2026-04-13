@@ -3,6 +3,7 @@ import { Inject, Service } from 'typedi';
 import { ActivityExportRepository, ActivityRepository } from '../../database';
 import { env } from '../../env';
 import { Logger } from '../../lib/logger';
+import { RuntimeLoopSnapshot } from '../contracts/Runtime';
 
 const log = new Logger(__filename);
 
@@ -22,6 +23,11 @@ export class ActivityMaintenanceService {
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private stopRequested = false;
+  private activeRunPromise: Promise<void> | null = null;
+  private lastStartedAt: Date | null = null;
+  private lastFinishedAt: Date | null = null;
+  private lastError: string | null = null;
 
   async start(): Promise<void> {
     if (env.isTest || !env.activity.maintenanceEnabled) {
@@ -35,6 +41,7 @@ export class ActivityMaintenanceService {
       return;
     }
 
+    this.stopRequested = false;
     log.info(
       `Starting activity maintenance loop with interval ${env.activity.maintenanceIntervalMs}ms`
     );
@@ -45,34 +52,80 @@ export class ActivityMaintenanceService {
     this.timer.unref?.();
   }
 
-  stop(): void {
-    if (!this.timer) {
-      return;
+  async stop(): Promise<void> {
+    this.stopRequested = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
     }
-    clearInterval(this.timer);
-    this.timer = null;
+    await this.activeRunPromise;
   }
 
   async runMaintenanceNow(): Promise<ActivityMaintenanceResult> {
     return this.runCleanup();
   }
 
+  getRuntimeSnapshot(): RuntimeLoopSnapshot {
+    const state = !env.activity.maintenanceEnabled
+      ? 'disabled'
+      : this.stopRequested
+        ? 'draining'
+        : this.running
+          ? 'running'
+          : this.timer
+            ? 'idle'
+            : 'stopped';
+
+    return {
+      key: 'activity-maintenance',
+      label: 'Activity Maintenance',
+      enabled: env.activity.maintenanceEnabled,
+      state,
+      timerActive: Boolean(this.timer),
+      running: this.running,
+      stopRequested: this.stopRequested,
+      pollIntervalMs: env.activity.maintenanceIntervalMs,
+      lastStartedAt: this.lastStartedAt?.toISOString() ?? null,
+      lastFinishedAt: this.lastFinishedAt?.toISOString() ?? null,
+      lastError: this.lastError,
+      detail:
+        state === 'disabled'
+          ? 'Activity maintenance is disabled in configuration.'
+          : this.lastError,
+    };
+  }
+
   private async tick(): Promise<void> {
-    if (this.running) {
+    if (this.running || this.stopRequested) {
       return;
     }
 
-    this.running = true;
+    const runPromise = (async () => {
+      this.running = true;
+      this.lastStartedAt = new Date();
+      try {
+        await this.runCleanup();
+        this.lastError = null;
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+        log.error(
+          `Activity maintenance run failed: ${
+            error instanceof Error ? error.stack || error.message : String(error)
+          }`
+        );
+      } finally {
+        this.lastFinishedAt = new Date();
+        this.running = false;
+      }
+    })();
+
+    this.activeRunPromise = runPromise;
     try {
-      await this.runCleanup();
-    } catch (error) {
-      log.error(
-        `Activity maintenance run failed: ${
-          error instanceof Error ? error.stack || error.message : String(error)
-        }`
-      );
+      await runPromise;
     } finally {
-      this.running = false;
+      if (this.activeRunPromise === runPromise) {
+        this.activeRunPromise = null;
+      }
     }
   }
 

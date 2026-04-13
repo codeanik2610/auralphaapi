@@ -8,6 +8,7 @@ import {
   AutomationRunItem,
   AutomationRunListResponse,
 } from '../contracts/Automation';
+import { RuntimeRepairResult, RuntimeStaleItem } from '../contracts/Runtime';
 import { BadRequestAppError, NotFoundAppError } from '../errors/AppError';
 import { successResponse } from '../utils/response';
 import {
@@ -44,6 +45,9 @@ import { formatDateInTimeZone } from '../utils/timezone';
 import { AutomationExecutionService, ExecuteAutomationResult } from './AutomationExecutionService';
 import { env } from '../../env';
 import { RedisClient } from '../../lib/RedisClient';
+import { Logger } from '../../lib/logger';
+
+const log = new Logger(__filename);
 
 @Service()
 export class AutomationsService {
@@ -51,6 +55,7 @@ export class AutomationsService {
   private static readonly CURSOR_STALE_MINUTES = 120;
   private static readonly TRADE_SUGGESTION_RUN_STALE_MINUTES = 20;
   private static readonly BACKTEST_RUN_STALE_MINUTES = 180;
+  private static readonly STARTUP_RECOVERY_BATCH_SIZE = 200;
 
   @Inject(() => AutomationRepository)
   private automationRepository!: AutomationRepository;
@@ -136,6 +141,326 @@ export class AutomationsService {
       detail: diagnostics.detail,
       summary: diagnostics.summary,
     };
+  }
+
+  async getRuntimeStaleRunCandidates(limit = 100): Promise<RuntimeStaleItem[]> {
+    const staleCutoff = new Date(
+      Date.now() - AutomationsService.BACKTEST_RUN_STALE_MINUTES * 60 * 1000
+    );
+    const runs = await this.automationRunRepository.findStaleRuns({
+      olderThan: staleCutoff,
+      statuses: ['Queued', 'Running'],
+      limit: Math.max(1, Math.min(limit, 500)),
+    });
+
+    const items: RuntimeStaleItem[] = [];
+    for (const run of runs) {
+      const automation = await this.automationRepository.getAutomationByIdAny(run.automationId);
+      const meta = this.parseRecord(run.meta) ?? {};
+      const lineage = extractAutomationLineage(meta.lineage ?? meta);
+      const backtestId = this.readString(meta.backtestId, lineage?.backtestId);
+      let backtestStatus: string | null = null;
+
+      if (automation && backtestId) {
+        const childBacktest = await this.backtestRepository.getBacktestById(
+          automation.userId,
+          backtestId
+        );
+        backtestStatus = childBacktest
+          ? this.resolveChildBacktestStatus(childBacktest.status, childBacktest.stability)
+          : null;
+      }
+
+      const recovery = this.buildAutomationRunRecovery(run, backtestId, backtestStatus);
+      if (automation && !recovery?.isStaleCandidate) {
+        continue;
+      }
+
+      const referenceTime = run.lastProgressAt ?? run.startedAt;
+      const ageMs =
+        referenceTime instanceof Date
+          ? Math.max(0, Date.now() - referenceTime.getTime())
+          : null;
+
+      items.push({
+        id: run.id,
+        type: 'automation-run',
+        source: 'auralpha',
+        status: run.status,
+        title: automation
+          ? `Automation run stalled: ${automation.name}`
+          : `Automation run stalled: missing parent automation (${run.automationId})`,
+        detail:
+          recovery?.note ||
+          run.errorMessage ||
+          (backtestId
+            ? `Child backtest ${backtestId} no longer reports a healthy active state.`
+            : 'No terminal automation run update arrived inside the guarded recovery window.'),
+        automationId: run.automationId,
+        userId: run.userId,
+        workerId: run.workerId,
+        startedAt: run.startedAt?.toISOString() ?? null,
+        lastProgressAt: run.lastProgressAt?.toISOString() ?? null,
+        ageMs,
+        staleThresholdMs:
+          recovery?.staleThresholdMinutes !== null && recovery?.staleThresholdMinutes !== undefined
+            ? recovery.staleThresholdMinutes * 60 * 1000
+            : null,
+        repairable: true,
+        repairAction: 'reconcile',
+      });
+    }
+
+    return items;
+  }
+
+  async repairRuntimeRun(
+    runId: string,
+    options: {
+      actorUserId?: string | null;
+      reason?: string | null;
+    } = {}
+  ): Promise<RuntimeRepairResult> {
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) {
+      throw new BadRequestAppError('runId is required');
+    }
+
+    const actorUserId = String(options.actorUserId || env.scheduler.systemUserId).trim();
+    const run = await this.automationRunRepository.findById(normalizedRunId);
+    if (!run) {
+      throw new NotFoundAppError('Automation run not found');
+    }
+
+    if (!this.isAutomationRunActive(run.status)) {
+      return {
+        repaired: false,
+        itemType: 'automation-run',
+        id: run.id,
+        status: run.status,
+        message: 'Automation run is already terminal. No repair was required.',
+      };
+    }
+
+    const automation = await this.automationRepository.getAutomationByIdAny(run.automationId);
+    if (!automation) {
+      const repaired = await this.automationRunRepository.markRunRepaired(run.id, {
+        status: 'Failed',
+        reason:
+          options.reason?.trim() ||
+          'Recovered stale automation run because the parent automation record is missing.',
+        workerId: null,
+      });
+
+      return {
+        repaired: Boolean(repaired),
+        itemType: 'automation-run',
+        id: run.id,
+        status: repaired?.status || 'Failed',
+        message: repaired
+          ? 'Recovered stale automation run with missing parent automation.'
+          : 'Automation run repair did not update the record.',
+      };
+    }
+
+    const meta = this.parseRecord(run.meta) ?? {};
+    const lineage = extractAutomationLineage(meta.lineage ?? meta);
+    const backtestId = this.readString(meta.backtestId, lineage?.backtestId);
+
+    if (backtestId) {
+      await this.automationExecutionService.syncBacktestRunnerLifecycleByBacktestId(backtestId);
+      const refreshedRun = await this.automationRunRepository.findById(run.id);
+      if (refreshedRun && !this.isAutomationRunActive(refreshedRun.status)) {
+        return {
+          repaired: false,
+          itemType: 'automation-run',
+          id: run.id,
+          status: refreshedRun.status,
+          message: `Automation run already reconciled from child backtest ${backtestId}.`,
+        };
+      }
+
+      const childBacktest = await this.backtestRepository.getBacktestById(
+        automation.userId,
+        backtestId
+      );
+      const childStatus = childBacktest
+        ? this.resolveChildBacktestStatus(childBacktest.status, childBacktest.stability)
+        : null;
+
+      if (childStatus === 'Queued' || childStatus === 'Running') {
+        return {
+          repaired: false,
+          itemType: 'automation-run',
+          id: run.id,
+          status: run.status,
+          message: `Child backtest ${backtestId} is still ${childStatus.toLowerCase()}. No repair was applied.`,
+        };
+      }
+    }
+
+    const recovery = this.buildAutomationRunRecovery(run, backtestId, null);
+    if (!recovery?.isStaleCandidate) {
+      return {
+        repaired: false,
+        itemType: 'automation-run',
+        id: run.id,
+        status: run.status,
+        message:
+          recovery?.note ||
+          'Automation run is still inside the guarded recovery window. No repair was applied.',
+      };
+    }
+
+    await this.clearStaleAutomationRun(automation, run, {
+      actorUserId,
+      backtestId,
+      reason:
+        options.reason?.trim() ||
+        'Operator repaired a stale automation run from runtime diagnostics.',
+      mode: 'runtime-diagnostics',
+    });
+
+    await this.operationalEventService.logActivity(automation.userId, {
+      type: 'Automation',
+      title: `Runtime repair cleared stale run: ${automation.name}`,
+      status: 'Success',
+      route: 'Automations',
+      stream: 'Recovery',
+      related: automation.strategy,
+      referenceId: automation.id,
+      description:
+        options.reason?.trim() ||
+        'Runtime diagnostics cleared a stale automation run after restart/deploy drift.',
+    });
+
+    return {
+      repaired: true,
+      itemType: 'automation-run',
+      id: run.id,
+      status: 'Failed',
+      message: backtestId
+        ? `Cleared stale automation run and released child backtest ${backtestId} for review.`
+        : 'Cleared stale automation run and restored normal scheduling.',
+    };
+  }
+
+  async reconcileStaleRunsOnStartup(): Promise<{
+    scanned: number;
+    recovered: number;
+    synced: number;
+    skipped: number;
+    failed: number;
+  }> {
+    const staleRuns = await this.automationRunRepository.findStaleRuns({
+      olderThan: new Date(
+        Date.now() - AutomationsService.TRADE_SUGGESTION_RUN_STALE_MINUTES * 60 * 1000
+      ),
+      statuses: ['Queued', 'Running'],
+      limit: AutomationsService.STARTUP_RECOVERY_BATCH_SIZE,
+    });
+
+    const summary = {
+      scanned: staleRuns.length,
+      recovered: 0,
+      synced: 0,
+      skipped: 0,
+      failed: 0,
+    };
+
+    if (!staleRuns.length) {
+      return summary;
+    }
+
+    const repairedAtIso = new Date().toISOString();
+    const repairActorUserId =
+      String(env.scheduler.systemUserId || '').trim() || 'system';
+
+    for (const staleRun of staleRuns) {
+      try {
+        let run = staleRun;
+        const automation = await this.automationRepository.getAutomationByIdAny(run.automationId);
+        if (!automation) {
+          const repaired = await this.automationRunRepository.markRunRepaired(run.id, {
+            status: 'Failed',
+            reason: `Recovered stale automation run after API restart/deploy on ${repairedAtIso}: parent automation is missing.`,
+            workerId: null,
+          });
+          if (repaired) {
+            summary.recovered += 1;
+          } else {
+            summary.skipped += 1;
+          }
+          continue;
+        }
+
+        const meta = this.parseRecord(run.meta) ?? {};
+        const lineage = extractAutomationLineage(meta.lineage ?? meta);
+        const backtestId = this.readString(meta.backtestId, lineage?.backtestId);
+
+        if (backtestId) {
+          await this.automationExecutionService.syncBacktestRunnerLifecycleByBacktestId(backtestId);
+          const refreshedRun = await this.automationRunRepository.findById(run.id);
+          if (!refreshedRun) {
+            summary.skipped += 1;
+            continue;
+          }
+          run = refreshedRun;
+          if (!this.isAutomationRunActive(run.status)) {
+            summary.synced += 1;
+            continue;
+          }
+        }
+
+        const refreshedMeta = this.parseRecord(run.meta) ?? {};
+        const refreshedLineage = extractAutomationLineage(refreshedMeta.lineage ?? refreshedMeta);
+        const refreshedBacktestId = this.readString(
+          refreshedMeta.backtestId,
+          refreshedLineage?.backtestId
+        );
+        const refreshedBacktestStatus = this.readString(refreshedMeta.childBacktestStatus);
+        const recovery = this.buildAutomationRunRecovery(
+          run,
+          refreshedBacktestId,
+          refreshedBacktestStatus
+        );
+
+        if (!recovery?.isStaleCandidate) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        const reason = `Startup recovery cleared stale automation run after API restart/deploy on ${repairedAtIso}`;
+        await this.clearStaleAutomationRun(automation, run, {
+          actorUserId: repairActorUserId,
+          backtestId: refreshedBacktestId,
+          reason,
+          mode: 'startup-recovery',
+        });
+
+        await this.operationalEventService.logActivity(automation.userId, {
+          type: 'Automation',
+          title: `Startup recovery cleared stale run: ${automation.name}`,
+          status: 'Success',
+          route: 'Automations',
+          stream: 'Recovery',
+          related: automation.strategy,
+          referenceId: automation.id,
+          description: reason,
+        });
+
+        summary.recovered += 1;
+      } catch (error) {
+        summary.failed += 1;
+        log.warn(
+          `Automation startup recovery failed for run ${staleRun.id}: ${
+            error instanceof Error ? error.stack || error.message : String(error)
+          }`
+        );
+      }
+    }
+
+    return summary;
   }
 
   async getAutomationById(
@@ -768,7 +1093,8 @@ export class AutomationsService {
       };
     }
 
-    await this.clearStaleAutomationRun(userId, automation, run, {
+    await this.clearStaleAutomationRun(automation, run, {
+      actorUserId: userId,
       backtestId,
       reason,
     });
@@ -781,10 +1107,14 @@ export class AutomationsService {
   }
 
   private async clearStaleAutomationRun(
-    userId: string,
     automation: Automation,
     run: AutomationRun,
-    options: { backtestId?: string | null; reason?: string }
+    options: {
+      actorUserId: string;
+      backtestId?: string | null;
+      reason?: string;
+      mode?: string;
+    }
   ): Promise<void> {
     const finishedAt = new Date();
     const durationMs = Math.max(0, finishedAt.getTime() - run.startedAt.getTime());
@@ -792,9 +1122,9 @@ export class AutomationsService {
     const nextMeta: Record<string, unknown> = {
       ...meta,
       repair: {
-        mode: 'stale-run-clear',
+        mode: options.mode ?? 'stale-run-clear',
         repairedAt: finishedAt.toISOString(),
-        repairedBy: userId,
+        repairedBy: options.actorUserId,
         reason: options.reason ?? null,
         previousStatus: run.status,
       },
@@ -804,6 +1134,8 @@ export class AutomationsService {
       status: 'Failed',
       finishedAt,
       durationMs,
+      workerId: null,
+      lastProgressAt: finishedAt,
       errorMessage:
         options.reason?.trim() ||
         'Operator reconciled a stale active run after no terminal update was received.',
@@ -814,13 +1146,16 @@ export class AutomationsService {
     if (String(automation.status || '').toLowerCase() === 'running') {
       const schedule = resolveAutomationSchedule(automation.schedule ?? null, automation.trigger);
       if (schedule) {
-        const timeZone = await this.resolveAutomationTimeZone(userId, automation.timeZone);
+        const timeZone = await this.resolveAutomationTimeZone(
+          automation.userId,
+          automation.timeZone
+        );
         nextRun = computeNextRun(schedule, timeZone, finishedAt);
       }
     }
 
     await this.automationRepository.updateAutomationStatus(
-      userId,
+      automation.userId,
       automation.id,
       automation.status,
       nextRun
@@ -829,7 +1164,7 @@ export class AutomationsService {
     await this.automationRepository.createAutomationEvent({
       automationId: automation.id,
       type: 'Run reconciled',
-      entity: 'Operator',
+      entity: options.actorUserId === env.scheduler.systemUserId ? 'System' : 'Operator',
       outcome: 'Recovered',
       meta: {
         runId: run.id,

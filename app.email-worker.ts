@@ -43,13 +43,55 @@ const banner = (): void => {
   log.info('');
 };
 
-const stop = async (signal: string): Promise<void> => {
-  log.info(`Received ${signal}, stopping email worker...`);
-  await worker.stop();
-  if (coreDataSource.isInitialized) {
-    await coreDataSource.destroy();
+const withTimeout = async <T>(promise: Promise<T>, label: string): Promise<T> => {
+  let timeoutHandle: NodeJS.Timeout | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(
+            new Error(
+              `${label} exceeded ${env.app.shutdownDrainTimeoutMs}ms during shutdown`
+            )
+          );
+        }, env.app.shutdownDrainTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
   }
-  process.exit(0);
+};
+
+let shutdownPromise: Promise<void> | null = null;
+
+const stop = async (signal: string): Promise<void> => {
+  if (shutdownPromise) {
+    return shutdownPromise;
+  }
+
+  shutdownPromise = (async () => {
+    try {
+      log.info(`Received ${signal}, draining email worker...`);
+      await withTimeout(worker.stop(), 'Email worker drain');
+      if (coreDataSource.isInitialized) {
+        await withTimeout(coreDataSource.destroy(), 'MySQL shutdown');
+      }
+      process.exit(0);
+    } catch (error) {
+      log.error(
+        `Email worker shutdown failed: ${
+          error instanceof Error ? error.stack || error.message : String(error)
+        }`
+      );
+      process.exit(1);
+    }
+  })();
+
+  return shutdownPromise;
 };
 
 process.on('SIGINT', () => {

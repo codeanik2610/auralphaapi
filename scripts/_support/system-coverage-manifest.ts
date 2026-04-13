@@ -36,7 +36,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       'ActivityExportProcessorService.ts',
     ],
     tests: [script('test:activity', 'scripts/test-activity.ts')],
-    checks: [script('check:activity-health', 'scripts/checks/check-activity-health.ts')],
+    checks: [
+      script('check:activity-health', 'scripts/checks/check-activity-health.ts'),
+    ],
     releaseGates: [script('release-gate:activity', 'scripts/release-gates/release-gate-activity.ts')],
     signoffs: [script('signoff:activity', 'scripts/signoffs/signoff-activity.ts')],
   },
@@ -118,8 +120,12 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       'AutomationExecutionService.ts',
       'AutomationSignalEvaluatorService.ts',
     ],
-    tests: [script('test:automations', 'scripts/test-automations.ts')],
-    checks: [script('check:automations-health', 'scripts/checks/check-automations-health.ts')],
+    tests: [
+      script('test:automations', 'scripts/test-automations.ts'),
+    ],
+    checks: [
+      script('check:automations-health', 'scripts/checks/check-automations-health.ts'),
+    ],
     proofs: [script('proof:automations-live', 'scripts/proofs/proof-automations-live.ts')],
     releaseGates: [script('release-gate:automations', 'scripts/release-gates/release-gate-automations.ts')],
     signoffs: [script('signoff:automations', 'scripts/signoffs/signoff-automations.ts')],
@@ -309,14 +315,30 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     key: 'operational',
     label: 'Operational',
     lane: 'aggregate-only',
-    controllers: ['HealthController.ts'],
-    services: ['OperationalEventService.ts'],
+    controllers: ['HealthController.ts', 'InternalRuntimeController.ts'],
+    services: ['OperationalEventService.ts', 'RuntimeDiagnosticsService.ts'],
     tests: [
       script('test:operational'),
       script('test:operational-events', 'scripts/test-operational-events.ts'),
       script('test:operational-audit', 'scripts/test-operational-audit.ts'),
+      script('test:runtime-recovery', 'scripts/test-runtime-recovery.ts'),
     ],
-    smokes: [script('smoke:scheduler-health', 'scripts/smokes/smoke-scheduler-health.ts')],
+    checks: [script('check:runtime-health', 'scripts/checks/check-runtime-health.ts')],
+    releaseGates: [
+      script(
+        'release-gate:runtime-recovery',
+        'scripts/release-gates/release-gate-runtime-recovery.ts'
+      ),
+      script('release-gate:runtime-recovery:live'),
+    ],
+    signoffs: [
+      script('signoff:runtime-recovery', 'scripts/signoffs/signoff-runtime-recovery.ts'),
+      script('signoff:runtime-recovery:live'),
+    ],
+    smokes: [
+      script('smoke:scheduler-health', 'scripts/smokes/smoke-scheduler-health.ts'),
+      script('smoke:runtime-recovery', 'scripts/smokes/smoke-runtime-recovery.ts'),
+    ],
     notes: [
       'Cross-cutting operational event plumbing intentionally remains outside the deterministic baseline.',
     ],
@@ -364,9 +386,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'scripts/release-gates/release-gate-orders-scheduler.ts'
       ),
     ],
-    signoffs: [
-      script('signoff:orders-scheduler', 'scripts/signoffs/signoff-orders-scheduler.ts'),
-    ],
+    signoffs: [script('signoff:orders-scheduler', 'scripts/signoffs/signoff-orders-scheduler.ts')],
   },
   {
     key: 'overview',
@@ -560,7 +580,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       'SuggestedTradesHealthService.ts',
       'SuggestedTradeExecutionSyncService.ts',
     ],
-    tests: [script('test:suggested-trades', 'scripts/test-suggested-trades.ts')],
+    tests: [
+      script('test:suggested-trades', 'scripts/test-suggested-trades.ts'),
+    ],
     checks: [
       script('check:suggested-trades-health', 'scripts/checks/check-suggested-trades-health.ts'),
     ],
@@ -573,9 +595,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'scripts/release-gates/release-gate-suggested-trades.ts'
       ),
     ],
-    signoffs: [
-      script('signoff:suggested-trades', 'scripts/signoffs/signoff-suggested-trades.ts'),
-    ],
+    signoffs: [script('signoff:suggested-trades', 'scripts/signoffs/signoff-suggested-trades.ts')],
     smokes: [
       script(
         'smoke:suggested-trades-lifecycle',

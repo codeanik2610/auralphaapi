@@ -17,6 +17,8 @@ export class EmailDeliveryWorker {
   private readonly workerId = `${os.hostname()}:${process.pid}`;
   private stopRequested = false;
   private running = false;
+  private processingPromise: Promise<void> | null = null;
+  private stopPromise: Promise<void> | null = null;
   private heartbeatState: {
     workerId: string;
     timestamp?: string;
@@ -49,6 +51,8 @@ export class EmailDeliveryWorker {
       return;
     }
 
+    this.stopRequested = false;
+    this.stopPromise = null;
     this.transport.validateConfiguration();
     await this.transport.verify();
     await this.writeHeartbeat({
@@ -58,17 +62,28 @@ export class EmailDeliveryWorker {
     this.log.info('SMTP transport verified; email delivery worker is polling.');
 
     while (!this.stopRequested) {
-      this.running = true;
+      const batchPromise = (async () => {
+        this.running = true;
+        try {
+          await this.processBatch();
+        } catch (error) {
+          this.log.error(
+            `Email delivery batch failed: ${
+              error instanceof Error ? error.stack || error.message : String(error)
+            }`
+          );
+        } finally {
+          this.running = false;
+        }
+      })();
+
+      this.processingPromise = batchPromise;
       try {
-        await this.processBatch();
-      } catch (error) {
-        this.log.error(
-          `Email delivery batch failed: ${
-            error instanceof Error ? error.stack || error.message : String(error)
-          }`
-        );
+        await batchPromise;
       } finally {
-        this.running = false;
+        if (this.processingPromise === batchPromise) {
+          this.processingPromise = null;
+        }
       }
 
       if (!this.stopRequested) {
@@ -78,11 +93,24 @@ export class EmailDeliveryWorker {
   }
 
   async stop(): Promise<void> {
-    this.stopRequested = true;
-    while (this.running) {
-      await sleep(100);
+    if (this.stopPromise) {
+      return this.stopPromise;
     }
-    await this.clearHeartbeat();
+
+    this.stopRequested = true;
+    this.stopPromise = (async () => {
+      await this.processingPromise;
+      while (this.running) {
+        await sleep(100);
+      }
+      await this.clearHeartbeat();
+    })();
+
+    try {
+      await this.stopPromise;
+    } finally {
+      this.stopPromise = null;
+    }
   }
 
   async processBatch(): Promise<void> {
@@ -113,8 +141,13 @@ export class EmailDeliveryWorker {
       lastError: null,
     });
 
-    for (const delivery of deliveries) {
+    for (let index = 0; index < deliveries.length; index += 1) {
+      const delivery = deliveries[index];
       if (this.stopRequested) {
+        await this.releaseClaimedDeliveries(
+          deliveries.slice(index),
+          'Email worker shutdown released an in-flight delivery claim before send.'
+        );
         return;
       }
 
@@ -196,5 +229,19 @@ export class EmailDeliveryWorker {
 
   private getHeartbeatTtlSeconds(): number {
     return Math.max(30, Math.ceil((env.email.pollIntervalMs * 3) / 1000));
+  }
+
+  private async releaseClaimedDeliveries(
+    deliveries: Array<{ id: string; recipientEmail?: string | null }>,
+    reason: string
+  ): Promise<void> {
+    for (const delivery of deliveries) {
+      await this.emailDeliveryRepository.releaseClaimedDelivery(delivery.id, reason);
+      this.log.info(
+        `Released claimed email delivery ${delivery.id}${
+          delivery.recipientEmail ? ` (${delivery.recipientEmail})` : ''
+        } during shutdown`
+      );
+    }
   }
 }

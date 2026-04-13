@@ -32,6 +32,15 @@ export class SchedulerConfigRepository {
     return this.repository.save(created);
   }
 
+  async listLockedBefore(olderThan: Date): Promise<SchedulerConfig[]> {
+    return this.repository
+      .createQueryBuilder('config')
+      .where('config.running_lock_until IS NOT NULL')
+      .andWhere('config.running_lock_until < :olderThan', { olderThan })
+      .orderBy('config.running_lock_until', 'ASC')
+      .getMany();
+  }
+
   async updateByKey(key: string, payload: Partial<SchedulerConfig>): Promise<SchedulerConfig | null> {
     const existing = await this.getByKey(key);
     if (!existing) {

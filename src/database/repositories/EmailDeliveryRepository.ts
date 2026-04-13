@@ -535,6 +535,25 @@ export class EmailDeliveryRepository {
     await this.repository.update({ id }, { status: 'Failed', lastError: message });
   }
 
+  async releaseClaimedDelivery(id: string, reason?: string | null): Promise<void> {
+    const message =
+      typeof reason === 'string' && reason.trim()
+        ? reason.trim().slice(0, 2000)
+        : null;
+
+    await this.repository
+      .createQueryBuilder()
+      .update(EmailDelivery)
+      .set({
+        status: 'Queued',
+        attempts: () => 'CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END',
+        lastError: message,
+      })
+      .where('id = :id', { id })
+      .andWhere('status = :status', { status: 'Sending' })
+      .execute();
+  }
+
   async countActiveDeliveries(): Promise<number> {
     return this.repository
       .createQueryBuilder('delivery')

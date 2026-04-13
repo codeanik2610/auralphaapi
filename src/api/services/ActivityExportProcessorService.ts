@@ -1,10 +1,12 @@
 import { mkdir, open } from 'node:fs/promises';
+import os from 'node:os';
 import * as path from 'node:path';
 import { Inject, Service } from 'typedi';
 import { ActivityLog, ActivityExportRepository, ActivityRepository } from '../../database';
 import { env } from '../../env';
 import { normalizeActivityStream } from '../../lib/activityEvents';
 import { Logger } from '../../lib/logger';
+import { RuntimeLoopSnapshot } from '../contracts/Runtime';
 import { OperationalEventService } from './OperationalEventService';
 
 const log = new Logger(__filename);
@@ -21,8 +23,14 @@ export class ActivityExportProcessorService {
   private operationalEventService!: OperationalEventService;
 
   private readonly exportRetentionMs = env.activity.exportRetentionDays * 24 * 60 * 60 * 1000;
+  private readonly workerId = `${os.hostname()}:${process.pid}:activity-export-processor`;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private stopRequested = false;
+  private activeRunPromise: Promise<void> | null = null;
+  private lastStartedAt: Date | null = null;
+  private lastFinishedAt: Date | null = null;
+  private lastError: string | null = null;
 
   async start(): Promise<void> {
     if (env.isTest || !env.activity.exportProcessorEnabled) {
@@ -36,6 +44,16 @@ export class ActivityExportProcessorService {
       return;
     }
 
+    this.stopRequested = false;
+    const recoveredCount = await this.recoverStaleProcessingExports();
+    if (recoveredCount > 0) {
+      log.warn(
+        `Recovered ${recoveredCount} stale activity export job${
+          recoveredCount === 1 ? '' : 's'
+        } before starting the processor loop`
+      );
+    }
+
     log.info(
       `Starting activity export processor loop with interval ${env.activity.exportProcessorIntervalMs}ms`
     );
@@ -46,13 +64,13 @@ export class ActivityExportProcessorService {
     this.timer.unref?.();
   }
 
-  stop(): void {
-    if (!this.timer) {
-      return;
+  async stop(): Promise<void> {
+    this.stopRequested = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
     }
-
-    clearInterval(this.timer);
-    this.timer = null;
+    await this.activeRunPromise;
   }
 
   async processPendingExportsOnce(): Promise<number> {
@@ -62,7 +80,11 @@ export class ActivityExportProcessorService {
     let processedCount = 0;
 
     for (const item of pending) {
-      const locked = await this.activityExportRepository.markExportProcessing(item.id);
+      if (this.stopRequested) {
+        break;
+      }
+
+      const locked = await this.activityExportRepository.markExportProcessing(item.id, this.workerId);
       if (!locked) {
         continue;
       }
@@ -85,22 +107,68 @@ export class ActivityExportProcessorService {
     return this.writeExportFile(item);
   }
 
+  getRuntimeSnapshot(): RuntimeLoopSnapshot {
+    const state = !env.activity.exportProcessorEnabled
+      ? 'disabled'
+      : this.stopRequested
+        ? 'draining'
+        : this.running
+          ? 'running'
+          : this.timer
+            ? 'idle'
+            : 'stopped';
+
+    return {
+      key: 'activity-export-processor',
+      label: 'Activity Export Processor',
+      enabled: env.activity.exportProcessorEnabled,
+      state,
+      timerActive: Boolean(this.timer),
+      running: this.running,
+      stopRequested: this.stopRequested,
+      pollIntervalMs: env.activity.exportProcessorIntervalMs,
+      lastStartedAt: this.lastStartedAt?.toISOString() ?? null,
+      lastFinishedAt: this.lastFinishedAt?.toISOString() ?? null,
+      lastError: this.lastError,
+      workerId: this.workerId,
+      detail:
+        state === 'disabled'
+          ? 'Activity export processing is disabled in configuration.'
+          : this.lastError,
+    };
+  }
+
   private async tick(): Promise<void> {
-    if (this.running) {
+    if (this.running || this.stopRequested) {
       return;
     }
 
-    this.running = true;
+    const runPromise = (async () => {
+      this.running = true;
+      this.lastStartedAt = new Date();
+      try {
+        await this.processPendingExportsOnce();
+        this.lastError = null;
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+        log.error(
+          `Activity export processor run failed: ${
+            error instanceof Error ? error.stack || error.message : String(error)
+          }`
+        );
+      } finally {
+        this.lastFinishedAt = new Date();
+        this.running = false;
+      }
+    })();
+
+    this.activeRunPromise = runPromise;
     try {
-      await this.processPendingExportsOnce();
-    } catch (error) {
-      log.error(
-        `Activity export processor run failed: ${
-          error instanceof Error ? error.stack || error.message : String(error)
-        }`
-      );
+      await runPromise;
     } finally {
-      this.running = false;
+      if (this.activeRunPromise === runPromise) {
+        this.activeRunPromise = null;
+      }
     }
   }
 
@@ -328,5 +396,29 @@ export class ActivityExportProcessorService {
       related: activity.related ?? '',
       description: activity.description ?? '',
     };
+  }
+
+  private async recoverStaleProcessingExports(): Promise<number> {
+    const staleExports = await this.activityExportRepository.findStaleProcessingExports({
+      olderThan: new Date(Date.now() - this.getStaleProcessingThresholdMs()),
+      limit: Math.max(10, env.activity.exportProcessorBatchSize * 5),
+    });
+
+    let recoveredCount = 0;
+    for (const item of staleExports) {
+      const repaired = await this.activityExportRepository.markExportRepaired(item.id, {
+        status: 'Queued',
+        reason: `Recovered stale Processing export after API restart/deploy on ${new Date().toISOString()}`,
+      });
+      if (repaired) {
+        recoveredCount += 1;
+      }
+    }
+
+    return recoveredCount;
+  }
+
+  private getStaleProcessingThresholdMs(): number {
+    return Math.max(60_000, env.activity.exportProcessorIntervalMs * 4);
   }
 }

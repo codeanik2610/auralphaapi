@@ -179,6 +179,10 @@ export const env = {
     schema: process.env.APP_SCHEMA || 'http',
     host: process.env.APP_HOST || 'localhost',
     banner: getBool('APP_BANNER', true),
+    shutdownDrainTimeoutMs: Math.max(
+      5_000,
+      getNumber('APP_SHUTDOWN_DRAIN_TIMEOUT_MS', 20_000)
+    ),
     routePrefix: process.env.APP_ROUTE_PREFIX || '/api/v1',
     environment: appEnvironment,
     apiKey: process.env.APP_API_KEY || '',

@@ -8,6 +8,7 @@ import {
 } from '../../database';
 import { env } from '../../env';
 import { Logger } from '../../lib/logger';
+import { RuntimeLoopSnapshot } from '../contracts/Runtime';
 import { OperationalEventService } from './OperationalEventService';
 import { SuggestedTradesService } from './SuggestedTradesService';
 
@@ -36,6 +37,11 @@ export class SuggestedTradeExecutionSyncService {
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private stopRequested = false;
+  private activeRunPromise: Promise<void> | null = null;
+  private lastStartedAt: Date | null = null;
+  private lastFinishedAt: Date | null = null;
+  private lastError: string | null = null;
 
   async start(): Promise<void> {
     await this.ensureSchedulerConfig();
@@ -51,6 +57,7 @@ export class SuggestedTradeExecutionSyncService {
       return;
     }
 
+    this.stopRequested = false;
     log.info(
       `Starting ${SCHEDULER_KEY} background loop with poll interval ${env.suggestedTradesSync.pollIntervalMs}ms`
     );
@@ -61,12 +68,13 @@ export class SuggestedTradeExecutionSyncService {
     this.timer.unref?.();
   }
 
-  stop(): void {
-    if (!this.timer) {
-      return;
+  async stop(): Promise<void> {
+    this.stopRequested = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
     }
-    clearInterval(this.timer);
-    this.timer = null;
+    await this.activeRunPromise;
   }
 
   async runBatchOnce(): Promise<{
@@ -76,6 +84,16 @@ export class SuggestedTradeExecutionSyncService {
     suggestedTradeIds: string[];
     skipped: boolean;
   }> {
+    if (this.stopRequested) {
+      return {
+        processed: 0,
+        refreshed: 0,
+        userCount: 0,
+        suggestedTradeIds: [],
+        skipped: true,
+      };
+    }
+
     const config = await this.ensureSchedulerConfig();
     if (!config.enabled) {
       return {
@@ -88,6 +106,15 @@ export class SuggestedTradeExecutionSyncService {
     }
 
     const lockTtlMs = Math.max(60_000, env.suggestedTradesSync.pollIntervalMs * 2);
+    if (this.stopRequested) {
+      return {
+        processed: 0,
+        refreshed: 0,
+        userCount: 0,
+        suggestedTradeIds: [],
+        skipped: true,
+      };
+    }
     const acquired = await this.schedulerConfigRepository.tryAcquireRunLock(
       SCHEDULER_KEY,
       new Date(Date.now() + lockTtlMs)
@@ -210,6 +237,36 @@ export class SuggestedTradeExecutionSyncService {
     } finally {
       await this.schedulerConfigRepository.releaseRunLock(SCHEDULER_KEY);
     }
+  }
+
+  getRuntimeSnapshot(): RuntimeLoopSnapshot {
+    const state = !env.suggestedTradesSync.backgroundEnabled
+      ? 'disabled'
+      : this.stopRequested
+        ? 'draining'
+        : this.running
+          ? 'running'
+          : this.timer
+            ? 'idle'
+            : 'stopped';
+
+    return {
+      key: SCHEDULER_KEY,
+      label: SCHEDULER_NAME,
+      enabled: env.suggestedTradesSync.backgroundEnabled,
+      state,
+      timerActive: Boolean(this.timer),
+      running: this.running,
+      stopRequested: this.stopRequested,
+      pollIntervalMs: env.suggestedTradesSync.pollIntervalMs,
+      lastStartedAt: this.lastStartedAt?.toISOString() ?? null,
+      lastFinishedAt: this.lastFinishedAt?.toISOString() ?? null,
+      lastError: this.lastError,
+      detail:
+        state === 'disabled'
+          ? 'Suggested trade execution sync background loop is disabled in configuration.'
+          : this.lastError,
+    };
   }
 
   async getSyncStatus(
@@ -368,21 +425,36 @@ export class SuggestedTradeExecutionSyncService {
   }
 
   private async tick(): Promise<void> {
-    if (this.running) {
+    if (this.running || this.stopRequested) {
       return;
     }
 
-    this.running = true;
+    const runPromise = (async () => {
+      this.running = true;
+      this.lastStartedAt = new Date();
+      try {
+        await this.runBatchOnce();
+        this.lastError = null;
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+        log.error(
+          `Suggested trade execution sync batch failed: ${
+            error instanceof Error ? error.stack || error.message : String(error)
+          }`
+        );
+      } finally {
+        this.lastFinishedAt = new Date();
+        this.running = false;
+      }
+    })();
+
+    this.activeRunPromise = runPromise;
     try {
-      await this.runBatchOnce();
-    } catch (error) {
-      log.error(
-        `Suggested trade execution sync batch failed: ${
-          error instanceof Error ? error.stack || error.message : String(error)
-        }`
-      );
+      await runPromise;
     } finally {
-      this.running = false;
+      if (this.activeRunPromise === runPromise) {
+        this.activeRunPromise = null;
+      }
     }
   }
 

@@ -13,6 +13,8 @@ import {
 @Index('idx_activity_exports_status_created_at', ['status', 'createdAt'])
 @Index('idx_activity_exports_expires_at', ['expiresAt'])
 @Index('idx_activity_exports_user_status_signature', ['userId', 'status', 'filterSignature', 'expiresAt'])
+@Index('idx_activity_exports_status_processing_started_at', ['status', 'processingStartedAt'])
+@Index('idx_activity_exports_worker_status_updated_at', ['workerId', 'status', 'updatedAt'])
 export class ActivityExport {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -28,6 +30,9 @@ export class ActivityExport {
 
   @Column({ type: 'varchar', length: 16, default: 'Ready' })
   status!: string;
+
+  @Column({ name: 'worker_id', type: 'varchar', length: 191, nullable: true })
+  workerId!: string | null;
 
   @Column({ name: 'file_name', type: 'varchar', length: 255 })
   fileName!: string;
@@ -52,6 +57,15 @@ export class ActivityExport {
 
   @Column({ name: 'error_message', type: 'varchar', length: 255, nullable: true })
   errorMessage!: string | null;
+
+  @Column({ name: 'processing_started_at', type: 'timestamp', nullable: true })
+  processingStartedAt!: Date | null;
+
+  @Column({ name: 'repaired_at', type: 'timestamp', nullable: true })
+  repairedAt!: Date | null;
+
+  @Column({ name: 'repair_reason', type: 'text', nullable: true })
+  repairReason!: string | null;
 
   @Column({ name: 'expires_at', type: 'timestamp', nullable: true })
   expiresAt!: Date | null;

@@ -3,11 +3,13 @@ import { Get, JsonController, Req } from 'routing-controllers';
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import { DiscoveryDependencyHealthResponse } from '../contracts/Discovery';
+import { RuntimeOverviewResponse } from '../contracts/Runtime';
 import { successResponse } from '../utils/response';
 import { requireAdminAuthUser, requireAdminAuthUserOrApiKey, requireAuthUserId } from '../utils/auth';
 import { AutomationsService } from '../services/AutomationsService';
 import { AuthLoginProtectionService } from '../services/AuthLoginProtectionService';
 import { DiscoveryDependencyService } from '../services/DiscoveryDependencyService';
+import { RuntimeDiagnosticsService } from '../services/RuntimeDiagnosticsService';
 import { SuggestedTradesHealthService } from '../services/SuggestedTradesHealthService';
 import { AlertRepository } from '../../database/repositories/AlertRepository';
 import { BacktestRepository } from '../../database/repositories/BacktestRepository';
@@ -239,6 +241,9 @@ export class HealthController {
   @Inject(() => SuggestedTradesHealthService)
   private suggestedTradesHealthService!: SuggestedTradesHealthService;
 
+  @Inject(() => RuntimeDiagnosticsService)
+  private runtimeDiagnosticsService!: RuntimeDiagnosticsService;
+
   private readAuthSecurityValidation(): { ok: boolean; detail?: string } {
     try {
       assertSecureEnvironmentConfig({
@@ -382,6 +387,14 @@ export class HealthController {
       status: 'ok',
       timestamp: new Date().toISOString(),
     });
+  }
+
+  @Get('/runtime')
+  async getRuntimeHealth(
+    @Req() request: Request
+  ): Promise<ApiSuccessResponse<RuntimeOverviewResponse>> {
+    requireAdminAuthUserOrApiKey(request);
+    return successResponse(await this.runtimeDiagnosticsService.getRuntimeOverview());
   }
 
   @Get('/queue')

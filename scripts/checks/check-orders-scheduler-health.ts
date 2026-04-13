@@ -264,6 +264,11 @@ async function run(): Promise<void> {
   const workerResponse = await requestJson('/health/worker', {}, adminToken);
   const workerDurationMs = Date.now() - workerStartedAt;
   const workerData = asRecord(workerResponse.data);
+  const runtimeResponse = await requestJson('/health/runtime', {}, adminToken);
+  const runtimeData = asRecord(runtimeResponse.data);
+  const runtimeWorker = asRecord(runtimeData.worker);
+  const runtimeStaleCounts = asRecord(runtimeData.staleCounts);
+  const runtimeApiLoops = readArray(runtimeData.apiLoops).map((item) => readString(asRecord(item).key));
 
   let productSnapshot: JsonRecord | null = null;
   if (RUN_PRODUCT_DESK_CHECKS) {
@@ -369,6 +374,15 @@ async function run(): Promise<void> {
   assertMaxDuration('orders scheduler runs', runsDurationMs, MAX_RUNS_MS);
   assertMaxDuration('scheduler queue health', queueDurationMs, MAX_QUEUE_MS);
   assertMaxDuration('scheduler worker health', workerDurationMs, MAX_WORKER_MS);
+  assert.notEqual(
+    readString(runtimeWorker.status).toLowerCase(),
+    'down',
+    'runtime overview must report a live scheduler worker for orders scheduler health'
+  );
+  assert.ok(
+    runtimeApiLoops.includes('paper-orders-execution'),
+    'runtime overview must expose paper-orders-execution loop for orders scheduler health'
+  );
 
   console.log(
     'orders-scheduler-health:',
@@ -433,6 +447,12 @@ async function run(): Promise<void> {
         status: readNullableString(workerData.status),
         detail: readNullableString(workerData.detail),
         lastHeartbeatAt: toIsoString(workerData.lastHeartbeatAt),
+      },
+      runtime: {
+        workerStatus: readNullableString(runtimeWorker.status),
+        workerHeartbeatStatus: readNullableString(runtimeWorker.heartbeatStatus),
+        staleSchedulerRuns: readNumber(runtimeStaleCounts.schedulerRuns),
+        apiLoops: runtimeApiLoops,
       },
       product: productSnapshot,
     })

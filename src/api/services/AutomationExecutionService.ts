@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import { Inject, Service } from 'typedi';
 import { Automation, AutomationRun, Backtest } from '../../database';
 import {
@@ -29,6 +30,7 @@ import type { StrategyLibraryRunBody } from '../contracts/StrategyLibrary';
 import { AutomationSignalEvaluatorService } from './AutomationSignalEvaluatorService';
 
 const log = new Logger('AutomationExecutionService');
+const AUTOMATION_RUNTIME_WORKER_ID = `${os.hostname()}:${process.pid}:automation-api`;
 
 export interface ExecuteAutomationPayload {
   automationId?: string;
@@ -194,8 +196,10 @@ export class AutomationExecutionService {
           automationId: automation.id,
           userId: automation.userId,
           status: 'Running',
+          workerId: AUTOMATION_RUNTIME_WORKER_ID,
           scheduledFor: scheduledAt,
           startedAt: now,
+          lastProgressAt: now,
           meta: startMeta,
         } as any);
       } catch (error) {
@@ -317,6 +321,8 @@ export class AutomationExecutionService {
 
         await this.automationRunRepository.updateRun(runId, {
           status: 'Running',
+          workerId: null,
+          lastProgressAt: finishedAt,
           meta: successMeta,
         });
 
@@ -361,6 +367,8 @@ export class AutomationExecutionService {
         status: 'Success',
         finishedAt,
         durationMs: Math.max(0, finishedAt.getTime() - now.getTime()),
+        workerId: null,
+        lastProgressAt: finishedAt,
         meta: successMeta,
       });
 
@@ -419,6 +427,8 @@ export class AutomationExecutionService {
         finishedAt,
         durationMs: Math.max(0, finishedAt.getTime() - now.getTime()),
         errorMessage: error instanceof Error ? error.message : String(error),
+        workerId: null,
+        lastProgressAt: finishedAt,
         meta: failureMeta,
       });
 
@@ -999,6 +1009,8 @@ export class AutomationExecutionService {
         finishedAt: null,
         durationMs: null,
         errorMessage: null,
+        workerId: null,
+        lastProgressAt: backtest.updatedAt instanceof Date ? backtest.updatedAt : new Date(),
         meta: nextMeta,
       });
       return;
@@ -1015,6 +1027,8 @@ export class AutomationExecutionService {
         finishedAt,
         durationMs,
         errorMessage: null,
+        workerId: null,
+        lastProgressAt: finishedAt,
         meta: nextMeta,
       });
 
@@ -1078,6 +1092,8 @@ export class AutomationExecutionService {
       finishedAt,
       durationMs,
       errorMessage,
+      workerId: null,
+      lastProgressAt: finishedAt,
       meta: nextMeta,
     });
 

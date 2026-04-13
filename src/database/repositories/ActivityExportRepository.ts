@@ -34,6 +34,20 @@ export interface ReadyActivityExportMatchOptions {
   filters?: Record<string, string> | null;
 }
 
+export interface ActivityExportStaleQuery {
+  olderThan: Date;
+  limit?: number;
+  userId?: string;
+  workerId?: string | null;
+  statuses?: string[];
+}
+
+export interface ActivityExportRepairPayload {
+  status: 'Queued' | 'Failed';
+  reason: string;
+  repairedAt?: Date;
+}
+
 @Service()
 export class ActivityExportRepository {
   private get exportRepository(): Repository<ActivityExport> {
@@ -52,6 +66,19 @@ export class ActivityExportRepository {
 
   async getExportById(userId: string, exportId: string): Promise<ActivityExport | null> {
     return this.exportRepository.findOne({ where: { id: exportId, userId } });
+  }
+
+  async getExportByIdAny(exportId: string): Promise<ActivityExport | null> {
+    const normalizedExportId = String(exportId || '').trim();
+    if (!normalizedExportId) {
+      return null;
+    }
+
+    return this.exportRepository.findOne({
+      where: {
+        id: normalizedExportId,
+      },
+    });
   }
 
   async createExport(payload: CreateActivityExportPayload): Promise<ActivityExport> {
@@ -82,10 +109,21 @@ export class ActivityExportRepository {
     });
   }
 
-  async markExportProcessing(exportId: string): Promise<ActivityExport | null> {
+  async markExportProcessing(
+    exportId: string,
+    workerId: string | null = null,
+    processingStartedAt = new Date()
+  ): Promise<ActivityExport | null> {
     const result = await this.exportRepository.update(
       { id: exportId, status: 'Queued' },
-      { status: 'Processing', errorMessage: null }
+      {
+        status: 'Processing',
+        errorMessage: null,
+        workerId,
+        processingStartedAt,
+        repairedAt: null,
+        repairReason: null,
+      }
     );
     if (Number(result.affected || 0) <= 0) {
       return null;
@@ -106,6 +144,8 @@ export class ActivityExportRepository {
         content: null,
         errorMessage: null,
         expiresAt: payload.expiresAt ?? null,
+        workerId: null,
+        processingStartedAt: null,
       }
     );
     return this.exportRepository.findOne({ where: { id: exportId } });
@@ -117,8 +157,64 @@ export class ActivityExportRepository {
       {
         status: 'Failed',
         errorMessage: errorMessage.slice(0, 255),
+        workerId: null,
+        processingStartedAt: null,
       }
     );
+    return this.exportRepository.findOne({ where: { id: exportId } });
+  }
+
+  async findStaleProcessingExports(query: ActivityExportStaleQuery): Promise<ActivityExport[]> {
+    const statuses = Array.isArray(query.statuses) && query.statuses.length
+      ? query.statuses
+      : ['Processing'];
+
+    const builder = this.exportRepository
+      .createQueryBuilder('activityExport')
+      .where('activityExport.status IN (:...statuses)', { statuses })
+      .andWhere(
+        '(activityExport.processing_started_at IS NULL OR activityExport.processing_started_at < :olderThan)',
+        { olderThan: query.olderThan }
+      );
+
+    if (query.userId) {
+      builder.andWhere('activityExport.user_id = :userId', { userId: query.userId });
+    }
+
+    if (query.workerId === null) {
+      builder.andWhere('activityExport.worker_id IS NULL');
+    } else if (typeof query.workerId === 'string' && query.workerId.trim()) {
+      builder.andWhere('activityExport.worker_id = :workerId', {
+        workerId: query.workerId.trim(),
+      });
+    }
+
+    return builder
+      .orderBy('activityExport.processing_started_at', 'ASC')
+      .addOrderBy('activityExport.createdAt', 'ASC')
+      .take(query.limit ?? 100)
+      .getMany();
+  }
+
+  async markExportRepaired(
+    exportId: string,
+    payload: ActivityExportRepairPayload
+  ): Promise<ActivityExport | null> {
+    const repairedAt = payload.repairedAt ?? new Date();
+
+    await this.exportRepository.update(
+      { id: exportId },
+      {
+        status: payload.status,
+        errorMessage:
+          payload.status === 'Failed' ? payload.reason.slice(0, 255) : null,
+        workerId: null,
+        processingStartedAt: null,
+        repairedAt,
+        repairReason: payload.reason,
+      }
+    );
+
     return this.exportRepository.findOne({ where: { id: exportId } });
   }
 

@@ -8,6 +8,7 @@ const mutationMethodPattern =
 
 const allowListMissingFailureAlert = new Set<string>([
   // Read/summary services can remain out. This list is only for mutation-class methods.
+  'RuntimeDiagnosticsService.ts',
 ]);
 
 function runOperationalAudit(): void {
@@ -92,6 +93,65 @@ function runOperationalAudit(): void {
   if (!appSource.includes('activityMaintenanceLoader')) {
     findings.push('app.ts: missing activity maintenance loader wiring');
   }
+  for (const marker of [
+    'shutdownDrainTimeoutMs',
+    'API runtime shutdown completed successfully',
+    'closeHttpServer(server)',
+  ]) {
+    if (!appSource.includes(marker)) {
+      findings.push(`app.ts: missing runtime drain marker ${marker}`);
+    }
+  }
+
+  const emailWorkerAppSource = fs.readFileSync(
+    path.join(process.cwd(), 'app.email-worker.ts'),
+    'utf8'
+  );
+  for (const marker of ['draining email worker', 'worker.stop()', 'shutdownDrainTimeoutMs']) {
+    if (!emailWorkerAppSource.includes(marker)) {
+      findings.push(`app.email-worker.ts: missing runtime drain marker ${marker}`);
+    }
+  }
+
+  const runtimeDiagnosticsSource = fs.readFileSync(
+    path.join(servicesDir, 'RuntimeDiagnosticsService.ts'),
+    'utf8'
+  );
+  for (const marker of [
+    'getRuntimeOverview(',
+    'listStaleItems(',
+    'repairSchedulerCommand(',
+    'repairSchedulerRun(',
+    'repairAutomationRun(',
+    'repairActivityExport(',
+    'requeueScheduler(',
+    'releaseSchedulerLock(',
+    'fetchDiscoveryRuntimePayload(',
+  ]) {
+    if (!runtimeDiagnosticsSource.includes(marker)) {
+      findings.push(`RuntimeDiagnosticsService.ts: missing runtime operator marker ${marker}`);
+    }
+  }
+
+  const runtimeControllerSource = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'api', 'controllers', 'InternalRuntimeController.ts'),
+    'utf8'
+  );
+  for (const marker of [
+    "@JsonController('/internal/runtime')",
+    "@Get('/overview')",
+    "@Get('/stale-items')",
+    "@Post('/repair/scheduler-command/:commandId')",
+    "@Post('/repair/scheduler-run/:runId')",
+    "@Post('/repair/automation-run/:runId')",
+    "@Post('/repair/activity-export/:exportId')",
+    "@Post('/requeue/scheduler/:schedulerKey')",
+    "@Post('/release-lock/:schedulerKey')",
+  ]) {
+    if (!runtimeControllerSource.includes(marker)) {
+      findings.push(`InternalRuntimeController.ts: missing runtime API marker ${marker}`);
+    }
+  }
 
   const envSource = fs.readFileSync(path.join(process.cwd(), 'src', 'env.ts'), 'utf8');
   for (const marker of [
@@ -147,6 +207,11 @@ function runOperationalAudit(): void {
     '"release-gate:global-system-schedulers"',
     '"signoff:global-system-schedulers"',
     '"proof:global-system-schedulers-live"',
+    '"test:runtime-recovery"',
+    '"check:runtime-health"',
+    '"smoke:runtime-recovery"',
+    '"release-gate:runtime-recovery"',
+    '"signoff:runtime-recovery"',
     '"check:portfolio-health"',
     '"release-gate:portfolio"',
     '"signoff:portfolio"',

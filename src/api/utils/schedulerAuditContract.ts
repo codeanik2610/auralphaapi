@@ -42,6 +42,28 @@ export function buildSystemSchedulerProcessAudit(
   };
 }
 
+export function buildRuntimeSchedulerAudit(options: {
+  actorUserId?: string | null;
+  executionContext?: SchedulerExecutionContext;
+  initiatedByLabel?: string | null;
+} = {}): SchedulerAuditMetadata {
+  const actorUserId = String(options.actorUserId || '').trim();
+  const executionContext = options.executionContext || (actorUserId ? 'user' : 'system');
+  const initiatedByType: SchedulerInitiator['type'] = actorUserId ? 'manual' : 'system';
+  const initiatedByLabel = String(options.initiatedByLabel || actorUserId || '').trim();
+
+  return {
+    initiatedByType,
+    ...(actorUserId ? { initiatedByUserId: actorUserId } : {}),
+    ...(initiatedByLabel
+      ? { initiatedByLabel }
+      : initiatedByType === 'system'
+        ? { initiatedByLabel: 'System' }
+        : {}),
+    executionContext,
+  };
+}
+
 export function toSchedulerAuditContract(
   ...sources: SchedulerAuditSource[]
 ): Pick<

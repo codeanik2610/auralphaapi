@@ -117,6 +117,12 @@ export class AutomationRepository {
     });
   }
 
+  async getAutomationByIdAny(automationId: string): Promise<Automation | null> {
+    return this.automationRepository.findOne({
+      where: { id: automationId },
+    });
+  }
+
   async getAutomationsSummary(userId?: string | null): Promise<{
     total: number;
     running: number;

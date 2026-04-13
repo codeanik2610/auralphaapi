@@ -3,6 +3,9 @@ import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 
 @Entity({ name: 'scheduler_run_logs' })
 @Index('idx_scheduler_run_logs_key_started', ['schedulerKey', 'startedAt'])
 @Index('idx_scheduler_run_logs_scheduler_actor_started', ['schedulerKey', 'actorUserId', 'startedAt'])
+@Index('idx_scheduler_run_logs_command_id', ['commandId'])
+@Index('idx_scheduler_run_logs_status_last_progress_at', ['status', 'lastProgressAt'])
+@Index('idx_scheduler_run_logs_worker_status_started_at', ['workerId', 'status', 'startedAt'])
 export class SchedulerRunLog {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -12,6 +15,12 @@ export class SchedulerRunLog {
 
   @Column({ type: 'varchar', length: 32 })
   status!: string;
+
+  @Column({ name: 'command_id', type: 'char', length: 36, nullable: true })
+  commandId!: string | null;
+
+  @Column({ name: 'worker_id', type: 'varchar', length: 191, nullable: true })
+  workerId!: string | null;
 
   @Column({ name: 'actor_user_id', type: 'varchar', length: 191, nullable: true })
   actorUserId!: string | null;
@@ -37,6 +46,9 @@ export class SchedulerRunLog {
   @Column({ name: 'duration_ms', type: 'int', nullable: true })
   durationMs!: number | null;
 
+  @Column({ name: 'last_progress_at', type: 'timestamp', nullable: true })
+  lastProgressAt!: Date | null;
+
   @Column({ name: 'processed_accounts', type: 'int', default: 0 })
   processedAccounts!: number;
 
@@ -51,6 +63,12 @@ export class SchedulerRunLog {
 
   @Column({ name: 'error_message', type: 'text', nullable: true })
   errorMessage!: string | null;
+
+  @Column({ name: 'repaired_at', type: 'timestamp', nullable: true })
+  repairedAt!: Date | null;
+
+  @Column({ name: 'repair_reason', type: 'text', nullable: true })
+  repairReason!: string | null;
 
   @Column({ name: 'meta_json', type: 'simple-json', nullable: true })
   meta!: Record<string, unknown> | null;
