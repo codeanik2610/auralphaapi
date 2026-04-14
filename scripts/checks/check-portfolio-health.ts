@@ -11,10 +11,15 @@ export type PortfolioHealthSnapshot = {
   contractVersion: string | null;
   purpose: string | null;
   pageHydration: string | null;
-  summarySource: string | null;
-  overviewPerformanceSource: string | null;
+  futuresSummarySource: string | null;
+  positionsSource: string | null;
+  capitalSource: string | null;
+  overviewActivitySource: string | null;
   directPerformanceSource: string | null;
   indexedSnapshotReads: boolean;
+  futuresOverview: boolean;
+  positionsIncludedInOverview: boolean;
+  legacyFieldsAreCompatibilityAliases: boolean;
   activityReadModelAcceleration: boolean;
   portfolioHealthChecks: boolean;
   shareableWorkspaceState: boolean;
@@ -23,8 +28,8 @@ export type PortfolioHealthSnapshot = {
   liveSnapshotReconciliationPolicy: boolean;
   exportReport: boolean;
   reconciliationMode: string | null;
-  holdingsCount: number;
-  snapshotsCount: number;
+  positionsCount: number;
+  capitalRouteCount: number;
   performancePointCount: number;
   performanceTrades: number;
   warningsCount: number;
@@ -155,13 +160,23 @@ export function buildPortfolioHealthSnapshot(input: {
   const overviewData = asRecord(input.overviewPayload.data);
   const overviewMeta = asRecord(overviewData.meta);
   const overviewCapabilities = asRecord(overviewMeta.capabilities);
-  const overviewSummary = asRecord(overviewData.summary);
+  const overviewFuturesSummary = asRecord(overviewData.futuresSummary);
+  const overviewPositions = asRecord(overviewData.positions);
+  const overviewCapital = asRecord(overviewData.capital);
+  const overviewActivity = asRecord(overviewData.activity);
+  const legacySummary = asRecord(overviewData.summary);
+  const legacyHoldings = asRecord(overviewData.holdings);
+  const legacyActiveFunds = asRecord(overviewData.activeFunds);
   const overviewPerformance = asRecord(overviewData.performance);
   const overviewReconciliationPolicy = asRecord(overviewMeta.reconciliationPolicy);
-  const holdings = asRecord(overviewData.holdings);
-  const snapshots = asRecord(overviewData.snapshots);
   const performanceData = asRecord(input.performancePayload.data);
   const performanceSummary = asRecord(performanceData.summary);
+  const capitalWalletItems = readArray(
+    overviewCapital.walletItems ?? legacyActiveFunds.walletItems
+  );
+  const capitalFuturesItems = readArray(
+    overviewCapital.futuresItems ?? legacyActiveFunds.futuresItems
+  );
 
   return {
     baseUrl: input.baseUrl,
@@ -170,10 +185,28 @@ export function buildPortfolioHealthSnapshot(input: {
     contractVersion: readString(overviewMeta.contractVersion) || null,
     purpose: readString(overviewMeta.purpose) || null,
     pageHydration: readString(overviewMeta.pageHydration) || null,
-    summarySource: readString(overviewSummary.source) || null,
-    overviewPerformanceSource: readString(overviewPerformance.source) || null,
+    futuresSummarySource:
+      readString(overviewFuturesSummary.source) ||
+      readString(legacySummary.source) ||
+      null,
+    positionsSource:
+      readString(overviewPositions.source) ||
+      readString(legacyHoldings.source) ||
+      null,
+    capitalSource:
+      readString(overviewCapital.source) ||
+      readString(legacyActiveFunds.source) ||
+      null,
+    overviewActivitySource:
+      readString(overviewActivity.source) ||
+      readString(overviewPerformance.source) ||
+      null,
     directPerformanceSource: readString(performanceData.source) || null,
     indexedSnapshotReads: overviewCapabilities.indexedSnapshotReads === true,
+    futuresOverview: overviewCapabilities.futuresOverview === true,
+    positionsIncludedInOverview: overviewCapabilities.positionsIncludedInOverview === true,
+    legacyFieldsAreCompatibilityAliases:
+      overviewCapabilities.legacyFieldsAreCompatibilityAliases === true,
     activityReadModelAcceleration:
       overviewCapabilities.activityReadModelAcceleration === true,
     portfolioHealthChecks: overviewCapabilities.portfolioHealthChecks === true,
@@ -184,8 +217,8 @@ export function buildPortfolioHealthSnapshot(input: {
       overviewCapabilities.liveSnapshotReconciliationPolicy === true,
     exportReport: overviewCapabilities.exportReport === true,
     reconciliationMode: readString(overviewReconciliationPolicy.mode) || null,
-    holdingsCount: readNumber(holdings.total),
-    snapshotsCount: readNumber(snapshots.total),
+    positionsCount: readNumber(overviewPositions.total ?? legacyHoldings.total),
+    capitalRouteCount: capitalWalletItems.length + capitalFuturesItems.length,
     performancePointCount: readArray(performanceData.points).length,
     performanceTrades: readNumber(performanceSummary.totalTrades),
     warningsCount: readArray(overviewMeta.warnings).length,
@@ -210,14 +243,24 @@ export function assertPortfolioHealthSnapshot(
     'portfolio page hydration must remain single-request'
   );
   assert.equal(
-    snapshot.summarySource,
-    'portfolio_snapshots',
-    'portfolio summary must remain snapshot-backed'
+    snapshot.futuresSummarySource,
+    'funds_snapshots_plus_position_read_models',
+    'portfolio overview must publish the futures summary source'
   );
   assert.equal(
-    snapshot.overviewPerformanceSource,
+    snapshot.positionsSource,
+    'position_read_models',
+    'portfolio overview positions must be read-model-backed'
+  );
+  assert.equal(
+    snapshot.capitalSource,
+    'funds_snapshots via broker_wallet_facade',
+    'portfolio overview capital must be route-backed'
+  );
+  assert.equal(
+    snapshot.overviewActivitySource,
     'scheduler_positions_snapshots',
-    'overview performance must preserve scheduler snapshot semantics'
+    'portfolio overview activity must preserve scheduler snapshot semantics'
   );
   assert.equal(
     snapshot.directPerformanceSource,
@@ -226,8 +269,23 @@ export function assertPortfolioHealthSnapshot(
   );
   assert.equal(
     snapshot.indexedSnapshotReads,
+    false,
+    'portfolio overview must stop advertising indexed snapshot reads in the futures-only contract'
+  );
+  assert.equal(
+    snapshot.futuresOverview,
     true,
-    'portfolio overview must advertise indexed snapshot reads after Phase 5'
+    'portfolio overview must advertise the futures-first workspace contract'
+  );
+  assert.equal(
+    snapshot.positionsIncludedInOverview,
+    true,
+    'portfolio overview must expose positions in the primary overview payload'
+  );
+  assert.equal(
+    snapshot.legacyFieldsAreCompatibilityAliases,
+    true,
+    'portfolio overview must keep legacy fields clearly marked as compatibility aliases during migration'
   );
   assert.equal(
     snapshot.activityReadModelAcceleration,
@@ -257,7 +315,7 @@ export function assertPortfolioHealthSnapshot(
   assert.equal(
     snapshot.liveSnapshotReconciliationPolicy,
     true,
-    'portfolio overview must advertise the manual live-versus-snapshot reconciliation policy after Phase 6'
+    'portfolio overview must advertise the manual futures workspace reconciliation policy after Phase 6'
   );
   assert.equal(
     snapshot.exportReport,

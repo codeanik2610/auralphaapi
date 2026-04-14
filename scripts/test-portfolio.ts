@@ -260,140 +260,186 @@ function createSuccess<T>(data: T) {
 
 async function runOverviewHydrationAssertions(): Promise<void> {
   const service = new PortfolioOverviewService() as any;
-  let requestedPerformanceTimeframe: string | null = null;
-  let requestedSnapshotsQuery: { limit?: string; offset?: string } | null = null;
+  let requestedActivityTimeframe: string | null = null;
+  let requestedPositionsQuery: { limit?: string | number; offset?: string | number } | null = null;
   const freshObservedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
   service.portfolioService = {
-    async getPortfolioPnL() {
+    async getFuturesSummary() {
       return createSuccess({
-        dailyPnL: 12,
-        weeklyPnL: 24,
-        monthlyPnL: 48,
-        source: 'scheduler_positions_snapshots',
-        measurement: 'realized_pnl',
-        windows: {
-          timezone: 'Asia/Kolkata',
-          daily: 'Today (Asia/Kolkata)',
-          weekly: 'Trailing 7 days (Asia/Kolkata)',
-          monthly: 'Trailing 30 days (Asia/Kolkata)',
-        },
-      });
-    },
-    async getPortfolioPerformance(_userId: string, timeframe: string) {
-      requestedPerformanceTimeframe = timeframe;
-      return createSuccess({
-        timeframe,
-        mode: 'closed-position-activity',
-        source: 'scheduler_positions_snapshots',
-        measurement: 'realized_pnl',
-        windowLabel: 'Trailing 7 days (Asia/Kolkata)',
-        bucketLabel: 'day',
-        points: [],
-        summary: {
-          totalEquity: 18000,
-          totalPnl: 24,
-          totalProfit: 30,
-          totalLoss: 6,
-          totalTrades: 4,
-        },
-      });
-    },
-    async getPortfolioSummary() {
-      return createSuccess({
-        source: 'portfolio_snapshots',
+        source: 'funds_snapshots_plus_position_read_models',
         observedAt: freshObservedAt,
-        definition: 'Latest stored portfolio snapshot summary.',
-        portfolioValue: '$18,000',
-        equity: 18000,
-        holdings: 4,
-      });
-    },
-    async getPortfolioHoldings() {
-      return createSuccess({
-        source: 'portfolio_snapshots',
-        observedAt: freshObservedAt,
+        observedAtIso: freshObservedAt,
+        positionsObservedAt: freshObservedAt,
+        positionsObservedAtIso: freshObservedAt,
+        capitalObservedAt: freshObservedAt,
+        capitalObservedAtIso: freshObservedAt,
         definition:
-          'Largest holdings ordered by market value from the latest stored portfolio snapshot.',
+          'Futures summary built from live capital routes in funds snapshots plus open-position exposure in the positions read model.',
+        futuresEquity: 320,
+        availableCollateral: 140,
+        usedMargin: 80,
+        walletCollateral: 200,
+        openPositions: 1,
+        grossExposure: 12000,
+        longExposure: 12000,
+        shortExposure: 0,
+        unrealizedPnl: 1800,
+      });
+    },
+    async getOpenPositionsOverview(
+      _userId: string,
+      query: { limit?: string | number; offset?: string | number }
+    ) {
+      requestedPositionsQuery = query;
+      return createSuccess({
+        source: 'position_read_models',
+        observedAt: freshObservedAt,
+        observedAtIso: freshObservedAt,
+        latestObservedAt: freshObservedAt,
+        latestObservedAtIso: freshObservedAt,
+        oldestObservedAt: freshObservedAt,
+        oldestObservedAtIso: freshObservedAt,
+        definition:
+          'Open futures positions across connected accounts, normalized from the positions read model.',
         items: [
           {
-            id: 'holding-1',
+            id: 'position-1',
+            accountId: 'account-1',
+            accountName: 'Delta Futures',
+            accountKey: 'delta-futures',
+            brokerKey: 'delta_exchange',
             symbol: 'BTCUSDT',
             quantity: 0.45,
-            marketValue: 12000,
-            allocationPct: 55,
-            dayPnL: 450,
-            unrealizedPnL: 1800,
+            exposure: 12000,
+            unrealizedPnl: 1800,
             side: 'Long',
-            strategy: 'Core',
-            riskState: 'Healthy',
-            sleeve: 'Majors',
+            sideKey: 'long',
+            status: 'Open',
+            statusKey: 'open',
+            entryPrice: 62000,
+            currentPrice: 62400,
+            closedPrice: null,
+            realizedPnl: null,
+            leverage: 5,
+            liquidationPrice: 54000,
+            freshness: {
+              state: 'fresh',
+              observedAt: freshObservedAt,
+              freshnessMs: 60_000,
+              staleAfterMs: 300_000,
+              criticalAfterMs: 900_000,
+              isStale: false,
+              isCritical: false,
+              source: 'position_read_models',
+            },
+            observedAt: freshObservedAt,
+            observedAtIso: freshObservedAt,
           },
         ],
         total: 1,
-        limit: 100,
+        limit: Number(query.limit || 0),
         offset: 0,
       });
     },
-    async getPortfolioSnapshots(
-      _userId: string,
-      query: { limit?: string; offset?: string }
-    ) {
-      requestedSnapshotsQuery = query;
+    async getCapitalOverview() {
       return createSuccess({
-        source: 'portfolio_snapshots',
-        items: [
-          {
-            id: 'snapshot-1',
-            equity: 18000,
-            createdAt: freshObservedAt,
-          },
-        ],
-        total: 1,
-      });
-    },
-  };
-
-  service.brokerWalletFacadeService = {
-    async getWalletFundsForActiveAccounts() {
-      return {
-        items: [
+        source: 'funds_snapshots via broker_wallet_facade',
+        definition:
+          'Wallet and futures capital routes normalized from the latest funds snapshot for each connected account.',
+        freshnessModel: 'funds_snapshot_timestamp',
+        latestObservedAt: freshObservedAt,
+        latestObservedAtIso: freshObservedAt,
+        oldestObservedAt: freshObservedAt,
+        oldestObservedAtIso: freshObservedAt,
+        walletItems: [
           {
             accountId: 'wallet-1',
             accountName: 'Mudrex Wallet',
+            accountKey: '',
             brokerKey: 'mudrex',
             status: 'connected',
             observedAt: freshObservedAt,
+            observedAtIso: freshObservedAt,
+            error: null,
             funds: {
-              data: {
-                balance: '200',
-                withdrawable: '150',
-                used_margin: '25',
-              },
+              balance: 200,
+              available: 150,
+              invested: 25,
             },
           },
         ],
-      };
-    },
-    async getFuturesFundsForActiveAccounts() {
-      return {
-        data: {
-          items: [
-            {
-              accountId: 'futures-1',
-              accountName: 'Delta Futures',
-              brokerKey: 'delta_exchange',
-              status: 'connected',
-              observedAt: freshObservedAt,
-              funds: {
-                futures_equity: '320',
-                free_balance: '140',
-                margin_used: '80',
-              },
+        futuresItems: [
+          {
+            accountId: 'futures-1',
+            accountName: 'Delta Futures',
+            accountKey: '',
+            brokerKey: 'delta_exchange',
+            status: 'connected',
+            observedAt: freshObservedAt,
+            observedAtIso: freshObservedAt,
+            error: null,
+            funds: {
+              balance: 320,
+              available: 140,
+              invested: 80,
             },
-          ],
+          },
+        ],
+        walletTotal: 200,
+        futuresTotal: 320,
+        totalVisibleCapital: 520,
+        walletSharePct: 38.46,
+        futuresSharePct: 61.54,
+        driftPct: 23.08,
+      });
+    },
+    async getActivityOverview(_userId: string, timeframe: string) {
+      requestedActivityTimeframe = timeframe;
+      return createSuccess({
+        source: 'scheduler_positions_snapshots',
+        definition:
+          'Portfolio activity combines realized PnL windows and performance buckets from scheduler position snapshots.',
+        freshnessModel: 'windowed_activity',
+        observedAt: freshObservedAt,
+        observedAtIso: freshObservedAt,
+        pnl: {
+          dailyPnL: 12,
+          weeklyPnL: 24,
+          monthlyPnL: 48,
+          source: 'scheduler_positions_snapshots',
+          measurement: 'realized_pnl',
+          freshnessModel: 'windowed_activity',
+          observedAt: freshObservedAt,
+          observedAtIso: freshObservedAt,
+          windows: {
+            timezone: 'Asia/Kolkata',
+            daily: 'Today (Asia/Kolkata)',
+            weekly: 'Trailing 7 days (Asia/Kolkata)',
+            monthly: 'Trailing 30 days (Asia/Kolkata)',
+          },
         },
-      };
+        performance: {
+          timeframe,
+          mode: 'closed-position-activity',
+          source: 'scheduler_positions_snapshots',
+          measurement: 'realized_pnl',
+          freshnessModel: 'windowed_activity',
+          observedAt: freshObservedAt,
+          observedAtIso: freshObservedAt,
+          windowLabel: 'Trailing 7 days (Asia/Kolkata)',
+          bucketLabel: 'day',
+          points: [],
+          summary: {
+            totalEquity: 18000,
+            totalPnl: 24,
+            totalProfit: 30,
+            totalLoss: 6,
+            totalTrades: 4,
+            brokers: {},
+          },
+        },
+      });
     },
   };
 
@@ -403,12 +449,12 @@ async function runOverviewHydrationAssertions(): Promise<void> {
     snapshotsOffset: '10',
   });
 
-  assert.equal(requestedPerformanceTimeframe, 'weekly');
-  assert.deepEqual(requestedSnapshotsQuery, {
-    limit: '5',
-    offset: '10',
+  assert.equal(requestedActivityTimeframe, 'weekly');
+  assert.deepEqual(requestedPositionsQuery, {
+    limit: '100',
+    offset: '0',
   });
-  assert.equal(response.data.meta.contractVersion, 'portfolio-overview-phase6-2026-04-10');
+  assert.equal(response.data.meta.contractVersion, 'portfolio-overview-phase7-futures-2026-04-14');
   assert.equal(response.data.meta.purpose, 'operator_portfolio_workspace');
   assert.equal(response.data.meta.primaryPageRoute, '/portfolio');
   assert.equal(response.data.meta.primaryEndpoint, '/portfolio/overview');
@@ -435,26 +481,34 @@ async function runOverviewHydrationAssertions(): Promise<void> {
   assert.deepEqual(response.data.meta.sources, {
     pnl: 'scheduler_positions_snapshots',
     performance: 'scheduler_positions_snapshots',
-    summary: 'portfolio_snapshots',
-    holdings: 'portfolio_snapshots',
-    snapshots: 'portfolio_snapshots',
+    summary: 'funds_snapshots_plus_position_read_models (legacy alias)',
+    holdings: 'position_read_models (legacy alias)',
+    snapshots: 'deprecated legacy placeholder',
     activeFunds: 'funds_snapshots via broker_wallet_facade',
+    futuresSummary: 'funds_snapshots_plus_position_read_models',
+    positions: 'position_read_models',
+    capital: 'funds_snapshots via broker_wallet_facade',
+    activity: 'scheduler_positions_snapshots',
   });
   assert.equal(response.data.meta.capabilities.singleRequestHydration, true);
-  assert.equal(response.data.meta.capabilities.holdingsIncludedInOverview, true);
+  assert.equal(response.data.meta.capabilities.holdingsIncludedInOverview, false);
+  assert.equal(response.data.meta.capabilities.positionsIncludedInOverview, true);
   assert.equal(response.data.meta.warnings.length, 0);
   assert.equal(
-    response.data.meta.sections.activeFunds.sourceLabel,
-    'Latest per-account funds snapshots'
+    response.data.meta.sections.capital.sourceLabel,
+    'Capital routes'
   );
-  assert.equal(response.data.holdings.source, 'portfolio_snapshots');
+  assert.equal(response.data.holdings.source, 'portfolio_overview_futures_legacy_alias');
   assert.equal(response.data.holdings.items.length, 1);
   assert.equal(response.data.activeFunds.source, 'funds_snapshots via broker_wallet_facade');
   assert.equal(
     response.data.activeFunds.definition,
-    'Latest stored funds snapshot per connected account, normalized for wallet and futures capital review.'
+    'Deprecated alias for capital routes. Use `capital` for wallet and futures route totals in the futures-only portfolio workspace.'
   );
   assert.equal(response.data.activeFunds.freshnessModel, 'funds_snapshot_timestamp');
+  assert.equal(response.data.positions?.items[0]?.symbol, 'BTCUSDT');
+  assert.equal(response.data.capital?.walletTotal, 200);
+  assert.equal(response.data.futuresSummary?.futuresEquity, 320);
   assert.deepEqual(response.data.activeFunds.walletItems, [
     {
       accountId: 'wallet-1',
@@ -463,6 +517,7 @@ async function runOverviewHydrationAssertions(): Promise<void> {
       brokerKey: 'mudrex',
       status: 'connected',
       observedAt: freshObservedAt,
+      observedAtIso: freshObservedAt,
       error: null,
       funds: {
         balance: 200,
@@ -479,6 +534,7 @@ async function runOverviewHydrationAssertions(): Promise<void> {
       brokerKey: 'delta_exchange',
       status: 'connected',
       observedAt: freshObservedAt,
+      observedAtIso: freshObservedAt,
       error: null,
       funds: {
         balance: 320,
@@ -487,6 +543,9 @@ async function runOverviewHydrationAssertions(): Promise<void> {
       },
     },
   ]);
+  assert.equal(response.data.snapshots.items.length, 0);
+  assert.equal(response.data.snapshots.limit, 5);
+  assert.equal(response.data.snapshots.offset, 10);
 }
 
 async function main(): Promise<void> {
@@ -569,64 +628,78 @@ async function runHoldingsMetadataAssertions(): Promise<void> {
 
 async function runOverviewWorkspaceAssertions(): Promise<void> {
   const service = new PortfolioOverviewService() as any;
-  let requestedHoldingsLimit: string | null = null;
+  let requestedPositionsLimit: string | number | null = null;
   const freshObservedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
   service.portfolioService = {
-    async getPortfolioPnL() {
+    async getFuturesSummary() {
       return createSuccess({
-        dailyPnL: 12,
-        weeklyPnL: 24,
-        monthlyPnL: 48,
-      });
-    },
-    async getPortfolioPerformance() {
-      return createSuccess({
-        timeframe: 'daily',
-        points: [],
-        summary: {
-          totalEquity: 18000,
-          totalPnl: 12,
-          totalProfit: 18,
-          totalLoss: 6,
-          totalTrades: 3,
-          brokers: {},
-        },
-      });
-    },
-    async getPortfolioSummary() {
-      return createSuccess({
-        source: 'portfolio_snapshots',
+        source: 'funds_snapshots_plus_position_read_models',
         observedAt: freshObservedAt,
-        portfolioValue: '$18,000',
-        netExposure: '42%',
-        diversification: 'Balanced',
-        riskPosture: 'Healthy',
-      });
-    },
-    async getPortfolioHoldings(
-      _userId: string,
-      query: { limit?: string; offset?: string }
-    ) {
-      requestedHoldingsLimit = query.limit || null;
-      return createSuccess({
-        source: 'portfolio_snapshots',
-        observedAt: freshObservedAt,
+        observedAtIso: freshObservedAt,
+        positionsObservedAt: freshObservedAt,
+        positionsObservedAtIso: freshObservedAt,
+        capitalObservedAt: freshObservedAt,
+        capitalObservedAtIso: freshObservedAt,
         definition:
-          'Largest holdings ordered by market value from the latest stored portfolio snapshot.',
+          'Futures summary built from live capital routes in funds snapshots plus open-position exposure in the positions read model.',
+        futuresEquity: 18000,
+        availableCollateral: 12000,
+        usedMargin: 4000,
+        walletCollateral: 0,
+        openPositions: 1,
+        grossExposure: 12000,
+        longExposure: 12000,
+        shortExposure: 0,
+        unrealizedPnl: 1800,
+      });
+    },
+    async getOpenPositionsOverview(
+      _userId: string,
+      query: { limit?: string | number; offset?: string | number }
+    ) {
+      requestedPositionsLimit = query.limit || null;
+      return createSuccess({
+        observedAt: freshObservedAt,
+        observedAtIso: freshObservedAt,
+        latestObservedAt: freshObservedAt,
+        latestObservedAtIso: freshObservedAt,
+        oldestObservedAt: freshObservedAt,
+        oldestObservedAtIso: freshObservedAt,
+        source: 'position_read_models',
+        definition:
+          'Open futures positions across connected accounts, normalized from the positions read model.',
         items: [
           {
-            id: 'holding-1',
+            id: 'position-1',
+            accountId: 'account-1',
+            accountName: 'Delta Futures',
+            accountKey: 'delta-futures',
+            brokerKey: 'delta_exchange',
             symbol: 'BTCUSDT',
             quantity: 0.45,
-            marketValue: 12000,
-            allocationPct: 55,
-            dayPnL: 450,
-            unrealizedPnL: 1800,
+            exposure: 12000,
+            unrealizedPnl: 1800,
             side: 'Long',
-            strategy: 'Core',
-            riskState: 'Healthy',
-            sleeve: 'Majors',
+            sideKey: 'long',
+            status: 'Open',
+            statusKey: 'open',
+            entryPrice: 62000,
+            currentPrice: 62400,
+            leverage: 5,
+            liquidationPrice: 54000,
+            freshness: {
+              state: 'fresh',
+              observedAt: freshObservedAt,
+              freshnessMs: 10_000,
+              staleAfterMs: 300_000,
+              criticalAfterMs: 900_000,
+              isStale: false,
+              isCritical: false,
+              source: 'position_read_models',
+            },
+            observedAt: freshObservedAt,
+            observedAtIso: freshObservedAt,
           },
         ],
         total: 1,
@@ -634,23 +707,57 @@ async function runOverviewWorkspaceAssertions(): Promise<void> {
         offset: 0,
       });
     },
-    async getPortfolioSnapshots() {
+    async getCapitalOverview() {
       return createSuccess({
-        source: 'portfolio_snapshots',
-        items: [],
-        total: 0,
-        limit: 20,
-        offset: 0,
+        source: 'funds_snapshots via broker_wallet_facade',
+        definition:
+          'Wallet and futures capital routes normalized from the latest funds snapshot for each connected account.',
+        freshnessModel: 'funds_snapshot_timestamp',
+        latestObservedAt: freshObservedAt,
+        latestObservedAtIso: freshObservedAt,
+        oldestObservedAt: freshObservedAt,
+        oldestObservedAtIso: freshObservedAt,
+        walletItems: [],
+        futuresItems: [],
+        walletTotal: 0,
+        futuresTotal: 18000,
+        totalVisibleCapital: 18000,
+        walletSharePct: 0,
+        futuresSharePct: 100,
+        driftPct: 100,
       });
     },
-  };
-
-  service.brokerWalletFacadeService = {
-    async getWalletFundsForActiveAccounts() {
-      return { items: [] };
-    },
-    async getFuturesFundsForActiveAccounts() {
-      return { items: [] };
+    async getActivityOverview() {
+      return createSuccess({
+        source: 'scheduler_positions_snapshots',
+        definition:
+          'Portfolio activity combines realized PnL windows and performance buckets from scheduler position snapshots.',
+        freshnessModel: 'windowed_activity',
+        observedAt: freshObservedAt,
+        observedAtIso: freshObservedAt,
+        pnl: {
+          dailyPnL: 12,
+          weeklyPnL: 24,
+          monthlyPnL: 48,
+          source: 'scheduler_positions_snapshots',
+          measurement: 'realized_pnl',
+          freshnessModel: 'windowed_activity',
+          observedAt: freshObservedAt,
+          observedAtIso: freshObservedAt,
+        },
+        performance: {
+          timeframe: 'daily',
+          points: [],
+          summary: {
+            totalEquity: 18000,
+            totalPnl: 12,
+            totalProfit: 18,
+            totalLoss: 6,
+            totalTrades: 3,
+            brokers: {},
+          },
+        },
+      });
     },
   };
 
@@ -659,13 +766,13 @@ async function runOverviewWorkspaceAssertions(): Promise<void> {
     holdingsLimit: '80',
   });
 
-  assert.equal(requestedHoldingsLimit, '80');
+  assert.equal(requestedPositionsLimit, '80');
   assert.equal(response.data.meta.query.supported.includes('holdingsLimit'), true);
-  assert.equal(response.data.meta.sources.holdings, 'portfolio_snapshots');
-  assert.equal(response.data.meta.capabilities.holdingsIncludedInOverview, true);
+  assert.equal(response.data.meta.sources.holdings, 'position_read_models (legacy alias)');
+  assert.equal(response.data.meta.capabilities.holdingsIncludedInOverview, false);
   assert.equal(
     response.data.meta.sections.holdings.sourceLabel,
-    'Latest stored holdings snapshot'
+    'Legacy holdings alias'
   );
   assert.equal(response.data.holdings.observedAt, freshObservedAt);
   assert.equal(response.data.holdings.limit, 80);
@@ -694,74 +801,70 @@ async function runPortfolioPhase4ContractAssertions(): Promise<void> {
   const staleFundsObservedAt = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
 
   service.portfolioService = {
-    async getPortfolioPnL() {
+    async getFuturesSummary() {
       return createSuccess({
-        dailyPnL: 12,
-        weeklyPnL: 24,
-        monthlyPnL: 48,
-        source: 'scheduler_positions_snapshots',
-        measurement: 'realized_pnl',
-        freshnessModel: 'windowed_activity',
+        source: 'funds_snapshots_plus_position_read_models',
         observedAt: staleSnapshotObservedAt,
+        observedAtIso: staleSnapshotObservedAt,
+        positionsObservedAt: staleSnapshotObservedAt,
+        positionsObservedAtIso: staleSnapshotObservedAt,
+        capitalObservedAt: staleFundsObservedAt,
+        capitalObservedAtIso: staleFundsObservedAt,
         definition:
-          'Realized PnL aggregated from closed-position scheduler snapshots across active accounts.',
-        windows: {
-          timezone: 'Asia/Kolkata',
-          daily: 'Today (Asia/Kolkata)',
-          weekly: 'Trailing 7 days (Asia/Kolkata)',
-          monthly: 'Trailing 30 days (Asia/Kolkata)',
-        },
+          'Futures summary built from live capital routes in funds snapshots plus open-position exposure in the positions read model.',
+        futuresEquity: 320,
+        availableCollateral: 140,
+        usedMargin: 80,
+        walletCollateral: 200,
+        openPositions: 1,
+        grossExposure: 12000,
+        longExposure: 12000,
+        shortExposure: 0,
+        unrealizedPnl: 1800,
       });
     },
-    async getPortfolioPerformance() {
+    async getOpenPositionsOverview() {
       return createSuccess({
-        timeframe: 'daily',
-        source: 'scheduler_positions_snapshots',
-        measurement: 'realized_pnl',
-        freshnessModel: 'windowed_activity',
+        source: 'position_read_models',
         observedAt: staleSnapshotObservedAt,
+        observedAtIso: staleSnapshotObservedAt,
+        latestObservedAt: staleSnapshotObservedAt,
+        latestObservedAtIso: staleSnapshotObservedAt,
+        oldestObservedAt: staleSnapshotObservedAt,
+        oldestObservedAtIso: staleSnapshotObservedAt,
         definition:
-          'Closed-position activity aggregated from scheduler snapshots for the selected portfolio timeframe.',
-        points: [],
-        summary: {
-          totalEquity: 18000,
-          totalPnl: 12,
-          totalProfit: 18,
-          totalLoss: 6,
-          totalTrades: 3,
-          brokers: {},
-        },
-      });
-    },
-    async getPortfolioSummary() {
-      return createSuccess({
-        source: 'portfolio_snapshots',
-        observedAt: staleSnapshotObservedAt,
-        definition: 'Latest stored portfolio snapshot summary.',
-        portfolioValue: '$18,000',
-        equity: 18000,
-        holdings: 3,
-      });
-    },
-    async getPortfolioHoldings() {
-      return createSuccess({
-        source: 'portfolio_snapshots',
-        observedAt: staleSnapshotObservedAt,
-        definition:
-          'Largest holdings ordered by market value from the latest stored portfolio snapshot.',
+          'Open futures positions across connected accounts, normalized from the positions read model.',
         items: [
           {
-            id: 'holding-1',
+            id: 'position-1',
+            accountId: 'futures-1',
+            accountName: 'Delta Futures',
+            accountKey: 'futures-main',
+            brokerKey: 'delta_exchange',
             symbol: 'BTCUSDT',
             quantity: 0.45,
-            marketValue: 12000,
-            allocationPct: 55,
-            dayPnL: 450,
-            unrealizedPnL: 1800,
+            exposure: 12000,
+            unrealizedPnl: 1800,
             side: 'Long',
-            strategy: 'Core',
-            riskState: 'Healthy',
-            sleeve: 'Majors',
+            sideKey: 'long',
+            status: 'Open',
+            statusKey: 'open',
+            entryPrice: 62000,
+            currentPrice: 62400,
+            leverage: 5,
+            liquidationPrice: 54000,
+            freshness: {
+              state: 'critical',
+              observedAt: staleSnapshotObservedAt,
+              freshnessMs: 7 * 60 * 60 * 1000,
+              staleAfterMs: 300_000,
+              criticalAfterMs: 900_000,
+              isStale: true,
+              isCritical: true,
+              source: 'position_read_models',
+            },
+            observedAt: staleSnapshotObservedAt,
+            observedAtIso: staleSnapshotObservedAt,
           },
         ],
         total: 1,
@@ -769,29 +872,17 @@ async function runPortfolioPhase4ContractAssertions(): Promise<void> {
         offset: 0,
       });
     },
-    async getPortfolioSnapshots() {
+    async getCapitalOverview() {
       return createSuccess({
-        source: 'portfolio_snapshots',
-        observedAt: staleSnapshotObservedAt,
-        definition: 'Stored portfolio snapshot history ordered from newest to oldest capture.',
-        items: [
-          {
-            id: 'snapshot-1',
-            equity: 18000,
-            createdAt: staleSnapshotObservedAt,
-          },
-        ],
-        total: 1,
-        limit: 10,
-        offset: 0,
-      });
-    },
-  };
-
-  service.brokerWalletFacadeService = {
-    async getWalletFundsForActiveAccounts() {
-      return {
-        items: [
+        source: 'funds_snapshots via broker_wallet_facade',
+        definition:
+          'Wallet and futures capital routes normalized from the latest funds snapshot for each connected account.',
+        freshnessModel: 'funds_snapshot_timestamp',
+        latestObservedAt: staleFundsObservedAt,
+        latestObservedAtIso: staleFundsObservedAt,
+        oldestObservedAt: staleFundsObservedAt,
+        oldestObservedAtIso: staleFundsObservedAt,
+        walletItems: [
           {
             accountId: 'wallet-1',
             accountName: 'Mudrex Wallet',
@@ -799,12 +890,11 @@ async function runPortfolioPhase4ContractAssertions(): Promise<void> {
             brokerKey: 'mudrex',
             status: 'connected',
             observedAt: staleFundsObservedAt,
+            observedAtIso: staleFundsObservedAt,
             funds: {
-              data: {
-                balance: '200',
-                withdrawable: '150',
-                used_margin: '25',
-              },
+              balance: 200,
+              available: 150,
+              invested: 25,
             },
             error: null,
           },
@@ -815,15 +905,16 @@ async function runPortfolioPhase4ContractAssertions(): Promise<void> {
             brokerKey: 'delta_exchange',
             status: 'connected',
             observedAt: null,
-            funds: null,
+            observedAtIso: null,
+            funds: {
+              balance: 0,
+              available: 0,
+              invested: 0,
+            },
             error: 'No snapshot available',
           },
         ],
-      };
-    },
-    async getFuturesFundsForActiveAccounts() {
-      return {
-        items: [
+        futuresItems: [
           {
             accountId: 'futures-1',
             accountName: 'Delta Futures',
@@ -831,15 +922,69 @@ async function runPortfolioPhase4ContractAssertions(): Promise<void> {
             brokerKey: 'delta_exchange',
             status: 'connected',
             observedAt: staleFundsObservedAt,
+            observedAtIso: staleFundsObservedAt,
             funds: {
-              futures_equity: '320',
-              free_balance: '140',
-              margin_used: '80',
+              balance: 320,
+              available: 140,
+              invested: 80,
             },
             error: null,
           },
         ],
-      };
+        walletTotal: 200,
+        futuresTotal: 320,
+        totalVisibleCapital: 520,
+        walletSharePct: 38.46,
+        futuresSharePct: 61.54,
+        driftPct: 23.08,
+      });
+    },
+    async getActivityOverview() {
+      return createSuccess({
+        source: 'scheduler_positions_snapshots',
+        definition:
+          'Portfolio activity combines realized PnL windows and performance buckets from scheduler position snapshots.',
+        freshnessModel: 'windowed_activity',
+        observedAt: staleSnapshotObservedAt,
+        observedAtIso: staleSnapshotObservedAt,
+        pnl: {
+          dailyPnL: 12,
+          weeklyPnL: 24,
+          monthlyPnL: 48,
+          source: 'scheduler_positions_snapshots',
+          measurement: 'realized_pnl',
+          freshnessModel: 'windowed_activity',
+          observedAt: staleSnapshotObservedAt,
+          observedAtIso: staleSnapshotObservedAt,
+          definition:
+            'Realized PnL aggregated from closed-position scheduler snapshots across active accounts.',
+          windows: {
+            timezone: 'Asia/Kolkata',
+            daily: 'Today (Asia/Kolkata)',
+            weekly: 'Trailing 7 days (Asia/Kolkata)',
+            monthly: 'Trailing 30 days (Asia/Kolkata)',
+          },
+        },
+        performance: {
+          timeframe: 'daily',
+          source: 'scheduler_positions_snapshots',
+          measurement: 'realized_pnl',
+          freshnessModel: 'windowed_activity',
+          observedAt: staleSnapshotObservedAt,
+          observedAtIso: staleSnapshotObservedAt,
+          definition:
+            'Closed-position activity aggregated from scheduler snapshots for the selected portfolio timeframe.',
+          points: [],
+          summary: {
+            totalEquity: 18000,
+            totalPnl: 12,
+            totalProfit: 18,
+            totalLoss: 6,
+            totalTrades: 3,
+            brokers: {},
+          },
+        },
+      });
     },
   };
 
@@ -850,7 +995,7 @@ async function runPortfolioPhase4ContractAssertions(): Promise<void> {
     holdingsLimit: '80',
   });
 
-  assert.equal(response.data.meta.contractVersion, 'portfolio-overview-phase6-2026-04-10');
+  assert.equal(response.data.meta.contractVersion, 'portfolio-overview-phase7-futures-2026-04-14');
   assert.equal(response.data.meta.purpose, 'operator_portfolio_workspace');
   assert.deepEqual(response.data.meta.query.resolved, {
     timeframe: 'daily',
@@ -866,16 +1011,16 @@ async function runPortfolioPhase4ContractAssertions(): Promise<void> {
   });
   assert.equal(
     response.data.meta.sections.summary.freshness?.state,
-    'stale'
+    'critical'
   );
-  assert.equal(response.data.meta.sections.activeFunds.availability, 'partial');
+  assert.equal(response.data.meta.sections.capital.availability, 'partial');
   assert.equal(
-    response.data.meta.sections.activeFunds.freshness?.state,
+    response.data.meta.sections.capital.freshness?.state,
     'critical'
   );
   assert.deepEqual(
     response.data.meta.warnings.map((warning: { code: string }) => warning.code),
-    ['stored_snapshot_stale', 'funds_snapshot_attention']
+    ['funds_snapshot_attention', 'positions_snapshot_attention', 'futures_summary_attention']
   );
   assert.equal(response.data.activeFunds.walletItems[0].observedAt, staleFundsObservedAt);
   assert.equal(response.data.activeFunds.walletItems[1].error, 'No snapshot available');
@@ -1188,85 +1333,116 @@ async function runSnapshotRepositoryAssertions(): Promise<void> {
 async function runOverviewCapabilityAssertions(): Promise<void> {
   const service = new PortfolioOverviewService() as any;
 
+  service.userTimeZoneService = {
+    async resolveUserTimeZone() {
+      return 'Asia/Kolkata';
+    },
+  };
+
   service.portfolioService = {
-    async getPortfolioPnL() {
+    async getFuturesSummary() {
       return createSuccess({
-        dailyPnL: 0,
-        weeklyPnL: 0,
-        monthlyPnL: 0,
-        source: 'scheduler_positions_snapshots',
-        measurement: 'realized_pnl',
-        freshnessModel: 'windowed_activity',
-        observedAt: null,
-        definition: 'Realized PnL aggregated from closed-position scheduler snapshots across active accounts.',
-        windows: {
-          timezone: 'Asia/Kolkata',
-          daily: 'Today (Asia/Kolkata)',
-          weekly: 'Trailing 7 days (Asia/Kolkata)',
-          monthly: 'Trailing 30 days (Asia/Kolkata)',
-        },
+        source: 'funds_snapshots_plus_position_read_models',
+        observedAt: '2026-04-09T10:05:00.000Z',
+        observedAtIso: '2026-04-09T10:05:00.000Z',
+        positionsObservedAt: '2026-04-09T10:05:00.000Z',
+        positionsObservedAtIso: '2026-04-09T10:05:00.000Z',
+        capitalObservedAt: '2026-04-09T10:05:00.000Z',
+        capitalObservedAtIso: '2026-04-09T10:05:00.000Z',
+        definition:
+          'Futures summary built from live capital routes in funds snapshots plus open-position exposure in the positions read model.',
+        futuresEquity: 0,
+        availableCollateral: 0,
+        usedMargin: 0,
+        walletCollateral: 0,
+        openPositions: 0,
+        grossExposure: 0,
+        longExposure: 0,
+        shortExposure: 0,
+        unrealizedPnl: 0,
       });
     },
-    async getPortfolioPerformance() {
+    async getOpenPositionsOverview() {
       return createSuccess({
-        timeframe: 'daily',
-        source: 'scheduler_positions_snapshots',
-        measurement: 'realized_pnl',
-        freshnessModel: 'windowed_activity',
+        source: 'position_read_models',
         observedAt: null,
-        definition: 'Closed-position activity aggregated from scheduler snapshots for the selected portfolio timeframe.',
-        points: [],
-        summary: {
-          totalEquity: 0,
-          totalPnl: 0,
-          totalProfit: 0,
-          totalLoss: 0,
-          totalTrades: 0,
-          brokers: {},
-        },
-      });
-    },
-    async getPortfolioSummary() {
-      return createSuccess({
-        source: 'portfolio_snapshots',
-        observedAt: null,
-        definition: 'Latest stored portfolio snapshot summary.',
-        equity: 0,
-        dayPnL: 0,
-        netExposure: '--',
-        diversification: '--',
-      });
-    },
-    async getPortfolioHoldings() {
-      return createSuccess({
-        source: 'portfolio_snapshots',
-        observedAt: null,
-        definition: 'Largest holdings ordered by market value from the latest stored portfolio snapshot.',
+        observedAtIso: null,
+        latestObservedAt: null,
+        latestObservedAtIso: null,
+        oldestObservedAt: null,
+        oldestObservedAtIso: null,
+        definition:
+          'Open futures positions across connected accounts, normalized from the positions read model.',
         items: [],
         total: 0,
         limit: 25,
         offset: 0,
       });
     },
-    async getPortfolioSnapshots() {
+    async getCapitalOverview() {
       return createSuccess({
-        source: 'portfolio_snapshots',
-        observedAt: null,
-        definition: 'Stored portfolio snapshot history ordered from newest to oldest capture.',
-        items: [],
-        total: 0,
-        limit: 10,
-        offset: 0,
+        source: 'funds_snapshots via broker_wallet_facade',
+        definition:
+          'Wallet and futures capital routes normalized from the latest funds snapshot for each connected account.',
+        freshnessModel: 'funds_snapshot_timestamp',
+        latestObservedAt: null,
+        latestObservedAtIso: null,
+        oldestObservedAt: null,
+        oldestObservedAtIso: null,
+        walletItems: [],
+        futuresItems: [],
+        walletTotal: 0,
+        futuresTotal: 0,
+        totalVisibleCapital: 0,
+        walletSharePct: 0,
+        futuresSharePct: 0,
+        driftPct: 0,
       });
     },
-  };
-
-  service.brokerWalletFacadeService = {
-    async getWalletFundsForActiveAccounts() {
-      return { items: [] };
-    },
-    async getFuturesFundsForActiveAccounts() {
-      return { items: [] };
+    async getActivityOverview() {
+      return createSuccess({
+        source: 'scheduler_positions_snapshots',
+        definition:
+          'Portfolio activity combines realized PnL windows and performance buckets from scheduler position snapshots.',
+        freshnessModel: 'windowed_activity',
+        observedAt: null,
+        observedAtIso: null,
+        pnl: {
+          dailyPnL: 0,
+          weeklyPnL: 0,
+          monthlyPnL: 0,
+          source: 'scheduler_positions_snapshots',
+          measurement: 'realized_pnl',
+          freshnessModel: 'windowed_activity',
+          observedAt: null,
+          definition:
+            'Realized PnL aggregated from closed-position scheduler snapshots across active accounts.',
+          windows: {
+            timezone: 'Asia/Kolkata',
+            daily: 'Today (Asia/Kolkata)',
+            weekly: 'Trailing 7 days (Asia/Kolkata)',
+            monthly: 'Trailing 30 days (Asia/Kolkata)',
+          },
+        },
+        performance: {
+          timeframe: 'daily',
+          source: 'scheduler_positions_snapshots',
+          measurement: 'realized_pnl',
+          freshnessModel: 'windowed_activity',
+          observedAt: null,
+          definition:
+            'Closed-position activity aggregated from scheduler snapshots for the selected portfolio timeframe.',
+          points: [],
+          summary: {
+            totalEquity: 0,
+            totalPnl: 0,
+            totalProfit: 0,
+            totalLoss: 0,
+            totalTrades: 0,
+            brokers: {},
+          },
+        },
+      });
     },
   };
 
@@ -1276,9 +1452,12 @@ async function runOverviewCapabilityAssertions(): Promise<void> {
     holdingsLimit: '25',
   });
 
-  assert.equal(response.data.meta.capabilities.indexedSnapshotReads, true);
+  assert.equal(response.data.meta.capabilities.indexedSnapshotReads, false);
   assert.equal(response.data.meta.capabilities.activityReadModelAcceleration, true);
   assert.equal(response.data.meta.capabilities.portfolioHealthChecks, true);
+  assert.equal(response.data.meta.capabilities.futuresOverview, true);
+  assert.equal(response.data.meta.capabilities.positionsIncludedInOverview, true);
+  assert.equal(response.data.meta.capabilities.legacyFieldsAreCompatibilityAliases, true);
 }
 
 async function main(): Promise<void> {
@@ -1523,104 +1702,133 @@ async function runOverviewCapabilityAssertions(): Promise<void> {
   };
 
   (service as any).portfolioService = {
-    async getPortfolioPnL() {
+    async getFuturesSummary() {
       return createSuccess({
-        dailyPnL: 0,
-        weeklyPnL: 0,
-        monthlyPnL: 0,
-        source: 'scheduler_positions_snapshots',
-        measurement: 'realized_pnl',
-        freshnessModel: 'windowed_activity',
-        observedAt: '2026-04-09T10:06:00.000Z',
-        definition:
-          'Realized PnL aggregated from closed-position scheduler snapshots across active accounts.',
-        windows: {
-          timezone: 'Asia/Kolkata',
-          daily: 'Today (Asia/Kolkata)',
-          weekly: 'Trailing 7 days (Asia/Kolkata)',
-          monthly: 'Trailing 30 days (Asia/Kolkata)',
-        },
-      });
-    },
-    async getPortfolioPerformance() {
-      return createSuccess({
-        timeframe: 'daily',
-        points: [],
-        summary: {
-          totalEquity: 18000,
-          totalPnl: 0,
-          totalProfit: 0,
-          totalLoss: 0,
-          totalTrades: 0,
-          brokers: {},
-        },
-        observedAt: '2026-04-09T10:06:00.000Z',
-        definition:
-          'Closed-position activity aggregated from scheduler snapshots for the selected portfolio timeframe.',
-        windowLabel: 'Today (Asia/Kolkata)',
-      });
-    },
-    async getPortfolioSummary() {
-      return createSuccess({
-        equity: 18000,
-        dayPnL: 250,
-        netExposure: '42%',
-        diversification: 'Balanced',
+        source: 'funds_snapshots_plus_position_read_models',
         observedAt: '2026-04-09T10:05:00.000Z',
-        definition: 'Latest stored portfolio snapshot summary.',
+        observedAtIso: '2026-04-09T10:05:00.000Z',
+        positionsObservedAt: '2026-04-09T10:05:00.000Z',
+        positionsObservedAtIso: '2026-04-09T10:05:00.000Z',
+        capitalObservedAt: '2026-04-09T10:07:00.000Z',
+        capitalObservedAtIso: '2026-04-09T10:07:00.000Z',
+        definition:
+          'Futures summary built from live capital routes in funds snapshots plus open-position exposure in the positions read model.',
+        futuresEquity: 100,
+        availableCollateral: 60,
+        usedMargin: 40,
+        walletCollateral: 900,
+        openPositions: 0,
+        grossExposure: 0,
+        longExposure: 0,
+        shortExposure: 0,
+        unrealizedPnl: 0,
       });
     },
-    async getPortfolioHoldings() {
+    async getOpenPositionsOverview() {
       return createSuccess({
-        source: 'portfolio_snapshots',
-        observedAt: '2026-04-09T10:05:00.000Z',
+        source: 'position_read_models',
+        observedAt: null,
+        observedAtIso: null,
+        latestObservedAt: null,
+        latestObservedAtIso: null,
+        oldestObservedAt: null,
+        oldestObservedAtIso: null,
         definition:
-          'Largest holdings ordered by market value from the latest stored portfolio snapshot.',
+          'Open futures positions across connected accounts, normalized from the positions read model.',
         items: [],
         total: 0,
         limit: 100,
         offset: 0,
       });
     },
-    async getPortfolioSnapshots() {
+    async getCapitalOverview() {
       return createSuccess({
-        source: 'portfolio_snapshots',
-        observedAt: '2026-04-09T10:05:00.000Z',
-        definition: 'Stored portfolio snapshot history ordered from newest to oldest capture.',
-        items: [],
-        total: 0,
-        limit: 20,
-        offset: 0,
-      });
-    },
-  };
-
-  (service as any).brokerWalletFacadeService = {
-    async getWalletFundsForActiveAccounts() {
-      return {
-        items: [
+        source: 'funds_snapshots via broker_wallet_facade',
+        definition:
+          'Wallet and futures capital routes normalized from the latest funds snapshot for each connected account.',
+        freshnessModel: 'funds_snapshot_timestamp',
+        latestObservedAt: '2026-04-09T10:08:00.000Z',
+        latestObservedAtIso: '2026-04-09T10:08:00.000Z',
+        oldestObservedAt: '2026-04-09T10:07:00.000Z',
+        oldestObservedAtIso: '2026-04-09T10:07:00.000Z',
+        walletItems: [
           {
             accountId: 'wallet-1',
+            accountName: 'Mudrex Wallet',
+            accountKey: '',
             brokerKey: 'mudrex',
+            status: 'connected',
             observedAt: '2026-04-09T10:07:00.000Z',
+            observedAtIso: '2026-04-09T10:07:00.000Z',
             error: null,
-            funds: { balance: 900 },
+            funds: { balance: 900, available: 900, invested: 0 },
           },
         ],
-      };
-    },
-    async getFuturesFundsForActiveAccounts() {
-      return {
-        items: [
+        futuresItems: [
           {
             accountId: 'futures-1',
+            accountName: 'Delta Futures',
+            accountKey: '',
             brokerKey: 'delta_exchange',
+            status: 'connected',
             observedAt: '2026-04-09T10:08:00.000Z',
+            observedAtIso: '2026-04-09T10:08:00.000Z',
             error: null,
-            funds: { balance: 100 },
+            funds: { balance: 100, available: 60, invested: 40 },
           },
         ],
-      };
+        walletTotal: 900,
+        futuresTotal: 100,
+        totalVisibleCapital: 1000,
+        walletSharePct: 90,
+        futuresSharePct: 10,
+        driftPct: 80,
+      });
+    },
+    async getActivityOverview() {
+      return createSuccess({
+        source: 'scheduler_positions_snapshots',
+        definition:
+          'Portfolio activity combines realized PnL windows and performance buckets from scheduler position snapshots.',
+        freshnessModel: 'windowed_activity',
+        observedAt: '2026-04-09T10:06:00.000Z',
+        observedAtIso: '2026-04-09T10:06:00.000Z',
+        pnl: {
+          dailyPnL: 0,
+          weeklyPnL: 0,
+          monthlyPnL: 0,
+          source: 'scheduler_positions_snapshots',
+          measurement: 'realized_pnl',
+          freshnessModel: 'windowed_activity',
+          observedAt: '2026-04-09T10:06:00.000Z',
+          observedAtIso: '2026-04-09T10:06:00.000Z',
+          definition:
+            'Realized PnL aggregated from closed-position scheduler snapshots across active accounts.',
+          windows: {
+            timezone: 'Asia/Kolkata',
+            daily: 'Today (Asia/Kolkata)',
+            weekly: 'Trailing 7 days (Asia/Kolkata)',
+            monthly: 'Trailing 30 days (Asia/Kolkata)',
+          },
+        },
+        performance: {
+          timeframe: 'daily',
+          points: [],
+          summary: {
+            totalEquity: 18000,
+            totalPnl: 0,
+            totalProfit: 0,
+            totalLoss: 0,
+            totalTrades: 0,
+            brokers: {},
+          },
+          observedAt: '2026-04-09T10:06:00.000Z',
+          observedAtIso: '2026-04-09T10:06:00.000Z',
+          definition:
+            'Closed-position activity aggregated from scheduler snapshots for the selected portfolio timeframe.',
+          windowLabel: 'Today (Asia/Kolkata)',
+        },
+      });
     },
   };
 
@@ -1631,12 +1839,14 @@ async function runOverviewCapabilityAssertions(): Promise<void> {
     snapshotsOffset: '0',
   });
 
-  assert.equal(response.data.meta.contractVersion, 'portfolio-overview-phase6-2026-04-10');
+  assert.equal(response.data.meta.contractVersion, 'portfolio-overview-phase7-futures-2026-04-14');
   assert.equal(response.data.meta.capabilities.shareableWorkspaceState, true);
   assert.equal(response.data.meta.capabilities.rebalanceReviewWorkflow, true);
   assert.equal(response.data.meta.capabilities.workspaceReportGeneration, true);
   assert.equal(response.data.meta.capabilities.liveSnapshotReconciliationPolicy, true);
   assert.equal(response.data.meta.capabilities.exportReport, true);
+  assert.equal(response.data.meta.capabilities.futuresOverview, true);
+  assert.equal(response.data.meta.capabilities.legacyFieldsAreCompatibilityAliases, true);
   assert.equal(response.data.meta.reconciliationPolicy.mode, 'manual_workspace_review');
   assert.deepEqual(response.data.time, buildApiTimeContract(timeZone));
   assert.deepEqual(response.data.meta.time, buildApiTimeContract(timeZone));
@@ -1651,12 +1861,12 @@ async function runOverviewCapabilityAssertions(): Promise<void> {
   assert.equal(response.data.activeFunds.latestObservedAtIso, '2026-04-09T10:08:00.000Z');
   assert.equal(
     response.data.meta.sections.summary.observedAt,
-    formatApiDisplayTime('2026-04-09T10:05:00.000Z', timeZone)
+    formatApiDisplayTime('2026-04-09T10:07:00.000Z', timeZone)
   );
-  assert.equal(response.data.meta.sections.summary.observedAtIso, '2026-04-09T10:05:00.000Z');
+  assert.equal(response.data.meta.sections.summary.observedAtIso, '2026-04-09T10:07:00.000Z');
   assert.match(
     response.data.meta.summary,
-    /manual reconciliation\/reporting workflow/i
+    /futures-first/i
   );
 }
 
@@ -1702,11 +1912,11 @@ async function runHealthAssertionChecks(): Promise<void> {
     overviewPayload: {
       data: {
         meta: {
-          contractVersion: 'portfolio-overview-phase6-2026-04-10',
+          contractVersion: 'portfolio-overview-phase7-futures-2026-04-14',
           purpose: 'operator_portfolio_workspace',
           pageHydration: 'single-request',
           capabilities: {
-            indexedSnapshotReads: true,
+            indexedSnapshotReads: false,
             activityReadModelAcceleration: true,
             portfolioHealthChecks: true,
             shareableWorkspaceState: true,
@@ -1714,23 +1924,29 @@ async function runHealthAssertionChecks(): Promise<void> {
             workspaceReportGeneration: true,
             liveSnapshotReconciliationPolicy: true,
             exportReport: true,
+            futuresOverview: true,
+            positionsIncludedInOverview: true,
+            legacyFieldsAreCompatibilityAliases: true,
           },
           reconciliationPolicy: {
             mode: 'manual_workspace_review',
           },
           warnings: [],
         },
-        summary: {
-          source: 'portfolio_snapshots',
+        futuresSummary: {
+          source: 'funds_snapshots_plus_position_read_models',
         },
-        performance: {
-          source: 'scheduler_positions_snapshots',
-        },
-        holdings: {
+        positions: {
+          source: 'position_read_models',
           total: 2,
         },
-        snapshots: {
-          total: 4,
+        capital: {
+          source: 'funds_snapshots via broker_wallet_facade',
+          walletItems: [{ accountId: 'wallet-1' }],
+          futuresItems: [{ accountId: 'futures-1' }],
+        },
+        activity: {
+          source: 'scheduler_positions_snapshots',
         },
       },
     },
@@ -1751,6 +1967,9 @@ async function runHealthAssertionChecks(): Promise<void> {
   assert.equal(snapshot.liveSnapshotReconciliationPolicy, true);
   assert.equal(snapshot.exportReport, true);
   assert.equal(snapshot.reconciliationMode, 'manual_workspace_review');
+  assert.equal(snapshot.futuresOverview, true);
+  assert.equal(snapshot.positionsIncludedInOverview, true);
+  assert.equal(snapshot.legacyFieldsAreCompatibilityAliases, true);
 
   assertPortfolioHealthSnapshot(snapshot, {
     maxOverviewMs: 1500,
@@ -2028,6 +2247,311 @@ async function main(): Promise<void> {
   await main();
 }
 
+async function portfolioGuard09(): Promise<void> {
+  const { PortfolioService } = await import("../src/api/services/PortfolioService");
+
+function createSuccess<T>(data: T) {
+  return { success: true as const, data };
+}
+
+function createService() {
+  const service = new PortfolioService() as any;
+
+  service.appSettingsRepository = {
+    async getSettings() {
+      return {
+        timezone: 'Asia/Kolkata',
+      };
+    },
+  };
+
+  service.brokerAccountRepository = {
+    async getConnectedBrokerAccounts(_userId: string, brokerKey?: string) {
+      const accounts = [
+        {
+          id: 'acct-1',
+          accountName: 'Delta Prime',
+          accountKey: 'delta-prime',
+          brokerKey: 'delta_exchange',
+          status: 'connected',
+        },
+        {
+          id: 'acct-2',
+          accountName: 'Mudrex Desk',
+          accountKey: 'mudrex-desk',
+          brokerKey: 'mudrex',
+          status: 'connected',
+        },
+      ];
+
+      return brokerKey
+        ? accounts.filter((account) => account.brokerKey === brokerKey)
+        : accounts;
+    },
+  };
+
+  service.brokerWalletFacadeService = {
+    async getWalletFundsForActiveAccounts() {
+      return {
+        items: [
+          {
+            accountId: 'acct-1',
+            accountName: 'Delta Prime',
+            accountKey: 'delta-prime',
+            brokerKey: 'delta_exchange',
+            status: 'connected',
+            observedAt: '2026-04-14T03:00:00.000Z',
+            funds: {
+              total: 200,
+              withdrawable: 120,
+              invested: 15,
+            },
+          },
+          {
+            accountId: 'acct-2',
+            accountName: 'Mudrex Desk',
+            accountKey: 'mudrex-desk',
+            brokerKey: 'mudrex',
+            status: 'connected',
+            observedAt: '2026-04-14T03:02:00.000Z',
+            funds: {
+              total: 100,
+              withdrawable: 60,
+              invested: 5,
+            },
+          },
+        ],
+      };
+    },
+    async getFuturesFundsForActiveAccounts() {
+      return {
+        items: [
+          {
+            accountId: 'acct-1',
+            accountName: 'Delta Prime',
+            accountKey: 'delta-prime',
+            brokerKey: 'delta_exchange',
+            status: 'connected',
+            observedAt: '2026-04-14T03:03:00.000Z',
+            funds: {
+              balance: 1000,
+              available_balance: 700,
+              used_margin: 300,
+            },
+          },
+          {
+            accountId: 'acct-2',
+            accountName: 'Mudrex Desk',
+            accountKey: 'mudrex-desk',
+            brokerKey: 'mudrex',
+            status: 'connected',
+            observedAt: '2026-04-14T03:04:00.000Z',
+            funds: {
+              balance: 500,
+              available_balance: 250,
+              used_margin: 120,
+            },
+          },
+        ],
+      };
+    },
+  };
+
+  service.positionReadModelRepository = {
+    async ensureHydratedFromSnapshots() {
+      return;
+    },
+    async getOpenPositionSummaryForAccounts() {
+      return new Map([
+        [
+          'acct-1',
+          {
+            accountId: 'acct-1',
+            openPositions: 1,
+            grossExposure: 1200,
+            longExposure: 1200,
+            shortExposure: 0,
+            unrealizedPnl: 80,
+            latestObservedAt: new Date('2026-04-14T03:05:00.000Z'),
+            oldestObservedAt: new Date('2026-04-14T03:05:00.000Z'),
+          },
+        ],
+        [
+          'acct-2',
+          {
+            accountId: 'acct-2',
+            openPositions: 1,
+            grossExposure: 400,
+            longExposure: 0,
+            shortExposure: 400,
+            unrealizedPnl: -20,
+            latestObservedAt: new Date('2026-04-14T03:06:00.000Z'),
+            oldestObservedAt: new Date('2026-04-14T03:01:00.000Z'),
+          },
+        ],
+      ]);
+    },
+    async listLivePositionsOverview() {
+      return {
+        items: [
+          {
+            id: 'pos-1',
+            accountId: 'acct-1',
+            brokerKey: 'delta_exchange',
+            last_seen_at: '2026-04-14T03:05:00.000Z',
+            positionSummary: {
+              id: 'pos-1',
+              externalId: 'ext-1',
+              symbol: 'BTCUSDT',
+              side: 'Long',
+              sideKey: 'long',
+              status: 'Open',
+              statusKey: 'open',
+              quantity: 0.25,
+              entryPrice: 60000,
+              currentPrice: 60400,
+              closedPrice: null,
+              unrealizedPnl: 100,
+              realizedPnl: null,
+              leverage: 5,
+              liquidationPrice: 52000,
+              exposure: 15000,
+              createdAt: '2026-04-14T01:00:00.000Z',
+              updatedAt: '2026-04-14T03:05:00.000Z',
+              closedAt: undefined,
+            },
+          },
+        ],
+        total: 1,
+        latestObservedAt: new Date('2026-04-14T03:05:00.000Z'),
+        oldestObservedAt: new Date('2026-04-14T03:05:00.000Z'),
+      };
+    },
+    async getAccountFreshness() {
+      return new Map([
+        [
+          'acct-1',
+          {
+            accountId: 'acct-1',
+            observedAt: new Date('2026-04-14T03:05:00.000Z'),
+          },
+        ],
+      ]);
+    },
+  };
+
+  return service;
+}
+
+async function runCapitalOverviewAssertions(): Promise<void> {
+  const service = createService();
+  const response = await service.getCapitalOverview('user-1');
+
+  assert.equal(response.data.source, 'funds_snapshots via broker_wallet_facade');
+  assert.equal(response.data.walletTotal, 300);
+  assert.equal(response.data.futuresTotal, 1500);
+  assert.equal(response.data.totalVisibleCapital, 1800);
+  assert.equal(response.data.walletItems[0]?.funds.available, 120);
+  assert.equal(response.data.futuresItems[1]?.funds.invested, 120);
+  assert.equal(response.data.latestObservedAtIso, '2026-04-14T03:04:00.000Z');
+  assert.equal(response.data.oldestObservedAtIso, '2026-04-14T03:00:00.000Z');
+}
+
+async function runFuturesSummaryAssertions(): Promise<void> {
+  const service = createService();
+  const response = await service.getFuturesSummary('user-1');
+
+  assert.equal(response.data.source, 'funds_snapshots_plus_position_read_models');
+  assert.equal(response.data.futuresEquity, 1500);
+  assert.equal(response.data.availableCollateral, 950);
+  assert.equal(response.data.usedMargin, 420);
+  assert.equal(response.data.walletCollateral, 300);
+  assert.equal(response.data.openPositions, 2);
+  assert.equal(response.data.grossExposure, 1600);
+  assert.equal(response.data.longExposure, 1200);
+  assert.equal(response.data.shortExposure, 400);
+  assert.equal(response.data.unrealizedPnl, 60);
+  assert.equal(response.data.positionsObservedAtIso, '2026-04-14T03:06:00.000Z');
+}
+
+async function runOpenPositionsOverviewAssertions(): Promise<void> {
+  const service = createService();
+  const response = await service.getOpenPositionsOverview('user-1', {
+    limit: '20',
+    offset: '0',
+    symbol: 'BTCUSDT',
+  });
+
+  assert.equal(response.data.source, 'position_read_models');
+  assert.equal(response.data.total, 1);
+  assert.equal(response.data.limit, 20);
+  assert.equal(response.data.items[0]?.accountName, 'Delta Prime');
+  assert.equal(response.data.items[0]?.brokerKey, 'delta_exchange');
+  assert.equal(response.data.items[0]?.symbol, 'BTCUSDT');
+  assert.equal(response.data.items[0]?.freshness?.state, 'fresh');
+  assert.equal(response.data.latestObservedAtIso, '2026-04-14T03:05:00.000Z');
+}
+
+async function runActivityOverviewAssertions(): Promise<void> {
+  const service = createService();
+  service.getPortfolioPnL = async () =>
+    createSuccess({
+      observedAtIso: '2026-04-14T03:07:00.000Z',
+      dailyPnL: 12,
+      weeklyPnL: 40,
+      monthlyPnL: 80,
+      source: 'scheduler_positions_snapshots',
+      measurement: 'realized_pnl',
+      freshnessModel: 'windowed_activity',
+      definition: 'PnL',
+      windows: {
+        timezone: 'Asia/Kolkata',
+        daily: 'Today (Asia/Kolkata)',
+        weekly: 'Trailing 7 days (Asia/Kolkata)',
+        monthly: 'Trailing 30 days (Asia/Kolkata)',
+      },
+      connections: [],
+    });
+  service.getPortfolioPerformance = async () =>
+    createSuccess({
+      observedAtIso: '2026-04-14T03:09:00.000Z',
+      timeframe: 'daily',
+      mode: 'closed-position-activity',
+      source: 'scheduler_positions_snapshots',
+      measurement: 'realized_pnl',
+      freshnessModel: 'windowed_activity',
+      definition: 'Performance',
+      windowLabel: 'Today (Asia/Kolkata)',
+      bucketLabel: 'hour',
+      points: [],
+      summary: {
+        totalEquity: 1000,
+        totalPnl: 12,
+        totalProfit: 18,
+        totalLoss: 6,
+        totalTrades: 3,
+        brokers: {},
+      },
+    });
+
+  const response = await service.getActivityOverview('user-1', 'daily');
+  assert.equal(response.data.source, 'scheduler_positions_snapshots');
+  assert.equal(response.data.observedAtIso, '2026-04-14T03:09:00.000Z');
+  assert.equal(response.data.pnl.dailyPnL, 12);
+  assert.equal(response.data.performance.summary.totalTrades, 3);
+}
+
+async function main(): Promise<void> {
+  await runCapitalOverviewAssertions();
+  await runFuturesSummaryAssertions();
+  await runOpenPositionsOverviewAssertions();
+  await runActivityOverviewAssertions();
+  console.log('Portfolio Phase 9 assertions passed.');
+}
+
+  await main();
+}
+
 const suiteSteps = {
   "01": portfolioGuard01,
   "02": portfolioGuard02,
@@ -2037,10 +2561,11 @@ const suiteSteps = {
   "06": portfolioGuard06,
   "07": portfolioGuard07,
   "08": portfolioGuard08,
+  "09": portfolioGuard09,
 } as const;
 
 export async function runPortfolioSuite(): Promise<void> {
-  await runSuiteSteps("Portfolio module", "scripts/test-portfolio.ts", ["01", "02", "03", "04", "05", "06", "07", "08"]);
+  await runSuiteSteps("Portfolio module", "scripts/test-portfolio.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09"]);
   console.log("Portfolio module assertions passed.");
 }
 

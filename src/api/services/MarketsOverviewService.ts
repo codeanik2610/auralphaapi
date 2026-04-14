@@ -1160,6 +1160,7 @@ export class MarketsOverviewService {
       await strategyDataSource.initialize();
     }
 
+    const resolvedSymbol = await this.resolveWarehouseSymbol(symbol);
     const intervalSeconds = this.intervalToSeconds(interval);
     const lookbackSeconds = Math.max(intervalSeconds * (limit + 2), intervalSeconds * 10);
 
@@ -1202,7 +1203,7 @@ export class MarketsOverviewService {
        GROUP BY bucket_ts
        ORDER BY bucket_ts DESC
        LIMIT $4`,
-      [symbol, intervalSeconds, lookbackSeconds, limit]
+      [resolvedSymbol, intervalSeconds, lookbackSeconds, limit]
     );
 
     return (rows || [])
@@ -1262,5 +1263,50 @@ export class MarketsOverviewService {
   private normalizeOptionalSymbol(symbol?: string | null): string | null {
     const normalized = String(symbol || '').trim().toUpperCase();
     return normalized || null;
+  }
+
+  private async resolveWarehouseSymbol(symbol: string): Promise<string> {
+    const candidates = this.buildMarketSymbolCandidates(symbol);
+    if (!candidates.length) {
+      return this.requireSymbol(symbol);
+    }
+
+    const rows = await strategyDataSource.query(
+      `SELECT symbol, MAX(open_time) AS latest_open
+       FROM market_candles_1m
+       WHERE symbol = ANY($1::text[])
+       GROUP BY symbol
+       ORDER BY CASE WHEN symbol = $2 THEN 0 ELSE 1 END, MAX(open_time) DESC
+       LIMIT 1`,
+      [candidates, candidates[0]]
+    );
+
+    const resolved = String(rows?.[0]?.symbol || '').trim().toUpperCase();
+    return resolved || candidates[0];
+  }
+
+  private buildMarketSymbolCandidates(value: unknown): string[] {
+    const normalized = this.normalizeOptionalSymbol(String(value || ''));
+    if (!normalized) {
+      return [];
+    }
+
+    const candidates = new Set<string>([normalized]);
+    if (normalized.endsWith('USD') && !normalized.endsWith('USDT')) {
+      candidates.add(`${normalized.slice(0, -3)}USDT`);
+    }
+    if (normalized.endsWith('USDC') || normalized.endsWith('BUSD') || normalized.endsWith('FDUSD')) {
+      candidates.add(`${normalized.replace(/(USDC|BUSD|FDUSD)$/u, '')}USDT`);
+    }
+    if (
+      /^[A-Z0-9]{2,20}$/u.test(normalized) &&
+      !['USDT', 'USDC', 'BUSD', 'FDUSD', 'USD', 'INR', 'BTC', 'ETH'].some((quote) =>
+        normalized.endsWith(quote)
+      )
+    ) {
+      candidates.add(`${normalized}USDT`);
+    }
+
+    return Array.from(candidates);
   }
 }

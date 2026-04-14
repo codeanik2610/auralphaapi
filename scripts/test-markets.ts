@@ -8,6 +8,7 @@ import { MarketsOverviewController } from '../src/api/controllers/MarketsOvervie
 import { MarketsOverviewService } from '../src/api/services/MarketsOverviewService';
 import { MarketSnapshotRefreshService } from '../src/api/services/MarketSnapshotRefreshService';
 import { validateMarketCandlesQuery } from '../src/api/validators/market.validator';
+import { strategyDataSource } from '../src/database/pg-data-source';
 
 function createSuccess<T>(data: T) {
   return { success: true as const, data };
@@ -330,6 +331,31 @@ async function runMarketsSymbolOverviewAssertions(): Promise<void> {
   assert.equal(response.data.watchlists.memberships[0].name, 'Momentum Core');
 }
 
+async function runMarketsChartWarehouseSymbolResolutionAssertions(): Promise<void> {
+  const service = new MarketsOverviewService() as any;
+  const originalQuery = strategyDataSource.query.bind(strategyDataSource);
+  const originalInitialized = strategyDataSource.isInitialized;
+  const capturedQueries: Array<{ sql: string; params: unknown[] }> = [];
+
+  (strategyDataSource as any).isInitialized = true;
+  (strategyDataSource as any).query = async (sql: string, params: unknown[]) => {
+    capturedQueries.push({ sql, params });
+    return [{ symbol: 'AVAXUSDT' }];
+  };
+
+  try {
+    const resolved = await service.resolveWarehouseSymbol('AVAXUSD');
+
+    assert.equal(resolved, 'AVAXUSDT');
+    assert.equal(capturedQueries.length, 1);
+    assert.match(capturedQueries[0].sql, /symbol = ANY/);
+    assert.deepEqual(capturedQueries[0].params, [['AVAXUSD', 'AVAXUSDT'], 'AVAXUSD']);
+  } finally {
+    (strategyDataSource as any).query = originalQuery;
+    (strategyDataSource as any).isInitialized = originalInitialized;
+  }
+}
+
 async function runMarketSnapshotRefreshServiceAssertions(): Promise<void> {
   const service = new MarketSnapshotRefreshService() as any;
   const upsertPayloads: Array<Array<Record<string, unknown>>> = [];
@@ -430,6 +456,7 @@ async function main(): Promise<void> {
   runMarketValidationAssertions();
   await runMarketsOverviewSnapshotAssertions();
   await runMarketsSymbolOverviewAssertions();
+  await runMarketsChartWarehouseSymbolResolutionAssertions();
   await runMarketSnapshotRefreshServiceAssertions();
   runMarketsScriptWiringAssertions();
   console.log('Markets module assertions passed.');

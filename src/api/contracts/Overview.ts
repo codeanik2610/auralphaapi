@@ -1,6 +1,7 @@
 import { AlertsListResponse, AlertsSummary } from './Alert';
 import { AutomationsListResponse, AutomationsSummary } from './Automation';
 import { MudrexAsset, MudrexAssetDetail, MudrexFuturesFunds, MudrexLeverage, MudrexWalletFunds } from './Mudrex';
+import { PortfolioActiveFundsResponse } from './PortfolioOverview';
 import { PortfolioHoldingsResponse, PortfolioSummary } from './Portfolio';
 import { SignalSummary, SignalsListResponse } from './Signal';
 
@@ -18,7 +19,8 @@ export type OverviewSectionKey =
   | 'signals'
   | 'signalsSummary'
   | 'portfolioSummary'
-  | 'portfolioHoldings';
+  | 'portfolioHoldings'
+  | 'activeFunds';
 
 export interface OverviewHealth {
   status: 'assembled' | 'degraded';
@@ -146,6 +148,7 @@ export interface OverviewResponse {
   health: OverviewHealth;
   walletFunds: MudrexWalletFunds | null;
   futuresFunds: MudrexFuturesFunds | null;
+  activeFunds: PortfolioActiveFundsResponse;
   assets: MudrexAsset[];
   selectedAsset: MudrexAssetDetail | null;
   leverage: MudrexLeverage | null;

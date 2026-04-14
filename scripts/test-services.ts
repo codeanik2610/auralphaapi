@@ -7630,7 +7630,7 @@ async function runBacktestTopSetupCandidateQueryAssertions(): Promise<void> {
     });
 
     assert.deepEqual(response, []);
-    assert.equal(capturedWhereClauses.length, 5);
+    assert.equal(capturedWhereClauses.length, 4);
     assert.equal(capturedWhereClauses[0].clause, 'backtest.userId = :userId');
     assert.deepEqual(capturedWhereClauses[0].params, { userId: 'user-99' });
     assert.equal(capturedWhereClauses[1].clause, 'result.id IS NOT NULL');
@@ -7652,19 +7652,6 @@ async function runBacktestTopSetupCandidateQueryAssertions(): Promise<void> {
     });
     assert.match(capturedWhereClauses[3].clause, /jsonb_array_length\(result\.config->'performanceSurface'->'results'\)/);
     assert.match(capturedWhereClauses[3].clause, /> 0$/);
-    assert.match(capturedWhereClauses[4].clause, /EXISTS \(/);
-    assert.match(capturedWhereClauses[4].clause, /CAST\(:timeframe AS text\) IS NULL/);
-    assert.match(capturedWhereClauses[4].clause, /CAST\(:minScore AS double precision\) IS NULL/);
-    assert.match(capturedWhereClauses[4].clause, /CAST\(:minTrades AS integer\) IS NULL/);
-    assert.match(capturedWhereClauses[4].clause, /CAST\(:search AS text\) IS NULL/);
-    assert.match(capturedWhereClauses[4].clause, /inputSnapshot,libraryId/);
-    assert.match(capturedWhereClauses[4].clause, /inputSnapshot,libraryName/);
-    assert.deepEqual(capturedWhereClauses[4].params, {
-      timeframe: '4h',
-      minScore: 0.8,
-      minTrades: 9,
-      search: '%momentum\\_100\\%%',
-    });
   } finally {
     (strategyDataSource as any).getRepository = originalGetRepository;
   }
@@ -8400,11 +8387,11 @@ async function runBacktestTopSetupsDelegationAssertions(): Promise<void> {
   assert.equal(response.data.total, 0);
   assert.equal(capturedRepositoryQueries.length, 1);
   assert.equal(capturedRepositoryQueries[0].eligibleOnly, true);
-  assert.equal(capturedRepositoryQueries[0].minTrades, 5);
+  assert.equal(capturedRepositoryQueries[0].minTrades, undefined);
   assert.equal(capturedRepositoryQueries[0].offset, 0);
   assert.equal(capturedCalls.length, 1);
   assert.equal(capturedCalls[0].query.eligibleOnly, true);
-  assert.equal(capturedCalls[0].query.minTrades, 5);
+  assert.equal(capturedCalls[0].query.minTrades, undefined);
   assert.equal(capturedCalls[0].promotionRules?.minScore, 0.82);
   assert.equal(capturedCalls[0].promotionRules?.minTrades, 7);
   assert.equal(capturedCalls[0].promotionRules?.requireRobustness, false);

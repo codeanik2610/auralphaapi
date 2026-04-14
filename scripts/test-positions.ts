@@ -1306,16 +1306,192 @@ async function run(): Promise<void> {
   await run();
 }
 
+async function positionsGuard09(): Promise<void> {
+  const { PositionReadModelRepository } = await import("../src/database/repositories/PositionReadModelRepository");
+  const { coreDataSource } = await import("../src/database/data-source");
+
+async function run(): Promise<void> {
+  const repository = new PositionReadModelRepository();
+  const originalQuery = coreDataSource.query.bind(coreDataSource);
+  const capturedCalls: Array<{ sql: string; params: unknown[] }> = [];
+
+  (coreDataSource as any).query = async (sql: string, params: unknown[] = []) => {
+    capturedCalls.push({ sql, params });
+
+    if (sql.includes('COUNT(*) AS openPositions')) {
+      return [
+        {
+          accountId: 'acc-1',
+          openPositions: '2',
+          grossExposure: '18500',
+          longExposure: '12000',
+          shortExposure: '6500',
+          unrealizedPnl: '420.5',
+          latestObservedAt: '2026-04-09T11:59:00.000Z',
+          oldestObservedAt: '2026-04-09T11:40:00.000Z',
+        },
+        {
+          accountId: 'acc-2',
+          openPositions: '1',
+          grossExposure: '4300',
+          longExposure: '4300',
+          shortExposure: '0',
+          unrealizedPnl: '-35.25',
+          latestObservedAt: '2026-04-09T11:57:00.000Z',
+          oldestObservedAt: '2026-04-09T11:57:00.000Z',
+        },
+      ];
+    }
+
+    if (sql.includes('COUNT(*) AS total')) {
+      return [
+        {
+          total: '3',
+          latestObservedAt: '2026-04-09T11:59:00.000Z',
+          oldestObservedAt: '2026-04-09T11:40:00.000Z',
+        },
+      ];
+    }
+
+    if (sql.includes('ORDER BY COALESCE(last_seen_at, position_updated_at, position_created_at) DESC')) {
+      return [
+        {
+          userId: 'user-1',
+          accountId: 'acc-1',
+          brokerKey: 'mudrex',
+          externalId: 'pos-2',
+          symbol: 'ETHUSDT',
+          side: 'Long',
+          sideKey: 'long',
+          sideRaw: 'long',
+          status: 'Open',
+          statusKey: 'open',
+          statusRaw: 'open',
+          statusRank: 1,
+          quantity: '1.5',
+          entryPrice: '3300',
+          currentPrice: '3360',
+          unrealizedPnl: '90',
+          leverage: '5',
+          exposure: '4950',
+          positionCreatedAt: '2026-04-09T10:00:00.000Z',
+          positionUpdatedAt: '2026-04-09T11:30:00.000Z',
+          lastSeenAt: '2026-04-09T11:58:00.000Z',
+          payloadJson: JSON.stringify({
+            symbol: 'ETHUSDT',
+            side: 'buy',
+            quantity: '1.5',
+            entry_price: '3300',
+            current_price: '3360',
+            status: 'open',
+            updated_at: '2026-04-09T11:30:00.000Z',
+          }),
+        },
+        {
+          userId: 'user-1',
+          accountId: 'acc-1',
+          brokerKey: 'mudrex',
+          externalId: 'pos-1',
+          symbol: 'BTCUSDT',
+          side: 'Long',
+          sideKey: 'long',
+          sideRaw: 'long',
+          status: 'Open',
+          statusKey: 'open',
+          statusRaw: 'open',
+          statusRank: 1,
+          quantity: '0.2',
+          entryPrice: '70000',
+          currentPrice: '70500',
+          unrealizedPnl: '100',
+          leverage: '10',
+          exposure: '14000',
+          positionCreatedAt: '2026-04-09T09:00:00.000Z',
+          positionUpdatedAt: '2026-04-09T11:15:00.000Z',
+          lastSeenAt: '2026-04-09T11:59:00.000Z',
+          payloadJson: JSON.stringify({
+            symbol: 'BTCUSDT',
+            side: 'buy',
+            quantity: '0.2',
+            entry_price: '70000',
+            current_price: '70500',
+            status: 'open',
+            updated_at: '2026-04-09T11:15:00.000Z',
+          }),
+        },
+      ];
+    }
+
+    return originalQuery(sql, params);
+  };
+
+  try {
+    const summary = await repository.getOpenPositionSummaryForAccounts('user-1', ['acc-1', 'acc-2']);
+    assert.equal(summary.size, 2);
+    assert.deepEqual(summary.get('acc-1'), {
+      accountId: 'acc-1',
+      openPositions: 2,
+      grossExposure: 18500,
+      longExposure: 12000,
+      shortExposure: 6500,
+      unrealizedPnl: 420.5,
+      latestObservedAt: new Date('2026-04-09T11:59:00.000Z'),
+      oldestObservedAt: new Date('2026-04-09T11:40:00.000Z'),
+    });
+    assert.equal(summary.get('acc-2')?.openPositions, 1);
+    assert.equal(summary.get('acc-2')?.shortExposure, 0);
+
+    const overview = await repository.listLivePositionsOverview(
+      'user-1',
+      ['acc-1', 'acc-2'],
+      {
+        limit: 2,
+        offset: 1,
+        brokerKey: 'mudrex',
+        sideKey: 'long',
+      }
+    );
+
+    assert.equal(overview.total, 3);
+    assert.equal(overview.latestObservedAt?.toISOString(), '2026-04-09T11:59:00.000Z');
+    assert.equal(overview.oldestObservedAt?.toISOString(), '2026-04-09T11:40:00.000Z');
+    assert.equal(overview.items.length, 2);
+    assert.equal(overview.items[0].id, 'pos-2');
+    assert.equal(overview.items[0].accountId, 'acc-1');
+    assert.equal(overview.items[0].brokerKey, 'mudrex');
+    assert.equal(overview.items[0].positionSummary?.exposure, 4950);
+    assert.equal(overview.items[1].id, 'pos-1');
+    assert.equal(overview.items[1].positionSummary?.unrealizedPnl, 100);
+
+    const summaryCall = capturedCalls.find((call) => call.sql.includes('COUNT(*) AS openPositions'));
+    assert.deepEqual(summaryCall?.params, ['user-1', 'acc-1', 'acc-2']);
+
+    const overviewAggregateCall = capturedCalls.find((call) => call.sql.includes('COUNT(*) AS total'));
+    assert.deepEqual(overviewAggregateCall?.params, ['user-1', 'acc-1', 'acc-2', 'mudrex', 'long']);
+
+    const overviewRowsCall = capturedCalls.find((call) => call.sql.includes('ORDER BY COALESCE(last_seen_at, position_updated_at, position_created_at) DESC'));
+    assert.deepEqual(overviewRowsCall?.params, ['user-1', 'acc-1', 'acc-2', 'mudrex', 'long', 2, 1]);
+
+    console.log('Positions phase 9 assertions passed.');
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
+  await run();
+}
+
 const suiteSteps = {
   "01": positionsGuard01,
   "04": positionsGuard04,
   "05": positionsGuard05,
   "06": positionsGuard06,
   "08": positionsGuard08,
+  "09": positionsGuard09,
 } as const;
 
 export async function runPositionsSuite(): Promise<void> {
-  await runSuiteSteps("Positions module", "scripts/test-positions.ts", ["01", "04", "05", "06", "08"]);
+  await runSuiteSteps("Positions module", "scripts/test-positions.ts", ["01", "04", "05", "06", "08", "09"]);
   console.log("Positions module assertions passed.");
 }
 

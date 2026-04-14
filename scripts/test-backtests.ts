@@ -435,6 +435,38 @@ async function runBacktestChartServiceAssertions(): Promise<void> {
   assert.equal(response.data.trades.length, 2);
 }
 
+async function runBacktestChartWarehouseSymbolResolutionAssertions(): Promise<void> {
+  const service = new BacktestChartService() as any;
+  const originalQuery = strategyDataSource.query.bind(strategyDataSource);
+  const originalInitialized = strategyDataSource.isInitialized;
+  const capturedQueries: Array<{ sql: string; params: unknown[] }> = [];
+
+  (strategyDataSource as any).isInitialized = true;
+  (strategyDataSource as any).query = async (sql: string, params: unknown[]) => {
+    capturedQueries.push({ sql, params });
+    return [{ symbol: 'PAXGUSDT' }];
+  };
+
+  try {
+    const resolved = await service.resolveWarehouseSymbol(
+      'PAXGUSD',
+      new Date('2026-04-13T23:59:59.999Z')
+    );
+
+    assert.equal(resolved, 'PAXGUSDT');
+    assert.equal(capturedQueries.length, 1);
+    assert.match(capturedQueries[0].sql, /symbol = ANY/);
+    assert.deepEqual(capturedQueries[0].params, [
+      ['PAXGUSD', 'PAXGUSDT'],
+      new Date('2026-04-13T23:59:59.999Z'),
+      'PAXGUSD',
+    ]);
+  } finally {
+    (strategyDataSource as any).query = originalQuery;
+    (strategyDataSource as any).isInitialized = originalInitialized;
+  }
+}
+
 async function runBacktestRepositorySearchAssertions(): Promise<void> {
   const repository = new BacktestRepository();
   const originalGetRepository = strategyDataSource.getRepository.bind(strategyDataSource);
@@ -536,12 +568,7 @@ async function runBacktestTopSetupCandidateQueryAssertions(): Promise<void> {
       "LOWER(COALESCE(backtest.status, '')) IN (:...completedStatuses)"
     );
     assert.match(capturedWhereClauses[3].clause, /jsonb_array_length/);
-    assert.deepEqual(capturedWhereClauses[4]?.params, {
-      timeframe: '4h',
-      minScore: 0.8,
-      minTrades: 9,
-      search: '%momentum\\_100\\%%',
-    });
+    assert.equal(capturedWhereClauses.length, 4);
   } finally {
     (strategyDataSource as any).getRepository = originalGetRepository;
   }
@@ -762,6 +789,30 @@ function runBacktestTopSetupsServiceAssertions(): void {
       ],
     },
   } as any;
+  const reviewBacktest = {
+    ...primaryBacktest,
+    id: 'backtest-top-review',
+    name: 'Dog Review Candidate',
+    status: 'Review',
+    assessmentStatus: 'Review',
+    symbol: 'DOGEUSD',
+    parameter: 'Alert Confirm / DOGEUSD / 15m',
+    performanceSurface: {
+      generatedAt: '2026-04-05T00:30:00.000Z',
+      results: [
+        {
+          symbol: 'DOGEUSD',
+          timeframe: '15m',
+          score: 0.5469,
+          total_trades: 4,
+          win_rate: 52,
+          profit_factor: 1.21,
+          total_return_pct: 6.2,
+          max_drawdown_pct: 8.4,
+        },
+      ],
+    },
+  } as any;
 
   const ranked = service.rankBacktestTopSetups(primaryBacktest);
   assert.equal(ranked.length, 2);
@@ -791,6 +842,14 @@ function runBacktestTopSetupsServiceAssertions(): void {
   });
   assert.equal(response.total, 1);
   assert.equal(response.items[0].backtestId, 'backtest-top-1');
+
+  const dogResponse = service.buildResponse([reviewBacktest], {
+    limit: '10',
+    offset: '0',
+    search: 'DOG',
+  });
+  assert.equal(dogResponse.total, 1);
+  assert.equal(dogResponse.items[0]?.symbol, 'DOGEUSD');
 }
 
 async function runBacktestTopSetupsDelegationAssertions(): Promise<void> {
@@ -875,11 +934,12 @@ async function runBacktestTopSetupsDelegationAssertions(): Promise<void> {
   });
 
   assert.equal(response.data.total, 0);
-  assert.equal(capturedRepositoryQueries[0].minTrades, 5);
+  assert.equal(capturedRepositoryQueries[0].minTrades, undefined);
   assert.equal(capturedCalls[0].promotionRules?.minScore, 0.82);
   assert.equal(capturedCalls[0].promotionRules?.minTrades, 7);
   assert.equal(capturedCalls[0].promotionRules?.requireRobustness, false);
   assert.equal(capturedCalls[0].backtests[0].templateId, 'template-7');
+  assert.equal(capturedCalls[0].query.minTrades, undefined);
 }
 
 async function runBacktestRecoveryServiceAssertions(): Promise<void> {
@@ -1996,6 +2056,7 @@ async function main(): Promise<void> {
   await runBacktestsOperationalAssertions();
   runBacktestStatusMappingAssertions();
   await runBacktestChartServiceAssertions();
+  await runBacktestChartWarehouseSymbolResolutionAssertions();
   await runBacktestRepositorySearchAssertions();
   await runBacktestTopSetupCandidateQueryAssertions();
   await runBacktestSummaryQueryAssertions();

@@ -1,22 +1,34 @@
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import {
+  PortfolioActivityResponse,
   PortfolioOverviewResponse,
   PortfolioActiveFundsResponse,
+  PortfolioCapitalResponse,
+  PortfolioFuturesSummaryResponse,
+  PortfolioOverviewContractEvolution,
   PortfolioOverviewMeta,
   PortfolioOverviewSectionAvailability,
   PortfolioOverviewSectionFreshness,
   PortfolioOverviewSectionKey,
   PortfolioOverviewSectionProvenance,
+  PortfolioOpenPositionsResponse,
   PortfolioOverviewWarning,
 } from '../contracts/PortfolioOverview';
+import {
+  PortfolioHolding,
+  PortfolioHoldingsResponse,
+  PortfolioPnLResponse,
+  PortfolioSnapshotsResponse,
+  PortfolioSummary,
+} from '../contracts/Portfolio';
 import { successResponse } from '../utils/response';
 import {
   buildApiTimeContract,
   formatApiDisplayTime,
   formatApiRawIso,
 } from '../utils/apiTimeContract';
-import { BrokerWalletFacadeService } from './BrokerWalletFacadeService';
+import { env } from '../../env';
 import { PortfolioService } from './PortfolioService';
 import { UserTimeZoneService } from './UserTimeZoneService';
 import {
@@ -26,16 +38,12 @@ import {
 
 @Service()
 export class PortfolioOverviewService {
-  private readonly portfolioSnapshotStaleAfterMs = 6 * 60 * 60 * 1000;
-  private readonly portfolioSnapshotCriticalAfterMs = 24 * 60 * 60 * 1000;
   private readonly fundsSnapshotStaleAfterMs = 30 * 60 * 1000;
   private readonly fundsSnapshotCriticalAfterMs = 2 * 60 * 60 * 1000;
+  private readonly legacySource = 'portfolio_overview_futures_legacy_alias' as const;
 
   @Inject(() => PortfolioService)
   private portfolioService!: PortfolioService;
-
-  @Inject(() => BrokerWalletFacadeService)
-  private brokerWalletFacadeService!: BrokerWalletFacadeService;
 
   @Inject(() => UserTimeZoneService)
   private userTimeZoneService!: UserTimeZoneService;
@@ -48,83 +56,61 @@ export class PortfolioOverviewService {
     const generatedAtIso = new Date().toISOString();
     const resolvedQuery = validatePortfolioOverviewQuery(query);
     const timeframe = resolvedQuery.timeframe;
-    const snapshotsLimit = String(resolvedQuery.snapshotsLimit);
-    const snapshotsOffset = String(resolvedQuery.snapshotsOffset);
     const holdingsLimit = String(resolvedQuery.holdingsLimit);
 
-    const [
-      pnlResponse,
-      performanceResponse,
-      summaryResponse,
-      holdingsResponse,
-      snapshotsResponse,
-      walletFundsResponse,
-      futuresFundsResponse,
-    ] = await Promise.all([
-      this.portfolioService.getPortfolioPnL(userId),
-      this.portfolioService.getPortfolioPerformance(userId, timeframe),
-      this.portfolioService.getPortfolioSummary(userId),
-      this.portfolioService.getPortfolioHoldings(userId, {
-        limit: holdingsLimit,
-        offset: '0',
-      }),
-      this.portfolioService.getPortfolioSnapshots(userId, {
-        limit: snapshotsLimit,
-        offset: snapshotsOffset,
-      }),
-      this.brokerWalletFacadeService.getWalletFundsForActiveAccounts(userId),
-      this.brokerWalletFacadeService.getFuturesFundsForActiveAccounts(userId),
-    ]);
+    const [futuresSummaryResponse, positionsResponse, capitalResponse, activityResponse] =
+      await Promise.all([
+        this.portfolioService.getFuturesSummary(userId),
+        this.portfolioService.getOpenPositionsOverview(userId, {
+          limit: holdingsLimit,
+          offset: '0',
+        }),
+        this.portfolioService.getCapitalOverview(userId),
+        this.portfolioService.getActivityOverview(userId, timeframe),
+      ]);
 
-    const pnl = pnlResponse.data ?? pnlResponse;
-    const performance = performanceResponse.data ?? performanceResponse;
-    const summary = summaryResponse.data ?? summaryResponse;
-    const holdings = holdingsResponse.data ?? holdingsResponse;
-    const snapshots = snapshotsResponse.data ?? snapshotsResponse;
-    const walletItems = this.normalizeFundsPayload(walletFundsResponse, timeZone);
-    const futuresItems = this.normalizeFundsPayload(futuresFundsResponse, timeZone);
-    const latestObservedAtIso = this.pickLatestTimestamp([
-      ...walletItems.map((item) => item.observedAtIso || item.observedAt || null),
-      ...futuresItems.map((item) => item.observedAtIso || item.observedAt || null),
-    ]);
-    const oldestObservedAtIso = this.pickOldestTimestamp([
-      ...walletItems.map((item) => item.observedAtIso || item.observedAt || null),
-      ...futuresItems.map((item) => item.observedAtIso || item.observedAt || null),
-    ]);
-
-    const activeFunds: PortfolioActiveFundsResponse = {
-      source: 'funds_snapshots via broker_wallet_facade',
-      definition:
-        'Latest stored funds snapshot per connected account, normalized for wallet and futures capital review.',
-      freshnessModel: 'funds_snapshot_timestamp',
-      walletItems,
-      futuresItems,
-      latestObservedAt: this.formatDisplayTime(latestObservedAtIso, timeZone),
-      latestObservedAtIso,
-      oldestObservedAt: this.formatDisplayTime(oldestObservedAtIso, timeZone),
-      oldestObservedAtIso,
-      time: buildApiTimeContract(timeZone),
-    };
+    const futuresSummary = futuresSummaryResponse.data ?? futuresSummaryResponse;
+    const positions = positionsResponse.data ?? positionsResponse;
+    const capital = capitalResponse.data ?? capitalResponse;
+    const activity = activityResponse.data ?? activityResponse;
+    const pnl = activity.pnl;
+    const performance = activity.performance;
+    const activeFunds = this.buildLegacyActiveFundsAlias(capital);
+    const summary = this.buildLegacySummaryAlias(futuresSummary, capital, positions, pnl, timeZone);
+    const holdings = this.buildLegacyHoldingsAlias(positions, timeZone);
+    const snapshots = this.buildLegacySnapshotsAlias(
+      resolvedQuery.snapshotsLimit,
+      resolvedQuery.snapshotsOffset,
+      timeZone
+    );
 
     const sections = this.buildSections({
       generatedAtIso,
       timeframe,
-      summary,
-      holdings,
-      snapshots,
-      pnl,
-      performance,
-      activeFunds,
+      futuresSummary,
+      positions,
+      capital,
+      activity,
       timeZone,
     });
-    const warnings = this.buildWarnings(sections);
+    const warnings = this.buildWarnings({
+      sections,
+      openPositions: positions.total,
+    });
+    const evolution: PortfolioOverviewContractEvolution = {
+      currentModel: 'futures_only_workspace',
+      targetModel: 'futures_only_workspace',
+      legacySectionKeys: ['pnl', 'performance', 'summary', 'holdings', 'snapshots', 'activeFunds'],
+      futuresSectionKeys: ['summary', 'positions', 'capital', 'activity'],
+      deprecatedLegacySections: ['holdings', 'snapshots', 'activeFunds'],
+    };
     const meta: PortfolioOverviewMeta = {
-      contractVersion: 'portfolio-overview-phase6-2026-04-10',
+      contractVersion: 'portfolio-overview-phase7-futures-2026-04-14',
       purpose: 'operator_portfolio_workspace',
       generatedAt: this.formatDisplayTime(generatedAtIso, timeZone) || generatedAtIso,
       generatedAtIso,
       summary:
-        'The `/portfolio/overview` contract is trust-aware, uses indexed snapshot reads plus read-model-backed activity queries, and now declares the manual reconciliation/reporting workflow available from the portfolio workspace.',
+        'The `/portfolio/overview` contract is futures-first: summary, positions, capital, and activity hydrate from live capital routes, the positions read model, and closed-position activity. Legacy fields remain only as compatibility aliases or placeholders.',
       primaryPageRoute: '/portfolio',
       primaryEndpoint: '/portfolio/overview',
       pageHydration: 'single-request',
@@ -147,25 +133,29 @@ export class PortfolioOverviewService {
       sources: {
         pnl: 'scheduler_positions_snapshots',
         performance: 'scheduler_positions_snapshots',
-        summary: 'portfolio_snapshots',
-        holdings: 'portfolio_snapshots',
-        snapshots: 'portfolio_snapshots',
-        activeFunds: 'funds_snapshots via broker_wallet_facade',
+        summary: 'futures_summary compatibility alias',
+        holdings: 'positions compatibility alias',
+        snapshots: 'deprecated legacy placeholder',
+        activeFunds: 'capital compatibility alias',
+        futuresSummary: 'funds_snapshots_plus_position_read_models',
+        positions: 'position_read_models',
+        capital: 'funds_snapshots via broker_wallet_facade',
+        activity: 'scheduler_positions_snapshots',
       },
       pageTruth: {
-        storedPosture: 'latest_portfolio_snapshot',
-        holdingsWorkspace: 'ranked_overview_slice_from_latest_snapshot',
+        storedPosture: 'futures_summary_from_live_routes',
+        holdingsWorkspace: 'open_positions_from_connected_accounts',
         liveCapital: 'active_account_funds_snapshots',
         activity: 'closed_position_scheduler_snapshots',
-        reconciliation: 'operator_review_without_auto_reconciliation',
-        workspaceStructure: 'trust_posture_holdings_capital_activity_snapshots',
+        reconciliation: 'operator_review_with_futures_aliases',
+        workspaceStructure: 'futures_summary_positions_capital_activity',
       },
       capabilities: {
         singleRequestHydration: true,
         explicitSectionProvenance: true,
         explicitSectionFreshness: true,
-        holdingsIncludedInOverview: true,
-        indexedSnapshotReads: true,
+        holdingsIncludedInOverview: false,
+        indexedSnapshotReads: false,
         activityReadModelAcceleration: true,
         portfolioHealthChecks: true,
         shareableWorkspaceState: true,
@@ -176,27 +166,51 @@ export class PortfolioOverviewService {
         routeScopedPnlFilters: false,
         liveSnapshotReconciliationPolicy: true,
         exportReport: true,
+        futuresOverview: true,
+        positionsIncludedInOverview: true,
+        legacyFieldsAreCompatibilityAliases: true,
       },
       reconciliationPolicy: {
         mode: 'manual_workspace_review',
-        holdingsSource: 'portfolio_snapshots',
+        holdingsSource: 'position_read_models',
         capitalSource: 'funds_snapshots via broker_wallet_facade',
         activitySource: 'scheduler_positions_snapshots',
-        holdingsScope: 'loaded_overview_slice_client_side',
+        holdingsScope: 'connected_accounts_live_positions',
         driftAlertThresholdPct: 15,
         reviewTriggers: [
-          'largest holding concentration above 40% of the loaded snapshot slice',
-          'at-risk holdings present in the loaded snapshot slice',
+          'positions read-model freshness crosses stale or critical thresholds',
+          'capital routes are missing, partial, or materially stale',
           'wallet versus futures capital differs by more than 15% of visible capital',
-          'selected timeframe realized activity is negative'
+          'selected timeframe realized activity is negative',
         ],
         operatorActions: [
-          'generate a manual rebalance review from the current workspace state',
+          'review capital routes before treating wallet collateral as deployable futures margin',
+          'inspect open futures positions before using legacy holdings aliases for decision-making',
           'generate and export a workspace report from the same shareable state',
-          'inspect the selected holding before changing allocations',
-          'refresh the overview before acting when any section is stale'
+          'refresh the overview before acting when capital or positions are stale',
         ],
       },
+      futuresReconciliationPolicy: {
+        mode: 'manual_workspace_review',
+        positionsSource: 'position_read_models',
+        capitalSource: 'funds_snapshots via broker_wallet_facade',
+        activitySource: 'scheduler_positions_snapshots',
+        positionsScope: 'connected_accounts_live_positions',
+        driftAlertThresholdPct: 15,
+        reviewTriggers: [
+          'positions read-model freshness crosses stale or critical thresholds',
+          'capital routes are missing, partial, or materially stale',
+          'wallet versus futures capital differs by more than 15% of visible capital',
+          'selected timeframe realized activity is negative',
+        ],
+        operatorActions: [
+          'review capital routes before treating wallet collateral as deployable futures margin',
+          'inspect open futures positions before changing exposure',
+          'generate and export a workspace report from the same shareable state',
+          'refresh the overview before acting when capital or positions are stale',
+        ],
+      },
+      evolution,
       warnings,
       sections,
       time: buildApiTimeContract(timeZone),
@@ -210,205 +224,309 @@ export class PortfolioOverviewService {
       holdings,
       snapshots,
       activeFunds,
+      futuresSummary,
+      positions,
+      capital,
+      activity,
       time: buildApiTimeContract(timeZone),
     });
   }
 
-  private normalizeFundsPayload(
-    payload: unknown,
-    timeZone: string
-  ): PortfolioActiveFundsResponse['walletItems'] {
-    const raw = payload as { items?: unknown[]; data?: { items?: unknown[] } };
-    const items =
-      (Array.isArray(raw?.items) && raw.items) ||
-      (Array.isArray(raw?.data?.items) && raw.data?.items) ||
-      (Array.isArray(raw) ? raw : []);
-
-    return items.map((item) => this.normalizeFundsItem(item, timeZone));
+  private buildLegacyActiveFundsAlias(
+    capital: PortfolioCapitalResponse
+  ): PortfolioActiveFundsResponse {
+    return {
+      source: capital.source,
+      definition:
+        'Deprecated alias for capital routes. Use `capital` for wallet and futures route totals in the futures-only portfolio workspace.',
+      freshnessModel: capital.freshnessModel,
+      latestObservedAt: capital.latestObservedAt,
+      latestObservedAtIso: capital.latestObservedAtIso,
+      oldestObservedAt: capital.oldestObservedAt,
+      oldestObservedAtIso: capital.oldestObservedAtIso,
+      walletItems: capital.walletItems,
+      futuresItems: capital.futuresItems,
+      time: capital.time,
+    };
   }
 
-  private normalizeFundsItem(item: unknown, timeZone: string) {
-    const safe = item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>) : {};
-    const rawFundsCandidate =
-      safe.funds && typeof safe.funds === 'object' && !Array.isArray(safe.funds)
-        ? (safe.funds as Record<string, unknown>)
-        : safe;
-    const rawFunds =
-      rawFundsCandidate.data &&
-      typeof rawFundsCandidate.data === 'object' &&
-      !Array.isArray(rawFundsCandidate.data)
-        ? (rawFundsCandidate.data as Record<string, unknown>)
-        : rawFundsCandidate;
-    const observedAtIso =
-      safe.observedAt || safe.observed_at ? this.toIsoString(safe.observedAt || safe.observed_at) : null;
-    const funds = rawFunds as Record<string, unknown>;
+  private buildLegacySummaryAlias(
+    futuresSummary: PortfolioFuturesSummaryResponse,
+    capital: PortfolioCapitalResponse,
+    positions: PortfolioOpenPositionsResponse,
+    pnl: PortfolioPnLResponse,
+    timeZone: string
+  ): PortfolioSummary {
+    const totalEquity =
+      this.toNumber(futuresSummary.futuresEquity) + this.toNumber(futuresSummary.walletCollateral);
+    const largestPosition = [...(positions.items || [])].sort((left, right) => {
+      return this.toNumber(right.exposure) - this.toNumber(left.exposure);
+    })[0] || null;
+    const allocationPct =
+      largestPosition && this.toNumber(futuresSummary.grossExposure) > 0
+        ? (this.toNumber(largestPosition.exposure) / this.toNumber(futuresSummary.grossExposure)) * 100
+        : null;
+
     return {
-      accountId: String(safe.accountId || safe.account_id || ''),
-      accountName: String(safe.accountName || safe.account_name || ''),
-      accountKey: String(safe.accountKey || safe.account_key || ''),
-      brokerKey: String(safe.brokerKey || safe.broker_key || ''),
-      status: String(safe.status || ''),
-      observedAt: this.formatDisplayTime(observedAtIso, timeZone),
-      observedAtIso,
-      error: safe.error ? String(safe.error) : null,
-      funds: {
-        balance: this.toNumber(
-          funds.balance ??
-            funds.total ??
-            funds.equity ??
-            funds.wallet_balance ??
-            funds.futures_equity ??
-            funds.margin_balance
-        ),
-        available: this.toNumber(
-          funds.available_balance ??
-            funds.withdrawable ??
-            funds.free ??
-            funds.available ??
-            funds.free_balance
-        ),
-        invested: this.toNumber(
-          funds.invested ??
-            funds.locked_amount ??
-            funds.used_margin ??
-            funds.margin_used
-        ),
-      },
+      equity: totalEquity,
+      dayPnL: this.toNumber(pnl.dailyPnL),
+      netExposure:
+        this.toNumber(futuresSummary.grossExposure) > 0
+          ? this.formatCurrency(this.toNumber(futuresSummary.grossExposure))
+          : '--',
+      diversification:
+        positions.total > 0
+          ? `${positions.total} live position${positions.total === 1 ? '' : 's'}`
+          : 'No open futures positions',
+      source: this.legacySource,
+      observedAt: futuresSummary.observedAt || null,
+      observedAtIso: futuresSummary.observedAtIso || null,
+      definition:
+        'Deprecated legacy summary alias synthesized from futures capital, open positions, and realized activity.',
+      portfolioValue: this.formatCurrency(totalEquity),
+      netPnl: this.formatSignedCurrency(this.toNumber(pnl.dailyPnL)),
+      holdings: positions.total,
+      largestWeight:
+        allocationPct !== null ? `${allocationPct.toFixed(1)}%` : '--',
+      largestWeightLabel: largestPosition?.symbol || '--',
+      assetAllocation: 'Futures capital routes',
+      strategyMix: 'Live futures positions',
+      riskPosture:
+        positions.total > 0
+          ? 'Live futures posture'
+          : 'Capital-only posture',
+      accountCurve: 'Use activity series',
+      monthlyPace: this.formatSignedCurrency(this.toNumber(pnl.monthlyPnL)),
+      time: buildApiTimeContract(timeZone),
+    };
+  }
+
+  private buildLegacyHoldingsAlias(
+    positions: PortfolioOpenPositionsResponse,
+    timeZone: string
+  ): PortfolioHoldingsResponse {
+    const totalExposure = (positions.items || []).reduce(
+      (sum, item) => sum + this.toNumber(item.exposure),
+      0
+    );
+    const items: PortfolioHolding[] = (positions.items || []).map((item) => ({
+      id: item.id,
+      symbol: item.symbol || '--',
+      quantity: this.toNumber(item.quantity),
+      marketValue: this.toNumber(item.exposure),
+      allocationPct:
+        totalExposure > 0 ? (this.toNumber(item.exposure) / totalExposure) * 100 : 0,
+      dayPnL: this.toNumber(item.unrealizedPnl),
+      unrealizedPnL: this.toNumber(item.unrealizedPnl),
+      side: item.side === 'Short' ? 'Short' : 'Long',
+      strategy: item.accountName || item.brokerKey || 'Live futures route',
+      riskState: this.mapLegacyRiskState(item.freshness?.state),
+      sleeve: item.brokerKey || 'Futures',
+      contribution: item.accountName || undefined,
+      lastRebalanceAt: item.observedAt || undefined,
+      lastRebalanceAtIso: item.observedAtIso || undefined,
+    }));
+
+    return {
+      items,
+      total: positions.total,
+      limit: positions.limit,
+      offset: positions.offset,
+      source: this.legacySource,
+      observedAt: positions.observedAt || null,
+      observedAtIso: positions.observedAtIso || null,
+      definition:
+        'Deprecated legacy holdings alias synthesized from open futures positions. Use `positions` for the live futures workspace.',
+      time: buildApiTimeContract(timeZone),
+    };
+  }
+
+  private buildLegacySnapshotsAlias(
+    limit: number,
+    offset: number,
+    timeZone: string
+  ): PortfolioSnapshotsResponse {
+    return {
+      items: [],
+      total: 0,
+      limit,
+      offset,
+      source: this.legacySource,
+      observedAt: null,
+      observedAtIso: null,
+      definition:
+        'Deprecated legacy placeholder. Stored portfolio snapshot history is retired from the futures-only overview.',
+      time: buildApiTimeContract(timeZone),
     };
   }
 
   private buildSections(input: {
     generatedAtIso: string;
     timeframe: 'daily' | 'weekly' | 'monthly';
-    summary: any;
-    holdings: any;
-    snapshots: any;
-    pnl: any;
-    performance: any;
-    activeFunds: PortfolioActiveFundsResponse;
+    futuresSummary: PortfolioFuturesSummaryResponse;
+    positions: PortfolioOpenPositionsResponse;
+    capital: PortfolioCapitalResponse;
+    activity: PortfolioActivityResponse;
     timeZone: string;
   }): Record<PortfolioOverviewSectionKey, PortfolioOverviewSectionProvenance> {
-    const summaryObservedAt =
-      this.toIsoString(input.summary?.observedAtIso) || this.toIsoString(input.summary?.observedAt);
-    const holdingsObservedAt =
-      this.toIsoString(input.holdings?.observedAtIso) || this.toIsoString(input.holdings?.observedAt);
-    const snapshotsObservedAt =
-      this.toIsoString(input.snapshots?.observedAtIso) ||
-      this.toIsoString(input.snapshots?.observedAt) ||
-      this.toIsoString(input.snapshots?.items?.[0]?.createdAtIso) ||
-      this.toIsoString(input.snapshots?.items?.[0]?.createdAt);
-    const pnlObservedAt =
-      this.toIsoString(input.pnl?.observedAtIso) || this.toIsoString(input.pnl?.observedAt);
-    const performanceObservedAt =
-      this.toIsoString(input.performance?.observedAtIso) ||
-      this.toIsoString(input.performance?.observedAt);
-    const activeFundsObservedAt =
-      this.toIsoString(input.activeFunds.oldestObservedAtIso) ||
-      this.toIsoString(input.activeFunds.oldestObservedAt) ||
-      this.toIsoString(input.activeFunds.latestObservedAtIso) ||
-      this.toIsoString(input.activeFunds.latestObservedAt);
-    const activeFundsHasError = [
-      ...(input.activeFunds.walletItems || []),
-      ...(input.activeFunds.futuresItems || []),
-    ].some((item) => Boolean(item?.error));
+    const capitalObservedAt =
+      this.toIsoString(input.capital.oldestObservedAtIso) ||
+      this.toIsoString(input.capital.oldestObservedAt) ||
+      this.toIsoString(input.capital.latestObservedAtIso) ||
+      this.toIsoString(input.capital.latestObservedAt);
+    const positionsObservedAt =
+      this.toIsoString(input.positions.oldestObservedAtIso) ||
+      this.toIsoString(input.positions.oldestObservedAt) ||
+      this.toIsoString(input.positions.latestObservedAtIso) ||
+      this.toIsoString(input.positions.latestObservedAt);
+    const activityObservedAt =
+      this.toIsoString(input.activity.observedAtIso) ||
+      this.toIsoString(input.activity.observedAt);
+    const capitalHasError = this.hasCapitalError(input.capital);
+    const capitalAvailability = this.resolveCapitalAvailability(input.capital, capitalHasError);
+    const positionsAvailability = this.resolvePositionsAvailability(input.positions);
+    const capitalFreshness = this.buildFreshness(
+      capitalObservedAt,
+      this.fundsSnapshotStaleAfterMs,
+      this.fundsSnapshotCriticalAfterMs
+    );
+    const positionsFreshness = this.buildFreshness(
+      positionsObservedAt,
+      env.positions.liveSnapshotStaleAfterMs,
+      env.positions.liveSnapshotCriticalAfterMs
+    );
+    const summaryObservedAt = this.pickOldestTimestamp([
+      capitalObservedAt,
+      input.positions.total > 0 ? positionsObservedAt : null,
+    ]);
+    const summaryFreshness = this.buildSummaryFreshness(
+      capitalFreshness,
+      positionsFreshness,
+      input.positions.total
+    );
 
     return {
       summary: this.createSection({
-        source: 'portfolio_snapshots',
-        sourceLabel: 'Latest stored portfolio snapshot summary',
-        availability: summaryObservedAt ? 'available' : 'missing',
+        source: 'funds_snapshots_plus_position_read_models',
+        sourceLabel: 'Futures capital and exposure summary',
+        availability:
+          capitalAvailability === 'missing' && input.positions.total > 0 && positionsAvailability === 'missing'
+            ? 'missing'
+            : capitalAvailability === 'partial' || positionsAvailability === 'partial'
+              ? 'partial'
+              : 'available',
         observedAt: this.formatDisplayTime(summaryObservedAt, input.timeZone),
         observedAtIso: summaryObservedAt,
-        freshnessModel: 'snapshot_timestamp',
-        freshness: this.buildFreshness(
-          summaryObservedAt,
-          this.portfolioSnapshotStaleAfterMs,
-          this.portfolioSnapshotCriticalAfterMs
-        ),
+        freshnessModel: 'mixed_futures_state',
+        freshness: summaryFreshness,
+        definition: input.futuresSummary.definition,
+        note:
+          'Summary is synthesized from capital routes and live open-position exposure. Stored portfolio snapshots are no longer part of this endpoint truth model.',
+      }),
+      positions: this.createSection({
+        source: 'position_read_models',
+        sourceLabel: 'Open futures positions',
+        availability: positionsAvailability,
+        observedAt: this.formatDisplayTime(positionsObservedAt, input.timeZone),
+        observedAtIso: positionsObservedAt,
+        freshnessModel: 'position_read_model_timestamp',
+        freshness: positionsFreshness,
         definition:
-          input.summary?.definition || 'Latest stored portfolio snapshot summary.',
-        note: summaryObservedAt
-          ? 'Book posture is snapshot-backed and does not auto-reconcile to current broker balances.'
-          : 'No stored portfolio snapshot is available yet, so stored posture is unavailable.',
+          input.positions.definition ||
+          'Open futures positions across connected accounts, normalized from the positions read model.',
+        note:
+          input.positions.total > 0
+            ? 'Open positions are live-read-model based and should be treated as the portfolio desk posture.'
+            : 'No open futures positions are visible on connected accounts right now.',
+      }),
+      capital: this.createSection({
+        source: 'funds_snapshots via broker_wallet_facade',
+        sourceLabel: 'Capital routes',
+        availability: capitalAvailability,
+        observedAt: this.formatDisplayTime(capitalObservedAt, input.timeZone),
+        observedAtIso: capitalObservedAt,
+        freshnessModel: 'funds_snapshot_timestamp',
+        freshness: capitalFreshness,
+        definition: input.capital.definition,
+        note: capitalHasError
+          ? 'One or more connected accounts are missing capital-route rows; inspect account-level route coverage before trusting totals.'
+          : 'Wallet routes are secondary collateral context and futures routes are the primary live capital surface.',
+      }),
+      activity: this.createSection({
+        source: 'scheduler_positions_snapshots',
+        sourceLabel: 'Closed-position activity',
+        availability: 'available',
+        observedAt: this.formatDisplayTime(activityObservedAt, input.timeZone),
+        observedAtIso: activityObservedAt,
+        freshnessModel: 'windowed_activity',
+        freshness: this.buildFreshness(activityObservedAt, null, null),
+        definition: input.activity.definition,
+        note: `Activity reflects ${input.timeframe} realized closed-position buckets, not live mark-to-market equity.`,
       }),
       holdings: this.createSection({
-        source: 'portfolio_snapshots',
-        sourceLabel: 'Latest stored holdings snapshot',
-        availability: holdingsObservedAt ? 'available' : 'missing',
-        observedAt: this.formatDisplayTime(holdingsObservedAt, input.timeZone),
-        observedAtIso: holdingsObservedAt,
-        freshnessModel: 'snapshot_timestamp',
-        freshness: this.buildFreshness(
-          holdingsObservedAt,
-          this.portfolioSnapshotStaleAfterMs,
-          this.portfolioSnapshotCriticalAfterMs
-        ),
+        source: 'position_read_models',
+        sourceLabel: 'Legacy holdings alias',
+        availability: positionsAvailability,
+        observedAt: this.formatDisplayTime(positionsObservedAt, input.timeZone),
+        observedAtIso: positionsObservedAt,
+        freshnessModel: 'position_read_model_timestamp',
+        freshness: positionsFreshness,
         definition:
-          input.holdings?.definition ||
-          'Largest holdings ordered by market value from the latest stored portfolio snapshot.',
+          'Deprecated alias that maps open futures positions into the old holdings shape for compatibility.',
         note:
-          'Search and focus on `/portfolio` apply to the loaded overview slice only; they do not change the stored backend snapshot.',
+          'Use `positions` instead. This alias exists only to bridge older portfolio consumers during the futures migration.',
       }),
       snapshots: this.createSection({
-        source: 'portfolio_snapshots',
-        sourceLabel: 'Stored portfolio snapshot history',
-        availability: Array.isArray(input.snapshots?.items) && input.snapshots.items.length ? 'available' : 'missing',
-        observedAt: this.formatDisplayTime(snapshotsObservedAt, input.timeZone),
-        observedAtIso: snapshotsObservedAt,
+        source: 'deprecated legacy placeholder',
+        sourceLabel: 'Legacy snapshot history placeholder',
+        availability: 'missing',
+        observedAt: null,
+        observedAtIso: null,
         freshnessModel: 'snapshot_timestamp',
-        freshness: this.buildFreshness(
-          snapshotsObservedAt,
-          this.portfolioSnapshotStaleAfterMs,
-          this.portfolioSnapshotCriticalAfterMs
-        ),
+        freshness: this.buildFreshness(null, null, null),
         definition:
-          input.snapshots?.definition ||
-          'Stored portfolio snapshot history ordered from newest to oldest capture.',
-        note: 'Snapshot history is an audit trail of stored posture, not a live balance feed.',
+          'Deprecated placeholder. Stored portfolio snapshot history is not part of the futures-only portfolio overview.',
+        note:
+          'Use capital, positions, and activity as the futures truth surfaces. This placeholder remains only to avoid breaking older consumers during migration.',
       }),
       activeFunds: this.createSection({
         source: 'funds_snapshots via broker_wallet_facade',
-        sourceLabel: 'Latest per-account funds snapshots',
-        availability: this.resolveActiveFundsAvailability(input.activeFunds, activeFundsHasError),
-        observedAt: this.formatDisplayTime(activeFundsObservedAt, input.timeZone),
-        observedAtIso: activeFundsObservedAt,
+        sourceLabel: 'Legacy capital alias',
+        availability: capitalAvailability,
+        observedAt: this.formatDisplayTime(capitalObservedAt, input.timeZone),
+        observedAtIso: capitalObservedAt,
         freshnessModel: 'funds_snapshot_timestamp',
-        freshness: this.buildFreshness(
-          activeFundsObservedAt,
-          this.fundsSnapshotStaleAfterMs,
-          this.fundsSnapshotCriticalAfterMs
-        ),
-        definition: input.activeFunds.definition,
-        note: activeFundsHasError
-          ? 'One or more connected accounts are missing funds snapshots; inspect route rows before trusting totals.'
-          : 'Live capital review is still snapshot-backed per connected account, not broker-streaming in real time.',
+        freshness: capitalFreshness,
+        definition:
+          'Deprecated alias for capital routes. Use `capital` for the futures-first funds surface.',
+        note:
+          'This alias remains for compatibility only. Wallet and futures route totals now live under `capital`.',
       }),
       pnl: this.createSection({
         source: 'scheduler_positions_snapshots',
-        sourceLabel: 'Closed-position realized PnL windows',
+        sourceLabel: 'Legacy realized PnL alias',
         availability: 'available',
-        observedAt: this.formatDisplayTime(pnlObservedAt, input.timeZone),
-        observedAtIso: pnlObservedAt,
+        observedAt: this.formatDisplayTime(activityObservedAt, input.timeZone),
+        observedAtIso: activityObservedAt,
         freshnessModel: 'windowed_activity',
-        freshness: this.buildFreshness(pnlObservedAt, null, null),
+        freshness: this.buildFreshness(activityObservedAt, null, null),
         definition:
-          input.pnl?.definition ||
-          'Realized PnL aggregated from closed-position scheduler snapshots across active accounts.',
+          'Deprecated alias for the realized PnL slice of `activity`.',
         note:
-          'Realized PnL is window-based activity. A missing recent event means there may have been no closed positions, not that the section failed.',
+          'Use `activity.pnl` for realized windows in the futures-only overview.',
       }),
       performance: this.createSection({
         source: 'scheduler_positions_snapshots',
-        sourceLabel: 'Closed-position activity series',
+        sourceLabel: 'Legacy performance alias',
         availability: 'available',
-        observedAt: this.formatDisplayTime(performanceObservedAt, input.timeZone),
-        observedAtIso: performanceObservedAt,
+        observedAt: this.formatDisplayTime(activityObservedAt, input.timeZone),
+        observedAtIso: activityObservedAt,
         freshnessModel: 'windowed_activity',
-        freshness: this.buildFreshness(performanceObservedAt, null, null),
+        freshness: this.buildFreshness(activityObservedAt, null, null),
         definition:
-          input.performance?.definition ||
-          'Closed-position activity aggregated from scheduler snapshots for the selected portfolio timeframe.',
-        note: `Performance reflects ${input.timeframe} realized activity buckets, not live account equity.`,
+          'Deprecated alias for the performance slice of `activity`.',
+        note:
+          'Use `activity.performance` for realized closed-position series in the futures-only overview.',
       }),
     };
   }
@@ -419,81 +537,106 @@ export class PortfolioOverviewService {
     return section;
   }
 
-  private buildWarnings(
-    sections: Record<PortfolioOverviewSectionKey, PortfolioOverviewSectionProvenance>
-  ): PortfolioOverviewWarning[] {
+  private buildWarnings(input: {
+    sections: Record<PortfolioOverviewSectionKey, PortfolioOverviewSectionProvenance>;
+    openPositions: number;
+  }): PortfolioOverviewWarning[] {
+    const sections = input.sections;
     const warnings: PortfolioOverviewWarning[] = [];
 
-    if (sections.summary.availability === 'missing') {
-      warnings.push({
-        code: 'stored_snapshot_missing',
-        tone: 'danger',
-        section: 'summary',
-        summary: 'Stored portfolio posture is unavailable because no snapshot has been captured yet.',
-        detail:
-          'Book posture, holdings, and stored snapshot history depend on portfolio snapshot ingestion. Capture a snapshot before using `/portfolio` as the stored book source.',
-      });
-    } else if (sections.summary.freshness?.state === 'critical' || sections.holdings.freshness?.state === 'critical') {
-      warnings.push({
-        code: 'stored_snapshot_stale',
-        tone: 'danger',
-        section: 'summary',
-        summary: 'Stored portfolio posture is critically stale.',
-        detail:
-          'The latest stored portfolio snapshot is older than the critical freshness threshold, so posture and holdings may not reflect current allocation.',
-      });
-    } else if (sections.summary.freshness?.state === 'stale' || sections.holdings.freshness?.state === 'stale') {
-      warnings.push({
-        code: 'stored_snapshot_stale',
-        tone: 'warning',
-        section: 'summary',
-        summary: 'Stored portfolio posture is getting stale.',
-        detail:
-          'The latest portfolio snapshot is older than the stale freshness threshold, so posture and holdings should be reviewed with care.',
-      });
-    }
-
-    if (sections.activeFunds.availability === 'missing') {
+    if (sections.capital.availability === 'missing') {
       warnings.push({
         code: 'funds_snapshot_missing',
         tone: 'danger',
-        section: 'activeFunds',
-        summary: 'Connected account funds snapshots are unavailable.',
+        section: 'capital',
+        summary: 'Capital routes are unavailable for the futures workspace.',
         detail:
-          'Wallet and futures capital routes could not be assembled from stored funds snapshots for the connected accounts.',
+          'Wallet and futures route rows could not be assembled for connected accounts from the current capital route surface.',
       });
     } else if (
-      sections.activeFunds.availability === 'partial' ||
-      sections.activeFunds.freshness?.state === 'critical'
+      sections.capital.availability === 'partial' ||
+      sections.capital.freshness?.state === 'critical'
     ) {
       warnings.push({
         code: 'funds_snapshot_attention',
-        tone: sections.activeFunds.freshness?.state === 'critical' ? 'danger' : 'warning',
-        section: 'activeFunds',
+        tone: sections.capital.freshness?.state === 'critical' ? 'danger' : 'warning',
+        section: 'capital',
         summary:
-          sections.activeFunds.availability === 'partial'
-            ? 'Capital routes need attention because some connected accounts are missing funds snapshots.'
-            : 'Capital route snapshots are critically stale.',
-        detail: sections.activeFunds.note,
+          sections.capital.availability === 'partial'
+            ? 'Capital routes need attention because some connected accounts are missing route coverage.'
+            : 'Capital routes are critically stale.',
+        detail: sections.capital.note,
       });
-    } else if (sections.activeFunds.freshness?.state === 'stale') {
+    } else if (sections.capital.freshness?.state === 'stale') {
       warnings.push({
         code: 'funds_snapshot_attention',
         tone: 'warning',
-        section: 'activeFunds',
-        summary: 'Capital route snapshots are getting stale.',
-        detail: sections.activeFunds.note,
+        section: 'capital',
+        summary: 'Capital routes are getting stale.',
+        detail: sections.capital.note,
+      });
+    }
+
+    if (input.openPositions > 0 && sections.positions.availability === 'missing') {
+      warnings.push({
+        code: 'positions_snapshot_missing',
+        tone: 'danger',
+        section: 'positions',
+        summary: 'Open position coverage is unavailable for the futures workspace.',
+        detail:
+          'The positions read model is not returning live open positions even though connected routes are expected to contribute positions.',
+      });
+    } else if (
+      input.openPositions > 0 &&
+      (sections.positions.availability === 'partial' ||
+        sections.positions.freshness?.state === 'critical')
+    ) {
+      warnings.push({
+        code: 'positions_snapshot_attention',
+        tone: sections.positions.freshness?.state === 'critical' ? 'danger' : 'warning',
+        section: 'positions',
+        summary:
+          sections.positions.availability === 'partial'
+            ? 'Open position coverage is partial and should be reviewed before trusting live posture.'
+            : 'Open positions are critically stale.',
+        detail: sections.positions.note,
+      });
+    } else if (input.openPositions > 0 && sections.positions.freshness?.state === 'stale') {
+      warnings.push({
+        code: 'positions_snapshot_attention',
+        tone: 'warning',
+        section: 'positions',
+        summary: 'Open positions are getting stale.',
+        detail: sections.positions.note,
+      });
+    }
+
+    if (sections.summary.freshness?.state === 'critical') {
+      warnings.push({
+        code: 'futures_summary_attention',
+        tone: 'danger',
+        section: 'summary',
+        summary: 'The futures summary is critically stale or incomplete.',
+        detail: sections.summary.note,
+      });
+    } else if (sections.summary.freshness?.state === 'stale') {
+      warnings.push({
+        code: 'futures_summary_attention',
+        tone: 'warning',
+        section: 'summary',
+        summary: 'The futures summary is getting stale.',
+        detail: sections.summary.note,
       });
     }
 
     return warnings;
   }
 
-  private resolveActiveFundsAvailability(
-    activeFunds: PortfolioActiveFundsResponse,
+  private resolveCapitalAvailability(
+    capital: PortfolioCapitalResponse,
     hasError: boolean
   ): PortfolioOverviewSectionAvailability {
-    const allItems = [...(activeFunds.walletItems || []), ...(activeFunds.futuresItems || [])];
+    const allItems = [...(capital.walletItems || []), ...(capital.futuresItems || [])];
 
     if (!allItems.length) {
       return 'missing';
@@ -510,6 +653,65 @@ export class PortfolioOverviewService {
     }
 
     return 'available';
+  }
+
+  private resolvePositionsAvailability(
+    positions: PortfolioOpenPositionsResponse
+  ): PortfolioOverviewSectionAvailability {
+    if (positions.total === 0) {
+      return 'available';
+    }
+    if (!(positions.items || []).length) {
+      return 'missing';
+    }
+    if ((positions.items || []).length < positions.total) {
+      return 'partial';
+    }
+    return 'available';
+  }
+
+  private hasCapitalError(capital: PortfolioCapitalResponse): boolean {
+    return [...(capital.walletItems || []), ...(capital.futuresItems || [])].some((item) =>
+      Boolean(item.error)
+    );
+  }
+
+  private buildSummaryFreshness(
+    capitalFreshness: PortfolioOverviewSectionFreshness | null,
+    positionsFreshness: PortfolioOverviewSectionFreshness | null,
+    openPositions: number
+  ): PortfolioOverviewSectionFreshness | null {
+    const activeFreshness = [
+      capitalFreshness,
+      openPositions > 0 ? positionsFreshness : null,
+    ].filter(Boolean) as PortfolioOverviewSectionFreshness[];
+
+    if (!activeFreshness.length) {
+      return this.buildFreshness(null, null, null);
+    }
+
+    const state = activeFreshness.some((item) => item.state === 'critical')
+      ? 'critical'
+      : activeFreshness.some((item) => item.state === 'stale')
+        ? 'stale'
+        : activeFreshness.every((item) => item.state === 'fresh')
+          ? 'fresh'
+          : 'unknown';
+
+    return {
+      state,
+      freshnessMs: Math.max(...activeFreshness.map((item) => item.freshnessMs || 0)),
+      staleAfterMs: Math.min(
+        ...activeFreshness
+          .map((item) => item.staleAfterMs)
+          .filter((value): value is number => value !== null)
+      ),
+      criticalAfterMs: Math.min(
+        ...activeFreshness
+          .map((item) => item.criticalAfterMs)
+          .filter((value): value is number => value !== null)
+      ),
+    };
   }
 
   private buildFreshness(
@@ -581,8 +783,38 @@ export class PortfolioOverviewService {
     return Number.isFinite(timestamp) ? timestamp : null;
   }
 
-  private toNumber(value: unknown): number | null {
+  private toNumber(value: unknown): number {
     const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : null;
+    return Number.isFinite(numeric) ? numeric : 0;
+  }
+
+  private mapLegacyRiskState(
+    state: PortfolioOverviewSectionFreshness['state'] | undefined
+  ): PortfolioHolding['riskState'] {
+    if (state === 'critical') {
+      return 'At risk';
+    }
+    if (state === 'stale') {
+      return 'Watch';
+    }
+    return 'Healthy';
+  }
+
+  private formatCurrency(value: number): string {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      maximumFractionDigits: 0,
+    }).format(value);
+  }
+
+  private formatSignedCurrency(value: number): string {
+    if (value > 0) {
+      return `+${this.formatCurrency(Math.abs(value))}`;
+    }
+    if (value < 0) {
+      return `-${this.formatCurrency(Math.abs(value))}`;
+    }
+    return this.formatCurrency(0);
   }
 }

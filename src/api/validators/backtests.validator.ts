@@ -162,7 +162,7 @@ export const validateBacktestTopSetupsQuery = (
 
   const minTrades = query.minTrades !== undefined && query.minTrades !== ''
     ? Number(query.minTrades)
-    : 5;
+    : undefined;
   if (minTrades !== undefined && (!Number.isInteger(minTrades) || minTrades < 0)) {
     throw new BadRequestAppError('minTrades must be a non-negative integer');
   }

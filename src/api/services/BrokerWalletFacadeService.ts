@@ -154,8 +154,13 @@ export class BrokerWalletFacadeService {
     };
   }
 
-  private parseSnapshotJson(value: string | null | undefined): unknown {
+  private parseSnapshotJson(value: unknown): unknown {
     if (!value) return null;
+
+    if (typeof value === 'object') {
+      return value;
+    }
+
     try {
       return JSON.parse(String(value));
     } catch {

@@ -853,6 +853,7 @@ export class BrokerPositionsFacadeService {
     if (!items.length) {
       return {
         observedAt: null,
+        attentionObservedAt: null,
         freshAccounts: 0,
         staleAccounts: 0,
         criticalAccounts: 0,
@@ -863,6 +864,8 @@ export class BrokerPositionsFacadeService {
 
     let observedAt: string | null = null;
     let observedTimestamp = 0;
+    let attentionObservedAt: string | null = null;
+    let attentionObservedTimestamp: number | null = null;
     let freshAccounts = 0;
     let staleAccounts = 0;
     let criticalAccounts = 0;
@@ -886,6 +889,15 @@ export class BrokerPositionsFacadeService {
         observedTimestamp = candidateTimestamp;
         observedAt = candidate;
       }
+      if (
+        candidate &&
+        candidateTimestamp !== null &&
+        (state === 'critical' || state === 'stale') &&
+        (attentionObservedTimestamp === null || candidateTimestamp < attentionObservedTimestamp)
+      ) {
+        attentionObservedTimestamp = candidateTimestamp;
+        attentionObservedAt = candidate;
+      }
     });
 
     const warning =
@@ -899,6 +911,7 @@ export class BrokerPositionsFacadeService {
 
     return {
       observedAt,
+      attentionObservedAt,
       freshAccounts,
       staleAccounts,
       criticalAccounts,

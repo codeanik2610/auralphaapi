@@ -106,7 +106,7 @@ async function runBrokerWalletFacadeServiceAssertions(): Promise<void> {
   service.fundsSnapshotRepository = {
     async getLatestSnapshot(_userId: string, brokerKey: string, accountId: string) {
       return {
-        wallet_funds_json: JSON.stringify({ total: 1250, brokerKey, accountId }),
+        wallet_funds_json: { total: 1250, brokerKey, accountId },
         futures_funds_json: JSON.stringify({ balance: '320.00', brokerKey, accountId }),
         observed_at: new Date('2026-04-13T02:15:00.000Z'),
         computed_at: new Date('2026-04-13T02:16:00.000Z'),

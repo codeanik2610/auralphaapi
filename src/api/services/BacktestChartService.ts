@@ -234,6 +234,10 @@ export class BacktestChartService {
         'Postgres market data is not enabled. Enable env.pg.enabled to load chart candles.'
       );
     }
+    if (!strategyDataSource.isInitialized) {
+      await strategyDataSource.initialize();
+    }
+    const resolvedSymbol = await this.resolveWarehouseSymbol(symbol, window.endTime);
     const rangeClause = window.startTime
       ? 'AND open_time BETWEEN $3 AND $4'
       : "AND open_time BETWEEN ($4 - ($3 || ' days')::interval) AND $4";
@@ -272,11 +276,11 @@ export class BacktestChartService {
     const queryText = limit && limit > 0 ? `${baseQuery} LIMIT $5` : baseQuery;
     const queryParams = window.startTime
       ? limit && limit > 0
-        ? [symbol, intervalSeconds, window.startTime, window.endTime, limit]
-        : [symbol, intervalSeconds, window.startTime, window.endTime]
+        ? [resolvedSymbol, intervalSeconds, window.startTime, window.endTime, limit]
+        : [resolvedSymbol, intervalSeconds, window.startTime, window.endTime]
       : limit && limit > 0
-        ? [symbol, intervalSeconds, window.lookbackDays, window.endTime, limit]
-        : [symbol, intervalSeconds, window.lookbackDays, window.endTime];
+        ? [resolvedSymbol, intervalSeconds, window.lookbackDays, window.endTime, limit]
+        : [resolvedSymbol, intervalSeconds, window.lookbackDays, window.endTime];
 
     const rows = await strategyDataSource.query(queryText, queryParams);
     const rawCandles: Array<BacktestChartResponse['candles'][number] | null> = (rows || []).map(
@@ -305,6 +309,52 @@ export class BacktestChartService {
     candles.sort((left, right) => left.openTime - right.openTime);
 
     return candles;
+  }
+
+  private async resolveWarehouseSymbol(symbol: string, endTime: Date): Promise<string> {
+    const candidates = this.buildMarketSymbolCandidates(symbol);
+    if (!candidates.length) {
+      return String(symbol || '').trim().toUpperCase();
+    }
+
+    const rows = await strategyDataSource.query(
+      `SELECT symbol, MAX(open_time) AS latest_open
+       FROM market_candles_1m
+       WHERE symbol = ANY($1::text[])
+         AND open_time <= $2
+       GROUP BY symbol
+       ORDER BY CASE WHEN symbol = $3 THEN 0 ELSE 1 END, MAX(open_time) DESC
+       LIMIT 1`,
+      [candidates, endTime, candidates[0]]
+    );
+
+    const resolved = String(rows?.[0]?.symbol || '').trim().toUpperCase();
+    return resolved || candidates[0];
+  }
+
+  private buildMarketSymbolCandidates(value: unknown): string[] {
+    const normalized = String(value || '').trim().toUpperCase();
+    if (!normalized) {
+      return [];
+    }
+
+    const candidates = new Set<string>([normalized]);
+    if (normalized.endsWith('USD') && !normalized.endsWith('USDT')) {
+      candidates.add(`${normalized.slice(0, -3)}USDT`);
+    }
+    if (normalized.endsWith('USDC') || normalized.endsWith('BUSD') || normalized.endsWith('FDUSD')) {
+      candidates.add(`${normalized.replace(/(USDC|BUSD|FDUSD)$/u, '')}USDT`);
+    }
+    if (
+      /^[A-Z0-9]{2,20}$/u.test(normalized) &&
+      !['USDT', 'USDC', 'BUSD', 'FDUSD', 'USD', 'INR', 'BTC', 'ETH'].some((quote) =>
+        normalized.endsWith(quote)
+      )
+    ) {
+      candidates.add(`${normalized}USDT`);
+    }
+
+    return Array.from(candidates);
   }
 
   private resolveChartWindow(

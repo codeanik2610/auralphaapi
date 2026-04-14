@@ -55,6 +55,45 @@ async function main(): Promise<void> {
     async getFuturesFunds() {
       throw new Error('futures snapshot loader unavailable');
     },
+    async getWalletFundsForActiveAccounts() {
+      return {
+        items: [
+          {
+            accountId: 'acct-default',
+            accountName: 'Primary wallet',
+            accountKey: 'primary',
+            brokerKey: 'mudrex',
+            status: 'Connected',
+            observedAt: '2026-04-09T10:15:00.000Z',
+            funds: {
+              total: 12500,
+              withdrawable: 6100,
+              invested: 6400,
+            },
+            error: null,
+          },
+        ],
+      };
+    },
+    async getFuturesFundsForActiveAccounts() {
+      return {
+        items: [
+          {
+            accountId: 'acct-default',
+            accountName: 'Primary wallet',
+            accountKey: 'primary',
+            brokerKey: 'mudrex',
+            status: 'Connected',
+            observedAt: '2026-04-09T10:15:00.000Z',
+            funds: {
+              balance: '8450.50',
+              locked_amount: '250.25',
+            },
+            error: null,
+          },
+        ],
+      };
+    },
   };
 
   service.brokerReferenceDataService = {
@@ -209,10 +248,13 @@ async function main(): Promise<void> {
 
   assert.equal(response.data.walletFunds?.total, 12500);
   assert.equal(response.data.futuresFunds?.balance, '8450.50');
+  assert.equal(response.data.activeFunds.walletItems[0]?.funds.balance, 12500);
   assert.equal(response.data.meta.sections.walletFunds.requestStatus, 'degraded');
   assert.equal(response.data.meta.sections.walletFunds.fetchMode, 'fallback');
   assert.equal(response.data.meta.sections.walletFunds.availability, 'available');
   assert.equal(response.data.meta.sections.futuresFunds.fetchMode, 'fallback');
+  assert.equal(response.data.meta.sections.activeFunds.requestStatus, 'ok');
+  assert.equal(response.data.meta.sections.activeFunds.availability, 'available');
 
   assert.equal(response.data.assets.length, 0);
   assert.equal(response.data.meta.sections.assets.requestStatus, 'degraded');

@@ -54,6 +54,45 @@ async function runOverviewServiceAssertions(): Promise<void> {
         first_time_user: false,
       });
     },
+    async getWalletFundsForActiveAccounts() {
+      return {
+        items: [
+          {
+            accountId: 'acct-default',
+            accountName: 'Primary wallet',
+            accountKey: 'primary',
+            brokerKey: 'mudrex',
+            status: 'Connected',
+            observedAt: '2026-04-09T10:15:00.000Z',
+            funds: {
+              total: 12500,
+              withdrawable: 6100,
+              invested: 6400,
+            },
+            error: null,
+          },
+        ],
+      };
+    },
+    async getFuturesFundsForActiveAccounts() {
+      return {
+        items: [
+          {
+            accountId: 'acct-default',
+            accountName: 'Primary wallet',
+            accountKey: 'primary',
+            brokerKey: 'mudrex',
+            status: 'Connected',
+            observedAt: '2026-04-09T10:15:00.000Z',
+            funds: {
+              balance: '8450.50',
+              locked_amount: '250.25',
+            },
+            error: null,
+          },
+        ],
+      };
+    },
   };
 
   service.fundsSnapshotRepository = {
@@ -298,6 +337,12 @@ async function runOverviewServiceAssertions(): Promise<void> {
     requestedResponse.data.meta.sections.walletFunds.statusDetail,
     'Loaded wallet funds from the resolved broker-account snapshot.'
   );
+  assert.equal(requestedResponse.data.meta.sections.activeFunds.sourceLabel, 'Capital routes');
+  assert.equal(requestedResponse.data.meta.sections.activeFunds.availability, 'available');
+  assert.equal(requestedResponse.data.meta.sections.activeFunds.requestStatus, 'ok');
+  assert.equal(requestedResponse.data.activeFunds.walletItems[0]?.funds.balance, 12500);
+  assert.equal(requestedResponse.data.activeFunds.walletItems[0]?.funds.available, 6100);
+  assert.equal(requestedResponse.data.activeFunds.futuresItems[0]?.funds.balance, 8450.5);
   assert.equal(requestedResponse.data.meta.sections.assets.sourceType, 'live_external');
   assert.equal(requestedResponse.data.meta.sections.assets.observedAt !== null, true);
   assert.equal(requestedResponse.data.meta.sections.assets.availability, 'available');

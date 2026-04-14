@@ -13,6 +13,7 @@ import {
   OverviewWarning,
 } from '../contracts/Overview';
 import { MudrexFuturesFunds, MudrexWalletFunds } from '../contracts/Mudrex';
+import { PortfolioActiveFundsResponse } from '../contracts/PortfolioOverview';
 import { successResponse } from '../utils/response';
 import { BrokerWalletFacadeService } from './BrokerWalletFacadeService';
 import { BrokerReferenceDataService } from './BrokerReferenceDataService';
@@ -95,6 +96,8 @@ const REFERENCE_STALE_CACHE_TTL_MS = 5 * 60_000;
 const REFERENCE_CACHE_MAX_ENTRIES = 200;
 const FUNDS_SNAPSHOT_STALE_AFTER_MS = 30 * 60 * 60 * 1000;
 const FUNDS_SNAPSHOT_CRITICAL_AFTER_MS = 48 * 60 * 60 * 1000;
+const ACTIVE_FUNDS_SNAPSHOT_STALE_AFTER_MS = 30 * 60 * 1000;
+const ACTIVE_FUNDS_SNAPSHOT_CRITICAL_AFTER_MS = 2 * 60 * 60 * 1000;
 const PORTFOLIO_SNAPSHOT_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 const PORTFOLIO_SNAPSHOT_CRITICAL_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -167,6 +170,7 @@ export class OverviewService {
     const [
       walletFundsTask,
       futuresFundsTask,
+      activeFundsTask,
       assetsTask,
       automationsTask,
       automationsSummaryTask,
@@ -213,6 +217,24 @@ export class OverviewService {
         successDetail: 'Loaded futures funds from the resolved broker-account snapshot.',
         fallbackDetail:
           'Futures funds lookup degraded, so the latest stored funds snapshot was reused.',
+      }),
+      this.loadSection<PortfolioActiveFundsResponse>('activeFunds', {
+        defaultValue: this.getDefaultActiveFundsResponse(),
+        run: async () => {
+          const [walletFundsResponse, futuresFundsResponse] = await Promise.all([
+            this.brokerWalletFacadeService.getWalletFundsForActiveAccounts(userId),
+            this.brokerWalletFacadeService.getFuturesFundsForActiveAccounts(userId),
+          ]);
+
+          return this.buildActiveFundsResponse({
+            walletFundsPayload:
+              this.extractData(walletFundsResponse as { data?: unknown }) ?? walletFundsResponse,
+            futuresFundsPayload:
+              this.extractData(futuresFundsResponse as { data?: unknown }) ?? futuresFundsResponse,
+          });
+        },
+        successDetail:
+          'Loaded per-account capital routes from the latest funds snapshots across connected accounts.',
       }),
       this.loadCachedReferenceSection<OverviewResponse['assets']>('assets', {
         cache: this.assetsReferenceCache,
@@ -369,6 +391,7 @@ export class OverviewService {
 
     const walletFunds = walletFundsTask.value;
     const futuresFunds = futuresFundsTask.value;
+    const activeFunds = activeFundsTask.value;
     const selectedAsset = selectedAssetTask.value;
     const leverage = leverageTask.value;
     const automations = automationsTask.value;
@@ -423,6 +446,14 @@ export class OverviewService {
       walletSnapshotObservedAt,
       FUNDS_SNAPSHOT_STALE_AFTER_MS,
       FUNDS_SNAPSHOT_CRITICAL_AFTER_MS
+    );
+    const activeFundsObservedAt: string | null =
+      activeFunds.oldestObservedAtIso ?? activeFunds.latestObservedAtIso ?? null;
+    const activeFundsHasError = this.hasActiveFundsError(activeFunds);
+    const activeFundsFreshness = this.buildFreshness(
+      activeFundsObservedAt,
+      ACTIVE_FUNDS_SNAPSHOT_STALE_AFTER_MS,
+      ACTIVE_FUNDS_SNAPSHOT_CRITICAL_AFTER_MS
     );
     const portfolioFreshness = this.buildFreshness(
       portfolioSnapshotObservedAt,
@@ -502,6 +533,34 @@ export class OverviewService {
           statusDetail: futuresFundsTask.statusDetail,
           timeoutMs: futuresFundsTask.timeoutMs,
           freshness: walletFreshness,
+        }
+      ),
+      activeFunds: this.createSectionProvenance(
+        {
+          sourceType: 'db_snapshot',
+          source: 'funds_snapshots via broker_wallet_facade across connected accounts',
+          sourceLabel: 'Capital routes',
+          uiUsage: 'rendered',
+          notes: activeFundsHasError
+            ? 'One or more connected accounts are missing funds snapshots; inspect the route rows before trusting visible capital totals.'
+            : 'Per-account wallet and futures funds snapshots across connected accounts.',
+        },
+        {
+          observedAt: activeFundsObservedAt,
+          availability:
+            activeFunds.walletItems.length || activeFunds.futuresItems.length
+              ? 'available'
+              : 'missing',
+          requestStatus:
+            activeFundsHasError && activeFundsTask.requestStatus === 'ok'
+              ? 'degraded'
+              : activeFundsTask.requestStatus,
+          fetchMode: activeFundsTask.fetchMode,
+          statusDetail: activeFundsHasError
+            ? 'One or more connected accounts are missing funds snapshots; inspect the capital routes before trusting totals.'
+            : activeFundsTask.statusDetail,
+          timeoutMs: activeFundsTask.timeoutMs,
+          freshness: activeFundsFreshness,
         }
       ),
       assets: this.createSectionProvenance(
@@ -816,6 +875,7 @@ export class OverviewService {
       health: overviewHealth,
       walletFunds,
       futuresFunds,
+      activeFunds,
       assets,
       selectedAsset,
       leverage,
@@ -1620,9 +1680,13 @@ export class OverviewService {
     return value as T;
   }
 
-  private parseSnapshotJson<T>(value: string | null | undefined): T | null {
+  private parseSnapshotJson<T>(value: unknown): T | null {
     if (!value) {
       return null;
+    }
+
+    if (typeof value === 'object') {
+      return value as T;
     }
 
     try {
@@ -1796,6 +1860,120 @@ export class OverviewService {
     };
   }
 
+  private getDefaultActiveFundsResponse(): PortfolioActiveFundsResponse {
+    return {
+      source: 'funds_snapshots via broker_wallet_facade',
+      definition:
+        'Latest stored funds snapshot per connected account, normalized for wallet and futures capital review.',
+      freshnessModel: 'funds_snapshot_timestamp',
+      latestObservedAt: null,
+      latestObservedAtIso: null,
+      oldestObservedAt: null,
+      oldestObservedAtIso: null,
+      walletItems: [],
+      futuresItems: [],
+    };
+  }
+
+  private buildActiveFundsResponse(input: {
+    walletFundsPayload: unknown;
+    futuresFundsPayload: unknown;
+  }): PortfolioActiveFundsResponse {
+    const walletItems = this.normalizeActiveFundsPayload(input.walletFundsPayload);
+    const futuresItems = this.normalizeActiveFundsPayload(input.futuresFundsPayload);
+    const latestObservedAtIso = this.pickLatestObservedTimestamp([
+      ...walletItems.map((item) => item.observedAtIso || item.observedAt || null),
+      ...futuresItems.map((item) => item.observedAtIso || item.observedAt || null),
+    ]);
+    const oldestObservedAtIso = this.pickOldestObservedTimestamp([
+      ...walletItems.map((item) => item.observedAtIso || item.observedAt || null),
+      ...futuresItems.map((item) => item.observedAtIso || item.observedAt || null),
+    ]);
+
+    return {
+      source: 'funds_snapshots via broker_wallet_facade',
+      definition:
+        'Latest stored funds snapshot per connected account, normalized for wallet and futures capital review.',
+      freshnessModel: 'funds_snapshot_timestamp',
+      latestObservedAt: latestObservedAtIso,
+      latestObservedAtIso,
+      oldestObservedAt: oldestObservedAtIso,
+      oldestObservedAtIso,
+      walletItems,
+      futuresItems,
+    };
+  }
+
+  private normalizeActiveFundsPayload(
+    payload: unknown
+  ): PortfolioActiveFundsResponse['walletItems'] {
+    const raw = payload as { items?: unknown[]; data?: { items?: unknown[] } };
+    const items =
+      (Array.isArray(raw?.items) && raw.items) ||
+      (Array.isArray(raw?.data?.items) && raw.data?.items) ||
+      (Array.isArray(raw) ? raw : []);
+
+    return items.map((item) => this.normalizeActiveFundsItem(item));
+  }
+
+  private normalizeActiveFundsItem(item: unknown): PortfolioActiveFundsResponse['walletItems'][number] {
+    const safe =
+      item && typeof item === 'object' && !Array.isArray(item)
+        ? (item as Record<string, unknown>)
+        : {};
+    const rawFundsCandidate =
+      safe.funds && typeof safe.funds === 'object' && !Array.isArray(safe.funds)
+        ? (safe.funds as Record<string, unknown>)
+        : safe;
+    const rawFunds =
+      rawFundsCandidate.data &&
+      typeof rawFundsCandidate.data === 'object' &&
+      !Array.isArray(rawFundsCandidate.data)
+        ? (rawFundsCandidate.data as Record<string, unknown>)
+        : rawFundsCandidate;
+    const observedAtIso = this.toIsoString(safe.observedAt || safe.observed_at);
+    const funds = rawFunds as Record<string, unknown>;
+
+    return {
+      accountId: String(safe.accountId || safe.account_id || ''),
+      accountName: String(safe.accountName || safe.account_name || ''),
+      accountKey: String(safe.accountKey || safe.account_key || ''),
+      brokerKey: String(safe.brokerKey || safe.broker_key || ''),
+      status: String(safe.status || ''),
+      observedAt: observedAtIso,
+      observedAtIso,
+      error: safe.error ? String(safe.error) : null,
+      funds: {
+        balance: this.toNumber(
+          funds.balance ??
+            funds.total ??
+            funds.equity ??
+            funds.wallet_balance ??
+            funds.futures_equity ??
+            funds.withdrawable
+        ),
+        available: this.toNumber(
+          funds.available ??
+            funds.withdrawable ??
+            funds.free ??
+            funds.available_balance ??
+            funds.coin_investable
+        ),
+        invested: this.toNumber(
+          funds.invested ??
+            funds.locked_amount ??
+            funds.locked ??
+            funds.used_margin ??
+            funds.margin_used
+        ),
+      },
+    };
+  }
+
+  private hasActiveFundsError(activeFunds: PortfolioActiveFundsResponse): boolean {
+    return [...activeFunds.walletItems, ...activeFunds.futuresItems].some((item) => Boolean(item.error));
+  }
+
   private normalizeOptionalSymbol(value: unknown): string {
     return String(value || '').trim().toUpperCase();
   }
@@ -1808,6 +1986,24 @@ export class OverviewService {
       }
     }
     return null;
+  }
+
+  private pickLatestObservedTimestamp(values: Array<string | null | undefined>): string | null {
+    const timestamps = values
+      .map((value) => this.toTimestamp(value))
+      .filter((value): value is number => value !== null)
+      .sort((left, right) => right - left);
+
+    return timestamps.length ? new Date(timestamps[0]).toISOString() : null;
+  }
+
+  private pickOldestObservedTimestamp(values: Array<string | null | undefined>): string | null {
+    const timestamps = values
+      .map((value) => this.toTimestamp(value))
+      .filter((value): value is number => value !== null)
+      .sort((left, right) => left - right);
+
+    return timestamps.length ? new Date(timestamps[0]).toISOString() : null;
   }
 
   private describeSectionKey(sectionKey: OverviewSectionKey): string {
@@ -1828,9 +2024,36 @@ export class OverviewService {
         return 'portfolio summary';
       case 'portfolioHoldings':
         return 'portfolio holdings';
+      case 'activeFunds':
+        return 'capital routes';
       default:
         return sectionKey.replace(/([A-Z])/g, ' $1').trim().toLowerCase();
     }
+  }
+
+  private toIsoString(value: unknown): string | null {
+    if (!value) {
+      return null;
+    }
+
+    const date = value instanceof Date ? value : new Date(String(value));
+    const timestamp = date.getTime();
+    return Number.isFinite(timestamp) ? date.toISOString() : null;
+  }
+
+  private toTimestamp(value: unknown): number | null {
+    if (!value) {
+      return null;
+    }
+
+    const date = value instanceof Date ? value : new Date(String(value));
+    const timestamp = date.getTime();
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  private toNumber(value: unknown): number | null {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
   }
 
   private isTimeoutError(error: unknown): boolean {

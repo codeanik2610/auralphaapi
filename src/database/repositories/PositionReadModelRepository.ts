@@ -81,6 +81,33 @@ export interface PositionReadModelRebuildResult {
   scopes: PositionReadModelRebuildScopeResult[];
 }
 
+export interface PositionOpenPositionSummaryRow {
+  accountId: string;
+  openPositions: number;
+  grossExposure: number;
+  longExposure: number;
+  shortExposure: number;
+  unrealizedPnl: number;
+  latestObservedAt: Date | null;
+  oldestObservedAt: Date | null;
+}
+
+export interface PositionLiveOverviewQuery {
+  limit?: number;
+  offset?: number;
+  brokerKey?: string;
+  accountId?: string;
+  symbol?: string;
+  sideKey?: 'long' | 'short';
+}
+
+export interface PositionLiveOverviewResult {
+  items: PositionRecord[];
+  total: number;
+  latestObservedAt: Date | null;
+  oldestObservedAt: Date | null;
+}
+
 @Service()
 export class PositionReadModelRepository {
   private static readonly UPSERT_CHUNK_SIZE = 250;
@@ -722,6 +749,184 @@ export class PositionReadModelRepository {
     return this.groupRowsByAccount(rows);
   }
 
+  async getOpenPositionSummaryForAccounts(
+    userId: string,
+    accountIds: string[]
+  ): Promise<Map<string, PositionOpenPositionSummaryRow>> {
+    const normalizedAccountIds = this.normalizeAccountIds(accountIds);
+    if (!normalizedAccountIds.length) {
+      return new Map();
+    }
+
+    try {
+      const rows = (await coreDataSource.query(
+        `SELECT account_id AS accountId,
+                COUNT(*) AS openPositions,
+                COALESCE(SUM(COALESCE(exposure, 0)), 0) AS grossExposure,
+                COALESCE(SUM(
+                  CASE
+                    WHEN LOWER(COALESCE(side_key, '')) = 'long' THEN COALESCE(exposure, 0)
+                    ELSE 0
+                  END
+                ), 0) AS longExposure,
+                COALESCE(SUM(
+                  CASE
+                    WHEN LOWER(COALESCE(side_key, '')) = 'short' THEN COALESCE(exposure, 0)
+                    ELSE 0
+                  END
+                ), 0) AS shortExposure,
+                COALESCE(SUM(COALESCE(unrealized_pnl, 0)), 0) AS unrealizedPnl,
+                MAX(${this.liveObservedAtExpr()}) AS latestObservedAt,
+                MIN(${this.liveObservedAtExpr()}) AS oldestObservedAt
+           FROM position_read_models
+          WHERE user_id = ?
+            AND account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})
+            AND status_rank > 0
+            AND status_rank <= 2
+          GROUP BY account_id`,
+        [userId, ...normalizedAccountIds]
+      )) as Array<{
+        accountId?: string;
+        openPositions?: number | string;
+        grossExposure?: number | string | null;
+        longExposure?: number | string | null;
+        shortExposure?: number | string | null;
+        unrealizedPnl?: number | string | null;
+        latestObservedAt?: Date | string | null;
+        oldestObservedAt?: Date | string | null;
+      }>;
+
+      return new Map(
+        rows
+          .map((row) => {
+            const accountId = String(row.accountId || '').trim();
+            if (!accountId) {
+              return null;
+            }
+            return [
+              accountId,
+              {
+                accountId,
+                openPositions: Number(row.openPositions || 0),
+                grossExposure: Number(row.grossExposure || 0),
+                longExposure: Number(row.longExposure || 0),
+                shortExposure: Number(row.shortExposure || 0),
+                unrealizedPnl: Number(row.unrealizedPnl || 0),
+                latestObservedAt: this.toDate(row.latestObservedAt),
+                oldestObservedAt: this.toDate(row.oldestObservedAt),
+              },
+            ] as const;
+          })
+          .filter((entry): entry is readonly [string, PositionOpenPositionSummaryRow] => Boolean(entry))
+      );
+    } catch (error) {
+      if (this.isMissingTableError(error, 'position_read_models')) {
+        return new Map();
+      }
+      throw error;
+    }
+  }
+
+  async listLivePositionsOverview(
+    userId: string,
+    accountIds: string[],
+    options: PositionLiveOverviewQuery = {}
+  ): Promise<PositionLiveOverviewResult> {
+    const normalizedAccountIds = this.normalizeAccountIds(accountIds);
+    if (!normalizedAccountIds.length) {
+      return {
+        items: [],
+        total: 0,
+        latestObservedAt: null,
+        oldestObservedAt: null,
+      };
+    }
+
+    const safeLimit = options.limit ? Math.max(1, Math.floor(options.limit)) : 100;
+    const safeOffset = options.offset ? Math.max(0, Math.floor(options.offset)) : 0;
+    const normalizedAccountId = String(options.accountId || '').trim();
+    const normalizedBrokerKey = String(options.brokerKey || '').trim().toLowerCase();
+    const normalizedSymbol = String(options.symbol || '').trim().toUpperCase();
+    const normalizedSideKey = String(options.sideKey || '').trim().toLowerCase();
+    const where = [
+      'user_id = ?',
+      `account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})`,
+      'status_rank > 0',
+      'status_rank <= 2',
+    ];
+    const params: Array<unknown> = [userId, ...normalizedAccountIds];
+
+    if (normalizedAccountId) {
+      where.push('account_id = ?');
+      params.push(normalizedAccountId);
+    }
+    if (normalizedBrokerKey) {
+      where.push('LOWER(broker_key) = ?');
+      params.push(normalizedBrokerKey);
+    }
+    if (normalizedSymbol) {
+      where.push('UPPER(COALESCE(symbol, \'\')) = ?');
+      params.push(normalizedSymbol);
+    }
+    if (normalizedSideKey === 'long' || normalizedSideKey === 'short') {
+      where.push('LOWER(COALESCE(side_key, \'\')) = ?');
+      params.push(normalizedSideKey);
+    }
+
+    try {
+      const overviewRows = (await coreDataSource.query(
+        `SELECT COUNT(*) AS total,
+                MAX(${this.liveObservedAtExpr()}) AS latestObservedAt,
+                MIN(${this.liveObservedAtExpr()}) AS oldestObservedAt
+           FROM position_read_models
+          WHERE ${where.join(' AND ')}`,
+        params
+      )) as Array<{
+        total?: number | string;
+        latestObservedAt?: Date | string | null;
+        oldestObservedAt?: Date | string | null;
+      }>;
+
+      const rows = (await coreDataSource.query(
+        `${this.baseSelectSql()}
+           FROM position_read_models
+          WHERE ${where.join(' AND ')}
+          ORDER BY ${this.liveObservedAtExpr()} DESC,
+                   COALESCE(exposure, 0) DESC,
+                   COALESCE(symbol, '') ASC,
+                   external_id ASC
+          LIMIT ?
+          OFFSET ?`,
+        [...params, safeLimit, safeOffset]
+      )) as PositionReadModelRow[];
+
+      const items = rows.map((row) =>
+        buildPositionRecordFromReadModelRow(row, {
+          accountId: String(row.accountId || '').trim() || undefined,
+          brokerKey: String(row.brokerKey || '').trim() || undefined,
+        })
+      );
+      const aggregate = overviewRows[0] || {};
+
+      return {
+        items,
+        total: Number(aggregate.total || 0),
+        latestObservedAt: this.toDate(aggregate.latestObservedAt),
+        oldestObservedAt: this.toDate(aggregate.oldestObservedAt),
+      };
+    } catch (error) {
+      if (this.isMissingTableError(error, 'position_read_models')) {
+        return {
+          items: [],
+          total: 0,
+          latestObservedAt: null,
+          oldestObservedAt: null,
+        };
+      }
+      throw error;
+    }
+  }
+
   async listHistoryForAccount(
     userId: string,
     accountId: string,
@@ -1084,6 +1289,10 @@ export class PositionReadModelRepository {
 
     const date = value instanceof Date ? value : new Date(String(value));
     return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  private liveObservedAtExpr(): string {
+    return 'COALESCE(last_seen_at, position_updated_at, position_created_at)';
   }
 
   private baseSelectSql(): string {

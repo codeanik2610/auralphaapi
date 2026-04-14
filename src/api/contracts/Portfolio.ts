@@ -22,7 +22,7 @@ export interface PortfolioHoldingsResponse {
   total: number;
   limit: number;
   offset: number;
-  source?: 'portfolio_snapshots';
+  source?: 'portfolio_snapshots' | 'portfolio_overview_futures_legacy_alias';
   observedAt?: string | null;
   observedAtIso?: string | null;
   definition?: string;
@@ -34,7 +34,7 @@ export interface PortfolioSummary {
   dayPnL: number;
   netExposure: string;
   diversification: string;
-  source?: 'portfolio_snapshots';
+  source?: 'portfolio_snapshots' | 'portfolio_overview_futures_legacy_alias';
   observedAt?: string | null;
   observedAtIso?: string | null;
   definition?: string;
@@ -131,7 +131,7 @@ export interface PortfolioSnapshotsResponse {
   total: number;
   limit: number;
   offset: number;
-  source?: 'portfolio_snapshots';
+  source?: 'portfolio_snapshots' | 'portfolio_overview_futures_legacy_alias';
   observedAt?: string | null;
   observedAtIso?: string | null;
   definition?: string;

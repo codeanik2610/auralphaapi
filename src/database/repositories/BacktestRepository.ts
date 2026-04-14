@@ -174,18 +174,6 @@ export class BacktestRepository {
         completedStatuses: BacktestRepository.COMPLETED_RUN_STATUSES,
       })
       .andWhere(`${this.buildPerformanceSurfaceResultCountSql('result')} > 0`)
-      .andWhere(this.buildTopSetupCandidateExistsClause(), {
-        timeframe: query.timeframe?.trim().toLowerCase() || null,
-        minScore:
-          typeof query.minScore === 'number' && Number.isFinite(query.minScore)
-            ? query.minScore
-            : null,
-        minTrades:
-          typeof query.minTrades === 'number' && Number.isFinite(query.minTrades)
-            ? Math.max(0, Math.trunc(query.minTrades))
-            : null,
-        search: query.search ? this.buildSearchPattern(query.search) : null,
-      })
       .orderBy('backtest.createdAt', 'DESC');
 
     return builder.getMany();
@@ -743,80 +731,6 @@ export class BacktestRepository {
 
   private buildSearchDocumentClause(alias: string): string {
     return `LOWER(CONCAT_WS(' ', ${alias}.name, ${alias}.strategy, ${alias}.symbol, ${alias}.parameter, ${alias}.status, ${alias}.stability)) LIKE :search ESCAPE '\\'`;
-  }
-
-  private buildTopSetupCandidateExistsClause(): string {
-    return `
-      EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements(
-          CASE
-            WHEN COALESCE(jsonb_typeof(result.config), '') = 'object'
-              AND COALESCE(jsonb_typeof(result.config->'performanceSurface'), '') = 'object'
-              AND COALESCE(jsonb_typeof(result.config->'performanceSurface'->'results'), '') = 'array'
-            THEN result.config->'performanceSurface'->'results'
-            ELSE '[]'::jsonb
-          END
-        ) AS setup(item)
-        WHERE
-          COALESCE(NULLIF(BTRIM(setup.item->>'symbol'), ''), NULL) IS NOT NULL
-          AND COALESCE(
-            NULLIF(BTRIM(COALESCE(setup.item->>'timeframe', setup.item->>'interval')), ''),
-            NULL
-          ) IS NOT NULL
-          AND (
-            CAST(:timeframe AS text) IS NULL OR
-            LOWER(COALESCE(setup.item->>'timeframe', setup.item->>'interval', '')) = CAST(:timeframe AS text)
-          )
-          AND (
-            CAST(:minScore AS double precision) IS NULL OR
-            (
-              CASE
-                WHEN COALESCE(setup.item->>'score', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
-                THEN (setup.item->>'score')::double precision
-                ELSE NULL
-              END
-            ) >= CAST(:minScore AS double precision)
-          )
-          AND (
-            CAST(:minTrades AS integer) IS NULL OR
-            (
-              CASE
-                WHEN COALESCE(
-                  COALESCE(setup.item->>'total_trades', setup.item->>'trades', setup.item->>'totalTrades'),
-                  ''
-                ) ~ '^[0-9]+$'
-                THEN (
-                  COALESCE(setup.item->>'total_trades', setup.item->>'trades', setup.item->>'totalTrades')
-                )::int
-                ELSE NULL
-              END
-            ) >= CAST(:minTrades AS integer)
-          )
-          AND (
-            CAST(:search AS text) IS NULL OR
-            LOWER(
-              CONCAT_WS(
-                ' ',
-                backtest.name,
-                backtest.strategy,
-                backtest.symbol,
-                backtest.parameter,
-                COALESCE(setup.item->>'symbol', ''),
-                COALESCE(setup.item->>'timeframe', setup.item->>'interval', ''),
-                COALESCE(result.config #>> '{inputSnapshot,sourceId}', result.config->>'sourceId', ''),
-                COALESCE(result.config #>> '{inputSnapshot,projectId}', result.config->>'projectId', ''),
-                COALESCE(result.config #>> '{inputSnapshot,libraryId}', result.config->>'libraryId', ''),
-                COALESCE(result.config #>> '{inputSnapshot,libraryName}', result.config->>'libraryName', ''),
-                COALESCE(result.config #>> '{inputSnapshot,templateId}', result.config->>'templateId', ''),
-                COALESCE(result.config #>> '{inputSnapshot,templateName}', result.config->>'templateName', ''),
-                COALESCE(result.config #>> '{inputSnapshot,sourceTemplateId}', result.config->>'sourceTemplateId', ''),
-                COALESCE(result.config #>> '{inputSnapshot,sourceTemplateName}', result.config->>'sourceTemplateName', '')
-              )
-            ) LIKE CAST(:search AS text) ESCAPE '\\'
-          )
-      )
-    `;
   }
 
   private buildSearchPattern(search: string): string {

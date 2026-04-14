@@ -17,6 +17,15 @@ import {
   RebalanceReviewBody,
   RebalanceReviewResult,
 } from '../contracts/Portfolio';
+import {
+  PortfolioActiveFundsItem,
+  PortfolioActivityResponse,
+  PortfolioCapitalResponse,
+  PortfolioFuturesSummaryResponse,
+  PortfolioOpenPositionItem,
+  PortfolioOpenPositionsResponse,
+} from '../contracts/PortfolioOverview';
+import { PositionRecord, PositionsFreshnessIndicator } from '../contracts/Positions';
 import { NotFoundAppError } from '../errors/AppError';
 import { successResponse } from '../utils/response';
 import {
@@ -39,6 +48,7 @@ import {
   PortfolioRepository,
   PositionReadModelRepository,
 } from '../../database';
+import { env } from '../../env';
 import { DEFAULT_TIMEZONE, normalizeTimeZone } from '../utils/timezone';
 import {
   buildApiTimeContract,
@@ -68,6 +78,21 @@ type PortfolioWorkspaceReviewPayload = {
   highlights: PortfolioWorkspaceHighlight[];
   actions: PortfolioWorkspaceAction[];
   time: ReturnType<typeof buildApiTimeContract>;
+};
+
+type PortfolioOpenPositionsQuery = {
+  limit?: string | number;
+  offset?: string | number;
+  brokerKey?: string;
+  accountId?: string;
+  symbol?: string;
+  sideKey?: string;
+};
+
+type PortfolioNormalizedFundsPayload = {
+  items: PortfolioActiveFundsItem[];
+  latestObservedAtIso: string | null;
+  oldestObservedAtIso: string | null;
 };
 
 type PortfolioWorkspaceCapitalRoute = {
@@ -458,9 +483,261 @@ export class PortfolioService {
     });
   }
 
+  async getCapitalOverview(userId: string): Promise<ApiSuccessResponse<PortfolioCapitalResponse>> {
+    const timeZone = await this.resolveUserTimeZone(userId);
+    return successResponse(await this.buildCapitalOverview(userId, timeZone));
+  }
+
+  async getFuturesSummary(
+    userId: string
+  ): Promise<ApiSuccessResponse<PortfolioFuturesSummaryResponse>> {
+    const timeZone = await this.resolveUserTimeZone(userId);
+    const activeAccounts = await this.brokerAccountRepository.getConnectedBrokerAccounts(userId);
+    const activeAccountIds = activeAccounts.map((account) => String(account.id || '').trim()).filter(Boolean);
+
+    await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, activeAccountIds);
+
+    const [capital, positionsByAccount] = await Promise.all([
+      this.buildCapitalOverview(userId, timeZone),
+      this.positionReadModelRepository.getOpenPositionSummaryForAccounts(userId, activeAccountIds),
+    ]);
+
+    const positionRows = Array.from(positionsByAccount.values());
+    const openPositions = positionRows.reduce((sum, row) => sum + this.toFiniteNumber(row.openPositions), 0);
+    const grossExposure = positionRows.reduce(
+      (sum, row) => sum + this.toFiniteNumber(row.grossExposure),
+      0
+    );
+    const longExposure = positionRows.reduce(
+      (sum, row) => sum + this.toFiniteNumber(row.longExposure),
+      0
+    );
+    const shortExposure = positionRows.reduce(
+      (sum, row) => sum + this.toFiniteNumber(row.shortExposure),
+      0
+    );
+    const unrealizedPnl = positionRows.reduce(
+      (sum, row) => sum + this.toFiniteNumber(row.unrealizedPnl),
+      0
+    );
+    const positionsObservedAtIso = this.pickLatestTimestamp(
+      positionRows.map((row) => this.formatRawIso(row.latestObservedAt))
+    );
+    const capitalObservedAtIso =
+      this.readTimeIso(capital.oldestObservedAtIso) ||
+      this.readTimeIso(capital.latestObservedAtIso) ||
+      null;
+    const observedAtIso = this.pickLatestTimestamp([capitalObservedAtIso, positionsObservedAtIso]);
+
+    return successResponse({
+      source: 'funds_snapshots_plus_position_read_models',
+      definition:
+        'Futures summary built from live capital routes in funds snapshots plus open-position exposure in the positions read model.',
+      freshnessModel: 'mixed_futures_state',
+      observedAt: this.formatDisplayTime(observedAtIso, timeZone),
+      observedAtIso,
+      positionsObservedAt: this.formatDisplayTime(positionsObservedAtIso, timeZone),
+      positionsObservedAtIso,
+      capitalObservedAt: this.formatDisplayTime(capitalObservedAtIso, timeZone),
+      capitalObservedAtIso,
+      futuresEquity: this.toFiniteNumber(capital.futuresTotal),
+      availableCollateral: capital.futuresItems.reduce(
+        (sum, item) => sum + this.toFiniteNumber(item.funds.available),
+        0
+      ),
+      usedMargin: capital.futuresItems.reduce(
+        (sum, item) => sum + this.toFiniteNumber(item.funds.invested),
+        0
+      ),
+      walletCollateral: this.toFiniteNumber(capital.walletTotal),
+      openPositions,
+      grossExposure,
+      longExposure,
+      shortExposure,
+      unrealizedPnl,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
+  async getOpenPositionsOverview(
+    userId: string,
+    query: PortfolioOpenPositionsQuery = {}
+  ): Promise<ApiSuccessResponse<PortfolioOpenPositionsResponse>> {
+    const timeZone = await this.resolveUserTimeZone(userId);
+    return successResponse(await this.buildOpenPositionsOverview(userId, timeZone, query));
+  }
+
+  async getActivityOverview(
+    userId: string,
+    timeframe: string
+  ): Promise<ApiSuccessResponse<PortfolioActivityResponse>> {
+    const timeZone = await this.resolveUserTimeZone(userId);
+    const [pnlResponse, performanceResponse] = await Promise.all([
+      this.getPortfolioPnL(userId),
+      this.getPortfolioPerformance(userId, timeframe),
+    ]);
+    const pnl = pnlResponse.data ?? pnlResponse;
+    const performance = performanceResponse.data ?? performanceResponse;
+    const observedAtIso = this.pickLatestTimestamp([
+      this.readTimeIso(pnl?.observedAtIso) || this.readTimeIso(pnl?.observedAt),
+      this.readTimeIso(performance?.observedAtIso) || this.readTimeIso(performance?.observedAt),
+    ]);
+
+    return successResponse({
+      source: 'scheduler_positions_snapshots',
+      definition:
+        'Portfolio activity combines realized PnL windows and performance buckets from scheduler position snapshots.',
+      freshnessModel: 'windowed_activity',
+      observedAt: this.formatDisplayTime(observedAtIso, timeZone),
+      observedAtIso,
+      pnl,
+      performance,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
   private async resolveUserTimeZone(userId: string): Promise<string> {
     const settings = await this.appSettingsRepository.getSettings(userId);
     return normalizeTimeZone(settings?.timezone, DEFAULT_TIMEZONE);
+  }
+
+  private async buildCapitalOverview(
+    userId: string,
+    timeZone: string
+  ): Promise<PortfolioCapitalResponse> {
+    const [walletFundsResponse, futuresFundsResponse] = await Promise.all([
+      this.brokerWalletFacadeService.getWalletFundsForActiveAccounts(userId),
+      this.brokerWalletFacadeService.getFuturesFundsForActiveAccounts(userId),
+    ]);
+    const wallet = this.normalizeActiveFundsPayload(walletFundsResponse, timeZone);
+    const futures = this.normalizeActiveFundsPayload(futuresFundsResponse, timeZone);
+    const walletTotal = wallet.items.reduce(
+      (sum, item) => sum + this.toFiniteNumber(item.funds.balance),
+      0
+    );
+    const futuresTotal = futures.items.reduce(
+      (sum, item) => sum + this.toFiniteNumber(item.funds.balance),
+      0
+    );
+    const totalVisibleCapital = walletTotal + futuresTotal;
+    const latestObservedAtIso = this.pickLatestTimestamp([
+      wallet.latestObservedAtIso,
+      futures.latestObservedAtIso,
+    ]);
+    const oldestObservedAtIso = this.pickOldestTimestamp([
+      wallet.oldestObservedAtIso,
+      futures.oldestObservedAtIso,
+    ]);
+
+    return {
+      source: 'funds_snapshots via broker_wallet_facade',
+      definition:
+        'Wallet and futures capital routes normalized from the latest funds snapshot for each connected account.',
+      freshnessModel: 'funds_snapshot_timestamp',
+      latestObservedAt: this.formatDisplayTime(latestObservedAtIso, timeZone),
+      latestObservedAtIso,
+      oldestObservedAt: this.formatDisplayTime(oldestObservedAtIso, timeZone),
+      oldestObservedAtIso,
+      walletItems: wallet.items,
+      futuresItems: futures.items,
+      walletTotal,
+      futuresTotal,
+      totalVisibleCapital,
+      walletSharePct:
+        totalVisibleCapital > 0 ? (walletTotal / totalVisibleCapital) * 100 : null,
+      futuresSharePct:
+        totalVisibleCapital > 0 ? (futuresTotal / totalVisibleCapital) * 100 : null,
+      driftPct:
+        totalVisibleCapital > 0
+          ? (Math.abs(walletTotal - futuresTotal) / totalVisibleCapital) * 100
+          : null,
+      time: buildApiTimeContract(timeZone),
+    };
+  }
+
+  private async buildOpenPositionsOverview(
+    userId: string,
+    timeZone: string,
+    query: PortfolioOpenPositionsQuery = {}
+  ): Promise<PortfolioOpenPositionsResponse> {
+    const normalizedBrokerKey = String(query.brokerKey || '').trim().toLowerCase();
+    const normalizedAccountId = String(query.accountId || '').trim();
+    const activeAccounts = await this.brokerAccountRepository.getConnectedBrokerAccounts(
+      userId,
+      normalizedBrokerKey || undefined
+    );
+    const accountById = new Map(
+      activeAccounts
+        .map((account) => [String(account.id || '').trim(), account] as const)
+        .filter(([accountId]) => Boolean(accountId))
+    );
+    const activeAccountIds = Array.from(accountById.keys());
+    const safeLimit = this.resolveQueryLimit(query.limit, 100);
+    const safeOffset = this.resolveQueryOffset(query.offset);
+
+    if (normalizedAccountId && !accountById.has(normalizedAccountId)) {
+      return {
+        items: [],
+        total: 0,
+        limit: safeLimit,
+        offset: safeOffset,
+        source: 'position_read_models',
+        freshnessModel: 'position_read_model_timestamp',
+        observedAt: null,
+        observedAtIso: null,
+        latestObservedAt: null,
+        latestObservedAtIso: null,
+        oldestObservedAt: null,
+        oldestObservedAtIso: null,
+        definition:
+          'Open futures positions across connected accounts, normalized from the positions read model.',
+        time: buildApiTimeContract(timeZone),
+      };
+    }
+
+    await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, activeAccountIds);
+
+    const [overview, freshnessByAccount] = await Promise.all([
+      this.positionReadModelRepository.listLivePositionsOverview(userId, activeAccountIds, {
+        limit: safeLimit,
+        offset: safeOffset,
+        brokerKey: normalizedBrokerKey || undefined,
+        accountId: normalizedAccountId || undefined,
+        symbol: String(query.symbol || '').trim() || undefined,
+        sideKey: this.normalizePositionSideKey(query.sideKey),
+      }),
+      this.positionReadModelRepository.getAccountFreshness(userId, activeAccountIds),
+    ]);
+
+    const items = overview.items.map((record) =>
+      this.mapOpenPositionRecord(
+        record,
+        timeZone,
+        accountById.get(String(record.accountId || '').trim()),
+        freshnessByAccount.get(String(record.accountId || '').trim()) || null
+      )
+    );
+    const latestObservedAtIso = this.formatRawIso(overview.latestObservedAt);
+    const oldestObservedAtIso = this.formatRawIso(overview.oldestObservedAt);
+    const observedAtIso = latestObservedAtIso || oldestObservedAtIso || null;
+
+    return {
+      items,
+      total: overview.total,
+      limit: safeLimit,
+      offset: safeOffset,
+      source: 'position_read_models',
+      freshnessModel: 'position_read_model_timestamp',
+      observedAt: this.formatDisplayTime(observedAtIso, timeZone),
+      observedAtIso,
+      latestObservedAt: this.formatDisplayTime(latestObservedAtIso, timeZone),
+      latestObservedAtIso,
+      oldestObservedAt: this.formatDisplayTime(oldestObservedAtIso, timeZone),
+      oldestObservedAtIso,
+      definition:
+        'Open futures positions across connected accounts, normalized from the positions read model.',
+      time: buildApiTimeContract(timeZone),
+    };
   }
 
   private toDateKeyInTimeZone(value: Date, timezone: string): string {
@@ -1639,6 +1916,89 @@ export class PortfolioService {
     };
   }
 
+  private normalizeActiveFundsPayload(
+    payload: unknown,
+    timeZone: string
+  ): PortfolioNormalizedFundsPayload {
+    const raw =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? (payload as { items?: unknown[]; data?: { items?: unknown[] } })
+        : {};
+    const items =
+      (Array.isArray(raw.items) && raw.items) ||
+      (Array.isArray(raw.data?.items) && raw.data.items) ||
+      (Array.isArray(payload) ? payload : []);
+    const normalizedItems = items.map((item) => this.normalizeActiveFundsItem(item, timeZone));
+
+    return {
+      items: normalizedItems,
+      latestObservedAtIso: this.pickLatestTimestamp(
+        normalizedItems.map((item) => item.observedAtIso || item.observedAt || null)
+      ),
+      oldestObservedAtIso: this.pickOldestTimestamp(
+        normalizedItems.map((item) => item.observedAtIso || item.observedAt || null)
+      ),
+    };
+  }
+
+  private normalizeActiveFundsItem(
+    item: unknown,
+    timeZone: string
+  ): PortfolioActiveFundsItem {
+    const safe =
+      item && typeof item === 'object' && !Array.isArray(item)
+        ? (item as Record<string, unknown>)
+        : {};
+    const rawFundsCandidate =
+      safe.funds && typeof safe.funds === 'object' && !Array.isArray(safe.funds)
+        ? (safe.funds as Record<string, unknown>)
+        : safe;
+    const rawFunds =
+      rawFundsCandidate.data &&
+      typeof rawFundsCandidate.data === 'object' &&
+      !Array.isArray(rawFundsCandidate.data)
+        ? (rawFundsCandidate.data as Record<string, unknown>)
+        : rawFundsCandidate;
+    const observedAtIso =
+      safe.observedAt || safe.observed_at
+        ? this.readTimeIso(safe.observedAt || safe.observed_at)
+        : null;
+
+    return {
+      accountId: String(safe.accountId || safe.account_id || ''),
+      accountName: String(safe.accountName || safe.account_name || ''),
+      accountKey: String(safe.accountKey || safe.account_key || ''),
+      brokerKey: String(safe.brokerKey || safe.broker_key || ''),
+      status: String(safe.status || ''),
+      observedAt: this.formatDisplayTime(observedAtIso, timeZone),
+      observedAtIso,
+      error: safe.error ? String(safe.error) : null,
+      funds: {
+        balance: this.toOptionalNumber(
+          rawFunds.balance ??
+            rawFunds.total ??
+            rawFunds.equity ??
+            rawFunds.wallet_balance ??
+            rawFunds.futures_equity ??
+            rawFunds.margin_balance
+        ),
+        available: this.toOptionalNumber(
+          rawFunds.available_balance ??
+            rawFunds.withdrawable ??
+            rawFunds.free ??
+            rawFunds.available ??
+            rawFunds.free_balance
+        ),
+        invested: this.toOptionalNumber(
+          rawFunds.invested ??
+            rawFunds.locked_amount ??
+            rawFunds.used_margin ??
+            rawFunds.margin_used
+        ),
+      },
+    };
+  }
+
   private normalizeCapitalRoutes(payload: unknown): PortfolioWorkspaceCapitalRoute[] {
     const safe =
       payload && typeof payload === 'object' && !Array.isArray(payload)
@@ -1695,6 +2055,68 @@ export class PortfolioService {
       }
     }
     return 0;
+  }
+
+  private mapOpenPositionRecord(
+    record: PositionRecord,
+    timeZone: string,
+    account:
+      | {
+          id: string;
+          accountName: string;
+          accountKey: string;
+          brokerKey: string;
+          status: string;
+        }
+      | undefined,
+    freshnessRow:
+      | {
+          observedAt?: Date | null;
+        }
+      | null
+  ): PortfolioOpenPositionItem {
+    const summary =
+      record.positionSummary && typeof record.positionSummary === 'object'
+        ? record.positionSummary
+        : {
+            id: String(record.id || ''),
+            externalId: String(record.externalId || record.external_id || '') || undefined,
+            symbol: record.symbol ?? null,
+            side: String(record.side || '--'),
+            sideKey: String(record.sideKey || 'unknown'),
+            status: String(record.status || '--'),
+            statusKey: String(record.statusKey || 'unknown'),
+            quantity: this.toOptionalNumber(record.quantity),
+            entryPrice: this.toOptionalNumber(record.entry_price),
+            currentPrice: this.toOptionalNumber(record.current_price),
+            closedPrice: this.toOptionalNumber(record.closed_price),
+            unrealizedPnl: this.toOptionalNumber(record.unrealized_pnl),
+            realizedPnl: this.toOptionalNumber(record.realized_pnl ?? record.realized),
+            leverage: this.toOptionalNumber(record.leverage),
+            liquidationPrice: this.toOptionalNumber(record.liquidation_price),
+            exposure: this.toOptionalNumber(record.exposure),
+            createdAt: String(record.created_at || '') || undefined,
+            updatedAt: String(record.updated_at || '') || undefined,
+            closedAt: String(record.closed_at || '') || undefined,
+          };
+    const observedAtIso =
+      this.readTimeIso(record.last_seen_at) ||
+      this.readTimeIso(record.updated_at) ||
+      this.readTimeIso(record.closed_at) ||
+      this.readTimeIso(record.created_at) ||
+      this.formatRawIso(freshnessRow?.observedAt || null) ||
+      null;
+
+    return {
+      ...summary,
+      accountId: String(account?.id || record.accountId || ''),
+      accountName: String(account?.accountName || record.accountName || ''),
+      accountKey: String(account?.accountKey || record.accountKey || ''),
+      brokerKey: String(account?.brokerKey || record.brokerKey || ''),
+      observedAt: this.formatDisplayTime(observedAtIso, timeZone),
+      observedAtIso,
+      freshness: this.buildPositionsFreshnessIndicator(observedAtIso, 'position_read_models'),
+    };
   }
 
   private buildWorkspaceHighlights(
@@ -2050,6 +2472,78 @@ export class PortfolioService {
       const existing = new Date(latest);
       return candidate.getTime() > existing.getTime() ? candidate.toISOString() : latest;
     }, null);
+  }
+
+  private pickOldestTimestamp(values: Array<string | null | undefined>): string | null {
+    return values.reduce<string | null>((oldest, value) => {
+      if (!value) {
+        return oldest;
+      }
+      const candidate = new Date(String(value));
+      if (Number.isNaN(candidate.getTime())) {
+        return oldest;
+      }
+      if (!oldest) {
+        return candidate.toISOString();
+      }
+      const existing = new Date(oldest);
+      return candidate.getTime() < existing.getTime() ? candidate.toISOString() : oldest;
+    }, null);
+  }
+
+  private buildPositionsFreshnessIndicator(
+    observedAt: string | null,
+    source: string
+  ): PositionsFreshnessIndicator {
+    const observedAtIso = this.readTimeIso(observedAt);
+    const observedAtMs = observedAtIso ? new Date(observedAtIso).getTime() : null;
+    const freshnessMs =
+      observedAtMs !== null && Number.isFinite(observedAtMs)
+        ? Math.max(0, Date.now() - observedAtMs)
+        : null;
+    const staleAfterMs = env.positions.liveSnapshotStaleAfterMs;
+    const criticalAfterMs = env.positions.liveSnapshotCriticalAfterMs;
+    const state =
+      freshnessMs === null
+        ? 'unknown'
+        : freshnessMs > criticalAfterMs
+          ? 'critical'
+          : freshnessMs > staleAfterMs
+            ? 'stale'
+            : 'fresh';
+
+    return {
+      state,
+      observedAt: observedAtIso,
+      freshnessMs,
+      staleAfterMs,
+      criticalAfterMs,
+      isStale: state === 'stale' || state === 'critical',
+      isCritical: state === 'critical',
+      source,
+    };
+  }
+
+  private toOptionalNumber(value: unknown): number | null {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  private resolveQueryLimit(value: string | number | undefined, fallback: number): number {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback;
+  }
+
+  private resolveQueryOffset(value: string | number | undefined): number {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= 0 ? Math.floor(numeric) : 0;
+  }
+
+  private normalizePositionSideKey(
+    value: unknown
+  ): 'long' | 'short' | undefined {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized === 'long' || normalized === 'short' ? normalized : undefined;
   }
 
   private formatDisplayTime(

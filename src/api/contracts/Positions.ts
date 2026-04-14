@@ -172,6 +172,7 @@ export interface PositionsAccountFreshness {
 
 export interface PositionsGroupedFreshnessSummary {
   observedAt: string | null;
+  attentionObservedAt?: string | null;
   freshAccounts: number;
   staleAccounts: number;
   criticalAccounts: number;
