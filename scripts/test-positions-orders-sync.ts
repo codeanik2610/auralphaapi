@@ -1442,11 +1442,90 @@ async function testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation
   }
 }
 
+async function testOrdersHistoryReconciliationPrunesDriftedTerminalRows(): Promise<void> {
+  const service = new InternalOrdersSyncService() as any;
+  const deletedChunks: string[][] = [];
+  const loggedEntries: Array<Record<string, unknown>> = [];
+
+  service.exchangeAssetUpdateLogRepository = {
+    async createMany(entries: Array<Record<string, unknown>>) {
+      loggedEntries.push(...entries);
+      return [];
+    },
+  };
+  service.listTerminalSnapshotRowsBeforeObservedAt = async () => [
+    {
+      externalId: 'old-1',
+      symbol: 'ETHUSDT',
+      orderStatus: 'CLOSED',
+    },
+  ];
+  service.listTerminalSnapshotRowsWithinObservedRange = async () => [
+    {
+      externalId: 'keep-1',
+      symbol: 'BTCUSDT',
+      orderStatus: 'FILLED',
+    },
+    {
+      externalId: 'drop-1',
+      symbol: 'SOLUSDT',
+      orderStatus: 'CANCELLED',
+    },
+  ];
+  service.deleteOrderSnapshotsByExternalIds = async (
+    _userId: string,
+    _accountId: string,
+    _brokerKey: string,
+    externalIds: string[]
+  ) => {
+    deletedChunks.push([...externalIds]);
+    return externalIds.length;
+  };
+
+  const result = await service.reconcileTerminalHistoryWindow(
+    'user-1',
+    'acct-1',
+    'mudrex',
+    new Date('2026-04-01T00:00:00.000Z'),
+    new Date('2026-04-14T00:00:00.000Z'),
+    [
+      {
+        id: 'keep-1',
+        order_id: 'keep-1',
+        symbol: 'BTCUSDT',
+        status: 'FILLED',
+        created_at: '2026-04-10T00:00:00.000Z',
+      },
+    ],
+    'run-1'
+  );
+
+  assert.equal(result.deletedOutsideLookback, 1);
+  assert.equal(result.deletedMissingHistory, 1);
+  assert.deepEqual(deletedChunks, [['old-1'], ['drop-1']]);
+  assert.deepEqual(result.orderIds.sort(), ['drop-1', 'old-1']);
+  assert.ok(
+    loggedEntries.some(
+      (entry) =>
+        entry.externalId === 'old-1' &&
+        String(entry.message || '').includes('removed outside lookback window')
+    )
+  );
+  assert.ok(
+    loggedEntries.some(
+      (entry) =>
+        entry.externalId === 'drop-1' &&
+        String(entry.message || '').includes('broker history no longer reports the order')
+    )
+  );
+}
+
 async function run(): Promise<void> {
   testPhase4Markers();
   await testOrdersSchedulerRuntimeMigratesToUserScope();
   await testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
+  await testOrdersHistoryReconciliationPrunesDriftedTerminalRows();
   console.log('Positions/orders sync Phase 4 assertions passed.');
 }
 

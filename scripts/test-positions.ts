@@ -1481,6 +1481,120 @@ async function run(): Promise<void> {
   await run();
 }
 
+async function positionsGuard10(): Promise<void> {
+  const { DeltaExchangePositionsAdapter } = await import("../src/brokers/capabilities/positions/DeltaExchangePositionsAdapter");
+
+async function run(): Promise<void> {
+  const adapter = new DeltaExchangePositionsAdapter() as any;
+  const capturedQueries: Array<{
+    accountId: string;
+    path: string;
+    query: Record<string, unknown>;
+    userId: string;
+  }> = [];
+
+  adapter.deltaHttpClient = {
+    async signedGetEnvelope(
+      accountId: string,
+      path: string,
+      query: Record<string, unknown>,
+      userId: string
+    ) {
+      capturedQueries.push({ accountId, path, query, userId });
+      if (!query.after) {
+        return {
+          success: true,
+          result: [
+            {
+              id: 'fill-btc-open',
+              product_id: '123',
+              product_symbol: 'BTCUSD',
+              side: 'buy',
+              size: '1',
+              price: '100',
+              created_at: '2026-04-10T00:00:00.000Z',
+            },
+            {
+              id: 'fill-btc-close',
+              product_id: '123',
+              product_symbol: 'BTCUSD',
+              side: 'sell',
+              size: '1',
+              price: '120',
+              created_at: '2026-04-10T01:00:00.000Z',
+            },
+            {
+              id: 'fill-eth-open',
+              product_id: '456',
+              product_symbol: 'ETHUSD',
+              side: 'buy',
+              size: '2',
+              price: '50',
+              created_at: '2026-04-10T02:00:00.000Z',
+            },
+          ],
+          meta: { after: 'cursor-2' },
+        };
+      }
+      return {
+        success: true,
+        result: [
+          {
+            id: 'fill-eth-close',
+            product_id: '456',
+            product_symbol: 'ETHUSD',
+            side: 'sell',
+            size: '2',
+            price: '55',
+            created_at: '2026-04-10T03:00:00.000Z',
+          },
+        ],
+        meta: { after: null },
+      };
+    },
+  };
+
+  const history = await adapter.getPositionHistory(
+    {
+      startDate: '2026-04-10',
+      endDate: '2026-04-14',
+      limit: '10',
+    },
+    {
+      userId: 'user-1',
+      accountId: 'account-1',
+      brokerKey: 'delta_exchange',
+    }
+  );
+
+  assert.equal(Array.isArray(history), true);
+  assert.equal(history.length, 2);
+  assert.equal(history[0].symbol, 'ETHUSD');
+  assert.equal(history[0].status, 'closed');
+  assert.equal(history[0].closed_price, '55');
+  assert.equal(history[1].symbol, 'BTCUSD');
+  assert.equal(history[1].closed_price, '120');
+
+  assert.equal(capturedQueries.length, 2);
+  assert.equal(capturedQueries[0].path, '/v2/fills');
+  assert.equal(capturedQueries[0].query.page_size, 50);
+  assert.equal(capturedQueries[0].query.contract_types, 'perpetual_futures');
+  assert.equal(
+    capturedQueries[0].query.start_time,
+    Date.parse('2026-04-10T00:00:00.000Z') * 1000
+  );
+  assert.equal(
+    capturedQueries[0].query.end_time,
+    Date.parse('2026-04-14T23:59:59.999Z') * 1000
+  );
+  assert.equal(capturedQueries[1].query.after, 'cursor-2');
+
+  console.log('Positions phase 10 assertions passed.');
+}
+
+  await run();
+}
+
 const suiteSteps = {
   "01": positionsGuard01,
   "04": positionsGuard04,
@@ -1488,10 +1602,11 @@ const suiteSteps = {
   "06": positionsGuard06,
   "08": positionsGuard08,
   "09": positionsGuard09,
+  "10": positionsGuard10,
 } as const;
 
 export async function runPositionsSuite(): Promise<void> {
-  await runSuiteSteps("Positions module", "scripts/test-positions.ts", ["01", "04", "05", "06", "08", "09"]);
+  await runSuiteSteps("Positions module", "scripts/test-positions.ts", ["01", "04", "05", "06", "08", "09", "10"]);
   console.log("Positions module assertions passed.");
 }
 

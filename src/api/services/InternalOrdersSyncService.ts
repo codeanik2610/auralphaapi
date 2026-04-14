@@ -135,12 +135,28 @@ export class InternalOrdersSyncService {
     return normalized;
   }
 
+  private readOrderExternalId(order: Record<string, unknown>): string {
+    return (
+      String(order.id || order.order_id || '').trim() || this.buildOrderSyntheticId(order)
+    );
+  }
+
   private buildOrderSyntheticId(order: Record<string, unknown>): string {
     const symbol = String(order.symbol || '').trim().toUpperCase();
     const createdAt = String(order.created_at || '').trim();
     const price = String(order.price || '').trim();
     return [symbol || 'NA', createdAt || 'NA', price || 'NA'].join(':');
   }
+
+  private readonly orderObservedAtSql = `COALESCE(
+    NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.updated_at')), ''),
+    NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.filled_at')), ''),
+    NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.closed_at')), ''),
+    NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.cancelled_at')), ''),
+    NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.canceled_at')), ''),
+    NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.created_at')), ''),
+    DATE_FORMAT(last_seen_at, '%Y-%m-%dT%H:%i:%s.000Z')
+  )`;
 
   private async getCheckpoint(accountId: string): Promise<Date | null> {
     const rows = (await coreDataSource.query(
@@ -162,6 +178,183 @@ export class InternalOrdersSyncService {
        ON DUPLICATE KEY UPDATE checkpoint_at = VALUES(checkpoint_at), updated_at = NOW()`,
       [CHECKPOINT_SCHEDULER_KEY, accountId, checkpointAt]
     );
+  }
+
+  private extractOrderExternalIds(items: unknown[]): string[] {
+    const ids = new Set<string>();
+    for (const item of items) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const externalId = this.readOrderExternalId(item as Record<string, unknown>);
+      if (externalId) {
+        ids.add(externalId);
+      }
+    }
+    return Array.from(ids);
+  }
+
+  private async listTerminalSnapshotRowsBeforeObservedAt(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    cutoffIso: string
+  ): Promise<Array<{ externalId: string; symbol: string | null; orderStatus: string | null }>> {
+    return (await coreDataSource.query(
+      `SELECT external_id AS externalId,
+              symbol,
+              order_status AS orderStatus
+       FROM scheduler_orders_snapshots
+       WHERE user_id = ?
+         AND account_id = ?
+         AND LOWER(broker_key) = ?
+         AND status_rank >= 3
+         AND ${this.orderObservedAtSql} < ?`,
+      [userId, accountId, brokerKey.toLowerCase(), cutoffIso]
+    )) as Array<{ externalId: string; symbol: string | null; orderStatus: string | null }>;
+  }
+
+  private async listTerminalSnapshotRowsWithinObservedRange(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    startIso: string,
+    endIso: string
+  ): Promise<Array<{ externalId: string; symbol: string | null; orderStatus: string | null }>> {
+    return (await coreDataSource.query(
+      `SELECT external_id AS externalId,
+              symbol,
+              order_status AS orderStatus
+       FROM scheduler_orders_snapshots
+       WHERE user_id = ?
+         AND account_id = ?
+         AND LOWER(broker_key) = ?
+         AND status_rank >= 3
+         AND ${this.orderObservedAtSql} >= ?
+         AND ${this.orderObservedAtSql} <= ?`,
+      [userId, accountId, brokerKey.toLowerCase(), startIso, endIso]
+    )) as Array<{ externalId: string; symbol: string | null; orderStatus: string | null }>;
+  }
+
+  private async deleteOrderSnapshotsByExternalIds(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    externalIds: string[]
+  ): Promise<number> {
+    const normalizedIds = Array.from(
+      new Set(externalIds.map((item) => String(item || '').trim()).filter(Boolean))
+    );
+    if (normalizedIds.length === 0) {
+      return 0;
+    }
+
+    let deleted = 0;
+    for (let index = 0; index < normalizedIds.length; index += CHUNK_SIZE) {
+      const chunk = normalizedIds.slice(index, index + CHUNK_SIZE);
+      const result = await coreDataSource.query(
+        `DELETE FROM scheduler_orders_snapshots
+         WHERE user_id = ?
+           AND account_id = ?
+           AND LOWER(broker_key) = ?
+           AND external_id IN (${chunk.map(() => '?').join(',')})`,
+        [userId, accountId, brokerKey.toLowerCase(), ...chunk]
+      );
+      deleted += this.readAffectedRows(result);
+    }
+
+    return deleted;
+  }
+
+  private async logDeletedOrderSnapshots(
+    rows: Array<{ externalId: string; symbol: string | null; orderStatus: string | null }>,
+    runLogId: string | undefined,
+    accountId: string,
+    reason: string
+  ): Promise<void> {
+    if (!runLogId || rows.length === 0) {
+      return;
+    }
+
+    await this.exchangeAssetUpdateLogRepository.createMany(
+      rows.map((row) => ({
+        runLogId,
+        source: 'orders',
+        accountId,
+        actionType: 'deleted',
+        symbol: row.symbol,
+        externalId: row.externalId,
+        message: reason
+          ? `${reason}: ${row.orderStatus || 'UNKNOWN'}`
+          : row.orderStatus || 'UNKNOWN',
+      }))
+    );
+  }
+
+  private async reconcileTerminalHistoryWindow(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    historyStart: Date,
+    historyEnd: Date,
+    historyOrders: unknown[],
+    runLogId?: string
+  ): Promise<{ deletedOutsideLookback: number; deletedMissingHistory: number; orderIds: string[] }> {
+    const historyStartIso = historyStart.toISOString();
+    const historyEndIso = historyEnd.toISOString();
+
+    const rowsOutsideLookback = await this.listTerminalSnapshotRowsBeforeObservedAt(
+      userId,
+      accountId,
+      brokerKey,
+      historyStartIso
+    );
+    const deletedOutsideLookback = await this.deleteOrderSnapshotsByExternalIds(
+      userId,
+      accountId,
+      brokerKey,
+      rowsOutsideLookback.map((row) => row.externalId)
+    );
+    await this.logDeletedOrderSnapshots(
+      rowsOutsideLookback,
+      runLogId,
+      accountId,
+      'removed outside lookback window'
+    );
+
+    const historyExternalIds = new Set(this.extractOrderExternalIds(historyOrders));
+    const rowsWithinWindow = await this.listTerminalSnapshotRowsWithinObservedRange(
+      userId,
+      accountId,
+      brokerKey,
+      historyStartIso,
+      historyEndIso
+    );
+    const rowsMissingFromHistory = rowsWithinWindow.filter(
+      (row) => !historyExternalIds.has(String(row.externalId || '').trim())
+    );
+    const deletedMissingHistory = await this.deleteOrderSnapshotsByExternalIds(
+      userId,
+      accountId,
+      brokerKey,
+      rowsMissingFromHistory.map((row) => row.externalId)
+    );
+    await this.logDeletedOrderSnapshots(
+      rowsMissingFromHistory,
+      runLogId,
+      accountId,
+      'removed because broker history no longer reports the order'
+    );
+
+    return {
+      deletedOutsideLookback,
+      deletedMissingHistory,
+      orderIds: Array.from(
+        new Set(
+          [...rowsOutsideLookback, ...rowsMissingFromHistory]
+            .map((row) => String(row.externalId || '').trim())
+            .filter(Boolean)
+        )
+      ),
+    };
   }
 
   // ── Deduplication ────────────────────────────────────────────
@@ -726,6 +919,21 @@ export class InternalOrdersSyncService {
                 if (orderId) {
                   affectedOrderIds.add(orderId);
                 }
+              }
+            }
+
+            if (!historyError) {
+              const reconciliation = await this.reconcileTerminalHistoryWindow(
+                userId,
+                resolvedAccountId,
+                resolvedBrokerKey.toLowerCase(),
+                historyStart,
+                historyEnd,
+                historyOrders,
+                request.runLogId
+              );
+              for (const orderId of reconciliation.orderIds) {
+                affectedOrderIds.add(orderId);
               }
             }
 

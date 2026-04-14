@@ -54,6 +54,8 @@ interface DeltaProduct {
 
 @Service()
 export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
+  readonly historyWindowMode = 'contiguous' as const;
+
   @Inject(() => DeltaExchangeHttpClient)
   private deltaHttpClient!: DeltaExchangeHttpClient;
 
@@ -239,12 +241,21 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
   }
 
   async getPositionHistory(
-    _query: PositionsHistoryQuery,
-    _context?: BrokerPositionContext
+    query: PositionsHistoryQuery,
+    context?: BrokerPositionContext
   ): Promise<unknown> {
-    // Position history is now derived from stale-close detection in the sync service.
-    // Close prices and PnL are fetched via getClosingFills() when a position disappears.
-    return [];
+    const fills = await this.fetchFillsWindow(
+      {
+        contract_types: 'perpetual_futures',
+        ...(query.startDate ? { start_time: this.toMicrosStart(query.startDate) } : {}),
+        ...(query.endDate ? { end_time: this.toMicrosEnd(query.endDate) } : {}),
+        page_size: 50,
+      },
+      context
+    );
+    const closedPositions = this.reconstructClosedPositionsFromFills(fills);
+    const limit = Math.max(1, Math.floor(Number(query.limit || 20)));
+    return closedPositions.slice(0, limit);
   }
 
   async getClosingFills(
@@ -254,13 +265,14 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     if (productIds.length === 0) return new Map();
 
     const targetSet = new Set(productIds.map(String));
-    const envelope = await this.deltaHttpClient.signedGetEnvelope<DeltaPositionHistoryPayload[]>(
-      context?.accountId,
-      '/v2/fills',
-      { page_size: 100 },
-      context?.userId
+    const fills = await this.fetchFillsWindow(
+      {
+        contract_types: 'perpetual_futures',
+        page_size: 50,
+      },
+      context,
+      targetSet
     );
-    const fills = Array.isArray(envelope.result) ? envelope.result : [];
 
     const result = new Map<string, { closePrice: number; closedAt: string; fillType: string | null }>();
     // Fills are returned most-recent-first; first match per product wins.
@@ -278,7 +290,6 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     return result;
   }
 
-  /** @deprecated No longer used — position history is derived via stale-close + getClosingFills. */
   private reconstructClosedPositionsFromFills(fills: DeltaPositionHistoryPayload[]) {
     type PositionState = {
       sizeSigned: number;
@@ -392,6 +403,62 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     // Most recent first.
     output.sort((a, b) => toTimestamp(String(b.updated_at || '')) - toTimestamp(String(a.updated_at || '')));
     return output;
+  }
+
+  private async fetchFillsWindow(
+    baseQuery: Record<string, string | number | boolean | undefined>,
+    context?: BrokerPositionContext,
+    targetProductIds?: ReadonlySet<string>
+  ): Promise<DeltaPositionHistoryPayload[]> {
+    const fills: DeltaPositionHistoryPayload[] = [];
+    let after: string | undefined;
+
+    for (;;) {
+      const envelope = await this.deltaHttpClient.signedGetEnvelope<DeltaPositionHistoryPayload[]>(
+        context?.accountId,
+        '/v2/fills',
+        {
+          ...baseQuery,
+          ...(after ? { after } : {}),
+        },
+        context?.userId
+      );
+      const page = Array.isArray(envelope.result) ? envelope.result : [];
+      fills.push(...page);
+
+      if (
+        targetProductIds &&
+        targetProductIds.size > 0 &&
+        this.hasAllTargetProducts(fills, targetProductIds)
+      ) {
+        break;
+      }
+
+      const nextAfter = String(envelope.meta?.after || '').trim();
+      if (!nextAfter || page.length === 0) {
+        break;
+      }
+      after = nextAfter;
+    }
+
+    return fills;
+  }
+
+  private hasAllTargetProducts(
+    fills: DeltaPositionHistoryPayload[],
+    targetProductIds: ReadonlySet<string>
+  ): boolean {
+    const seen = new Set<string>();
+    for (const fill of fills) {
+      const productId = String(fill.product_id ?? '').trim();
+      if (productId && targetProductIds.has(productId)) {
+        seen.add(productId);
+      }
+      if (seen.size >= targetProductIds.size) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async findPosition(
@@ -522,5 +589,13 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
   private toNumber(value: string | number | null | undefined): number {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private toMicrosStart(date: string): number {
+    return Date.parse(`${date}T00:00:00.000Z`) * 1000;
+  }
+
+  private toMicrosEnd(date: string): number {
+    return Date.parse(`${date}T23:59:59.999Z`) * 1000;
   }
 }

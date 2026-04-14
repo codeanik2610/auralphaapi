@@ -57,6 +57,10 @@ export class InternalPositionsSyncService {
   @Inject(() => SuggestedTradesService)
   private suggestedTradesService!: SuggestedTradesService;
 
+  private checkpointTableColumns:
+    | { hasId: boolean; hasCreatedAt: boolean; hasUpdatedAt: boolean }
+    | null = null;
+
   // ── Helpers ──────────────────────────────────────────────────
 
   private toFiniteNumber(value: unknown): number {
@@ -276,6 +280,20 @@ export class InternalPositionsSyncService {
         UNIQUE KEY uidx_sync_checkpoint (scheduler_key, account_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
     `);
+
+    this.checkpointTableColumns = null;
+    const shape = await this.getCheckpointTableColumns();
+    if (!shape.hasUpdatedAt) {
+      await coreDataSource.query(
+        `ALTER TABLE scheduler_sync_checkpoints
+         ADD COLUMN updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+         ON UPDATE CURRENT_TIMESTAMP`
+      );
+      this.checkpointTableColumns = {
+        ...shape,
+        hasUpdatedAt: true,
+      };
+    }
   }
 
   private async getCheckpoint(accountId: string): Promise<Date | null> {
@@ -292,12 +310,64 @@ export class InternalPositionsSyncService {
   }
 
   private async saveCheckpoint(accountId: string, checkpointAt: Date): Promise<void> {
+    const shape = await this.getCheckpointTableColumns();
+    if (shape.hasId && shape.hasCreatedAt) {
+      await coreDataSource.query(
+        `INSERT INTO scheduler_sync_checkpoints (id, scheduler_key, account_id, checkpoint_at, created_at, updated_at)
+         VALUES (UUID(), ?, ?, ?, NOW(), NOW())
+         ON DUPLICATE KEY UPDATE checkpoint_at = VALUES(checkpoint_at), updated_at = NOW()`,
+        [CHECKPOINT_SCHEDULER_KEY, accountId, checkpointAt]
+      );
+      return;
+    }
+
+    if (shape.hasUpdatedAt) {
+      await coreDataSource.query(
+        `INSERT INTO scheduler_sync_checkpoints (scheduler_key, account_id, checkpoint_at, updated_at)
+         VALUES (?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE checkpoint_at = VALUES(checkpoint_at), updated_at = NOW()`,
+        [CHECKPOINT_SCHEDULER_KEY, accountId, checkpointAt]
+      );
+      return;
+    }
+
     await coreDataSource.query(
-      `INSERT INTO scheduler_sync_checkpoints (id, scheduler_key, account_id, checkpoint_at, created_at, updated_at)
-       VALUES (UUID(), ?, ?, ?, NOW(), NOW())
-       ON DUPLICATE KEY UPDATE checkpoint_at = VALUES(checkpoint_at), updated_at = NOW()`,
+      `INSERT INTO scheduler_sync_checkpoints (scheduler_key, account_id, checkpoint_at)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE checkpoint_at = VALUES(checkpoint_at)`,
       [CHECKPOINT_SCHEDULER_KEY, accountId, checkpointAt]
     );
+  }
+
+  private async getCheckpointTableColumns(): Promise<{
+    hasId: boolean;
+    hasCreatedAt: boolean;
+    hasUpdatedAt: boolean;
+  }> {
+    if (this.checkpointTableColumns) {
+      return this.checkpointTableColumns;
+    }
+
+    const rows = (await coreDataSource.query(
+      `SELECT column_name AS columnName
+         FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'scheduler_sync_checkpoints'`
+    )) as Array<{ columnName?: string }>;
+
+    const columnNames = new Set(
+      rows
+        .map((row) => String(row.columnName || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+
+    this.checkpointTableColumns = {
+      hasId: columnNames.has('id'),
+      hasCreatedAt: columnNames.has('created_at'),
+      hasUpdatedAt: columnNames.has('updated_at'),
+    };
+
+    return this.checkpointTableColumns;
   }
 
   // ── Deduplication ────────────────────────────────────────────
@@ -858,11 +928,11 @@ export class InternalPositionsSyncService {
             let historyPositions: unknown[] = [];
             let historyError: string | null = null;
 
+            const adapter = this.brokerRuntimeRegistry.getPositionsAdapter(resolvedBrokerKey);
+
             // Step 1: Always fetch open positions (lightweight, catches status changes fast)
             try {
-              const openRaw = await this.brokerRuntimeRegistry
-                .getPositionsAdapter(resolvedBrokerKey)
-                .getPositions({ limit: SYNC_LIMIT }, route);
+              const openRaw = await adapter.getPositions({ limit: SYNC_LIMIT }, route);
               openPositions = this.extractList(openRaw);
               await this.enrichOpenPositionsWithMarketPnl(openPositions);
             } catch (error) {
@@ -897,19 +967,20 @@ export class InternalPositionsSyncService {
             const endDateStr = request.endDate || this.formatIsoDate(historyEnd);
 
             try {
-              const windows = this.buildDateWindows(startDateStr, endDateStr, historyWindowDays);
+              const windows =
+                adapter.historyWindowMode === 'contiguous'
+                  ? [{ startDate: startDateStr, endDate: endDateStr }]
+                  : this.buildDateWindows(startDateStr, endDateStr, historyWindowDays);
               const combinedHistory: unknown[] = [];
               for (const window of windows) {
-                const historyRaw = await this.brokerRuntimeRegistry
-                  .getPositionsAdapter(resolvedBrokerKey)
-                  .getPositionHistory(
-                    {
-                      startDate: window.startDate || undefined,
-                      endDate: window.endDate || undefined,
-                      limit: String(SYNC_LIMIT),
-                    },
-                    route
-                  );
+                const historyRaw = await adapter.getPositionHistory(
+                  {
+                    startDate: window.startDate || undefined,
+                    endDate: window.endDate || undefined,
+                    limit: String(SYNC_LIMIT),
+                  },
+                  route
+                );
                 combinedHistory.push(...this.extractList(historyRaw));
               }
               historyPositions = combinedHistory;
@@ -970,7 +1041,6 @@ export class InternalPositionsSyncService {
               // Fetch closing fills from broker if adapter supports it
               let closingFills: Map<string, { closePrice: number; closedAt: string; fillType: string | null }> | undefined;
               if (stalePositions.length > 0) {
-                const adapter = this.brokerRuntimeRegistry.getPositionsAdapter(resolvedBrokerKey);
                 if (typeof adapter.getClosingFills === 'function') {
                   try {
                     const productIds = stalePositions.map((s) => s.external_id);

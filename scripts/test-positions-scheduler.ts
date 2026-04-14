@@ -2142,6 +2142,199 @@ async function run(): Promise<void> {
   await run();
 }
 
+async function positions_schedulerGuard09(): Promise<void> {
+  const { InternalPositionsSyncService } = await import("../src/api/services/InternalPositionsSyncService");
+  const { coreDataSource } = await import("../src/database/data-source");
+
+async function runLegacyCheckpointCompatibilityAssertions(): Promise<void> {
+  const service = new InternalPositionsSyncService() as any;
+  const originalQuery = (coreDataSource as any).query;
+  const capturedQueries: Array<{ sql: string; params: unknown[] }> = [];
+
+  (coreDataSource as any).query = async (sql: string, params: unknown[] = []) => {
+    capturedQueries.push({ sql, params });
+    if (sql.includes('FROM information_schema.columns') && sql.includes("table_name = 'scheduler_sync_checkpoints'")) {
+      return [
+        { columnName: 'scheduler_key' },
+        { columnName: 'account_id' },
+        { columnName: 'checkpoint_at' },
+        { columnName: 'updated_at' },
+      ];
+    }
+    if (sql.includes('INSERT INTO scheduler_sync_checkpoints')) {
+      return [{ affectedRows: 1 }];
+    }
+    throw new Error(`Unexpected SQL in positions scheduler phase 9 test: ${sql}`);
+  };
+
+  try {
+    await service.saveCheckpoint('account-1', new Date('2026-04-14T04:00:00.000Z'));
+
+    const insertCall = capturedQueries.find((entry) =>
+      entry.sql.includes('INSERT INTO scheduler_sync_checkpoints')
+    );
+    assert.ok(insertCall, 'saveCheckpoint should write the checkpoint row');
+    assert.equal(
+      insertCall?.sql.includes('(scheduler_key, account_id, checkpoint_at, updated_at)'),
+      true,
+      'legacy checkpoint schemas without id/create_at should use the compatibility upsert'
+    );
+    assert.deepEqual(insertCall?.params, [
+      'positions-sync',
+      'account-1',
+      new Date('2026-04-14T04:00:00.000Z'),
+    ]);
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
+async function run(): Promise<void> {
+  await runLegacyCheckpointCompatibilityAssertions();
+  console.log('Positions scheduler phase 9 assertions passed.');
+}
+
+  await run();
+}
+
+async function positions_schedulerGuard10(): Promise<void> {
+  const { InternalPositionsSyncService } = await import("../src/api/services/InternalPositionsSyncService");
+  const { coreDataSource } = await import("../src/database/data-source");
+
+async function runContiguousHistoryWindowAssertions(): Promise<void> {
+  const service = new InternalPositionsSyncService() as any;
+  const historyCalls: Array<Record<string, unknown>> = [];
+
+  service.brokerAccountRepository = {
+    async getActiveBrokerAccounts() {
+      return [
+        {
+          id: 'delta-account-1',
+          userId: 'user-1',
+          brokerKey: 'delta_exchange',
+          createdAt: new Date('2026-04-01T00:00:00.000Z'),
+        },
+      ];
+    },
+  };
+  service.brokerAccountRoutingService = {
+    async resolve(userId: string, brokerKey: string, accountId: string) {
+      return { userId, brokerKey, accountId };
+    },
+  };
+  service.brokerRuntimeRegistry = {
+    getPositionsAdapter() {
+      return {
+        historyWindowMode: 'contiguous',
+        async getPositions() {
+          return { data: [] };
+        },
+        async getPositionHistory(query: Record<string, unknown>) {
+          historyCalls.push(query);
+          return { data: [] };
+        },
+      };
+    },
+  };
+  service.exchangeAssetUpdateLogRepository = {
+    async createMany() {},
+  };
+  service.positionReadModelRepository = {
+    async upsertReadModels() {},
+    async markPositionsClosed() {},
+  };
+  service.assetPriceRepository = {
+    async getBySymbols() {
+      return [];
+    },
+  };
+  service.operationalEventService = {
+    async logActivity() {},
+    async emitFailureAlert() {},
+  };
+  service.suggestedTradesService = {
+    async syncExecutionForPositionUpdates() {},
+  };
+
+  const originalQuery = (coreDataSource as any).query;
+  (coreDataSource as any).query = async (sql: string) => {
+    const statement = String(sql || '');
+    if (statement.includes('SELECT NOW() AS now')) {
+      return [{ now: new Date('2026-04-14T04:00:00.000Z') }];
+    }
+    if (statement.includes('SELECT checkpoint_at FROM scheduler_sync_checkpoints')) {
+      return [];
+    }
+    if (statement.includes('FROM information_schema.columns') && statement.includes("table_name = 'scheduler_sync_checkpoints'")) {
+      return [
+        { columnName: 'scheduler_key' },
+        { columnName: 'account_id' },
+        { columnName: 'checkpoint_at' },
+        { columnName: 'updated_at' },
+      ];
+    }
+    if (statement.includes('INSERT INTO scheduler_sync_checkpoints')) {
+      return [{ affectedRows: 1 }];
+    }
+    if (statement.includes('SELECT id, external_id, symbol, status, payload_json')) {
+      return [];
+    }
+    if (statement.includes('UPDATE scheduler_positions_snapshots')) {
+      return [{ affectedRows: 0 }];
+    }
+    if (statement.includes('FROM information_schema.columns') && statement.includes("table_name = 'scheduler_positions_snapshots'")) {
+      return [
+        { count: 1 },
+      ];
+    }
+    if (statement.includes('SELECT external_id, status, payload_hash, status_rank')) {
+      return [];
+    }
+    if (statement.includes('INSERT INTO scheduler_positions_snapshots')) {
+      return [{ affectedRows: 0 }];
+    }
+    if (statement.includes('CREATE TABLE IF NOT EXISTS scheduler_positions_snapshots')) {
+      return [{ affectedRows: 0 }];
+    }
+    if (statement.includes('CREATE TABLE IF NOT EXISTS scheduler_sync_checkpoints')) {
+      return [{ affectedRows: 0 }];
+    }
+    throw new Error(`Unexpected SQL in positions scheduler phase 10 test: ${statement}`);
+  };
+
+  try {
+    const result = await service.runBatch({
+      executionScope: 'product_user',
+      requestUserId: 'user-1',
+      targetUserIds: ['user-1'],
+      brokerKeys: ['delta_exchange'],
+      accountIds: ['delta-account-1'],
+      startDate: '2026-01-14',
+      endDate: '2026-04-14',
+      historyWindowDays: 30,
+      backfill: true,
+    });
+
+    assert.equal(result.failedAccounts, 0);
+    assert.equal(historyCalls.length, 1);
+    assert.deepEqual(historyCalls[0], {
+      startDate: '2026-01-14',
+      endDate: '2026-04-14',
+      limit: '50000',
+    });
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
+async function run(): Promise<void> {
+  await runContiguousHistoryWindowAssertions();
+  console.log('Positions scheduler phase 10 assertions passed.');
+}
+
+  await run();
+}
+
 const suiteSteps = {
   "01": positions_schedulerGuard01,
   "02": positions_schedulerGuard02,
@@ -2151,10 +2344,12 @@ const suiteSteps = {
   "06": positions_schedulerGuard06,
   "07": positions_schedulerGuard07,
   "08": positions_schedulerGuard08,
+  "09": positions_schedulerGuard09,
+  "10": positions_schedulerGuard10,
 } as const;
 
 export async function runPositionsSchedulerSuite(): Promise<void> {
-  await runSuiteSteps("Positions scheduler module", "scripts/test-positions-scheduler.ts", ["01", "02", "03", "04", "05", "06", "07", "08"]);
+  await runSuiteSteps("Positions scheduler module", "scripts/test-positions-scheduler.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]);
   console.log("Positions scheduler module assertions passed.");
 }
 

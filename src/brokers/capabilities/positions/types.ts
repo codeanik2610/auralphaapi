@@ -17,7 +17,10 @@ export interface ValidatedPositionsRouteQuery {
   limit?: number;
 }
 
+export type BrokerPositionsHistoryWindowMode = 'split_safe' | 'contiguous';
+
 export interface BrokerPositionsAdapter {
+  historyWindowMode?: BrokerPositionsHistoryWindowMode;
   getPositions(
     query: ValidatedPositionsRouteQuery,
     context?: BrokerPositionContext
