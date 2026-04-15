@@ -126,7 +126,7 @@ async function testPositionsSchedulerOwnershipNormalization(): Promise<void> {
   assert.equal(actorRunningChecks, 0);
 }
 
-async function testSchedulerOverviewKeepsPositionsGlobal(): Promise<void> {
+async function testSchedulerOverviewUsesPositionsUserOverlay(): Promise<void> {
   const service = new SchedulerOverviewService() as any;
   service.userTimeZoneService = {
     async resolveUserTimeZone(userId: string) {
@@ -177,13 +177,13 @@ async function testSchedulerOverviewKeepsPositionsGlobal(): Promise<void> {
     const response = await service.getOverview('user-7');
     const item = response.data.items.find((entry: any) => entry.key === 'positions-sync');
     assert.ok(item, 'positions-sync should remain present in scheduler overview');
-    assert.equal(item?.enabled, true);
-    assert.equal(item?.name, 'Positions Sync');
+    assert.equal(item?.enabled, false);
+    assert.equal(item?.name, 'Positions Sync Personal');
     assert.equal(item?.status, 'idle');
     assert.equal(
       item?.lastStatus,
-      'Completed',
-      'positions-sync should keep the global scheduler row rather than a user overlay'
+      'Failed',
+      'positions-sync should now prefer the user scheduler row over the global anchor'
     );
     assert.ok(
       capturedQueries.some((entry) => entry.sql.includes('FROM scheduler_user_configs')),
@@ -196,7 +196,7 @@ async function testSchedulerOverviewKeepsPositionsGlobal(): Promise<void> {
 
 async function run(): Promise<void> {
   await testPositionsSchedulerOwnershipNormalization();
-  await testSchedulerOverviewKeepsPositionsGlobal();
+  await testSchedulerOverviewUsesPositionsUserOverlay();
   console.log('Positions scheduler phase 1 assertions passed.');
 }
 

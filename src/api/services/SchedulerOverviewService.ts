@@ -11,7 +11,6 @@ import {
   resolveSchedulerAuditDisplayLabels,
   toSchedulerAuditContract,
 } from '../utils/schedulerAuditContract';
-import { ALL_USERS_SYSTEM_SYNC_SCHEDULERS } from '../utils/positionsOrdersSyncScopeContract';
 import { coreDataSource } from '../../database/data-source';
 import { UserTimeZoneService } from './UserTimeZoneService';
 
@@ -26,7 +25,6 @@ const SYSTEM_OWNED_SCHEDULER_KEYS = new Set([
   'binance-candles-3m-1m-sync',
   'system-health-sync',
   'asset-price-sync',
-  ...ALL_USERS_SYSTEM_SYNC_SCHEDULERS,
 ]);
 
 type SchedulerOverviewConfigRecord = {

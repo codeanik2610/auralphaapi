@@ -900,6 +900,96 @@ async function testSchedulerOverviewKeepsSystemGlobalsGlobal(): Promise<void> {
   }
 }
 
+async function testSchedulerOverviewDoesNotTreatPositionsAndOrdersAsSystemGlobals(): Promise<void> {
+  const service = new SchedulerOverviewService() as any;
+  const originalQuery = (coreDataSource as any).query;
+
+  service.userTimeZoneService = {
+    async resolveUserTimeZone(userId: string) {
+      assert.equal(userId, 'admin-user-11');
+      return 'UTC';
+    },
+  } as any;
+
+  (coreDataSource as any).query = async (sql: string, params: unknown[] = []) => {
+    if (sql.includes('FROM scheduler_configs')) {
+      return [
+        {
+          key: 'positions-sync',
+          name: 'Positions Sync',
+          enabled: 1,
+          last_finished_at: '2026-04-10T01:00:00.000Z',
+          last_status: 'Completed',
+          last_error: null,
+          scheduler_type: 'global',
+        },
+        {
+          key: 'orders-sync',
+          name: 'Orders Sync',
+          enabled: 1,
+          last_finished_at: '2026-04-10T01:00:00.000Z',
+          last_status: 'Completed',
+          last_error: null,
+          scheduler_type: 'global',
+        },
+      ];
+    }
+
+    if (sql.includes('FROM scheduler_user_configs')) {
+      assert.deepEqual(params, ['admin-user-11']);
+      return [
+        {
+          key: 'positions-sync',
+          name: 'Positions Sync Personal',
+          enabled: 0,
+          last_finished_at: '2026-04-09T01:00:00.000Z',
+          last_status: 'Failed',
+          last_error: 'User-specific positions state',
+          scheduler_type: 'user',
+        },
+        {
+          key: 'orders-sync',
+          name: 'Orders Sync Personal',
+          enabled: 0,
+          last_finished_at: '2026-04-09T01:05:00.000Z',
+          last_status: 'Cancelled',
+          last_error: 'User-specific orders state',
+          scheduler_type: 'user',
+        },
+      ];
+    }
+
+    if (sql.includes('FROM scheduler_run_logs')) {
+      return [];
+    }
+
+    if (sql.includes('FROM scheduler_commands')) {
+      return [];
+    }
+
+    return [];
+  };
+
+  try {
+    const response = await service.getOverview('admin-user-11');
+    const indexed = new Map(response.data.items.map((item: any) => [item.key, item]));
+    const positionsItem = indexed.get('positions-sync');
+    const ordersItem = indexed.get('orders-sync');
+
+    assert.ok(positionsItem, 'positions-sync should remain visible in scheduler overview');
+    assert.equal(positionsItem?.name, 'Positions Sync Personal');
+    assert.equal(positionsItem?.enabled, false);
+    assert.equal(positionsItem?.lastStatus, 'Failed');
+
+    assert.ok(ordersItem, 'orders-sync should remain visible in scheduler overview');
+    assert.equal(ordersItem?.name, 'Orders Sync Personal');
+    assert.equal(ordersItem?.enabled, false);
+    assert.equal(ordersItem?.lastStatus, 'Cancelled');
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
 async function testSchedulerOverviewPhaseFiveSnapshots(): Promise<void> {
   const service = new SchedulerOverviewService() as any;
   const originalQuery = (coreDataSource as any).query;
@@ -1599,6 +1689,7 @@ async function run(): Promise<void> {
   }
 
   await testSchedulerOverviewKeepsSystemGlobalsGlobal();
+  await testSchedulerOverviewDoesNotTreatPositionsAndOrdersAsSystemGlobals();
   await testSchedulerOverviewPhaseFiveSnapshots();
   await testGlobalSystemSchedulerMigration();
   console.log('Global system scheduler assertions passed.');

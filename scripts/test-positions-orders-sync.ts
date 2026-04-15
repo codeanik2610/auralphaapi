@@ -167,8 +167,8 @@ function read(relativePath: string): string {
 function testSharedOwnershipContract(): void {
   assert.equal(POSITIONS_SYNC_SCHEDULER_OWNERSHIP, 'user');
   assert.equal(ORDERS_SYNC_SCHEDULER_OWNERSHIP, 'user');
-  assert.equal(POSITIONS_SYNC_RUNTIME_OWNERSHIP_LEGACY, 'global');
-  assert.equal(ORDERS_SYNC_RUNTIME_OWNERSHIP_LEGACY, 'global');
+  assert.equal(POSITIONS_SYNC_RUNTIME_OWNERSHIP_LEGACY, 'user');
+  assert.equal(ORDERS_SYNC_RUNTIME_OWNERSHIP_LEGACY, 'user');
   assert.deepEqual(ALL_USERS_BATCH_SYNC_SCHEDULERS, ['positions-sync', 'orders-sync']);
 }
 
@@ -234,10 +234,10 @@ function testPhase2Markers(): void {
   for (const marker of [
     "export const POSITIONS_SYNC_SCHEDULER_OWNERSHIP = 'user' as const;",
     "export const ORDERS_SYNC_SCHEDULER_OWNERSHIP = 'user' as const;",
-    "export const POSITIONS_SYNC_RUNTIME_OWNERSHIP_LEGACY = 'global' as const;",
-    "export const ORDERS_SYNC_RUNTIME_OWNERSHIP_LEGACY = 'global' as const;",
+    "export const POSITIONS_SYNC_RUNTIME_OWNERSHIP = 'user' as const;",
+    "export const ORDERS_SYNC_RUNTIME_OWNERSHIP = 'user' as const;",
     'export const ALL_USERS_BATCH_SYNC_SCHEDULERS = [',
-    'export const ALL_USERS_SYSTEM_SYNC_SCHEDULERS = ALL_USERS_BATCH_SYNC_SCHEDULERS;',
+    'export const ALL_USERS_SYSTEM_SYNC_SCHEDULERS = [] as const;',
     'buildSystemOwnedPositionsSyncRequest(',
     'buildSystemOwnedOrdersSyncRequest(',
     'buildProductOwnedPositionsSyncRequest(',
