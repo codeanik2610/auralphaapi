@@ -122,6 +122,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     ],
     tests: [
       script('test:automations', 'scripts/test-automations.ts'),
+      script('test:automation-type', 'scripts/test-automation-type-utils.ts'),
     ],
     checks: [
       script('check:automations-health', 'scripts/checks/check-automations-health.ts'),
@@ -623,7 +624,12 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     lane: 'baseline',
     controllers: ['LeverageController.ts', 'WalletController.ts'],
     services: ['BrokerWalletFacadeService.ts', 'BrokerWalletLiveFetchService.ts'],
-    tests: [script('test:wallets', 'scripts/test-wallets.ts')],
+    tests: [
+      script('test:wallets', 'scripts/test-wallets.ts'),
+      fileOnly('scripts/test-delta-comprehensive.ts'),
+      fileOnly('scripts/test-delta-real-account.ts'),
+      fileOnly('scripts/test-delta-wallet-adapter.ts'),
+    ],
     checks: [script('check:wallets-health', 'scripts/checks/check-wallets-health.ts')],
   },
   {

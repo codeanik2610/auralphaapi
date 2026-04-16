@@ -1,0 +1,339 @@
+import assert from 'node:assert/strict';
+import {
+  normalizeAutomationConfig,
+  normalizeAutomationType,
+  inferAutomationTypeFromConfig,
+} from '../src/api/utils/automationType';
+
+// Test Suite 1: Basic Template ID Promotion
+function runTemplateIdPromotionTests(): void {
+  console.log('Test Suite 1: Template ID Promotion\n');
+
+  // Test 1.1: Promote from config.config.templateId
+  const case1 = {
+    kind: 'trade-suggestion',
+    config: {
+      templateId: 'template-123',
+      market: 'crypto-futures',
+    },
+  };
+
+  const result1 = normalizeAutomationConfig('trade-suggestion', case1);
+
+  assert.strictEqual(
+    result1?.templateId,
+    'template-123',
+    'Should promote templateId from config.config to top-level'
+  );
+  assert.strictEqual(
+    (result1?.config as Record<string, unknown>)?.templateId,
+    'template-123',
+    'Should preserve original nested templateId'
+  );
+  console.log('  ✓ Promotes templateId from nested config');
+
+  // Test 1.2: Promote from config.config.sourceTemplateId
+  const case2 = {
+    kind: 'trade-suggestion',
+    config: {
+      sourceTemplateId: 'template-456',
+      market: 'crypto-futures',
+    },
+  };
+
+  const result2 = normalizeAutomationConfig('trade-suggestion', case2);
+
+  assert.strictEqual(
+    result2?.sourceTemplateId,
+    'template-456',
+    'Should promote sourceTemplateId from config.config to top-level'
+  );
+  console.log('  ✓ Promotes sourceTemplateId from nested config');
+
+  // Test 1.3: Promote from execution template object
+  const case3 = {
+    kind: 'trade-suggestion',
+    config: {
+      template: {
+        id: 'template-789',
+        name: 'Test Template',
+      },
+      market: 'crypto-futures',
+    },
+  };
+
+  const result3 = normalizeAutomationConfig('trade-suggestion', case3);
+
+  assert.strictEqual(
+    result3?.templateId,
+    'template-789',
+    'Should extract templateId from nested template object'
+  );
+  console.log('  ✓ Extracts templateId from template object\n');
+}
+
+// Test Suite 2: Precedence Logic
+function runPrecedenceTests(): void {
+  console.log('Test Suite 2: Precedence Logic\n');
+
+  // Test 2.1: Explicit top-level wins over nested
+  const case1 = {
+    kind: 'trade-suggestion',
+    templateId: 'explicit-top-level',
+    config: {
+      templateId: 'nested-config',
+    },
+    tradeSuggestion: {
+      templateId: 'nested-suggestion',
+    },
+  };
+
+  const result1 = normalizeAutomationConfig('trade-suggestion', case1);
+
+  assert.strictEqual(
+    result1?.templateId,
+    'explicit-top-level',
+    'Explicit top-level templateId should take highest priority'
+  );
+  console.log('  ✓ Explicit top-level has highest priority');
+
+  // Test 2.2: Nested config wins over tradeSuggestion
+  const case2 = {
+    kind: 'trade-suggestion',
+    config: {
+      templateId: 'nested-config',
+    },
+    tradeSuggestion: {
+      templateId: 'nested-suggestion',
+    },
+  };
+
+  const result2 = normalizeAutomationConfig('trade-suggestion', case2);
+
+  assert.strictEqual(
+    result2?.templateId,
+    'nested-config',
+    'Nested config templateId should win over tradeSuggestion'
+  );
+  console.log('  ✓ Nested config has priority over tradeSuggestion');
+
+  // Test 2.3: sourceTemplateId follows same precedence
+  const case3 = {
+    kind: 'trade-suggestion',
+    sourceTemplateId: 'explicit-source',
+    config: {
+      sourceTemplateId: 'nested-source',
+    },
+  };
+
+  const result3 = normalizeAutomationConfig('trade-suggestion', case3);
+
+  assert.strictEqual(
+    result3?.sourceTemplateId,
+    'explicit-source',
+    'sourceTemplateId should follow same precedence as templateId'
+  );
+  console.log('  ✓ sourceTemplateId follows same precedence\n');
+}
+
+// Test Suite 3: Duplicate Handling
+function runDuplicateHandlingTests(): void {
+  console.log('Test Suite 3: Duplicate Handling\n');
+
+  // Test 3.1: Don't create duplicates when already exists
+  const case1 = {
+    kind: 'trade-suggestion',
+    templateId: 'existing-id',
+    sourceTemplateId: 'existing-source',
+    config: {
+      templateId: 'existing-id', // Same value
+      market: 'crypto-futures',
+    },
+  };
+
+  const result1 = normalizeAutomationConfig('trade-suggestion', case1);
+
+  assert.strictEqual(result1?.templateId, 'existing-id');
+  assert.strictEqual(result1?.sourceTemplateId, 'existing-source');
+
+  // Verify no duplicate keys (count occurrences)
+  const keys = Object.keys(result1 || {});
+  const templateIdCount = keys.filter((k) => k === 'templateId').length;
+  const sourceTemplateIdCount = keys.filter((k) => k === 'sourceTemplateId').length;
+
+  assert.strictEqual(templateIdCount, 1, 'Should not create duplicate templateId key');
+  assert.strictEqual(
+    sourceTemplateIdCount,
+    1,
+    'Should not create duplicate sourceTemplateId key'
+  );
+  console.log('  ✓ No duplicate keys created');
+
+  // Test 3.2: Handle null values correctly
+  const case2 = {
+    kind: 'trade-suggestion',
+    templateId: null,
+    config: {
+      templateId: 'nested-id',
+      market: 'crypto-futures',
+    },
+  };
+
+  const result2 = normalizeAutomationConfig('trade-suggestion', case2);
+
+  assert.strictEqual(
+    result2?.templateId,
+    'nested-id',
+    'Should use nested value when top-level is null'
+  );
+  console.log('  ✓ Handles null values correctly\n');
+}
+
+// Test Suite 4: Backward Compatibility
+function runBackwardCompatibilityTests(): void {
+  console.log('Test Suite 4: Backward Compatibility\n');
+
+  // Test 4.1: Existing automations without templateId
+  const case1 = {
+    kind: 'trade-suggestion',
+    symbol: 'BTCUSD',
+    timeframe: '15m',
+    config: {
+      market: 'crypto-futures',
+    },
+  };
+
+  const result1 = normalizeAutomationConfig('trade-suggestion', case1);
+
+  assert.strictEqual(result1?.templateId, undefined, 'Should not add templateId if not present');
+  assert.strictEqual(
+    result1?.sourceTemplateId,
+    undefined,
+    'Should not add sourceTemplateId if not present'
+  );
+  console.log("  ✓ Doesn't add fields when not present");
+
+  // Test 4.2: Preserve all existing fields
+  const case2 = {
+    kind: 'trade-suggestion',
+    symbol: 'ETHUSD',
+    timeframe: '1h',
+    market: 'crypto-futures',
+    strategy: 'Momentum',
+    config: {
+      templateId: 'test-template',
+      assets: [{ symbol: 'ETHUSD' }],
+    },
+  };
+
+  const result2 = normalizeAutomationConfig('trade-suggestion', case2);
+
+  assert.strictEqual(result2?.symbol, 'ETHUSD');
+  assert.strictEqual(result2?.timeframe, '1h');
+  assert.strictEqual(result2?.market, 'crypto-futures');
+  assert.strictEqual(result2?.strategy, 'Momentum');
+  assert.strictEqual(result2?.templateId, 'test-template');
+  console.log('  ✓ Preserves all existing fields\n');
+}
+
+// Test Suite 5: Edge Cases
+function runEdgeCaseTests(): void {
+  console.log('Test Suite 5: Edge Cases\n');
+
+  // Test 5.1: Empty strings should be ignored
+  const case1 = {
+    kind: 'trade-suggestion',
+    templateId: '', // Empty string
+    config: {
+      templateId: 'valid-id',
+    },
+  };
+
+  const result1 = normalizeAutomationConfig('trade-suggestion', case1);
+
+  assert.strictEqual(
+    result1?.templateId,
+    'valid-id',
+    'Empty string should be ignored, use nested value'
+  );
+  console.log('  ✓ Empty strings ignored');
+
+  // Test 5.2: Whitespace-only strings should be ignored
+  const case2 = {
+    kind: 'trade-suggestion',
+    templateId: '   ', // Whitespace only
+    config: {
+      templateId: 'valid-id',
+    },
+  };
+
+  const result2 = normalizeAutomationConfig('trade-suggestion', case2);
+
+  assert.strictEqual(
+    result2?.templateId,
+    'valid-id',
+    'Whitespace-only string should be ignored'
+  );
+  console.log('  ✓ Whitespace-only strings ignored');
+
+  // Test 5.3: Backtest-runner type (typically no templates)
+  const case3 = {
+    kind: 'backtest-runner',
+    backtestRunner: {
+      libraryId: 'lib-123',
+      runBody: {
+        templateId: 'runner-template',
+      },
+    },
+  };
+
+  const result3 = normalizeAutomationConfig('backtest-runner', case3);
+
+  assert.strictEqual(
+    result3?.templateId,
+    'runner-template',
+    'Should handle backtest-runner type correctly'
+  );
+  console.log('  ✓ Handles backtest-runner type');
+
+  // Test 5.4: Multiple nested template references
+  const case4 = {
+    kind: 'trade-suggestion',
+    config: {
+      templateId: 'config-id',
+      inputSnapshot: {
+        templateId: 'snapshot-id',
+      },
+      template: {
+        id: 'template-obj-id',
+      },
+    },
+  };
+
+  const result4 = normalizeAutomationConfig('trade-suggestion', case4);
+
+  assert.strictEqual(
+    result4?.templateId,
+    'config-id',
+    'Should use first valid value in precedence order'
+  );
+  console.log('  ✓ Handles multiple nested references\n');
+}
+
+// Main test runner
+export async function main(): Promise<void> {
+  console.log('Running automationType utils tests...\n');
+
+  runTemplateIdPromotionTests();
+  runPrecedenceTests();
+  runDuplicateHandlingTests();
+  runBackwardCompatibilityTests();
+  runEdgeCaseTests();
+
+  console.log('✅ All automationType tests passed!\n');
+}
+
+main().catch((error) => {
+  console.error('Test failed:', error);
+  process.exit(1);
+});

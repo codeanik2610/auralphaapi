@@ -174,6 +174,19 @@ export const normalizeAutomationConfig = (
       ) ??
       (libraryId ? 'strategy-library' : 'manual');
 
+    // Extract template IDs (backtest-runner typically doesn't use templates, but handle for consistency)
+    const sourceTemplateId = readString(
+      root.sourceTemplateId,
+      runBody?.sourceTemplateId,
+      runner.sourceTemplateId
+    ) ?? null;
+
+    const templateId = readString(
+      root.templateId,
+      runBody?.templateId,
+      runner.templateId
+    ) ?? null;
+
     return {
       ...root,
       kind: type,
@@ -181,6 +194,8 @@ export const normalizeAutomationConfig = (
       ...(libraryId ? { libraryId } : {}),
       ...(backtestId ? { backtestId } : {}),
       ...(runBody ? { config: runBody } : {}),
+      ...(sourceTemplateId ? { sourceTemplateId } : {}),
+      ...(templateId ? { templateId } : {}),
       backtestRunner: {
         kind: type,
         source,
@@ -209,6 +224,24 @@ export const normalizeAutomationConfig = (
   ) ?? null;
   const market = readString(suggestion.market, root.market, execution?.market) ?? null;
 
+  // Extract template IDs with clear precedence:
+  // Priority: explicit top-level > nested config > tradeSuggestion > execution
+  const executionTemplate = parseRecord(execution?.template);
+  const sourceTemplateId = readString(
+    root.sourceTemplateId,              // 1. Explicit top-level (highest priority)
+    execution?.sourceTemplateId,         // 2. Nested in execution/config
+    suggestion.sourceTemplateId,         // 3. Nested in tradeSuggestion
+    executionTemplate?.id                // 4. Nested template object
+  ) ?? null;
+
+  const templateId = readString(
+    root.templateId,                     // 1. Explicit top-level (highest priority)
+    execution?.templateId,               // 2. Nested in execution/config
+    suggestion.templateId,               // 3. Nested in tradeSuggestion
+    executionTemplate?.id,               // 4. Nested template object
+    executionTemplate?.templateId        // 5. Template object's templateId field
+  ) ?? null;
+
   return {
     ...root,
     kind: type,
@@ -220,6 +253,8 @@ export const normalizeAutomationConfig = (
     ...(market ? { market } : {}),
     ...(setupScope ? { setupScope } : {}),
     ...(execution ? { config: execution } : {}),
+    ...(sourceTemplateId ? { sourceTemplateId } : {}),
+    ...(templateId ? { templateId } : {}),
     tradeSuggestion: {
       kind: type,
       source,

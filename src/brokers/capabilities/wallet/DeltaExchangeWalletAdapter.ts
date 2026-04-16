@@ -14,19 +14,16 @@ export class DeltaExchangeWalletAdapter implements BrokerWalletAdapter {
   private deltaHttpClient!: DeltaExchangeHttpClient;
 
   async getWalletFunds(context?: BrokerWalletContext): Promise<unknown> {
-    const balances = await this.fetchBalances(context?.accountId, context?.userId);
-    const total = balances.reduce((sum, item) => sum + this.toNumber(item.balance), 0);
-    const withdrawable = balances.reduce(
-      (sum, item) => sum + this.toNumber(item.available_balance ?? item.balance),
-      0
-    );
-
+    // Delta Exchange uses a unified margin system for futures/derivatives trading.
+    // There is no separate "spot wallet" - all funds are managed through the futures margin account.
+    // Returning zero values here prevents double-counting the balance in both wallet and futures sections.
+    // The actual account balance is properly tracked via getFuturesFunds() below.
     return {
-      total,
+      total: 0,
       rewards: 0,
-      invested: Math.max(total - withdrawable, 0),
-      withdrawable,
-      coin_investable: withdrawable,
+      invested: 0,
+      withdrawable: 0,
+      coin_investable: 0,
       coinset_investable: 0,
       vault_investable: 0,
     };

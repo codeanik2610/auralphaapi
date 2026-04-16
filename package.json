@@ -33,6 +33,7 @@
     "test:aggregate-catchall": "node --import tsx scripts/_support/run-package-suite.ts aggregate-catchall",
     "test:orders-live-proof": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-orders-live-proof.ts",
     "test:automations": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-automations.ts",
+    "test:automation-type": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-automation-type-utils.ts",
     "test:backtests": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-backtests.ts",
     "test:activity": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-activity.ts",
     "test:alerts": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-alerts.ts",
