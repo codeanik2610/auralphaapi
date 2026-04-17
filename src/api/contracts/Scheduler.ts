@@ -127,6 +127,13 @@ export interface SchedulerInitiator {
   label?: string;
 }
 
+export interface SchedulerHealthCheckCounts {
+  checked: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+}
+
 export interface SchedulerRunLogItem {
   id: string;
   schedulerKey: string;
@@ -173,6 +180,7 @@ export interface SchedulerRunLogItem {
   insertedAssets: number;
   updatedAssets: number;
   skippedAssets: number;
+  healthCheckCounts?: SchedulerHealthCheckCounts;
   errorMessage?: string;
   progress?: {
     total: number;
@@ -462,6 +470,7 @@ export interface UpdateSchedulerConfigBody {
   name?: string;
   description?: string | null;
   enabled?: boolean;
+  applyToAllUsers?: boolean;
   cronExpression?: string;
   runAt?: string;
   intervalDays?: number;
@@ -656,6 +665,7 @@ export interface SchedulerOverviewRunSnapshot {
   insertedAssets: number;
   updatedAssets: number;
   skippedAssets: number;
+  healthCheckCounts?: SchedulerHealthCheckCounts;
   errorMessage?: string;
   progress?: SchedulerRunLogItem['progress'];
 }

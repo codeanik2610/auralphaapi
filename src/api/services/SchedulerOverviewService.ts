@@ -1,6 +1,10 @@
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
-import { SchedulerOverviewItem, SchedulerOverviewResponse } from '../contracts/Scheduler';
+import {
+  SchedulerHealthCheckCounts,
+  SchedulerOverviewItem,
+  SchedulerOverviewResponse,
+} from '../contracts/Scheduler';
 import { successResponse } from '../utils/response';
 import {
   buildSchedulerTimeContract,
@@ -406,6 +410,11 @@ export class SchedulerOverviewService {
 
     const parsedMeta = this.parseMeta(row.meta);
     const progress = this.readProgress(parsedMeta);
+    const healthCheckCounts = this.readHealthCheckCounts(
+      String(row.schedulerKey || ''),
+      parsedMeta,
+      row
+    );
     const startedAt = row.startedAt as Date | string | null | undefined;
     const finishedAt = row.finishedAt as Date | string | null | undefined;
     const status = String(row.status || '').trim();
@@ -423,6 +432,7 @@ export class SchedulerOverviewService {
       insertedAssets: this.readNumber(row.insertedAssets),
       updatedAssets: this.readNumber(row.updatedAssets),
       skippedAssets: this.readNumber(row.skippedAssets),
+      ...(healthCheckCounts ? { healthCheckCounts } : {}),
       errorMessage: this.readOptionalText(row.errorMessage),
       ...(progress ? { progress } : {}),
     };
@@ -477,6 +487,39 @@ export class SchedulerOverviewService {
               id: String((progressRaw.currentItem as Record<string, unknown>).id || ''),
             }
           : undefined,
+    };
+  }
+
+  private readHealthCheckCounts(
+    schedulerKey: string,
+    meta: Record<string, unknown>,
+    row: Record<string, unknown>
+  ): SchedulerHealthCheckCounts | undefined {
+    if (schedulerKey !== 'system-health-sync') {
+      return undefined;
+    }
+
+    const explicitRaw =
+      meta.healthCheckCounts &&
+      typeof meta.healthCheckCounts === 'object' &&
+      !Array.isArray(meta.healthCheckCounts)
+        ? (meta.healthCheckCounts as Record<string, unknown>)
+        : null;
+
+    if (explicitRaw) {
+      return {
+        checked: Math.max(0, this.readNumber(explicitRaw.checked)),
+        passed: Math.max(0, this.readNumber(explicitRaw.passed)),
+        failed: Math.max(0, this.readNumber(explicitRaw.failed)),
+        skipped: Math.max(0, this.readNumber(explicitRaw.skipped)),
+      };
+    }
+
+    return {
+      checked: Math.max(0, this.readNumber(row.processedAccounts)),
+      passed: Math.max(0, this.readNumber(row.insertedAssets)),
+      failed: Math.max(0, this.readNumber(row.updatedAssets)),
+      skipped: Math.max(0, this.readNumber(row.skippedAssets)),
     };
   }
 

@@ -398,6 +398,14 @@ async function assertPhaseThreeLocalizedTimeContract(
   assert.equal(runsResponse.data.items[0]?.finishedAt, '2026-04-10T06:35:00.000+05:30');
   assert.equal(runsResponse.data.items[0]?.startedAtIso, '2026-04-10T01:00:00.000Z');
   assert.equal(runsResponse.data.items[0]?.finishedAtIso, '2026-04-10T01:05:00.000Z');
+  if (isHealthSchedulerCase(testCase)) {
+    assert.deepEqual(runsResponse.data.items[0]?.healthCheckCounts, {
+      checked: 1,
+      passed: 3,
+      failed: 2,
+      skipped: 1,
+    });
+  }
 
   const progressResponse = await service.getSchedulerRunProgress(
     'admin-user-1',
@@ -409,6 +417,14 @@ async function assertPhaseThreeLocalizedTimeContract(
   assert.equal(progressResponse.data.run?.finishedAt, '2026-04-10T06:35:00.000+05:30');
   assert.equal(progressResponse.data.run?.startedAtIso, '2026-04-10T01:00:00.000Z');
   assert.equal(progressResponse.data.run?.finishedAtIso, '2026-04-10T01:05:00.000Z');
+  if (isHealthSchedulerCase(testCase)) {
+    assert.deepEqual(progressResponse.data.run?.healthCheckCounts, {
+      checked: 1,
+      passed: 3,
+      failed: 2,
+      skipped: 1,
+    });
+  }
 
   const updatesResponse = await service.listSchedulerRunUpdates(
     'admin-user-1',
@@ -972,7 +988,9 @@ async function testSchedulerOverviewDoesNotTreatPositionsAndOrdersAsSystemGlobal
 
   try {
     const response = await service.getOverview('admin-user-11');
-    const indexed = new Map(response.data.items.map((item: any) => [item.key, item]));
+    const indexed = new Map<string, any>(
+      response.data.items.map((item: any) => [item.key, item])
+    );
     const positionsItem = indexed.get('positions-sync');
     const ordersItem = indexed.get('orders-sync');
 
@@ -1396,6 +1414,12 @@ async function testSchedulerOverviewPhaseFiveSnapshots(): Promise<void> {
     assert.equal(health?.recentRun?.status, 'Completed');
     assert.equal(health?.recentRun?.finishedAt, '2026-04-10T09:00:00.000+05:30');
     assert.equal(health?.recentRun?.updatedAssets, 5);
+    assert.deepEqual(health?.recentRun?.healthCheckCounts, {
+      checked: 5,
+      passed: 0,
+      failed: 5,
+      skipped: 0,
+    });
     assert.equal(health?.ops?.activeStatus, 'idle');
     assert.equal(health?.ops?.latestRunStatus, 'Completed');
     assert.equal(health?.ops?.latestOutcome, 'Completed');

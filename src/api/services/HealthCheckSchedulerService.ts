@@ -1037,14 +1037,20 @@ export class HealthCheckSchedulerService {
     },
     timeZone: string
   ): SchedulerRunLogItem {
-    const meta = this.mapRunMeta(item.meta);
+    const parsedMeta = this.parseMeta(item.meta);
+    const meta = this.mapRunMeta(parsedMeta, {
+      processedAccounts: item.processedAccounts,
+      insertedAssets: item.insertedAssets,
+      updatedAssets: item.updatedAssets,
+      skippedAssets: item.skippedAssets,
+    });
     return {
       id: item.id,
       schedulerKey: item.schedulerKey,
       status: item.status,
       ...toSchedulerAuditContract(
         item as unknown as Record<string, unknown>,
-        this.parseMeta(item.meta)
+        parsedMeta
       ),
       startedAt: this.formatDisplayDate(item.startedAt, timeZone) || this.formatDate(item.startedAt)!,
       startedAtIso: formatSchedulerRawIso(item.startedAt),
@@ -1060,32 +1066,80 @@ export class HealthCheckSchedulerService {
     };
   }
 
-  private mapRunMeta(meta: unknown): Pick<SchedulerRunLogItem, 'progress' | 'scopeAssetsCount'> {
+  private mapRunMeta(
+    meta: unknown,
+    legacyCounts?: {
+      processedAccounts?: number;
+      insertedAssets?: number;
+      updatedAssets?: number;
+      skippedAssets?: number;
+    }
+  ): Pick<SchedulerRunLogItem, 'progress' | 'scopeAssetsCount' | 'healthCheckCounts'> {
     const parsed = this.parseMeta(meta);
     const progressRaw =
       parsed.progress && typeof parsed.progress === 'object' && !Array.isArray(parsed.progress)
         ? (parsed.progress as Record<string, unknown>)
         : null;
-    if (!progressRaw) {
-      return {};
-    }
+    const healthCheckCounts = this.readHealthCheckCounts(parsed, legacyCounts);
     return {
-      progress: {
-        total: this.readNumber(progressRaw.total),
-        processed: this.readNumber(progressRaw.processed),
-        percent: this.readNumber(progressRaw.percent),
-        etaSeconds: this.readNumber(progressRaw.etaSeconds),
-        currentItem:
-          progressRaw.currentItem &&
-          typeof progressRaw.currentItem === 'object' &&
-          !Array.isArray(progressRaw.currentItem)
-            ? {
-                symbol: String((progressRaw.currentItem as Record<string, unknown>).symbol || ''),
-                assetId: String((progressRaw.currentItem as Record<string, unknown>).assetId || ''),
-                id: String((progressRaw.currentItem as Record<string, unknown>).id || ''),
-              }
-            : undefined,
-      },
+      ...(progressRaw
+        ? {
+            progress: {
+              total: this.readNumber(progressRaw.total),
+              processed: this.readNumber(progressRaw.processed),
+              percent: this.readNumber(progressRaw.percent),
+              etaSeconds: this.readNumber(progressRaw.etaSeconds),
+              currentItem:
+                progressRaw.currentItem &&
+                typeof progressRaw.currentItem === 'object' &&
+                !Array.isArray(progressRaw.currentItem)
+                  ? {
+                      symbol: String((progressRaw.currentItem as Record<string, unknown>).symbol || ''),
+                      assetId: String((progressRaw.currentItem as Record<string, unknown>).assetId || ''),
+                      id: String((progressRaw.currentItem as Record<string, unknown>).id || ''),
+                    }
+                  : undefined,
+            },
+          }
+        : {}),
+      ...(healthCheckCounts ? { healthCheckCounts } : {}),
+    };
+  }
+
+  private readHealthCheckCounts(
+    meta: Record<string, unknown>,
+    legacyCounts?: {
+      processedAccounts?: number;
+      insertedAssets?: number;
+      updatedAssets?: number;
+      skippedAssets?: number;
+    }
+  ): SchedulerRunLogItem['healthCheckCounts'] {
+    const explicitRaw =
+      meta.healthCheckCounts &&
+      typeof meta.healthCheckCounts === 'object' &&
+      !Array.isArray(meta.healthCheckCounts)
+        ? (meta.healthCheckCounts as Record<string, unknown>)
+        : null;
+
+    if (explicitRaw) {
+      return {
+        checked: Math.max(0, this.readNumber(explicitRaw.checked)),
+        passed: Math.max(0, this.readNumber(explicitRaw.passed)),
+        failed: Math.max(0, this.readNumber(explicitRaw.failed)),
+        skipped: Math.max(0, this.readNumber(explicitRaw.skipped)),
+      };
+    }
+
+    if (!legacyCounts) {
+      return undefined;
+    }
+
+    return {
+      checked: Math.max(0, this.readNumber(legacyCounts.processedAccounts)),
+      passed: Math.max(0, this.readNumber(legacyCounts.insertedAssets)),
+      failed: Math.max(0, this.readNumber(legacyCounts.updatedAssets)),
+      skipped: Math.max(0, this.readNumber(legacyCounts.skippedAssets)),
     };
   }
 
