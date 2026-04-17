@@ -430,6 +430,23 @@ export interface PromoteBacktestBody {
   schedule?: Record<string, unknown> | null;
 }
 
+export interface PromoteBacktestBatchItemBody {
+  symbol: string;
+  timeframe: string;
+  name?: string;
+}
+
+export interface PromoteBacktestBatchBody {
+  name?: string;
+  broker?: string;
+  trigger?: string;
+  riskMode?: string;
+  status?: AutomationStatus;
+  timeZone?: string | null;
+  schedule?: Record<string, unknown> | null;
+  items: PromoteBacktestBatchItemBody[];
+}
+
 export interface PromoteBacktestResult {
   message: string;
   automation: {
@@ -437,4 +454,27 @@ export interface PromoteBacktestResult {
     status: AutomationStatus;
     createdAt: string;
   };
+}
+
+export interface PromoteBacktestBatchResultItem {
+  symbol: string;
+  timeframe: string;
+  status: 'created' | 'reused' | 'failed';
+  message: string;
+  automation?: {
+    id: string;
+    status: AutomationStatus;
+    createdAt: string;
+  } | null;
+}
+
+export interface PromoteBacktestBatchResult {
+  message: string;
+  summary: {
+    requested: number;
+    created: number;
+    reused: number;
+    failed: number;
+  };
+  results: PromoteBacktestBatchResultItem[];
 }

@@ -108,9 +108,19 @@ export interface RiskOverviewFreshnessMeta {
 
 export interface RiskOverviewLineageMeta {
   summary: 'risk_snapshots_latest';
-  riskWindows: 'risk_snapshots_latest_with_explicit_unavailable_windows';
-  brokerCoverage: 'funds_snapshots_plus_position_read_models_for_connected_accounts';
-  recomputeWrites: Array<'risk_snapshots' | 'risk_controls' | 'risk_alerts' | 'risk_scenarios'>;
+  riskWindows: 'risk_snapshots_latest_with_persisted_loss_windows';
+  brokerCoverage:
+    | 'funds_snapshots_plus_position_read_models_for_connected_accounts'
+    | 'risk_account_snapshots_plus_funds_snapshots_plus_position_read_models_for_connected_accounts';
+  recomputeWrites: Array<
+    | 'risk_snapshots'
+    | 'risk_account_snapshots'
+    | 'risk_order_snapshots'
+    | 'risk_position_snapshots'
+    | 'risk_controls'
+    | 'risk_alerts'
+    | 'risk_scenarios'
+  >;
 }
 
 export interface RiskOverviewMeta {
@@ -149,8 +159,10 @@ export interface RiskOverviewMeta {
     activityExports: string;
   };
   pageTruth: {
-    riskWindowSource: 'latest_risk_snapshot_with_explicit_unavailable_windows';
-    brokerCoverageSource: 'snapshot_backed_connected_brokers';
+    riskWindowSource: 'latest_risk_snapshot_with_persisted_loss_windows';
+    brokerCoverageSource:
+      | 'snapshot_backed_connected_brokers'
+      | 'risk_account_snapshots_backed_connected_brokers';
     policyWorkspace: 'selected_rule_with_pending_review_history_controls';
     policyGovernance: 'manual_review_for_sensitive_policy_mutations';
     activityTrailSource: 'activity_logs_route_and_reference_filters';

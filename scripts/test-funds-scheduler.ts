@@ -631,14 +631,14 @@ async function run(): Promise<void> {
     assert.equal(runResponse.data.queued, true);
     assert.equal(calls.createRun.length, 1);
     assert.equal(calls.createRun[0].actorUserId, 'user-1');
-    assert.equal(calls.createRun[0].executionContext, 'system');
-    assert.equal((calls.createRun[0].meta as Record<string, unknown>).actorUserId, env.scheduler.systemUserId);
+    assert.equal(calls.createRun[0].executionContext, 'user');
+    assert.equal((calls.createRun[0].meta as Record<string, unknown>).actorUserId, 'user-1');
     assert.equal((calls.createRun[0].meta as Record<string, unknown>).requestedByUserId, 'user-1');
     assert.equal(calls.createCommand[0].actorUserId, 'user-1');
     assert.equal(calls.createCommand[0].commandType, 'run_now');
-    assert.equal((calls.createCommand[0].payload as Record<string, unknown>).actorUserId, env.scheduler.systemUserId);
+    assert.equal((calls.createCommand[0].payload as Record<string, unknown>).actorUserId, 'user-1');
     assert.equal((calls.createCommand[0].payload as Record<string, unknown>).requestedByUserId, 'user-1');
-    assert.equal(calls.createCommand[0].executionContext, 'system');
+    assert.equal(calls.createCommand[0].executionContext, 'user');
 
     const pauseResponse = await service.pauseScheduler('user-1');
     assert.equal(pauseResponse.data.state, 'applied');
@@ -669,9 +669,9 @@ async function run(): Promise<void> {
     assert.equal(calls.createCommand[2].commandType, 'stop_now');
     assert.equal(calls.createCommand[3].actorUserId, 'user-1');
     assert.equal(calls.createCommand[3].commandType, 'run_now');
-    assert.equal((calls.createCommand[3].payload as Record<string, unknown>).actorUserId, env.scheduler.systemUserId);
+    assert.equal((calls.createCommand[3].payload as Record<string, unknown>).actorUserId, 'user-1');
     assert.equal((calls.createCommand[3].payload as Record<string, unknown>).requestedByUserId, 'user-1');
-    assert.equal(calls.createCommand[3].executionContext, 'system');
+    assert.equal(calls.createCommand[3].executionContext, 'user');
 
     await service.listSchedulerRuns('user-1', { limit: '10', offset: '0' });
     assert.deepEqual(calls.listRuns, [

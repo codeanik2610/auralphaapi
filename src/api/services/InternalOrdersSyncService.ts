@@ -49,6 +49,10 @@ export class InternalOrdersSyncService {
   @Inject(() => SchedulerRuntimeSchemaService)
   private schedulerRuntimeSchemaService!: SchedulerRuntimeSchemaService;
 
+  private checkpointTableColumns:
+    | { hasId: boolean; hasCreatedAt: boolean; hasUpdatedAt: boolean }
+    | null = null;
+
   // ── Helpers ──────────────────────────────────────────────────
 
   private extractList(raw: unknown): unknown[] {
@@ -172,12 +176,60 @@ export class InternalOrdersSyncService {
   }
 
   private async saveCheckpoint(accountId: string, checkpointAt: Date): Promise<void> {
+    const shape = await this.getCheckpointTableColumns();
+    if (shape.hasId && shape.hasCreatedAt) {
+      await coreDataSource.query(
+        `INSERT INTO scheduler_sync_checkpoints (id, scheduler_key, account_id, checkpoint_at, created_at, updated_at)
+         VALUES (UUID(), ?, ?, ?, NOW(), NOW())
+         ON DUPLICATE KEY UPDATE checkpoint_at = VALUES(checkpoint_at), updated_at = NOW()`,
+        [CHECKPOINT_SCHEDULER_KEY, accountId, checkpointAt]
+      );
+      return;
+    }
+
+    if (shape.hasUpdatedAt) {
+      await coreDataSource.query(
+        `INSERT INTO scheduler_sync_checkpoints (scheduler_key, account_id, checkpoint_at, updated_at)
+         VALUES (?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE checkpoint_at = VALUES(checkpoint_at), updated_at = NOW()`,
+        [CHECKPOINT_SCHEDULER_KEY, accountId, checkpointAt]
+      );
+      return;
+    }
+
     await coreDataSource.query(
-      `INSERT INTO scheduler_sync_checkpoints (id, scheduler_key, account_id, checkpoint_at, created_at, updated_at)
-       VALUES (UUID(), ?, ?, ?, NOW(), NOW())
-       ON DUPLICATE KEY UPDATE checkpoint_at = VALUES(checkpoint_at), updated_at = NOW()`,
+      `INSERT INTO scheduler_sync_checkpoints (scheduler_key, account_id, checkpoint_at)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE checkpoint_at = VALUES(checkpoint_at)`,
       [CHECKPOINT_SCHEDULER_KEY, accountId, checkpointAt]
     );
+  }
+
+  private async getCheckpointTableColumns(): Promise<{
+    hasId: boolean;
+    hasCreatedAt: boolean;
+    hasUpdatedAt: boolean;
+  }> {
+    if (this.checkpointTableColumns) {
+      return this.checkpointTableColumns;
+    }
+
+    const rows = (await coreDataSource.query(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema = DATABASE()
+         AND table_name = 'scheduler_sync_checkpoints'`
+    )) as Array<{ column_name?: string }>;
+    const columns = new Set(
+      rows.map((row) => String(row.column_name || '').trim().toLowerCase()).filter(Boolean)
+    );
+
+    this.checkpointTableColumns = {
+      hasId: columns.has('id'),
+      hasCreatedAt: columns.has('created_at'),
+      hasUpdatedAt: columns.has('updated_at'),
+    };
+    return this.checkpointTableColumns;
   }
 
   private extractOrderExternalIds(items: unknown[]): string[] {
@@ -708,14 +760,19 @@ export class InternalOrdersSyncService {
     const accountIdFilter = new Set(
       (request.accountIds || []).map((item) => String(item || '').trim()).filter(Boolean)
     );
-    const isInfraAllAccountsRequest =
+    const isInfraSystemAccountsRequest =
       userIds.length === 1 && userIds[0] === env.scheduler.systemUserId;
-    const accountGroups = isInfraAllAccountsRequest
-      ? this.groupInfraAccountsByOwner(
-          await this.brokerAccountRepository.getAllActiveBrokerAccounts(),
-          brokerKeyFilter,
-          accountIdFilter
-        )
+    const accountGroups = isInfraSystemAccountsRequest
+      ? [
+          {
+            userId: String(env.scheduler.systemUserId || '').trim(),
+            accounts: this.filterScopedAccounts(
+              await this.brokerAccountRepository.getActiveSystemBrokerAccounts(),
+              brokerKeyFilter,
+              accountIdFilter
+            ),
+          },
+        ]
       : await Promise.all(
           userIds.map(async (userId) => {
             const isSystemUser = userId === env.scheduler.systemUserId;

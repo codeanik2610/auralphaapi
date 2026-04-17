@@ -48,7 +48,9 @@ export class RiskControlRepository {
       return 0;
     }
 
-    const placeholders = normalizedItems.map(() => '(?, ?, ?, ?, ?, ?, ?, NOW(), NOW())').join(', ');
+    const placeholders = normalizedItems
+      .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())')
+      .join(', ');
     const params: Array<string> = [];
 
     normalizedItems.forEach((item) => {
@@ -121,6 +123,24 @@ export class RiskControlRepository {
       items: (rows || []) as RiskControlRow[],
       total
     };
+  }
+
+  async listBySnapshotId(userId: string, snapshotId: string): Promise<RiskControlRow[]> {
+    const normalizedSnapshotId = String(snapshotId || '').trim();
+    if (!normalizedSnapshotId) {
+      return [];
+    }
+
+    const rows = await coreDataSource.query(
+      `SELECT id, snapshotId, bucket, exposure, threshold, status, action, createdAt
+         FROM risk_controls
+        WHERE user_id = ?
+          AND snapshotId = ?
+        ORDER BY createdAt DESC, id DESC`,
+      [userId, normalizedSnapshotId]
+    );
+
+    return (rows || []) as RiskControlRow[];
   }
 
   async getLatestCreatedAtForUsers(userIds: string[]): Promise<Date | null> {

@@ -25,11 +25,44 @@ export class RiskSnapshot {
   @Column({ type: 'double', default: 0 })
   capitalAtRisk!: number;
 
+  @Column({ name: 'denominator_basis', type: 'varchar', length: 50, nullable: true })
+  denominatorBasis!: string | null;
+
+  @Column({ name: 'portfolio_equity', type: 'double', default: 0 })
+  portfolioEquity!: number;
+
+  @Column({ name: 'gross_exposure', type: 'double', default: 0 })
+  grossExposure!: number;
+
+  @Column({ name: 'net_exposure', type: 'double', default: 0 })
+  netExposure!: number;
+
+  @Column({ name: 'long_exposure', type: 'double', default: 0 })
+  longExposure!: number;
+
+  @Column({ name: 'short_exposure', type: 'double', default: 0 })
+  shortExposure!: number;
+
+  @Column({ name: 'open_orders', type: 'int', unsigned: true, default: 0 })
+  openOrders!: number;
+
+  @Column({ name: 'open_order_exposure', type: 'double', default: 0 })
+  openOrderExposure!: number;
+
+  @Column({ name: 'reserved_order_margin', type: 'double', default: 0 })
+  reservedOrderMargin!: number;
+
   @Column({ type: 'varchar', length: 50, nullable: true })
   marginUsage!: string | null;
 
   @Column({ type: 'varchar', length: 50, nullable: true })
   drawdownBudgetUsed!: string | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  weeklyDrawdownBudgetUsed!: string | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  monthlyDrawdownBudgetUsed!: string | null;
 
   @Column({ type: 'int', unsigned: true, default: 0 })
   atRiskPositions!: number;
@@ -72,6 +105,15 @@ export class RiskSnapshot {
 
   @Column({ name: 'user_id', type: 'varchar', length: 191 })
   userId!: string;
+
+  @Column({ name: 'funds_observed_at', type: 'timestamp', nullable: true })
+  fundsObservedAt!: Date | null;
+
+  @Column({ name: 'positions_observed_at', type: 'timestamp', nullable: true })
+  positionsObservedAt!: Date | null;
+
+  @Column({ name: 'orders_observed_at', type: 'timestamp', nullable: true })
+  ordersObservedAt!: Date | null;
 
   @CreateDateColumn({ type: 'timestamp' })
   createdAt!: Date;

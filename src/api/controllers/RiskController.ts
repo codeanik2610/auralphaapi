@@ -1,11 +1,14 @@
-import { Request } from 'express';
-import { Body, Get, JsonController, Post, Put, QueryParams, Req, Param } from 'routing-controllers';
+import { Request, Response } from 'express';
+import { Body, Get, JsonController, Post, Put, QueryParams, Req, Param, Res } from 'routing-controllers';
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import {
   ReviewRiskPolicyVersionBody,
   RiskKillSwitchBody,
   RiskKillSwitchResult,
+  RiskAccountsResponse,
+  RiskOrdersResponse,
+  RiskPositionsResponse,
   RiskAlertsResponse,
   RiskControlsResponse,
   RiskScenariosResponse,
@@ -36,6 +39,35 @@ export class RiskController {
   @Get('/summary')
   async getRiskSummary(@Req() request: Request): Promise<ApiSuccessResponse<RiskSummary>> {
     return this.riskService.getRiskSummary(requireAuthUserId(request));
+  }
+
+  @Get('/accounts')
+  async getRiskAccounts(@Req() request: Request): Promise<ApiSuccessResponse<RiskAccountsResponse>> {
+    return this.riskService.getRiskAccounts(requireAuthUserId(request));
+  }
+
+  @Get('/positions')
+  async getRiskPositions(@Req() request: Request): Promise<ApiSuccessResponse<RiskPositionsResponse>> {
+    return this.riskService.getRiskPositions(requireAuthUserId(request));
+  }
+
+  @Get('/orders')
+  async getRiskOrders(@Req() request: Request): Promise<ApiSuccessResponse<RiskOrdersResponse>> {
+    return this.riskService.getRiskOrders(requireAuthUserId(request));
+  }
+
+  @Get('/snapshots/:snapshotId')
+  async getRiskSnapshotDetail(
+    @Req() request: Request,
+    @Param('snapshotId') snapshotId: string,
+    @Res() response: Response
+  ): Promise<Response> {
+    const payload = await this.riskService.getRiskSnapshotDetail(
+      requireAuthUserId(request),
+      snapshotId
+    );
+
+    return response.json(payload);
   }
 
   @Get('/alerts')

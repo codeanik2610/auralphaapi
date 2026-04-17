@@ -130,6 +130,10 @@ export function validateSchedulerConfigBody(
     payload.enabled = Boolean(body.enabled);
   }
 
+  if (body.applyToAllUsers !== undefined) {
+    payload.applyToAllUsers = Boolean(body.applyToAllUsers);
+  }
+
   if (body.cronExpression !== undefined) {
     const cronExpression = String(body.cronExpression || '').trim();
     if (!cronExpression) {

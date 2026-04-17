@@ -1,6 +1,7 @@
 import {
   BacktestRunStatus,
   CreateBacktestBody,
+  PromoteBacktestBatchBody,
   PromoteBacktestBody,
   UpdateBacktestResultBody,
 } from '../contracts/Backtest';
@@ -543,5 +544,67 @@ export const validatePromoteBacktestBody = (
     timeframe: timeframe || undefined,
     timeZone: timeZone === undefined ? undefined : timeZone || null,
     schedule: schedule === undefined ? undefined : schedule,
+  };
+};
+
+export const validatePromoteBacktestBatchBody = (
+  body: PromoteBacktestBatchBody
+): PromoteBacktestBatchBody => {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new BadRequestAppError('batch promotion body must be an object');
+  }
+
+  const shared = validatePromoteBacktestBody(body);
+  const rawItems = Array.isArray(body.items) ? body.items : [];
+
+  if (!rawItems.length) {
+    throw new BadRequestAppError('items must contain at least one selected setup');
+  }
+
+  const items = rawItems.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new BadRequestAppError(`items[${index}] must be an object`);
+    }
+
+    const symbol = String(item.symbol || '').trim().toUpperCase();
+    const timeframe = String(item.timeframe || '').trim();
+    const name = item.name !== undefined ? String(item.name).trim() : undefined;
+
+    if (!symbol) {
+      throw new BadRequestAppError(`items[${index}].symbol must be a non-empty string`);
+    }
+    if (!timeframe) {
+      throw new BadRequestAppError(`items[${index}].timeframe must be a non-empty string`);
+    }
+    if (!VALID_INTERVALS.has(timeframe)) {
+      throw new BadRequestAppError(
+        `items[${index}].timeframe must be one of: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d, 1w`
+      );
+    }
+    if (item.name !== undefined && !name) {
+      throw new BadRequestAppError(`items[${index}].name must be a non-empty string`);
+    }
+
+    return {
+      symbol,
+      timeframe,
+      name: name || undefined,
+    };
+  });
+
+  const deduped = new Set<string>();
+  items.forEach((item) => {
+    const key = `${item.symbol}::${item.timeframe}`;
+    if (deduped.has(key)) {
+      throw new BadRequestAppError(
+        `Duplicate setup selection is not allowed: ${item.symbol} ${item.timeframe}`
+      );
+    }
+    deduped.add(key);
+  });
+
+  return {
+    ...shared,
+    items,
   };
 };

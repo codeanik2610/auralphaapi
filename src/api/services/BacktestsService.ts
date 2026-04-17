@@ -5,12 +5,15 @@ import {
   BacktestChartResponse,
   BacktestInputSnapshotResponse,
   BacktestItem,
+  BacktestTopSetupItem,
   RecoverBacktestResult,
   BacktestRunStatus,
   BacktestsListResponse,
   BacktestsSummary,
   BacktestsTopSetupsResponse,
   CreateBacktestBody,
+  PromoteBacktestBatchBody,
+  PromoteBacktestBatchResult,
   CreateBacktestResult,
   PromoteBacktestBody,
   PromoteBacktestResult,
@@ -29,6 +32,7 @@ import {
   validateBacktestTopSetupsQuery,
   validateBacktestsQuery,
   validateCreateBacktestBody,
+  validatePromoteBacktestBatchBody,
   validatePromoteBacktestBody,
   validateUpdateBacktestResultBody,
 } from '../validators/backtests.validator';
@@ -367,53 +371,8 @@ export class BacktestsService {
     const payload = validatePromoteBacktestBody(body || {});
 
     try {
-      const backtest = await this.backtestRepository.getBacktestById(userId, validatedId);
-
-      if (!backtest) {
-        throw new NotFoundAppError('Backtest not found');
-      }
-
-      const storedTradeCount = (
-        await this.backtestTradeRepository.getTradeCountsByBacktest(userId, [backtest.id])
-      ).get(backtest.id) ?? 0;
-      const promotionRules = await this.getUserBacktestPromotionRules(userId);
-      const mappedBacktest = this.mapBacktest(backtest, {
-        includeSurface: true,
-        storedTradeCount,
-      });
-      const rankedTopSetups = this.backtestTopSetupsService.rankBacktestTopSetups(
-        mappedBacktest,
-        promotionRules
-      );
-      const selectedTopSetup =
-        payload.symbol && payload.timeframe
-          ? rankedTopSetups.find(
-              (item) => item.symbol === payload.symbol && item.timeframe === payload.timeframe
-            ) || null
-          : rankedTopSetups[0] || null;
-
-      if (payload.symbol || payload.timeframe) {
-        if (!payload.symbol || !payload.timeframe) {
-          throw new BadRequestAppError(
-            'symbol and timeframe must both be provided to scope automation to a top setup'
-          );
-        }
-        if (!selectedTopSetup) {
-          throw new NotFoundAppError('Selected top setup was not found on this backtest');
-        }
-      }
-
-      if (!selectedTopSetup) {
-        throw new BadRequestAppError(
-          'No promotable top setup was found on this backtest yet. Review Top Setups or rerun the backtest with robustness validation.'
-        );
-      }
-
-      if (!selectedTopSetup.eligibleForAutomation) {
-        throw new BadRequestAppError(
-          `Selected top setup is not automation-ready: ${selectedTopSetup.automationEligibilityReasons.join(', ')}`
-        );
-      }
+      const { backtest, rankedTopSetups } = await this.buildPromotionContext(userId, validatedId);
+      const selectedTopSetup = this.resolvePromotionTarget(rankedTopSetups, payload);
 
       return await this.backtestPromotionService.promoteResolvedTopSetup({
         userId,
@@ -441,6 +400,178 @@ export class BacktestsService {
       });
       throw error;
     }
+  }
+
+  async promoteBacktestBatchToAutomation(
+    userId: string,
+    backtestId: string,
+    body: PromoteBacktestBatchBody
+  ): Promise<ApiSuccessResponse<PromoteBacktestBatchResult>> {
+    const validatedId = validateBacktestId(backtestId);
+    const payload = validatePromoteBacktestBatchBody(body);
+
+    try {
+      const { backtest, rankedTopSetups } = await this.buildPromotionContext(userId, validatedId);
+      const results: PromoteBacktestBatchResult['results'] = [];
+
+      for (const item of payload.items) {
+        const scopedPayload: PromoteBacktestBody = {
+          name: item.name ?? payload.name,
+          broker: payload.broker,
+          trigger: payload.trigger,
+          riskMode: payload.riskMode,
+          status: payload.status,
+          timeZone: payload.timeZone,
+          schedule: payload.schedule,
+          symbol: item.symbol,
+          timeframe: item.timeframe,
+        };
+
+        try {
+          const selectedTopSetup = this.resolvePromotionTarget(rankedTopSetups, scopedPayload);
+          const response = await this.backtestPromotionService.promoteResolvedTopSetup({
+            userId,
+            backtest,
+            payload: scopedPayload,
+            selectedTopSetup,
+          });
+          const message = String(response.data?.message || 'Automation created from top setup');
+          results.push({
+            symbol: item.symbol,
+            timeframe: item.timeframe,
+            status: /already exists/i.test(message) ? 'reused' : 'created',
+            message,
+            automation: response.data?.automation ?? null,
+          });
+        } catch (error) {
+          results.push({
+            symbol: item.symbol,
+            timeframe: item.timeframe,
+            status: 'failed',
+            message: error instanceof Error ? error.message : String(error),
+            automation: null,
+          });
+        }
+      }
+
+      const summary = {
+        requested: payload.items.length,
+        created: results.filter((item) => item.status === 'created').length,
+        reused: results.filter((item) => item.status === 'reused').length,
+        failed: results.filter((item) => item.status === 'failed').length,
+      };
+      const message =
+        summary.failed > 0
+          ? `Batch deployment completed with ${summary.created} created, ${summary.reused} reused, and ${summary.failed} failed.`
+          : `Batch deployment completed with ${summary.created} created and ${summary.reused} reused.`;
+
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Automation',
+        title: 'Backtest batch promotion completed',
+        status: summary.failed > 0 && !summary.created && !summary.reused ? 'Failed' : 'Success',
+        route: 'Backtests',
+        stream: 'Deployments',
+        referenceId: validatedId,
+        description: message,
+      });
+
+      if (summary.failed > 0 && !summary.created && !summary.reused) {
+        await this.operationalEventService.emitFailureAlert(userId, {
+          channel: 'Backtests',
+          source: 'backtests:promotion-batch',
+          message: `Backtest batch promotion failed for all ${summary.failed} selected setup(s).`,
+          route: 'Backtests',
+        });
+      }
+
+      return successResponse({
+        message,
+        summary,
+        results,
+      });
+    } catch (error) {
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Automation',
+        title: 'Backtest batch promotion failed',
+        status: 'Failed',
+        route: 'Backtests',
+        stream: 'Deployments',
+        referenceId: validatedId,
+        description: error instanceof Error ? error.message : String(error),
+      });
+      await this.operationalEventService.emitFailureAlert(userId, {
+        channel: 'Backtests',
+        source: 'backtests:promotion-batch',
+        message: `Backtest batch promotion failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        route: 'Backtests',
+      });
+      throw error;
+    }
+  }
+
+  private async buildPromotionContext(
+    userId: string,
+    validatedId: string
+  ): Promise<{ backtest: Backtest; rankedTopSetups: BacktestTopSetupItem[] }> {
+    const backtest = await this.backtestRepository.getBacktestById(userId, validatedId);
+
+    if (!backtest) {
+      throw new NotFoundAppError('Backtest not found');
+    }
+
+    const storedTradeCount = (
+      await this.backtestTradeRepository.getTradeCountsByBacktest(userId, [backtest.id])
+    ).get(backtest.id) ?? 0;
+    const promotionRules = await this.getUserBacktestPromotionRules(userId);
+    const mappedBacktest = this.mapBacktest(backtest, {
+      includeSurface: true,
+      storedTradeCount,
+    });
+    const rankedTopSetups = this.backtestTopSetupsService.rankBacktestTopSetups(
+      mappedBacktest,
+      promotionRules
+    );
+
+    return { backtest, rankedTopSetups };
+  }
+
+  private resolvePromotionTarget(
+    rankedTopSetups: BacktestTopSetupItem[],
+    payload: PromoteBacktestBody
+  ): BacktestTopSetupItem {
+    const selectedTopSetup =
+      payload.symbol && payload.timeframe
+        ? rankedTopSetups.find(
+            (item) => item.symbol === payload.symbol && item.timeframe === payload.timeframe
+          ) || null
+        : rankedTopSetups[0] || null;
+
+    if (payload.symbol || payload.timeframe) {
+      if (!payload.symbol || !payload.timeframe) {
+        throw new BadRequestAppError(
+          'symbol and timeframe must both be provided to scope automation to a top setup'
+        );
+      }
+      if (!selectedTopSetup) {
+        throw new NotFoundAppError('Selected top setup was not found on this backtest');
+      }
+    }
+
+    if (!selectedTopSetup) {
+      throw new BadRequestAppError(
+        'No promotable top setup was found on this backtest yet. Review Top Setups or rerun the backtest with robustness validation.'
+      );
+    }
+
+    if (!selectedTopSetup.eligibleForAutomation) {
+      throw new BadRequestAppError(
+        `Selected top setup is not automation-ready: ${selectedTopSetup.automationEligibilityReasons.join(', ')}`
+      );
+    }
+
+    return selectedTopSetup;
   }
 
   private async requireBacktest(userId: string, backtestId: string): Promise<Backtest> {

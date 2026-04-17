@@ -8,8 +8,19 @@ export interface ComputedRiskSnapshotPayload {
   breachedRules: number;
   liquidationWatch: number;
   capitalAtRisk: number;
+  denominatorBasis: string;
+  portfolioEquity: number;
+  grossExposure: number;
+  netExposure: number;
+  longExposure: number;
+  shortExposure: number;
+  openOrders: number;
+  openOrderExposure: number;
+  reservedOrderMargin: number;
   marginUsage: string;
   drawdownBudgetUsed: string;
+  weeklyDrawdownBudgetUsed: string;
+  monthlyDrawdownBudgetUsed: string;
   atRiskPositions: number;
   ruleViolations: number;
   portfolioRiskScore: string;
@@ -23,6 +34,9 @@ export interface ComputedRiskSnapshotPayload {
   actionOne: string;
   actionTwo: string;
   actionThree: string;
+  fundsObservedAt: Date | null;
+  positionsObservedAt: Date | null;
+  ordersObservedAt: Date | null;
 }
 
 export interface LatestRiskSnapshotRow {
@@ -38,11 +52,62 @@ export class RiskRepository {
   }
 
   async getLatestSnapshot(userId: string): Promise<RiskSnapshot | null> {
-    return this.snapshotRepository
+    const snapshot = await this.snapshotRepository
       .createQueryBuilder('snapshot')
       .where('snapshot.userId = :userId', { userId })
       .orderBy('snapshot.createdAt', 'DESC')
       .getOne();
+
+    if (!snapshot) {
+      return null;
+    }
+
+    return this.hydrateOrderSummaryFields(snapshot);
+  }
+
+  async getSnapshotById(userId: string, snapshotId: string): Promise<RiskSnapshot | null> {
+    const normalizedSnapshotId = String(snapshotId || '').trim();
+    if (!normalizedSnapshotId) {
+      return null;
+    }
+
+    const snapshot = await this.snapshotRepository.findOne({
+      where: {
+        id: normalizedSnapshotId,
+        userId,
+      },
+    });
+
+    if (!snapshot) {
+      return null;
+    }
+
+    return this.hydrateOrderSummaryFields(snapshot);
+  }
+
+  async getPreviousSnapshot(
+    userId: string,
+    snapshot: Pick<RiskSnapshot, 'id' | 'createdAt'>
+  ): Promise<RiskSnapshot | null> {
+    const snapshotId = String(snapshot?.id || '').trim();
+    if (!snapshotId || !(snapshot?.createdAt instanceof Date)) {
+      return null;
+    }
+
+    const previousSnapshot = await this.snapshotRepository
+      .createQueryBuilder('snapshot')
+      .where('snapshot.userId = :userId', { userId })
+      .andWhere('snapshot.id != :snapshotId', { snapshotId })
+      .andWhere('snapshot.createdAt <= :createdAt', { createdAt: snapshot.createdAt })
+      .orderBy('snapshot.createdAt', 'DESC')
+      .addOrderBy('snapshot.id', 'DESC')
+      .getOne();
+
+    if (!previousSnapshot) {
+      return null;
+    }
+
+    return this.hydrateOrderSummaryFields(previousSnapshot);
   }
 
   async createComputedSnapshot(
@@ -55,8 +120,19 @@ export class RiskRepository {
       breachedRules: payload.breachedRules,
       liquidationWatch: payload.liquidationWatch,
       capitalAtRisk: payload.capitalAtRisk,
+      denominatorBasis: payload.denominatorBasis,
+      portfolioEquity: payload.portfolioEquity,
+      grossExposure: payload.grossExposure,
+      netExposure: payload.netExposure,
+      longExposure: payload.longExposure,
+      shortExposure: payload.shortExposure,
+      openOrders: payload.openOrders,
+      openOrderExposure: payload.openOrderExposure,
+      reservedOrderMargin: payload.reservedOrderMargin,
       marginUsage: payload.marginUsage,
       drawdownBudgetUsed: payload.drawdownBudgetUsed,
+      weeklyDrawdownBudgetUsed: payload.weeklyDrawdownBudgetUsed,
+      monthlyDrawdownBudgetUsed: payload.monthlyDrawdownBudgetUsed,
       atRiskPositions: payload.atRiskPositions,
       ruleViolations: payload.ruleViolations,
       portfolioRiskScore: payload.portfolioRiskScore,
@@ -69,7 +145,10 @@ export class RiskRepository {
       guardrailThree: payload.guardrailThree,
       actionOne: payload.actionOne,
       actionTwo: payload.actionTwo,
-      actionThree: payload.actionThree
+      actionThree: payload.actionThree,
+      fundsObservedAt: payload.fundsObservedAt,
+      positionsObservedAt: payload.positionsObservedAt,
+      ordersObservedAt: payload.ordersObservedAt,
     });
     await this.snapshotRepository.save(created);
 
@@ -126,5 +205,39 @@ export class RiskRepository {
     });
 
     return byUserId;
+  }
+
+  private async hydrateOrderSummaryFields(snapshot: RiskSnapshot): Promise<RiskSnapshot> {
+    if (
+      snapshot.openOrders !== undefined &&
+      snapshot.openOrderExposure !== undefined &&
+      snapshot.reservedOrderMargin !== undefined
+    ) {
+      return snapshot;
+    }
+
+    const rows = (await coreDataSource.query(
+      `SELECT open_orders AS openOrders,
+              open_order_exposure AS openOrderExposure,
+              reserved_order_margin AS reservedOrderMargin
+         FROM risk_snapshots
+        WHERE id = ?
+        LIMIT 1`,
+      [snapshot.id]
+    )) as Array<{
+      openOrders?: number | string | null;
+      openOrderExposure?: number | string | null;
+      reservedOrderMargin?: number | string | null;
+    }>;
+
+    const row = rows[0];
+    if (!row) {
+      return snapshot;
+    }
+
+    snapshot.openOrders = Number(row.openOrders || 0);
+    snapshot.openOrderExposure = Number(row.openOrderExposure || 0);
+    snapshot.reservedOrderMargin = Number(row.reservedOrderMargin || 0);
+    return snapshot;
   }
 }

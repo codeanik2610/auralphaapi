@@ -863,14 +863,19 @@ export class InternalPositionsSyncService {
     const accountIdFilter = new Set(
       (request.accountIds || []).map((item) => String(item || '').trim()).filter(Boolean)
     );
-    const isInfraAllAccountsRequest =
+    const isInfraSystemAccountsRequest =
       requestedUserIds.length === 1 && requestedUserIds[0] === env.scheduler.systemUserId;
-    const accountGroups = isInfraAllAccountsRequest
-      ? this.groupInfraAccountsByOwner(
-          await this.brokerAccountRepository.getAllActiveBrokerAccounts(),
-          brokerKeyFilter,
-          accountIdFilter
-        )
+    const accountGroups = isInfraSystemAccountsRequest
+      ? [
+          {
+            userId: String(env.scheduler.systemUserId || '').trim(),
+            accounts: this.filterScopedAccounts(
+              await this.brokerAccountRepository.getActiveSystemBrokerAccounts(),
+              brokerKeyFilter,
+              accountIdFilter
+            ),
+          },
+        ]
       : await Promise.all(
           requestedUserIds.map(async (userId) => {
             const isSystemUser = userId === env.scheduler.systemUserId;

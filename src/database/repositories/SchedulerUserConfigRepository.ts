@@ -1,5 +1,6 @@
 import { Service } from 'typedi';
 import { Repository } from 'typeorm';
+import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { coreDataSource } from '../data-source';
 import { SchedulerUserConfig } from '../entities/SchedulerUserConfig';
 
@@ -44,6 +45,22 @@ export class SchedulerUserConfigRepository {
     });
   }
 
+  async listBySchedulerKey(schedulerKey: string): Promise<SchedulerUserConfig[]> {
+    const normalizedSchedulerKey = String(schedulerKey || '').trim();
+    if (!normalizedSchedulerKey) {
+      return [];
+    }
+
+    return this.repository.find({
+      where: {
+        schedulerKey: normalizedSchedulerKey,
+      },
+      order: {
+        updatedAt: 'DESC',
+      },
+    });
+  }
+
   async listLockedBefore(olderThan: Date): Promise<SchedulerUserConfig[]> {
     return this.repository
       .createQueryBuilder('config')
@@ -81,6 +98,25 @@ export class SchedulerUserConfigRepository {
 
     const merged = this.repository.merge(existing, payload);
     return this.repository.save(merged);
+  }
+
+  async updateManyBySchedulerKey(
+    schedulerKey: string,
+    payload: Partial<SchedulerUserConfig>
+  ): Promise<number> {
+    const normalizedSchedulerKey = String(schedulerKey || '').trim();
+    if (!normalizedSchedulerKey) {
+      return 0;
+    }
+
+    const result = await this.repository
+      .createQueryBuilder()
+      .update(SchedulerUserConfig)
+      .set(payload as QueryDeepPartialEntity<SchedulerUserConfig>)
+      .where('scheduler_key = :schedulerKey', { schedulerKey: normalizedSchedulerKey })
+      .execute();
+
+    return Number(result.affected || 0);
   }
 
   async tryAcquireRunLock(

@@ -10,6 +10,13 @@ import {
   RiskAlertsResponse,
   RiskAlertsSummary,
   RiskAlertItem,
+  RiskAccountsResponse,
+  RiskAccountItem,
+  RiskOrdersResponse,
+  RiskOrderItem,
+  RiskPositionsResponse,
+  RiskPositionItem,
+  RiskSnapshotDetailResponse,
   RiskControlsResponse,
   RiskControlItem,
   RiskScenariosResponse,
@@ -45,8 +52,27 @@ import { RiskScenarioRepository } from '../../database';
 import { RiskPolicyRepository } from '../../database';
 import { BrokerAccountRepository } from '../../database';
 import { FundsSnapshotRepository, FundsSnapshotRow } from '../../database/repositories/FundsSnapshotRepository';
-import { PositionReadModelRepository } from '../../database/repositories/PositionReadModelRepository';
+import {
+  PositionAccountFreshnessRow,
+  PositionReadModelRepository,
+} from '../../database/repositories/PositionReadModelRepository';
 import { ComputedRiskSnapshotPayload } from '../../database/repositories/RiskRepository';
+import {
+  ComputedRiskAccountSnapshotPayload,
+  RiskAccountSnapshotRepository,
+} from '../../database/repositories/RiskAccountSnapshotRepository';
+import {
+  OpenOrderSnapshotSourceRow,
+  OrdersSnapshotSourceRepository,
+} from '../../database/repositories/OrdersSnapshotSourceRepository';
+import {
+  ComputedRiskPositionSnapshotPayload,
+  RiskPositionSnapshotRepository,
+} from '../../database/repositories/RiskPositionSnapshotRepository';
+import {
+  ComputedRiskOrderSnapshotPayload,
+  RiskOrderSnapshotRepository,
+} from '../../database/repositories/RiskOrderSnapshotRepository';
 import { ComputedRiskAlertPayload } from '../../database/repositories/RiskAlertRepository';
 import { ComputedRiskControlPayload } from '../../database/repositories/RiskControlRepository';
 import { ComputedRiskScenarioPayload } from '../../database/repositories/RiskScenarioRepository';
@@ -54,6 +80,7 @@ import { OperationalEventService } from './OperationalEventService';
 import { BrokerRouteResolution } from '../../brokers/core/BrokerAccountRoutingService';
 import { getUtcDateRangeFromLocalDates } from '../utils/timezone';
 import { UserTimeZoneService } from './UserTimeZoneService';
+import { PortfolioService } from './PortfolioService';
 import {
   buildApiTimeContract,
   formatApiDisplayTime,
@@ -122,6 +149,8 @@ interface RiskThresholdProfile {
   concentrationWarnPct: number;
   concentrationCriticalPct: number;
   dailyLossLimitPct: number;
+  weeklyLossLimitPct: number;
+  monthlyLossLimitPct: number;
   maxLeverage: number;
   maxTotalAllocation: number;
   maxAvgLeverage: number;
@@ -133,9 +162,17 @@ interface RiskThresholdProfileInput {
   concentrationWarnPct?: number | null;
   concentrationCriticalPct?: number | null;
   dailyLossLimitPct?: number | null;
+  weeklyLossLimitPct?: number | null;
+  monthlyLossLimitPct?: number | null;
   maxLeverage?: number | null;
   maxTotalAllocation?: number | null;
   maxAvgLeverage?: number | null;
+}
+
+interface LossWindowUsage {
+  dailyUsagePct: number;
+  weeklyUsagePct: number;
+  monthlyUsagePct: number;
 }
 
 interface AccountRiskSnapshotInput {
@@ -143,8 +180,11 @@ interface AccountRiskSnapshotInput {
   brokerKey: string;
   accountName: string;
   fundsSnapshot: FundsSnapshotRow | null;
+  walletBalance: number | null;
+  futuresBalance: number | null;
   balance: number | null;
   positions: PositionRecord[];
+  positionsFreshness: PositionAccountFreshnessRow | null;
   thresholds: RiskThresholdProfile;
 }
 
@@ -163,8 +203,17 @@ interface PositionRiskEvaluation {
   notes: string[];
 }
 
+interface ComputedRiskOrderAccountSummary {
+  openOrders: number;
+  openOrderExposure: number;
+  reservedOrderMargin: number;
+}
+
 interface RiskComputationResult {
   snapshot: ComputedRiskSnapshotPayload;
+  accountSnapshots: ComputedRiskAccountSnapshotPayload[];
+  orderSnapshots: ComputedRiskOrderSnapshotPayload[];
+  positionSnapshots: ComputedRiskPositionSnapshotPayload[];
   alerts: ComputedRiskAlertPayload[];
   controls: ComputedRiskControlPayload[];
   scenarios: ComputedRiskScenarioPayload[];
@@ -182,6 +231,12 @@ interface RiskComputationResult {
   }>;
 }
 
+interface FundsBalanceBreakdown {
+  walletBalance: number | null;
+  futuresBalance: number | null;
+  trackedBalance: number | null;
+}
+
 @Service()
 export class RiskService {
   @Inject(() => RiskRepository)
@@ -189,6 +244,15 @@ export class RiskService {
 
   @Inject(() => RiskAlertRepository)
   private riskAlertRepository!: RiskAlertRepository;
+
+  @Inject(() => RiskAccountSnapshotRepository)
+  private riskAccountSnapshotRepository!: RiskAccountSnapshotRepository;
+
+  @Inject(() => RiskPositionSnapshotRepository)
+  private riskPositionSnapshotRepository!: RiskPositionSnapshotRepository;
+
+  @Inject(() => RiskOrderSnapshotRepository)
+  private riskOrderSnapshotRepository!: RiskOrderSnapshotRepository;
 
   @Inject(() => RiskControlRepository)
   private riskControlRepository!: RiskControlRepository;
@@ -208,11 +272,17 @@ export class RiskService {
   @Inject(() => PositionReadModelRepository)
   private positionReadModelRepository!: PositionReadModelRepository;
 
+  @Inject(() => OrdersSnapshotSourceRepository)
+  private ordersSnapshotSourceRepository!: OrdersSnapshotSourceRepository;
+
   @Inject(() => OperationalEventService)
   private operationalEventService!: OperationalEventService;
 
   @Inject(() => UserTimeZoneService)
   private userTimeZoneService!: UserTimeZoneService;
+
+  @Inject(() => PortfolioService)
+  private portfolioService!: PortfolioService;
 
   async getRiskSummary(userId: string): Promise<ApiSuccessResponse<RiskSummary>> {
     const snapshot = await this.riskRepository.getLatestSnapshot(userId);
@@ -227,12 +297,24 @@ export class RiskService {
     }
 
     return successResponse({
+      snapshotId: snapshot.id,
       portfolioRisk: snapshot.portfolioRisk ?? '--',
       breachedRules: snapshot.breachedRules,
       liquidationWatch: snapshot.liquidationWatch,
       capitalAtRisk: snapshot.capitalAtRisk,
+      denominatorBasis: snapshot.denominatorBasis ?? undefined,
+      portfolioEquity: snapshot.portfolioEquity,
+      grossExposure: snapshot.grossExposure,
+      netExposure: snapshot.netExposure,
+      longExposure: snapshot.longExposure,
+      shortExposure: snapshot.shortExposure,
+      openOrders: snapshot.openOrders,
+      openOrderExposure: snapshot.openOrderExposure,
+      reservedOrderMargin: snapshot.reservedOrderMargin,
       marginUsage: snapshot.marginUsage ?? '--',
       drawdownBudgetUsed: snapshot.drawdownBudgetUsed ?? '--',
+      weeklyDrawdownBudgetUsed: snapshot.weeklyDrawdownBudgetUsed ?? '--',
+      monthlyDrawdownBudgetUsed: snapshot.monthlyDrawdownBudgetUsed ?? '--',
       atRiskPositions: snapshot.atRiskPositions,
       ruleViolations: snapshot.ruleViolations,
       portfolioRiskScore: snapshot.portfolioRiskScore ?? '--',
@@ -246,6 +328,459 @@ export class RiskService {
       actionOne: snapshot.actionOne ?? '--',
       actionTwo: snapshot.actionTwo ?? '--',
       actionThree: snapshot.actionThree ?? '--',
+      fundsObservedAtIso: this.formatRawIso(snapshot.fundsObservedAt) || undefined,
+      positionsObservedAtIso: this.formatRawIso(snapshot.positionsObservedAt) || undefined,
+      ordersObservedAtIso: this.formatRawIso(snapshot.ordersObservedAt) || undefined,
+    });
+  }
+
+  async getRiskAccounts(userId: string): Promise<ApiSuccessResponse<RiskAccountsResponse>> {
+    const [snapshot, timeZone] = await Promise.all([
+      this.riskRepository.getLatestSnapshot(userId),
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+    ]);
+
+    if (!snapshot) {
+      return successResponse({
+        items: [],
+        total: 0,
+        time: buildApiTimeContract(timeZone),
+      });
+    }
+
+    const accountSnapshots = await this.riskAccountSnapshotRepository.listBySnapshotId(snapshot.id);
+
+    const items: RiskAccountItem[] = accountSnapshots.map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      brokerKey: item.brokerKey,
+      accountId: item.accountId,
+      accountName: item.accountName,
+      denominatorBasis: item.denominatorBasis ?? undefined,
+      walletBalance: item.walletBalance,
+      futuresBalance: item.futuresBalance,
+      trackedBalance: item.trackedBalance,
+      grossExposure: item.grossExposure,
+      netExposure: item.netExposure,
+      longExposure: item.longExposure,
+      shortExposure: item.shortExposure,
+      openOrders: item.openOrders,
+      openOrderExposure: item.openOrderExposure,
+      reservedOrderMargin: item.reservedOrderMargin,
+      marginUsagePct: item.marginUsagePct,
+      portfolioConcentrationPct: item.portfolioConcentrationPct,
+      dailyLossUsagePct: item.dailyLossUsagePct,
+      unrealizedPnl: item.unrealizedPnl,
+      openPositions: item.openPositions,
+      maxPositionLeverage: item.maxPositionLeverage,
+      closestLiquidationDistancePct: item.closestLiquidationDistancePct,
+      marginUsageWarnPct: item.marginUsageWarnPct,
+      marginUsageCriticalPct: item.marginUsageCriticalPct,
+      concentrationWarnPct: item.concentrationWarnPct,
+      concentrationCriticalPct: item.concentrationCriticalPct,
+      dailyLossLimitPct: item.dailyLossLimitPct,
+      weeklyLossLimitPct: item.weeklyLossLimitPct,
+      monthlyLossLimitPct: item.monthlyLossLimitPct,
+      maxLeverage: item.maxLeverage,
+      maxTotalAllocation: item.maxTotalAllocation,
+      maxAvgLeverage: item.maxAvgLeverage,
+      fundsObservedAt: this.formatDisplayTime(item.fundsObservedAt, timeZone) || null,
+      fundsObservedAtIso: this.formatRawIso(item.fundsObservedAt) || null,
+      positionsObservedAt: this.formatDisplayTime(item.positionsObservedAt, timeZone) || null,
+      positionsObservedAtIso: this.formatRawIso(item.positionsObservedAt) || null,
+      ordersObservedAt: this.formatDisplayTime(item.ordersObservedAt, timeZone) || null,
+      ordersObservedAtIso: this.formatRawIso(item.ordersObservedAt) || null,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
+
+    return successResponse({
+      items,
+      total: items.length,
+      snapshotId: snapshot.id,
+      denominatorBasis: snapshot.denominatorBasis ?? undefined,
+      portfolioEquity: snapshot.portfolioEquity,
+      grossExposure: snapshot.grossExposure,
+      netExposure: snapshot.netExposure,
+      longExposure: snapshot.longExposure,
+      shortExposure: snapshot.shortExposure,
+      openOrders: snapshot.openOrders,
+      openOrderExposure: snapshot.openOrderExposure,
+      reservedOrderMargin: snapshot.reservedOrderMargin,
+      fundsObservedAt: this.formatDisplayTime(snapshot.fundsObservedAt, timeZone) || null,
+      fundsObservedAtIso: this.formatRawIso(snapshot.fundsObservedAt) || null,
+      positionsObservedAt: this.formatDisplayTime(snapshot.positionsObservedAt, timeZone) || null,
+      positionsObservedAtIso: this.formatRawIso(snapshot.positionsObservedAt) || null,
+      ordersObservedAt: this.formatDisplayTime(snapshot.ordersObservedAt, timeZone) || null,
+      ordersObservedAtIso: this.formatRawIso(snapshot.ordersObservedAt) || null,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
+  async getRiskPositions(userId: string): Promise<ApiSuccessResponse<RiskPositionsResponse>> {
+    const [snapshot, timeZone] = await Promise.all([
+      this.riskRepository.getLatestSnapshot(userId),
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+    ]);
+
+    if (!snapshot) {
+      return successResponse({
+        items: [],
+        total: 0,
+        time: buildApiTimeContract(timeZone),
+      });
+    }
+
+    const positionSnapshots = await this.riskPositionSnapshotRepository.listBySnapshotId(snapshot.id);
+    const items: RiskPositionItem[] = positionSnapshots.map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      brokerKey: item.brokerKey,
+      accountId: item.accountId,
+      accountName: item.accountName,
+      positionId: item.positionId,
+      symbol: item.symbol,
+      side: item.side,
+      sideKey: item.sideKey,
+      status: item.status,
+      statusKey: item.statusKey,
+      quantity: item.quantity,
+      entryPrice: item.entryPrice,
+      currentPrice: item.currentPrice,
+      exposure: item.exposure,
+      unrealizedPnl: item.unrealizedPnl,
+      realizedPnl: item.realizedPnl,
+      leverage: item.leverage,
+      liquidationPrice: item.liquidationPrice,
+      liquidationDistancePct: item.liquidationDistancePct,
+      concentrationPct: item.concentrationPct,
+      riskState: item.riskState,
+      notes: Array.isArray(item.riskNotesJson) ? item.riskNotesJson : [],
+      positionOpenedAt: this.formatDisplayTime(item.positionOpenedAt, timeZone) || null,
+      positionOpenedAtIso: this.formatRawIso(item.positionOpenedAt) || null,
+      sourceUpdatedAt: this.formatDisplayTime(item.sourceUpdatedAt, timeZone) || null,
+      sourceUpdatedAtIso: this.formatRawIso(item.sourceUpdatedAt) || null,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
+
+    return successResponse({
+      items,
+      total: items.length,
+      snapshotId: snapshot.id,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
+  async getRiskOrders(userId: string): Promise<ApiSuccessResponse<RiskOrdersResponse>> {
+    const [snapshot, timeZone] = await Promise.all([
+      this.riskRepository.getLatestSnapshot(userId),
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+    ]);
+
+    if (!snapshot) {
+      return successResponse({
+        items: [],
+        total: 0,
+        time: buildApiTimeContract(timeZone),
+      });
+    }
+
+    const orderSnapshots = await this.riskOrderSnapshotRepository.listBySnapshotId(snapshot.id);
+    const items: RiskOrderItem[] = orderSnapshots.map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      brokerKey: item.brokerKey,
+      accountId: item.accountId,
+      accountName: item.accountName,
+      externalId: item.externalId,
+      orderId: item.orderId,
+      symbol: item.symbol,
+      side: item.side,
+      status: item.status,
+      orderType: item.orderType,
+      triggerType: item.triggerType,
+      quantity: item.quantity,
+      filledQuantity: item.filledQuantity,
+      remainingQuantity: item.remainingQuantity,
+      price: item.price,
+      orderPrice: item.orderPrice,
+      triggerPrice: item.triggerPrice,
+      filledPrice: item.filledPrice,
+      lastPrice: item.lastPrice,
+      stoplossPrice: item.stoplossPrice,
+      takeprofitPrice: item.takeprofitPrice,
+      leverage: item.leverage,
+      reduceOnly: item.reduceOnly,
+      snapshotStatusRank: item.snapshotStatusRank,
+      notional: item.notional,
+      reservedMargin: item.reservedMargin,
+      orderCreatedAt: this.formatDisplayTime(item.orderCreatedAt, timeZone) || null,
+      orderCreatedAtIso: this.formatRawIso(item.orderCreatedAt) || null,
+      orderUpdatedAt: this.formatDisplayTime(item.orderUpdatedAt, timeZone) || null,
+      orderUpdatedAtIso: this.formatRawIso(item.orderUpdatedAt) || null,
+      orderCanceledAt: this.formatDisplayTime(item.orderCanceledAt, timeZone) || null,
+      orderCanceledAtIso: this.formatRawIso(item.orderCanceledAt) || null,
+      firstSeenAt: this.formatDisplayTime(item.firstSeenAt, timeZone) || null,
+      firstSeenAtIso: this.formatRawIso(item.firstSeenAt) || null,
+      lastSeenAt: this.formatDisplayTime(item.lastSeenAt, timeZone) || null,
+      lastSeenAtIso: this.formatRawIso(item.lastSeenAt) || null,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
+
+    return successResponse({
+      items,
+      total: items.length,
+      snapshotId: snapshot.id,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
+  async getRiskSnapshotDetail(
+    userId: string,
+    snapshotId: string
+  ): Promise<ApiSuccessResponse<RiskSnapshotDetailResponse>> {
+    const [snapshot, timeZone] = await Promise.all([
+      this.riskRepository.getSnapshotById(userId, snapshotId),
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+    ]);
+
+    if (!snapshot) {
+      throw new NotFoundAppError('Risk snapshot not found');
+    }
+
+    const [
+      previousSnapshot,
+      accountSnapshots,
+      positionSnapshots,
+      orderSnapshots,
+      controlRows,
+      alertRows,
+      scenarioRows,
+    ] = await Promise.all([
+      this.riskRepository.getPreviousSnapshot(userId, snapshot),
+      this.riskAccountSnapshotRepository.listBySnapshotId(snapshot.id),
+      this.riskPositionSnapshotRepository.listBySnapshotId(snapshot.id),
+      this.riskOrderSnapshotRepository.listBySnapshotId(snapshot.id),
+      this.riskControlRepository.listBySnapshotId(userId, snapshot.id),
+      this.riskAlertRepository.listBySnapshotId(userId, snapshot.id),
+      this.riskScenarioRepository.listBySnapshotId(userId, snapshot.id),
+    ]);
+
+    const summary: RiskSummary = {
+      portfolioRisk: snapshot.portfolioRisk ?? '--',
+      breachedRules: snapshot.breachedRules,
+      liquidationWatch: snapshot.liquidationWatch,
+      capitalAtRisk: snapshot.capitalAtRisk,
+      denominatorBasis: snapshot.denominatorBasis ?? undefined,
+      portfolioEquity: snapshot.portfolioEquity,
+      grossExposure: snapshot.grossExposure,
+      netExposure: snapshot.netExposure,
+      longExposure: snapshot.longExposure,
+      shortExposure: snapshot.shortExposure,
+      openOrders: snapshot.openOrders,
+      openOrderExposure: snapshot.openOrderExposure,
+      reservedOrderMargin: snapshot.reservedOrderMargin,
+      marginUsage: snapshot.marginUsage ?? '--',
+      drawdownBudgetUsed: snapshot.drawdownBudgetUsed ?? '--',
+      weeklyDrawdownBudgetUsed: snapshot.weeklyDrawdownBudgetUsed ?? '--',
+      monthlyDrawdownBudgetUsed: snapshot.monthlyDrawdownBudgetUsed ?? '--',
+      atRiskPositions: snapshot.atRiskPositions,
+      ruleViolations: snapshot.ruleViolations,
+      portfolioRiskScore: snapshot.portfolioRiskScore ?? '--',
+      primaryConcern: snapshot.primaryConcern ?? '--',
+      riskByPosition: snapshot.riskByPosition ?? '--',
+      riskByStrategy: snapshot.riskByStrategy ?? '--',
+      riskByGuardrail: snapshot.riskByGuardrail ?? '--',
+      guardrailOne: snapshot.guardrailOne ?? '--',
+      guardrailTwo: snapshot.guardrailTwo ?? '--',
+      guardrailThree: snapshot.guardrailThree ?? '--',
+      actionOne: snapshot.actionOne ?? '--',
+      actionTwo: snapshot.actionTwo ?? '--',
+      actionThree: snapshot.actionThree ?? '--',
+      fundsObservedAtIso: this.formatRawIso(snapshot.fundsObservedAt) || undefined,
+      positionsObservedAtIso: this.formatRawIso(snapshot.positionsObservedAt) || undefined,
+      ordersObservedAtIso: this.formatRawIso(snapshot.ordersObservedAt) || undefined,
+    };
+
+    const accounts: RiskAccountItem[] = accountSnapshots.map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      brokerKey: item.brokerKey,
+      accountId: item.accountId,
+      accountName: item.accountName,
+      denominatorBasis: item.denominatorBasis ?? undefined,
+      walletBalance: item.walletBalance,
+      futuresBalance: item.futuresBalance,
+      trackedBalance: item.trackedBalance,
+      grossExposure: item.grossExposure,
+      netExposure: item.netExposure,
+      longExposure: item.longExposure,
+      shortExposure: item.shortExposure,
+      openOrders: item.openOrders,
+      openOrderExposure: item.openOrderExposure,
+      reservedOrderMargin: item.reservedOrderMargin,
+      marginUsagePct: item.marginUsagePct,
+      portfolioConcentrationPct: item.portfolioConcentrationPct,
+      dailyLossUsagePct: item.dailyLossUsagePct,
+      unrealizedPnl: item.unrealizedPnl,
+      openPositions: item.openPositions,
+      maxPositionLeverage: item.maxPositionLeverage,
+      closestLiquidationDistancePct: item.closestLiquidationDistancePct,
+      marginUsageWarnPct: item.marginUsageWarnPct,
+      marginUsageCriticalPct: item.marginUsageCriticalPct,
+      concentrationWarnPct: item.concentrationWarnPct,
+      concentrationCriticalPct: item.concentrationCriticalPct,
+      dailyLossLimitPct: item.dailyLossLimitPct,
+      weeklyLossLimitPct: item.weeklyLossLimitPct,
+      monthlyLossLimitPct: item.monthlyLossLimitPct,
+      maxLeverage: item.maxLeverage,
+      maxTotalAllocation: item.maxTotalAllocation,
+      maxAvgLeverage: item.maxAvgLeverage,
+      fundsObservedAt: this.formatDisplayTime(item.fundsObservedAt, timeZone) || null,
+      fundsObservedAtIso: this.formatRawIso(item.fundsObservedAt) || null,
+      positionsObservedAt: this.formatDisplayTime(item.positionsObservedAt, timeZone) || null,
+      positionsObservedAtIso: this.formatRawIso(item.positionsObservedAt) || null,
+      ordersObservedAt: this.formatDisplayTime(item.ordersObservedAt, timeZone) || null,
+      ordersObservedAtIso: this.formatRawIso(item.ordersObservedAt) || null,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
+
+    const positions: RiskPositionItem[] = positionSnapshots.map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      brokerKey: item.brokerKey,
+      accountId: item.accountId,
+      accountName: item.accountName,
+      positionId: item.positionId,
+      symbol: item.symbol,
+      side: item.side,
+      sideKey: item.sideKey,
+      status: item.status,
+      statusKey: item.statusKey,
+      quantity: item.quantity,
+      entryPrice: item.entryPrice,
+      currentPrice: item.currentPrice,
+      exposure: item.exposure,
+      unrealizedPnl: item.unrealizedPnl,
+      realizedPnl: item.realizedPnl,
+      leverage: item.leverage,
+      liquidationPrice: item.liquidationPrice,
+      liquidationDistancePct: item.liquidationDistancePct,
+      concentrationPct: item.concentrationPct,
+      riskState: item.riskState,
+      notes: Array.isArray(item.riskNotesJson) ? item.riskNotesJson : [],
+      positionOpenedAt: this.formatDisplayTime(item.positionOpenedAt, timeZone) || null,
+      positionOpenedAtIso: this.formatRawIso(item.positionOpenedAt) || null,
+      sourceUpdatedAt: this.formatDisplayTime(item.sourceUpdatedAt, timeZone) || null,
+      sourceUpdatedAtIso: this.formatRawIso(item.sourceUpdatedAt) || null,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
+
+    const orders: RiskOrderItem[] = orderSnapshots.map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      brokerKey: item.brokerKey,
+      accountId: item.accountId,
+      accountName: item.accountName,
+      externalId: item.externalId,
+      orderId: item.orderId,
+      symbol: item.symbol,
+      side: item.side,
+      status: item.status,
+      orderType: item.orderType,
+      triggerType: item.triggerType,
+      quantity: item.quantity,
+      filledQuantity: item.filledQuantity,
+      remainingQuantity: item.remainingQuantity,
+      price: item.price,
+      orderPrice: item.orderPrice,
+      triggerPrice: item.triggerPrice,
+      filledPrice: item.filledPrice,
+      lastPrice: item.lastPrice,
+      stoplossPrice: item.stoplossPrice,
+      takeprofitPrice: item.takeprofitPrice,
+      leverage: item.leverage,
+      reduceOnly: item.reduceOnly,
+      snapshotStatusRank: item.snapshotStatusRank,
+      notional: item.notional,
+      reservedMargin: item.reservedMargin,
+      orderCreatedAt: this.formatDisplayTime(item.orderCreatedAt, timeZone) || null,
+      orderCreatedAtIso: this.formatRawIso(item.orderCreatedAt) || null,
+      orderUpdatedAt: this.formatDisplayTime(item.orderUpdatedAt, timeZone) || null,
+      orderUpdatedAtIso: this.formatRawIso(item.orderUpdatedAt) || null,
+      orderCanceledAt: this.formatDisplayTime(item.orderCanceledAt, timeZone) || null,
+      orderCanceledAtIso: this.formatRawIso(item.orderCanceledAt) || null,
+      firstSeenAt: this.formatDisplayTime(item.firstSeenAt, timeZone) || null,
+      firstSeenAtIso: this.formatRawIso(item.firstSeenAt) || null,
+      lastSeenAt: this.formatDisplayTime(item.lastSeenAt, timeZone) || null,
+      lastSeenAtIso: this.formatRawIso(item.lastSeenAt) || null,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
+
+    const controls: RiskControlItem[] = controlRows.map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      bucket: item.bucket,
+      exposure: item.exposure,
+      threshold: item.threshold,
+      status: item.status,
+      action: item.action,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || String(item.createdAt),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
+
+    const alerts: RiskAlertItem[] = alertRows.map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      severity: item.severity,
+      message: item.message,
+      symbol: item.symbol,
+      channel: item.channel ?? undefined,
+      status: item.status ?? undefined,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || String(item.createdAt),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
+
+    const scenarios: RiskScenarioItem[] = scenarioRows.map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      scenario: item.scenario,
+      impact: item.impact,
+      commentary: item.commentary,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || String(item.createdAt),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
+
+    return successResponse({
+      snapshotId: snapshot.id,
+      createdAt: this.formatDisplayTime(snapshot.createdAt, timeZone) || snapshot.createdAt.toISOString(),
+      createdAtIso: this.formatRawIso(snapshot.createdAt) || undefined,
+      previousSnapshotId: previousSnapshot?.id || undefined,
+      previousSnapshotCreatedAt:
+        this.formatDisplayTime(previousSnapshot?.createdAt || null, timeZone) || null,
+      previousSnapshotCreatedAtIso:
+        this.formatRawIso(previousSnapshot?.createdAt || null) || null,
+      summary,
+      accounts,
+      positions,
+      orders,
+      controls,
+      alerts,
+      scenarios,
+      counts: {
+        accounts: accounts.length,
+        positions: positions.length,
+        orders: orders.length,
+        controls: controls.length,
+        alerts: alerts.length,
+        scenarios: scenarios.length,
+      },
+      time: buildApiTimeContract(timeZone),
     });
   }
 
@@ -908,7 +1443,29 @@ export class RiskService {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
     const computed = await this.buildComputedRiskSnapshot(userId);
     const snapshot = await this.riskRepository.createComputedSnapshot(userId, computed.snapshot);
-    const [controlsCreated, alertsCreated, scenariosCreated] = await Promise.all([
+    const [
+      accountSnapshotsCreated,
+      orderSnapshotsCreated,
+      positionSnapshotsCreated,
+      controlsCreated,
+      alertsCreated,
+      scenariosCreated,
+    ] = await Promise.all([
+      this.riskAccountSnapshotRepository.createComputedAccountSnapshots(
+        userId,
+        snapshot.id,
+        computed.accountSnapshots
+      ),
+      this.riskOrderSnapshotRepository.createComputedOrderSnapshots(
+        userId,
+        snapshot.id,
+        computed.orderSnapshots
+      ),
+      this.riskPositionSnapshotRepository.createComputedPositionSnapshots(
+        userId,
+        snapshot.id,
+        computed.positionSnapshots
+      ),
       this.riskControlRepository.createComputedControls(userId, snapshot.id, computed.controls),
       this.riskAlertRepository.createComputedAlerts(userId, snapshot.id, computed.alerts),
       this.riskScenarioRepository.createComputedScenarios(userId, snapshot.id, computed.scenarios),
@@ -922,7 +1479,7 @@ export class RiskService {
       stream: 'Controls',
       referenceId: snapshot.id,
       related: computed.snapshot.portfolioRisk,
-      description: `Persisted risk snapshot with ${controlsCreated} controls, ${alertsCreated} alerts, and ${scenariosCreated} scenarios.`,
+      description: `Persisted risk snapshot with ${accountSnapshotsCreated} account rows, ${orderSnapshotsCreated} order rows, ${positionSnapshotsCreated} position rows, ${controlsCreated} controls, ${alertsCreated} alerts, and ${scenariosCreated} scenarios.`,
     });
 
     return successResponse({
@@ -932,6 +1489,7 @@ export class RiskService {
       equity: computed.equity,
       snapshotId: snapshot.id,
       portfolioRisk: computed.snapshot.portfolioRisk,
+      orderSnapshotsCreated,
       controlsCreated,
       alertsCreated,
       scenariosCreated,
@@ -959,6 +1517,7 @@ export class RiskService {
     let succeeded = 0;
     const failures: Array<{ userId: string; error: string }> = [];
     let snapshotsCreated = 0;
+    let orderSnapshotsCreated = 0;
     let controlsCreated = 0;
     let alertsCreated = 0;
     let scenariosCreated = 0;
@@ -970,6 +1529,7 @@ export class RiskService {
         if (response.data.snapshotId) {
           snapshotsCreated += 1;
         }
+        orderSnapshotsCreated += Number(response.data.orderSnapshotsCreated || 0);
         controlsCreated += Number(response.data.controlsCreated || 0);
         alertsCreated += Number(response.data.alertsCreated || 0);
         scenariosCreated += Number(response.data.scenariosCreated || 0);
@@ -1000,6 +1560,7 @@ export class RiskService {
       succeeded,
       failed: failures.length,
       snapshotsCreated,
+      orderSnapshotsCreated,
       controlsCreated,
       alertsCreated,
       scenariosCreated,
@@ -1039,8 +1600,23 @@ export class RiskService {
     }
     if (activePolicy.maxOrderAllocation && input.orderPrice && input.quantity) {
       const notional = input.orderPrice * input.quantity;
-      if (notional > activePolicy.maxOrderAllocation) {
-        breaches.push('Order allocation exceeds max');
+      const fundsSnapshot =
+        route.brokerKey && route.accountId
+          ? await this.fundsSnapshotRepository.getLatestSnapshot(
+              userId,
+              route.brokerKey,
+              route.accountId
+            )
+          : null;
+      const balance = this.extractFundsBalanceValue(fundsSnapshot);
+      const allocationPct =
+        balance && balance > 0 ? (Math.abs(notional) / balance) * 100 : null;
+      if (allocationPct !== null && allocationPct > activePolicy.maxOrderAllocation) {
+        breaches.push(
+          `Order allocation exceeds max (${this.formatPercent(allocationPct)} vs ${this.formatPercent(
+            activePolicy.maxOrderAllocation
+          )} of account balance)`
+        );
       }
     }
 
@@ -1065,9 +1641,17 @@ export class RiskService {
     );
 
     const accountIds = uniqueAccounts.map((account) => String(account.id || '').trim()).filter(Boolean);
-    const livePositionsByAccount = accountIds.length
-      ? await this.positionReadModelRepository.listLivePositionsForAccounts(userId, accountIds)
-      : new Map<string, PositionRecord[]>();
+    const [livePositionsByAccount, positionFreshnessByAccount, openOrdersByAccount] = accountIds.length
+      ? await Promise.all([
+          this.positionReadModelRepository.listLivePositionsForAccounts(userId, accountIds),
+          this.positionReadModelRepository.getAccountFreshness(userId, accountIds),
+          this.ordersSnapshotSourceRepository.listOpenOrdersForAccounts(userId, accountIds),
+        ])
+      : [
+          new Map<string, PositionRecord[]>(),
+          new Map<string, PositionAccountFreshnessRow>(),
+          new Map<string, OpenOrderSnapshotSourceRow[]>(),
+        ];
 
     const brokerPolicyCache = new Map<string, RiskThresholdProfile>();
     const accountInputs = await Promise.all(
@@ -1087,14 +1671,18 @@ export class RiskService {
           account.brokerKey,
           account.id
         );
-        const balance = this.extractFundsBalanceValue(fundsSnapshot);
+        const fundsBreakdown = this.extractFundsBalanceBreakdown(fundsSnapshot);
         return {
           accountId: String(account.id || '').trim(),
           brokerKey,
           accountName: String(account.accountName || account.accountKey || account.id || '--').trim(),
           fundsSnapshot,
-          balance,
+          walletBalance: fundsBreakdown.walletBalance,
+          futuresBalance: fundsBreakdown.futuresBalance,
+          balance: fundsBreakdown.trackedBalance,
           positions: livePositionsByAccount.get(String(account.id || '').trim()) || [],
+          positionsFreshness:
+            positionFreshnessByAccount.get(String(account.id || '').trim()) || null,
           thresholds: brokerPolicyCache.get(brokerKey) || this.buildRiskThresholdProfile(null),
         } satisfies AccountRiskSnapshotInput;
       })
@@ -1108,12 +1696,28 @@ export class RiskService {
 
     const accountExposureTotals = new Map<string, number>();
     const brokerExposureTotals = new Map<string, number>();
+    const accountLongExposureTotals = new Map<string, number>();
+    const accountShortExposureTotals = new Map<string, number>();
+    const accountNetExposureTotals = new Map<string, number>();
     const positionEvaluations = accountInputs.flatMap((account) => {
       const totalForAccount = account.positions.reduce(
         (sum, position) => sum + this.resolvePositionExposure(position),
         0
       );
+      const longExposure = account.positions.reduce((sum, position) => {
+        return this.resolvePositionSideKey(position) === 'long'
+          ? sum + this.resolvePositionExposure(position)
+          : sum;
+      }, 0);
+      const shortExposure = account.positions.reduce((sum, position) => {
+        return this.resolvePositionSideKey(position) === 'short'
+          ? sum + this.resolvePositionExposure(position)
+          : sum;
+      }, 0);
       accountExposureTotals.set(account.accountId, totalForAccount);
+      accountLongExposureTotals.set(account.accountId, longExposure);
+      accountShortExposureTotals.set(account.accountId, shortExposure);
+      accountNetExposureTotals.set(account.accountId, longExposure - shortExposure);
       brokerExposureTotals.set(
         account.brokerKey,
         (brokerExposureTotals.get(account.brokerKey) || 0) + totalForAccount
@@ -1127,6 +1731,15 @@ export class RiskService {
     const capitalAtRisk = this.roundNumber(
       positionEvaluations.reduce((sum, evaluation) => sum + evaluation.exposure, 0)
     );
+    const longExposure = this.roundNumber(
+      Array.from(accountLongExposureTotals.values()).reduce((sum, value) => sum + value, 0)
+    );
+    const shortExposure = this.roundNumber(
+      Array.from(accountShortExposureTotals.values()).reduce((sum, value) => sum + value, 0)
+    );
+    const netExposure = this.roundNumber(
+      Array.from(accountNetExposureTotals.values()).reduce((sum, value) => sum + value, 0)
+    );
     const marginUsagePct = equity > 0 ? (capitalAtRisk / equity) * 100 : 0;
     const unrealizedLoss = Math.abs(
       positionEvaluations.reduce((sum, evaluation) => {
@@ -1135,6 +1748,7 @@ export class RiskService {
       }, 0)
     );
     const drawdownUsagePct = equity > 0 ? (unrealizedLoss / equity) * 100 : 0;
+    const lossWindowUsage = await this.computeLossWindowUsage(userId, drawdownUsagePct, equity);
     const averageLeverage = this.average(
       positionEvaluations
         .map((evaluation) => evaluation.leverage)
@@ -1150,7 +1764,7 @@ export class RiskService {
       equity,
       capitalAtRisk,
       marginUsagePct,
-      drawdownUsagePct,
+      lossWindowUsage,
       averageLeverage,
       brokerExposureTotals,
       accountExposureTotals,
@@ -1172,7 +1786,11 @@ export class RiskService {
     ).length;
     const riskScore = this.computeRiskScore({
       marginUsagePct,
-      drawdownUsagePct,
+      lossUsagePct: Math.max(
+        lossWindowUsage.dailyUsagePct,
+        lossWindowUsage.weeklyUsagePct,
+        lossWindowUsage.monthlyUsagePct
+      ),
       liquidationWatch,
       criticalControls: criticalControls.length,
       watchControls: watchControls.length,
@@ -1182,6 +1800,161 @@ export class RiskService {
     const primaryConcern = this.resolvePrimaryConcern(criticalControls, watchControls, alerts, equity, livePositionCount);
     const topHolding = this.resolveTopHolding(positionEvaluations, equity);
     const topBroker = this.resolveTopBroker(brokerExposureTotals, capitalAtRisk);
+    const positionEvaluationsById = new Map(
+      positionEvaluations.map((evaluation) => [evaluation.positionId, evaluation] as const)
+    );
+    const {
+      orderSnapshots,
+      observedAtByAccount: ordersObservedAtByAccount,
+      summaryByAccount: orderSummaryByAccount,
+      latestObservedAt: ordersObservedAt,
+    } = this.buildComputedRiskOrderSnapshots(accountInputs, openOrdersByAccount);
+    const portfolioOpenOrders = Array.from(orderSummaryByAccount.values()).reduce(
+      (sum, item) => sum + item.openOrders,
+      0
+    );
+    const portfolioOpenOrderExposure = this.roundNumber(
+      Array.from(orderSummaryByAccount.values()).reduce(
+        (sum, item) => sum + item.openOrderExposure,
+        0
+      ),
+      2
+    );
+    const portfolioReservedOrderMargin = this.roundNumber(
+      Array.from(orderSummaryByAccount.values()).reduce(
+        (sum, item) => sum + item.reservedOrderMargin,
+        0
+      ),
+      2
+    );
+    const accountSnapshots = accountInputs.map((account) => {
+      const grossExposure = this.roundNumber(accountExposureTotals.get(account.accountId) || 0);
+      const accountLongExposure = this.roundNumber(accountLongExposureTotals.get(account.accountId) || 0);
+      const accountShortExposure = this.roundNumber(accountShortExposureTotals.get(account.accountId) || 0);
+      const accountNetExposure = this.roundNumber(accountNetExposureTotals.get(account.accountId) || 0);
+      const trackedBalance = account.balance;
+      const marginUsagePctForAccount =
+        trackedBalance && trackedBalance > 0 ? (grossExposure / trackedBalance) * 100 : 0;
+      const portfolioConcentrationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
+      const unrealizedPnl = this.roundNumber(
+        account.positions.reduce((sum, position) => {
+          return sum + this.toFiniteNumber(position.positionSummary?.unrealizedPnl ?? position.unrealized_pnl, 0);
+        }, 0),
+        2
+      );
+      const dailyLossUsagePct =
+        trackedBalance && trackedBalance > 0
+          ? (Math.max(0, -unrealizedPnl) / trackedBalance) * 100
+          : 0;
+      const maxPositionLeverage = this.maxNumber(
+        account.positions.map((position) =>
+          this.toFiniteNumber(position.positionSummary?.leverage ?? position.leverage, null)
+        )
+      );
+      const closestLiquidationDistancePct = this.minNumber(
+        account.positions.map((position) => this.resolveLiquidationDistancePct(position))
+      );
+      const fundsObservedAt = this.resolveFundsObservedAt(account.fundsSnapshot);
+      const positionsObservedAt = account.positionsFreshness?.observedAt || null;
+      const accountOrdersObservedAt = ordersObservedAtByAccount.get(account.accountId) || null;
+      const orderSummary = orderSummaryByAccount.get(account.accountId) || {
+        openOrders: 0,
+        openOrderExposure: 0,
+        reservedOrderMargin: 0,
+      };
+
+      return {
+        brokerKey: account.brokerKey,
+        accountId: account.accountId,
+        accountName: account.accountName,
+        denominatorBasis: 'tracked_balance',
+        walletBalance: account.walletBalance,
+        futuresBalance: account.futuresBalance,
+        trackedBalance,
+        grossExposure,
+        netExposure: accountNetExposure,
+        longExposure: accountLongExposure,
+        shortExposure: accountShortExposure,
+        openOrders: orderSummary.openOrders,
+        openOrderExposure: orderSummary.openOrderExposure,
+        reservedOrderMargin: orderSummary.reservedOrderMargin,
+        marginUsagePct: this.roundNumber(marginUsagePctForAccount, 2),
+        portfolioConcentrationPct: this.roundNumber(portfolioConcentrationPct, 2),
+        dailyLossUsagePct: this.roundNumber(dailyLossUsagePct, 2),
+        unrealizedPnl,
+        openPositions: account.positionsFreshness?.openPositions ?? account.positions.length,
+        maxPositionLeverage,
+        closestLiquidationDistancePct:
+          closestLiquidationDistancePct === null
+            ? null
+            : this.roundNumber(closestLiquidationDistancePct, 2),
+        marginUsageWarnPct: account.thresholds.marginUsageWarnPct,
+        marginUsageCriticalPct: account.thresholds.marginUsageCriticalPct,
+        concentrationWarnPct: account.thresholds.concentrationWarnPct,
+        concentrationCriticalPct: account.thresholds.concentrationCriticalPct,
+        dailyLossLimitPct: account.thresholds.dailyLossLimitPct,
+        weeklyLossLimitPct: account.thresholds.weeklyLossLimitPct,
+        monthlyLossLimitPct: account.thresholds.monthlyLossLimitPct,
+        maxLeverage: account.thresholds.maxLeverage,
+        maxTotalAllocation: account.thresholds.maxTotalAllocation,
+        maxAvgLeverage: account.thresholds.maxAvgLeverage,
+        fundsObservedAt,
+        positionsObservedAt,
+        ordersObservedAt: accountOrdersObservedAt,
+      } satisfies ComputedRiskAccountSnapshotPayload;
+    });
+    const positionSnapshots = accountInputs.flatMap((account) =>
+      account.positions.map((position) => {
+        const positionId =
+          String(position.id || position.externalId || position.external_id || '').trim() ||
+          `${account.accountId}-${this.resolvePositionSymbol(position)}`;
+        const evaluation = positionEvaluationsById.get(positionId);
+        const summary = position.positionSummary;
+        return {
+          brokerKey: account.brokerKey,
+          accountId: account.accountId,
+          accountName: account.accountName,
+          positionId,
+          symbol: this.resolvePositionSymbol(position),
+          side: this.readNullableString(summary?.side ?? position.side),
+          sideKey: this.readNullableString(summary?.sideKey ?? position.sideKey),
+          status: this.readNullableString(summary?.status ?? position.status),
+          statusKey: this.readNullableString(summary?.statusKey ?? position.statusKey),
+          quantity: this.toFiniteNumber(summary?.quantity ?? position.quantity, null),
+          entryPrice: this.toFiniteNumber(summary?.entryPrice ?? position.entry_price, null),
+          currentPrice: this.toFiniteNumber(summary?.currentPrice ?? position.current_price, null),
+          exposure: this.roundNumber(evaluation?.exposure ?? this.resolvePositionExposure(position), 2),
+          unrealizedPnl: this.toFiniteNumber(summary?.unrealizedPnl ?? position.unrealized_pnl, null),
+          realizedPnl: this.toFiniteNumber(summary?.realizedPnl ?? position.realized_pnl ?? position.realized, null),
+          leverage: this.toFiniteNumber(summary?.leverage ?? position.leverage, null),
+          liquidationPrice: this.toFiniteNumber(summary?.liquidationPrice ?? position.liquidation_price, null),
+          liquidationDistancePct:
+            evaluation?.liquidationDistancePct === null || evaluation?.liquidationDistancePct === undefined
+              ? this.resolveLiquidationDistancePct(position)
+              : this.roundNumber(evaluation.liquidationDistancePct, 2),
+          concentrationPct:
+            evaluation?.concentrationPct === null || evaluation?.concentrationPct === undefined
+              ? equity > 0
+                ? this.roundNumber((this.resolvePositionExposure(position) / equity) * 100, 2)
+                : 0
+              : this.roundNumber(evaluation.concentrationPct, 2),
+          riskState: evaluation ? this.resolveWorstRiskState(evaluation.statuses) : 'ok',
+          riskNotesJson: evaluation?.notes?.length ? evaluation.notes : [],
+          positionOpenedAt: this.parseDateLike(
+            summary?.createdAt ?? position.created_at ?? position.first_seen_at
+          ),
+          sourceUpdatedAt: this.parseDateLike(
+            position.last_seen_at ?? summary?.updatedAt ?? position.updated_at
+          ),
+        } satisfies ComputedRiskPositionSnapshotPayload;
+      })
+    );
+    const fundsObservedAt = this.resolveLatestDate(
+      accountSnapshots.map((account) => account.fundsObservedAt)
+    );
+    const positionsObservedAt = this.resolveLatestDate(
+      accountSnapshots.map((account) => account.positionsObservedAt)
+    );
 
     return {
       snapshot: {
@@ -1189,8 +1962,19 @@ export class RiskService {
         breachedRules: criticalControls.length,
         liquidationWatch,
         capitalAtRisk,
+        denominatorBasis: 'tracked_balance',
+        portfolioEquity: equity,
+        grossExposure: capitalAtRisk,
+        netExposure,
+        longExposure,
+        shortExposure,
+        openOrders: portfolioOpenOrders,
+        openOrderExposure: portfolioOpenOrderExposure,
+        reservedOrderMargin: portfolioReservedOrderMargin,
         marginUsage: this.formatPercent(marginUsagePct),
-        drawdownBudgetUsed: this.formatPercent(drawdownUsagePct),
+        drawdownBudgetUsed: this.formatPercent(lossWindowUsage.dailyUsagePct),
+        weeklyDrawdownBudgetUsed: this.formatPercent(lossWindowUsage.weeklyUsagePct),
+        monthlyDrawdownBudgetUsed: this.formatPercent(lossWindowUsage.monthlyUsagePct),
         atRiskPositions,
         ruleViolations: criticalControls.length + watchControls.length,
         portfolioRiskScore: `${riskScore}/100`,
@@ -1213,7 +1997,7 @@ export class RiskService {
           'Funds and positions remain snapshot-backed, not broker-live.',
         guardrailThree:
           controls[2]?.action ||
-          'Weekly and monthly loss windows are still unavailable in the persisted contract.',
+          'Weekly and monthly loss windows are now backed by persisted closed-position activity.',
         actionOne:
           criticalControls[0]?.action ||
           watchControls[0]?.action ||
@@ -1224,7 +2008,13 @@ export class RiskService {
         actionThree:
           scenarios[0]?.commentary ||
           'Use Risk Center scenario review to pressure-test the current posture.',
+        fundsObservedAt,
+        positionsObservedAt,
+        ordersObservedAt,
       },
+      accountSnapshots,
+      orderSnapshots,
+      positionSnapshots,
       alerts,
       controls,
       scenarios,
@@ -1247,6 +2037,56 @@ export class RiskService {
     };
   }
 
+  private buildComputedRiskOrderSnapshots(
+    accounts: AccountRiskSnapshotInput[],
+    openOrdersByAccount: Map<string, OpenOrderSnapshotSourceRow[]>
+  ): {
+    orderSnapshots: ComputedRiskOrderSnapshotPayload[];
+    observedAtByAccount: Map<string, Date | null>;
+    summaryByAccount: Map<string, ComputedRiskOrderAccountSummary>;
+    latestObservedAt: Date | null;
+  } {
+    const observedAtByAccount = new Map<string, Date | null>();
+    const summaryByAccount = new Map<string, ComputedRiskOrderAccountSummary>();
+    const orderSnapshots = accounts.flatMap((account) => {
+      const sourceRows = openOrdersByAccount.get(account.accountId) || [];
+      const observedAt = this.resolveLatestDate(
+        sourceRows.map((row) => row.lastSeenAt || row.firstSeenAt)
+      );
+      observedAtByAccount.set(account.accountId, observedAt);
+      const accountOrderSnapshots = sourceRows.map((row) => this.mapOpenOrderSnapshot(account, row));
+      summaryByAccount.set(account.accountId, {
+        openOrders: sourceRows.length,
+        openOrderExposure: this.roundNumber(
+          accountOrderSnapshots.reduce((sum, item) => {
+            if (item.reduceOnly) {
+              return sum;
+            }
+            return sum + Math.abs(item.notional || 0);
+          }, 0),
+          2
+        ),
+        reservedOrderMargin: this.roundNumber(
+          accountOrderSnapshots.reduce((sum, item) => {
+            if (item.reduceOnly) {
+              return sum;
+            }
+            return sum + Math.abs(item.reservedMargin || 0);
+          }, 0),
+          2
+        ),
+      });
+      return accountOrderSnapshots;
+    });
+
+    return {
+      orderSnapshots,
+      observedAtByAccount,
+      summaryByAccount,
+      latestObservedAt: this.resolveLatestDate(Array.from(observedAtByAccount.values())),
+    };
+  }
+
   private buildRiskThresholdProfile(
     policy: RiskThresholdProfileInput | null | undefined
   ): RiskThresholdProfile {
@@ -1256,6 +2096,8 @@ export class RiskService {
       concentrationWarnPct: this.toFiniteNumber(policy?.concentrationWarnPct, 30),
       concentrationCriticalPct: this.toFiniteNumber(policy?.concentrationCriticalPct, 45),
       dailyLossLimitPct: this.toFiniteNumber(policy?.dailyLossLimitPct, 5),
+      weeklyLossLimitPct: this.toFiniteNumber(policy?.weeklyLossLimitPct, 12),
+      monthlyLossLimitPct: this.toFiniteNumber(policy?.monthlyLossLimitPct, 20),
       maxLeverage: this.toFiniteNumber(policy?.maxLeverage, 5),
       maxTotalAllocation: this.toFiniteNumber(policy?.maxTotalAllocation, 80),
       maxAvgLeverage: this.toFiniteNumber(policy?.maxAvgLeverage, 4),
@@ -1267,7 +2109,7 @@ export class RiskService {
     equity: number,
     capitalAtRisk: number,
     marginUsagePct: number,
-    drawdownUsagePct: number,
+    lossWindowUsage: LossWindowUsage,
     averageLeverage: number | null,
     brokerExposureTotals: Map<string, number>,
     accountExposureTotals: Map<string, number>,
@@ -1295,15 +2137,50 @@ export class RiskService {
 
     controls.push({
       bucket: 'Daily drawdown usage',
-      exposure: this.formatPercent(drawdownUsagePct),
+      exposure: this.formatPercent(lossWindowUsage.dailyUsagePct),
       threshold: `Limit ${this.formatPercent(globalThresholds.dailyLossLimitPct)}`,
-      status: this.resolveDailyLossState(drawdownUsagePct, globalThresholds.dailyLossLimitPct),
+      status: this.resolveLossWindowState(
+        lossWindowUsage.dailyUsagePct,
+        globalThresholds.dailyLossLimitPct
+      ),
       action:
-        drawdownUsagePct >= globalThresholds.dailyLossLimitPct
+        lossWindowUsage.dailyUsagePct >= globalThresholds.dailyLossLimitPct
           ? 'De-risk open positions or tighten losses before the daily budget is exhausted.'
-          : drawdownUsagePct >= globalThresholds.dailyLossLimitPct * 0.8
+          : lossWindowUsage.dailyUsagePct >= globalThresholds.dailyLossLimitPct * 0.8
             ? 'Watch daily drawdown closely; one more adverse move could hit the limit.'
             : 'Daily drawdown usage remains within the configured budget.',
+    });
+
+    controls.push({
+      bucket: 'Weekly loss usage',
+      exposure: this.formatPercent(lossWindowUsage.weeklyUsagePct),
+      threshold: `Limit ${this.formatPercent(globalThresholds.weeklyLossLimitPct)}`,
+      status: this.resolveLossWindowState(
+        lossWindowUsage.weeklyUsagePct,
+        globalThresholds.weeklyLossLimitPct
+      ),
+      action:
+        lossWindowUsage.weeklyUsagePct >= globalThresholds.weeklyLossLimitPct
+          ? 'Trailing 7-day realized losses have exhausted the weekly budget. Reduce risk and review recent closed-trade activity before adding exposure.'
+          : lossWindowUsage.weeklyUsagePct >= globalThresholds.weeklyLossLimitPct * 0.8
+            ? 'Weekly loss usage is nearing its limit. Review the last 7 days of realized losses before scaling up.'
+            : 'Weekly loss usage remains within the configured budget.',
+    });
+
+    controls.push({
+      bucket: 'Monthly loss usage',
+      exposure: this.formatPercent(lossWindowUsage.monthlyUsagePct),
+      threshold: `Limit ${this.formatPercent(globalThresholds.monthlyLossLimitPct)}`,
+      status: this.resolveLossWindowState(
+        lossWindowUsage.monthlyUsagePct,
+        globalThresholds.monthlyLossLimitPct
+      ),
+      action:
+        lossWindowUsage.monthlyUsagePct >= globalThresholds.monthlyLossLimitPct
+          ? 'Trailing 30-day realized losses have exhausted the monthly budget. Pause new risk and review strategy quality before re-entering.'
+          : lossWindowUsage.monthlyUsagePct >= globalThresholds.monthlyLossLimitPct * 0.8
+            ? 'Monthly loss usage is approaching its limit. Inspect the last 30 days of realized losses before increasing risk.'
+            : 'Monthly loss usage remains within the configured budget.',
     });
 
     if (averageLeverage !== null) {
@@ -1568,6 +2445,71 @@ export class RiskService {
     };
   }
 
+  private mapOpenOrderSnapshot(
+    account: AccountRiskSnapshotInput,
+    row: OpenOrderSnapshotSourceRow
+  ): ComputedRiskOrderSnapshotPayload {
+    const payload = this.parseSnapshotJson(row.payloadJson);
+    const orderId =
+      this.pickRecordNullableString(payload, ['order_id', 'orderId', 'id']) || null;
+    const externalId =
+      this.pickRecordString(payload, ['external_id', 'externalId', 'id', 'order_id', 'orderId']) ||
+      String(row.externalId || '').trim() ||
+      `${account.accountId}-open-order`;
+    const quantity = this.pickRecordNumber(payload, ['quantity', 'actual_amount', 'desired_amount']);
+    const filledQuantity = this.pickRecordNumber(payload, ['filled_quantity', 'filledQuantity']);
+    const remainingQuantity = this.pickRecordNumber(payload, ['remaining_quantity', 'remainingQuantity']);
+    const price = this.pickRecordNumber(payload, ['price', 'order_price', 'orderPrice']);
+    const orderPrice = this.pickRecordNumber(payload, ['order_price', 'orderPrice', 'price']);
+    const triggerPrice = this.pickRecordNumber(payload, ['trigger_price', 'triggerPrice']);
+    const filledPrice = this.pickRecordNumber(payload, ['filled_price', 'filledPrice']);
+    const lastPrice = this.pickRecordNumber(payload, ['last_price', 'lastPrice']);
+    const referencePrice = orderPrice ?? price ?? triggerPrice ?? filledPrice ?? lastPrice;
+    const notional =
+      this.pickRecordNumber(payload, ['actual_amount', 'actualAmount', 'notional']) ??
+      this.resolveOrderNotional(quantity, referencePrice);
+    const reservedMargin = this.resolveOrderReservedMargin(payload, notional);
+
+    return {
+      brokerKey: account.brokerKey,
+      accountId: account.accountId,
+      accountName: account.accountName,
+      externalId,
+      orderId,
+      symbol: this.pickRecordNullableString(payload, ['symbol']),
+      side: this.pickRecordNullableString(payload, ['side']),
+      status: this.pickRecordNullableString(payload, ['status']),
+      orderType: this.pickRecordNullableString(payload, ['order_type', 'orderType']),
+      triggerType: this.pickRecordNullableString(payload, ['trigger_type', 'triggerType']),
+      quantity,
+      filledQuantity,
+      remainingQuantity,
+      price,
+      orderPrice,
+      triggerPrice,
+      filledPrice,
+      lastPrice,
+      stoplossPrice: this.pickRecordNumber(payload, ['stoploss_price', 'stopLossPrice']),
+      takeprofitPrice: this.pickRecordNumber(payload, ['takeprofit_price', 'takeProfitPrice']),
+      leverage: this.pickRecordNumber(payload, ['leverage']),
+      reduceOnly: this.pickRecordBoolean(payload, ['reduce_only', 'reduceOnly']),
+      snapshotStatusRank: Math.max(
+        0,
+        Math.trunc(
+          this.pickRecordNumber(payload, ['snapshot_status_rank', 'snapshotStatusRank']) ??
+            this.toFiniteNumber(row.statusRank, 0)
+        )
+      ),
+      notional,
+      reservedMargin,
+      orderCreatedAt: this.pickRecordDate(payload, ['created_at', 'createdAt']) || row.firstSeenAt,
+      orderUpdatedAt: this.pickRecordDate(payload, ['updated_at', 'updatedAt']) || row.lastSeenAt,
+      orderCanceledAt: this.pickRecordDate(payload, ['canceled_at', 'canceledAt']),
+      firstSeenAt: row.firstSeenAt,
+      lastSeenAt: row.lastSeenAt,
+    };
+  }
+
   private resolvePrimaryConcern(
     criticalControls: ComputedRiskControlPayload[],
     watchControls: ComputedRiskControlPayload[],
@@ -1638,6 +2580,8 @@ export class RiskService {
         concentrationWarnPct: Math.min(accumulator.concentrationWarnPct, account.thresholds.concentrationWarnPct),
         concentrationCriticalPct: Math.min(accumulator.concentrationCriticalPct, account.thresholds.concentrationCriticalPct),
         dailyLossLimitPct: Math.min(accumulator.dailyLossLimitPct, account.thresholds.dailyLossLimitPct),
+        weeklyLossLimitPct: Math.min(accumulator.weeklyLossLimitPct, account.thresholds.weeklyLossLimitPct),
+        monthlyLossLimitPct: Math.min(accumulator.monthlyLossLimitPct, account.thresholds.monthlyLossLimitPct),
         maxLeverage: Math.min(accumulator.maxLeverage, account.thresholds.maxLeverage),
         maxTotalAllocation: Math.min(accumulator.maxTotalAllocation, account.thresholds.maxTotalAllocation),
         maxAvgLeverage: Math.min(accumulator.maxAvgLeverage, account.thresholds.maxAvgLeverage),
@@ -1648,7 +2592,7 @@ export class RiskService {
 
   private computeRiskScore(input: {
     marginUsagePct: number;
-    drawdownUsagePct: number;
+    lossUsagePct: number;
     liquidationWatch: number;
     criticalControls: number;
     watchControls: number;
@@ -1660,7 +2604,7 @@ export class RiskService {
       input.liquidationWatch * 6 +
       input.atRiskPositions * 4 +
       Math.min(20, input.marginUsagePct / 4) +
-      Math.min(20, input.drawdownUsagePct * 2);
+      Math.min(20, input.lossUsagePct * 2);
 
     return Math.max(0, Math.min(100, Math.round(rawScore)));
   }
@@ -1689,7 +2633,7 @@ export class RiskService {
     return 'Ok';
   }
 
-  private resolveDailyLossState(value: number, limit: number): string {
+  private resolveLossWindowState(value: number, limit: number): string {
     if (value >= limit) {
       return 'Critical';
     }
@@ -1697,6 +2641,40 @@ export class RiskService {
       return 'Watch';
     }
     return 'Ok';
+  }
+
+  private async computeLossWindowUsage(
+    userId: string,
+    dailyUsagePct: number,
+    equity: number
+  ): Promise<LossWindowUsage> {
+    const normalizedDailyUsage = this.roundNumber(Math.max(0, dailyUsagePct), 2);
+    if (!(equity > 0)) {
+      return {
+        dailyUsagePct: normalizedDailyUsage,
+        weeklyUsagePct: 0,
+        monthlyUsagePct: 0,
+      };
+    }
+
+    try {
+      const pnlResponse = await this.portfolioService.getPortfolioPnL(userId);
+      const pnl = pnlResponse.data ?? pnlResponse;
+      const weeklyRealizedLoss = Math.max(0, -this.toFiniteNumber(pnl?.weeklyPnL, 0));
+      const monthlyRealizedLoss = Math.max(0, -this.toFiniteNumber(pnl?.monthlyPnL, 0));
+
+      return {
+        dailyUsagePct: normalizedDailyUsage,
+        weeklyUsagePct: this.roundNumber((weeklyRealizedLoss / equity) * 100, 2),
+        monthlyUsagePct: this.roundNumber((monthlyRealizedLoss / equity) * 100, 2),
+      };
+    } catch {
+      return {
+        dailyUsagePct: normalizedDailyUsage,
+        weeklyUsagePct: 0,
+        monthlyUsagePct: 0,
+      };
+    }
   }
 
   private resolveWorstRiskState(statuses: Array<'ok' | 'watch' | 'critical'>): string {
@@ -1739,6 +2717,26 @@ export class RiskService {
     return 0;
   }
 
+  private resolvePositionSideKey(position: PositionRecord): 'long' | 'short' | null {
+    const rawValue = String(
+      position.positionSummary?.sideKey ||
+        position.sideKey ||
+        position.positionSummary?.side ||
+        position.side ||
+        ''
+    )
+      .trim()
+      .toLowerCase();
+
+    if (rawValue === 'long' || rawValue === 'buy') {
+      return 'long';
+    }
+    if (rawValue === 'short' || rawValue === 'sell') {
+      return 'short';
+    }
+    return null;
+  }
+
   private resolveLiquidationDistancePct(position: PositionRecord): number | null {
     const summary = position.positionSummary;
     const liquidationPrice = this.toFiniteNumber(summary?.liquidationPrice ?? position.liquidation_price, null);
@@ -1757,14 +2755,42 @@ export class RiskService {
     return String(position.positionSummary?.symbol || position.symbol || 'UNKNOWN').trim() || 'UNKNOWN';
   }
 
+  private readNullableString(value: unknown): string | null {
+    const normalized = String(value || '').trim();
+    return normalized ? normalized : null;
+  }
+
   private extractFundsBalanceValue(snapshot: FundsSnapshotRow | null): number | null {
+    return this.extractFundsBalanceBreakdown(snapshot).trackedBalance;
+  }
+
+  private extractFundsBalanceBreakdown(snapshot: FundsSnapshotRow | null): FundsBalanceBreakdown {
     if (!snapshot) {
-      return null;
+      return {
+        walletBalance: null,
+        futuresBalance: null,
+        trackedBalance: null,
+      };
     }
 
     const futuresFunds = this.parseSnapshotJson(snapshot.futures_funds_json);
     const walletFunds = this.parseSnapshotJson(snapshot.wallet_funds_json);
-    return this.extractFundsBalanceFromPayload(futuresFunds) ?? this.extractFundsBalanceFromPayload(walletFunds);
+    const walletBalance = this.extractFundsBalanceFromPayload(walletFunds);
+    const futuresBalance = this.extractFundsBalanceFromPayload(futuresFunds);
+
+    return {
+      walletBalance,
+      futuresBalance,
+      trackedBalance: futuresBalance ?? walletBalance,
+    };
+  }
+
+  private resolveFundsObservedAt(snapshot: FundsSnapshotRow | null): Date | null {
+    if (!snapshot) {
+      return null;
+    }
+
+    return snapshot.observed_at || snapshot.computed_at || snapshot.created_at || null;
   }
 
   private extractFundsBalanceFromPayload(payload: Record<string, unknown> | null): number | null {
@@ -1783,9 +2809,13 @@ export class RiskService {
     );
   }
 
-  private parseSnapshotJson(value: string | null | undefined): Record<string, unknown> | null {
+  private parseSnapshotJson(value: unknown): Record<string, unknown> | null {
     if (!value) {
       return null;
+    }
+
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
     }
 
     try {
@@ -1796,6 +2826,134 @@ export class RiskService {
     } catch {
       return null;
     }
+  }
+
+  private isPresentRecordValue(value: unknown): boolean {
+    return (
+      value !== undefined &&
+      value !== null &&
+      !(typeof value === 'string' && value.trim() === '')
+    );
+  }
+
+  private pickRecordValue(
+    record: Record<string, unknown> | null,
+    keys: string[]
+  ): unknown {
+    if (!record) {
+      return null;
+    }
+
+    for (const key of keys) {
+      if (this.isPresentRecordValue(record[key])) {
+        return record[key];
+      }
+    }
+
+    return null;
+  }
+
+  private pickRecordString(
+    record: Record<string, unknown> | null,
+    keys: string[]
+  ): string {
+    const value = this.pickRecordValue(record, keys);
+    return this.isPresentRecordValue(value) ? String(value).trim() : '';
+  }
+
+  private pickRecordNullableString(
+    record: Record<string, unknown> | null,
+    keys: string[]
+  ): string | null {
+    const normalized = this.pickRecordString(record, keys);
+    return normalized || null;
+  }
+
+  private pickRecordNumber(
+    record: Record<string, unknown> | null,
+    keys: string[]
+  ): number | null {
+    const value = this.pickRecordValue(record, keys);
+    if (!this.isPresentRecordValue(value)) {
+      return null;
+    }
+
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  private pickRecordBoolean(
+    record: Record<string, unknown> | null,
+    keys: string[]
+  ): boolean | null {
+    const value = this.pickRecordValue(record, keys);
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return value !== 0;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (!normalized) {
+        return null;
+      }
+      if (['true', '1', 'yes'].includes(normalized)) {
+        return true;
+      }
+      if (['false', '0', 'no'].includes(normalized)) {
+        return false;
+      }
+    }
+    return null;
+  }
+
+  private pickRecordDate(
+    record: Record<string, unknown> | null,
+    keys: string[]
+  ): Date | null {
+    return this.parseDateLike(this.pickRecordValue(record, keys));
+  }
+
+  private resolveOrderNotional(quantity: number | null, price: number | null): number | null {
+    if (quantity === null || price === null) {
+      return null;
+    }
+
+    return this.roundNumber(Math.abs(quantity * price), 2);
+  }
+
+  private resolveOrderReservedMargin(
+    payload: Record<string, unknown> | null,
+    notional: number | null
+  ): number | null {
+    const explicit =
+      this.pickRecordNumber(payload, [
+        'reserved_margin',
+        'reservedMargin',
+        'margin_required',
+        'marginRequired',
+        'required_margin',
+        'requiredMargin',
+        'margin_reserved',
+        'marginReserved',
+        'order_margin',
+        'orderMargin',
+        'initial_margin',
+        'initialMargin',
+      ]) ??
+      this.pickRecordNumber(payload, ['used_margin', 'usedMargin', 'margin_used', 'marginUsed']);
+
+    if (explicit !== null) {
+      return this.roundNumber(Math.abs(explicit), 2);
+    }
+
+    const leverage = this.pickRecordNumber(payload, ['leverage']);
+    if (notional !== null && leverage !== null && leverage > 0) {
+      return this.roundNumber(Math.abs(notional) / leverage, 2);
+    }
+
+    return null;
   }
 
   private formatPercent(value: number): string {
@@ -1817,11 +2975,58 @@ export class RiskService {
     return Math.round(value * factor) / factor;
   }
 
+  private resolveLatestDate(values: Array<Date | null | undefined>): Date | null {
+    let latest: Date | null = null;
+    values.forEach((value) => {
+      if (!value || Number.isNaN(value.getTime())) {
+        return;
+      }
+      if (!latest || value.getTime() > latest.getTime()) {
+        latest = value;
+      }
+    });
+    return latest;
+  }
+
+  private parseDateLike(value: unknown): Date | null {
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+
+    const normalized = String(value || '').trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const parsed = new Date(normalized);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
   private average(values: number[]): number | null {
     if (!values.length) {
       return null;
     }
     return values.reduce((sum, value) => sum + value, 0) / values.length;
+  }
+
+  private maxNumber(values: Array<number | null | undefined>): number | null {
+    const normalized = values.filter(
+      (value): value is number => value !== null && value !== undefined && Number.isFinite(value)
+    );
+    if (!normalized.length) {
+      return null;
+    }
+    return this.roundNumber(Math.max(...normalized), 2);
+  }
+
+  private minNumber(values: Array<number | null | undefined>): number | null {
+    const normalized = values.filter(
+      (value): value is number => value !== null && value !== undefined && Number.isFinite(value)
+    );
+    if (!normalized.length) {
+      return null;
+    }
+    return Math.min(...normalized);
   }
 
   private toFiniteNumber<T extends number | null>(value: unknown, fallback: T): number | T {
@@ -1903,6 +3108,7 @@ export class RiskService {
       id: policy.id,
       scope: policy.scope,
       brokerKey: policy.brokerKey ?? undefined,
+      mode: this.resolvePolicyMode(policy),
       enabled: policy.enabled,
       monitorOnly: policy.monitorOnly,
       enforceHardBlock: policy.enforceHardBlock,
@@ -1934,6 +3140,7 @@ export class RiskService {
       id: policyId,
       scope: policy.scope,
       brokerKey: policy.brokerKey,
+      mode: this.resolvePolicyMode(policy),
       enabled: policy.enabled,
       monitorOnly: policy.monitorOnly,
       enforceHardBlock: policy.enforceHardBlock,
@@ -2187,6 +3394,7 @@ export class RiskService {
         id: this.readOptionalString(rawSnapshot.id) || version.policyId || '',
         scope: validatedSnapshot.scope,
         brokerKey: validatedSnapshot.brokerKey,
+        mode: this.resolvePolicyMode(validatedSnapshot),
         enabled: validatedSnapshot.enabled,
         monitorOnly: validatedSnapshot.monitorOnly,
         enforceHardBlock: validatedSnapshot.enforceHardBlock,
@@ -2212,6 +3420,23 @@ export class RiskService {
       },
       createdAt,
     };
+  }
+
+  private resolvePolicyMode(policy: {
+    enabled?: boolean | null;
+    monitorOnly?: boolean | null;
+    enforceHardBlock?: boolean | null;
+  }): RiskPolicyContract['mode'] {
+    if (!policy?.enabled) {
+      return 'disabled';
+    }
+    if (policy.monitorOnly) {
+      return 'monitor';
+    }
+    if (policy.enforceHardBlock) {
+      return 'hard_block';
+    }
+    return 'warn';
   }
 
   private safeParsePolicyVersionPayload(raw: string): StoredRiskPolicyVersionPayload | Record<string, unknown> {
@@ -2343,8 +3568,6 @@ export class RiskService {
       this.hasTighterConstraint(current.concentrationWarnPct, next.concentrationWarnPct),
       this.hasTighterConstraint(current.concentrationCriticalPct, next.concentrationCriticalPct),
       this.hasTighterConstraint(current.dailyLossLimitPct, next.dailyLossLimitPct),
-      this.hasTighterConstraint(current.weeklyLossLimitPct, next.weeklyLossLimitPct),
-      this.hasTighterConstraint(current.monthlyLossLimitPct, next.monthlyLossLimitPct),
       this.hasTighterConstraint(current.maxLeverage, next.maxLeverage),
       this.hasTighterConstraint(current.maxOrderAllocation, next.maxOrderAllocation),
       this.hasTighterConstraint(current.maxTotalAllocation, next.maxTotalAllocation),

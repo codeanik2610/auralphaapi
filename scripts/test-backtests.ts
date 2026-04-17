@@ -72,6 +72,7 @@ async function runBacktestsControllerAssertions(): Promise<void> {
     recoverBacktestFromCheckpoint: async (...args: unknown[]) => createSuccess({ args }),
     syncBacktestAutomationLifecycle: async (...args: unknown[]) => createSuccess({ args }),
     promoteBacktestToAutomation: async (...args: unknown[]) => createSuccess({ args }),
+    promoteBacktestBatchToAutomation: async (...args: unknown[]) => createSuccess({ args }),
   };
 
   assert.deepEqual(
@@ -152,6 +153,15 @@ async function runBacktestsControllerAssertions(): Promise<void> {
     (await controller.promoteBacktestToAutomation(authReq, 'bt-1', { status: 'Draft' })).data
       .args,
     ['user-1', 'bt-1', { status: 'Draft' }]
+  );
+  assert.deepEqual(
+    (
+      await controller.promoteBacktestBatchToAutomation(authReq, 'bt-1', {
+        status: 'Running',
+        items: [{ symbol: 'BTCUSDT', timeframe: '1h' }],
+      })
+    ).data.args,
+    ['user-1', 'bt-1', { status: 'Running', items: [{ symbol: 'BTCUSDT', timeframe: '1h' }] }]
   );
 
   const originalGetConnection = RedisClient.getConnection;
@@ -1976,6 +1986,365 @@ async function runBacktestPromotionFailureAlertAssertions(): Promise<void> {
   assert.equal(alerts[0].source, 'backtests:promotion');
 }
 
+async function runBacktestBatchPromotionAssertions(): Promise<void> {
+  const service = createBacktestsService();
+  const activities: Array<Record<string, unknown>> = [];
+  const alerts: Array<Record<string, unknown>> = [];
+  const capturedCalls: Array<Record<string, unknown>> = [];
+  const backtest = {
+    id: 'backtest-batch-promotion-1',
+    name: 'Batch Promotion Candidate',
+    strategy: 'Momentum Template',
+    symbol: 'BTCUSDT',
+    parameter: 'Momentum Template / BTCUSDT / 1h',
+    status: 'Completed',
+    stability: 'Stable',
+    trades: 42,
+    createdAt: new Date('2026-04-05T00:00:00.000Z'),
+    result: {
+      cagr: 18.4,
+      sharpe: 1.74,
+      drawdown: 6.2,
+      winRate: 61,
+      profitFactor: 1.91,
+      config: {
+        performanceSurface: {
+          generatedAt: '2026-04-05T00:15:00.000Z',
+          results: [],
+        },
+        tradeEventCount: 42,
+      },
+    },
+  };
+
+  service.backtestRepository = {
+    getBacktestById: async () => backtest,
+  };
+  service.backtestTradeRepository = {
+    getTradeCountsByBacktest: async () => new Map([[backtest.id, 42]]),
+  };
+  service.mapBacktest = () => ({
+    id: backtest.id,
+    runStatus: 'Completed',
+    performanceSurface: {
+      generatedAt: '2026-04-05T00:15:00.000Z',
+      results: [],
+    },
+    hasIncompleteTradeHistory: false,
+  });
+  service.backtestTopSetupsService = {
+    rankBacktestTopSetups: () => [
+      {
+        id: 'setup-batch-1',
+        dedupeKey: 'setup-batch-1',
+        backtestId: backtest.id,
+        backtestName: backtest.name,
+        strategy: backtest.strategy,
+        parameter: backtest.parameter,
+        symbol: 'BTCUSDT',
+        timeframe: '1h',
+        score: 0.93,
+        trades: 18,
+        winRate: 59,
+        profitFactor: 1.84,
+        returnPct: 14.6,
+        maxDrawdownPct: 5.7,
+        hasIncompleteTradeHistory: false,
+        eligibleForAutomation: true,
+        automationEligibilityReasons: [],
+        templateAutomationReady: true,
+        templateAutomationReasons: [],
+        robustness: {
+          robustnessScore: 0.9,
+        },
+        createdAt: '2026-04-05T00:00:00.000Z',
+      },
+      {
+        id: 'setup-batch-2',
+        dedupeKey: 'setup-batch-2',
+        backtestId: backtest.id,
+        backtestName: backtest.name,
+        strategy: backtest.strategy,
+        parameter: backtest.parameter,
+        symbol: 'ETHUSDT',
+        timeframe: '4h',
+        score: 0.88,
+        trades: 12,
+        winRate: 57,
+        profitFactor: 1.54,
+        returnPct: 9.3,
+        maxDrawdownPct: 7.1,
+        hasIncompleteTradeHistory: false,
+        eligibleForAutomation: true,
+        automationEligibilityReasons: [],
+        templateAutomationReady: true,
+        templateAutomationReasons: [],
+        robustness: {
+          robustnessScore: 0.82,
+        },
+        createdAt: '2026-04-05T00:00:00.000Z',
+      },
+      {
+        id: 'setup-batch-3',
+        dedupeKey: 'setup-batch-3',
+        backtestId: backtest.id,
+        backtestName: backtest.name,
+        strategy: backtest.strategy,
+        parameter: backtest.parameter,
+        symbol: 'SOLUSDT',
+        timeframe: '15m',
+        score: 0.84,
+        trades: 10,
+        winRate: 55,
+        profitFactor: 1.42,
+        returnPct: 7.2,
+        maxDrawdownPct: 8.4,
+        hasIncompleteTradeHistory: false,
+        eligibleForAutomation: true,
+        automationEligibilityReasons: [],
+        templateAutomationReady: true,
+        templateAutomationReasons: [],
+        robustness: {
+          robustnessScore: 0.8,
+        },
+        createdAt: '2026-04-05T00:00:00.000Z',
+      },
+    ],
+  };
+  service.backtestPromotionService = {
+    promoteResolvedTopSetup: async (payload: Record<string, unknown>) => {
+      capturedCalls.push(payload);
+      const selectedTopSetup = payload.selectedTopSetup as Record<string, unknown>;
+      const symbol = String(selectedTopSetup.symbol || '');
+
+      if (symbol === 'ETHUSDT') {
+        return {
+          success: true,
+          data: {
+            message: 'Automation already exists for this setup',
+            automation: {
+              id: 'automation-batch-reused-1',
+              status: 'Running',
+              createdAt: '2026-04-05T00:20:00.000Z',
+            },
+          },
+        };
+      }
+
+      if (symbol === 'SOLUSDT') {
+        throw new Error('Automation create failed');
+      }
+
+      return {
+        success: true,
+        data: {
+          message: 'Automation created from top setup',
+          automation: {
+            id: 'automation-batch-created-1',
+            status: 'Running',
+            createdAt: '2026-04-05T00:20:00.000Z',
+          },
+        },
+      };
+    },
+  };
+  service.operationalEventService = {
+    logActivity: async (_userId: string, payload: Record<string, unknown>) => {
+      activities.push(payload);
+    },
+    emitFailureAlert: async (_userId: string, payload: Record<string, unknown>) => {
+      alerts.push(payload);
+    },
+  };
+
+  const response = await service.promoteBacktestBatchToAutomation('user-1', backtest.id, {
+    name: 'Shared Automation Name',
+    trigger: 'Top setups',
+    status: 'Running',
+    timeZone: 'Asia/Kolkata',
+    schedule: {
+      interval: 'daily',
+    },
+    items: [
+      {
+        symbol: 'BTCUSDT',
+        timeframe: '1h',
+        name: 'BTC custom automation',
+      },
+      {
+        symbol: 'ETHUSDT',
+        timeframe: '4h',
+      },
+      {
+        symbol: 'SOLUSDT',
+        timeframe: '15m',
+      },
+    ],
+  });
+
+  assert.equal(
+    response.data.message,
+    'Batch deployment completed with 1 created, 1 reused, and 1 failed.'
+  );
+  assert.deepEqual(response.data.summary, {
+    requested: 3,
+    created: 1,
+    reused: 1,
+    failed: 1,
+  });
+  assert.deepEqual(
+    response.data.results.map((item: any) => ({
+      symbol: item.symbol,
+      timeframe: item.timeframe,
+      status: item.status,
+    })),
+    [
+      { symbol: 'BTCUSDT', timeframe: '1h', status: 'created' },
+      { symbol: 'ETHUSDT', timeframe: '4h', status: 'reused' },
+      { symbol: 'SOLUSDT', timeframe: '15m', status: 'failed' },
+    ]
+  );
+  assert.equal(capturedCalls.length, 3);
+  assert.equal(
+    (capturedCalls[0].payload as Record<string, unknown>).name,
+    'BTC custom automation'
+  );
+  assert.equal(
+    (capturedCalls[1].payload as Record<string, unknown>).name,
+    'Shared Automation Name'
+  );
+  assert.equal(activities[0].title, 'Backtest batch promotion completed');
+  assert.equal(activities[0].status, 'Success');
+  assert.equal(alerts.length, 0);
+}
+
+async function runBacktestBatchPromotionAllFailedAlertAssertions(): Promise<void> {
+  const service = createBacktestsService();
+  const activities: Array<Record<string, unknown>> = [];
+  const alerts: Array<Record<string, unknown>> = [];
+  const backtest = {
+    id: 'backtest-batch-promotion-failure-1',
+    name: 'Batch Promotion Failure Candidate',
+    strategy: 'Momentum Template',
+    symbol: 'BTCUSDT',
+    parameter: 'Momentum Template / BTCUSDT / 1h',
+    status: 'Completed',
+    stability: 'Stable',
+    trades: 24,
+    createdAt: new Date('2026-04-05T00:00:00.000Z'),
+    result: {
+      cagr: 10.4,
+      sharpe: 1.42,
+      drawdown: 7.4,
+      winRate: 56,
+      profitFactor: 1.63,
+      config: {
+        performanceSurface: {
+          generatedAt: '2026-04-05T00:15:00.000Z',
+          results: [],
+        },
+        tradeEventCount: 24,
+      },
+    },
+  };
+
+  service.backtestRepository = {
+    getBacktestById: async () => backtest,
+  };
+  service.backtestTradeRepository = {
+    getTradeCountsByBacktest: async () => new Map([[backtest.id, 24]]),
+  };
+  service.mapBacktest = () => ({
+    id: backtest.id,
+    runStatus: 'Completed',
+    performanceSurface: {
+      generatedAt: '2026-04-05T00:15:00.000Z',
+      results: [],
+    },
+    hasIncompleteTradeHistory: false,
+  });
+  service.backtestTopSetupsService = {
+    rankBacktestTopSetups: () => [
+      {
+        id: 'setup-batch-failure-1',
+        dedupeKey: 'setup-batch-failure-1',
+        backtestId: backtest.id,
+        backtestName: backtest.name,
+        strategy: backtest.strategy,
+        parameter: backtest.parameter,
+        symbol: 'BTCUSDT',
+        timeframe: '1h',
+        score: 0.8,
+        trades: 12,
+        winRate: 55,
+        profitFactor: 1.4,
+        returnPct: 8.1,
+        maxDrawdownPct: 7.3,
+        hasIncompleteTradeHistory: false,
+        eligibleForAutomation: true,
+        automationEligibilityReasons: [],
+        templateAutomationReady: true,
+        templateAutomationReasons: [],
+        createdAt: '2026-04-05T00:00:00.000Z',
+      },
+      {
+        id: 'setup-batch-failure-2',
+        dedupeKey: 'setup-batch-failure-2',
+        backtestId: backtest.id,
+        backtestName: backtest.name,
+        strategy: backtest.strategy,
+        parameter: backtest.parameter,
+        symbol: 'ETHUSDT',
+        timeframe: '4h',
+        score: 0.79,
+        trades: 10,
+        winRate: 53,
+        profitFactor: 1.36,
+        returnPct: 6.4,
+        maxDrawdownPct: 8.8,
+        hasIncompleteTradeHistory: false,
+        eligibleForAutomation: true,
+        automationEligibilityReasons: [],
+        templateAutomationReady: true,
+        templateAutomationReasons: [],
+        createdAt: '2026-04-05T00:00:00.000Z',
+      },
+    ],
+  };
+  service.backtestPromotionService = {
+    promoteResolvedTopSetup: async () => {
+      throw new Error('Automation create failed');
+    },
+  };
+  service.operationalEventService = {
+    logActivity: async (_userId: string, payload: Record<string, unknown>) => {
+      activities.push(payload);
+    },
+    emitFailureAlert: async (_userId: string, payload: Record<string, unknown>) => {
+      alerts.push(payload);
+    },
+  };
+
+  const response = await service.promoteBacktestBatchToAutomation('user-1', backtest.id, {
+    status: 'Running',
+    items: [
+      { symbol: 'BTCUSDT', timeframe: '1h' },
+      { symbol: 'ETHUSDT', timeframe: '4h' },
+    ],
+  });
+
+  assert.deepEqual(response.data.summary, {
+    requested: 2,
+    created: 0,
+    reused: 0,
+    failed: 2,
+  });
+  assert.equal(activities[0].title, 'Backtest batch promotion completed');
+  assert.equal(activities[0].status, 'Failed');
+  assert.equal(alerts[0].channel, 'Backtests');
+  assert.equal(alerts[0].source, 'backtests:promotion-batch');
+}
+
 function runBacktestsScriptWiringAssertions(): void {
   const packageSource = read('package.json');
   const packageJson = JSON.parse(packageSource) as { scripts?: Record<string, string> };
@@ -2077,6 +2446,8 @@ async function main(): Promise<void> {
   await runBacktestPromotionServiceFailureAlertAssertions();
   await runBacktestPromotionDelegationAssertions();
   await runBacktestPromotionFailureAlertAssertions();
+  await runBacktestBatchPromotionAssertions();
+  await runBacktestBatchPromotionAllFailedAlertAssertions();
   runBacktestsScriptWiringAssertions();
   console.log('Backtests module assertions passed.');
 }

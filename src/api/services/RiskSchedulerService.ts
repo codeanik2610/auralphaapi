@@ -184,34 +184,59 @@ export class RiskSchedulerService {
         );
       }
 
-      const updated = await this.schedulerUserConfigRepository.updateBySchedulerKeyAndUserId(
-        SCHEDULER_KEY,
-        actorUserId,
-        {
-          ...(payload.name !== undefined ? { name: payload.name } : {}),
-          ...(payload.description !== undefined ? { description: payload.description } : {}),
-          ...(payload.enabled !== undefined ? { enabled: payload.enabled } : {}),
-          ...(payload.cronExpression !== undefined
-            ? { cronExpression: payload.cronExpression }
-            : {}),
-          ...(payload.runAt !== undefined ? { runAt: payload.runAt } : {}),
-          ...(payload.intervalDays !== undefined ? { intervalDays: payload.intervalDays } : {}),
-          ...(payload.batchSize !== undefined ? { batchSize: payload.batchSize } : {}),
-          schedulerType: RISK_SCHEDULER_OWNERSHIP,
-          config: this.normalizePersistedConfigMap(nextConfig),
-        }
-      );
+      const applyToAllUsers = payload.applyToAllUsers === true;
+      const updatePayload = {
+        ...(payload.name !== undefined ? { name: payload.name } : {}),
+        ...(payload.description !== undefined ? { description: payload.description } : {}),
+        ...(payload.enabled !== undefined ? { enabled: payload.enabled } : {}),
+        ...(payload.cronExpression !== undefined
+          ? { cronExpression: payload.cronExpression }
+          : {}),
+        ...(payload.runAt !== undefined ? { runAt: payload.runAt } : {}),
+        ...(payload.intervalDays !== undefined ? { intervalDays: payload.intervalDays } : {}),
+        ...(payload.batchSize !== undefined ? { batchSize: payload.batchSize } : {}),
+        schedulerType: RISK_SCHEDULER_OWNERSHIP,
+        config: this.normalizePersistedConfigMap(nextConfig),
+      };
+      const targetUserIds = applyToAllUsers
+        ? Array.from(
+            new Set(
+              (await this.schedulerUserConfigRepository.listBySchedulerKey(SCHEDULER_KEY))
+                .map((item) => String(item.userId || '').trim())
+                .filter(Boolean)
+            )
+          )
+        : [actorUserId];
+
+      let updated: SchedulerUserConfig | null = null;
+      if (applyToAllUsers) {
+        await this.schedulerUserConfigRepository.updateManyBySchedulerKey(SCHEDULER_KEY, {
+          ...updatePayload,
+          lastStartedAt: current.lastStartedAt,
+          lastFinishedAt: current.lastFinishedAt,
+          lastStatus: current.lastStatus,
+          lastError: current.lastError,
+        });
+      } else {
+        updated = await this.schedulerUserConfigRepository.updateBySchedulerKeyAndUserId(
+          SCHEDULER_KEY,
+          actorUserId,
+          updatePayload
+        );
+      }
       if (payload.enabled === false) {
-        await this.schedulerCommandRepository.cancelPendingBySchedulerKeyAndActor(
-          SCHEDULER_KEY,
-          actorUserId,
-          `Cancelled because scheduler disabled by ${actorUserId}`
-        );
-        await this.schedulerRunLogRepository.cancelQueuedRunsBySchedulerKeyAndActor(
-          SCHEDULER_KEY,
-          actorUserId,
-          `Cancelled because scheduler disabled by ${actorUserId}`
-        );
+        for (const targetUserId of targetUserIds) {
+          await this.schedulerCommandRepository.cancelPendingBySchedulerKeyAndActor(
+            SCHEDULER_KEY,
+            targetUserId,
+            `Cancelled because scheduler disabled by ${actorUserId}`
+          );
+          await this.schedulerRunLogRepository.cancelQueuedRunsBySchedulerKeyAndActor(
+            SCHEDULER_KEY,
+            targetUserId,
+            `Cancelled because scheduler disabled by ${actorUserId}`
+          );
+        }
       }
       const config = updated || (await this.ensureSchedulerConfig(actorUserId, timeZone));
       await this.logSchedulerActivity(

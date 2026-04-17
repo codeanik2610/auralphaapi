@@ -16,6 +16,9 @@ import { AppSetting } from './entities/AppSetting';
 import { PortfolioHolding } from './entities/PortfolioHolding';
 import { RiskPolicy } from './entities/RiskPolicy';
 import { RiskPolicyVersion } from './entities/RiskPolicyVersion';
+import { RiskAccountSnapshot } from './entities/RiskAccountSnapshot';
+import { RiskOrderSnapshot } from './entities/RiskOrderSnapshot';
+import { RiskPositionSnapshot } from './entities/RiskPositionSnapshot';
 import { RiskSnapshot } from './entities/RiskSnapshot';
 import { RefreshToken } from './entities/RefreshToken';
 import { User } from './entities/User';
@@ -56,6 +59,6 @@ export const coreDataSource = new DataSource({
   timezone: 'Z',
   synchronize: env.db.synchronize,
   logging: env.db.logging,
-  entities: [Trade, ActivityExport, ActivityLog, ActivitySavedView, Alert, AlertAction, AssetPrice, Asset, ExchangeAsset, ExchangeAssetUpdateLog, SchedulerHealthCheckResult, MarketSymbolSnapshot, Signal, SignalAction, SignalAlertLink, SuggestedTrade, SuggestedTradeExecution, Automation, AutomationCursor, AutomationEvent, AutomationAlert, AutomationRun, AutomationRunOutput, Watchlist, WatchlistItem, Connection, BrokerAccount, Broker, Exchange, EmailDelivery, AppSetting, SettingsAuditLog, SchedulerConfig, SchedulerCommand, SchedulerRunLog, SchedulerUserConfig, PortfolioSnapshot, PortfolioHolding, PaperOrder, OrderSubmissionRequest, RiskSnapshot, RiskPolicy, RiskPolicyVersion, User, RefreshToken],
+  entities: [Trade, ActivityExport, ActivityLog, ActivitySavedView, Alert, AlertAction, AssetPrice, Asset, ExchangeAsset, ExchangeAssetUpdateLog, SchedulerHealthCheckResult, MarketSymbolSnapshot, Signal, SignalAction, SignalAlertLink, SuggestedTrade, SuggestedTradeExecution, Automation, AutomationCursor, AutomationEvent, AutomationAlert, AutomationRun, AutomationRunOutput, Watchlist, WatchlistItem, Connection, BrokerAccount, Broker, Exchange, EmailDelivery, AppSetting, SettingsAuditLog, SchedulerConfig, SchedulerCommand, SchedulerRunLog, SchedulerUserConfig, PortfolioSnapshot, PortfolioHolding, PaperOrder, OrderSubmissionRequest, RiskAccountSnapshot, RiskOrderSnapshot, RiskPositionSnapshot, RiskSnapshot, RiskPolicy, RiskPolicyVersion, User, RefreshToken],
   migrations: [`${__dirname}/migrations/*.{ts,js}`],
 });

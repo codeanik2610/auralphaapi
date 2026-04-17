@@ -46,7 +46,9 @@ export class RiskAlertRepository {
       return 0;
     }
 
-    const placeholders = normalizedItems.map(() => '(?, ?, ?, ?, ?, ?, ?, NOW(), NOW())').join(', ');
+    const placeholders = normalizedItems
+      .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())')
+      .join(', ');
     const params: Array<string | null> = [];
 
     normalizedItems.forEach((item) => {
@@ -119,6 +121,24 @@ export class RiskAlertRepository {
       items: (rows || []) as RiskAlertRow[],
       total
     };
+  }
+
+  async listBySnapshotId(userId: string, snapshotId: string): Promise<RiskAlertRow[]> {
+    const normalizedSnapshotId = String(snapshotId || '').trim();
+    if (!normalizedSnapshotId) {
+      return [];
+    }
+
+    const rows = await coreDataSource.query(
+      `SELECT id, snapshotId, severity, message, symbol, channel, status, createdAt
+         FROM risk_alerts
+        WHERE user_id = ?
+          AND snapshotId = ?
+        ORDER BY createdAt DESC, id DESC`,
+      [userId, normalizedSnapshotId]
+    );
+
+    return (rows || []) as RiskAlertRow[];
   }
 
   async getRiskAlertsSummary(userId: string, query: RiskAlertsQuery): Promise<{

@@ -12,6 +12,8 @@ import {
   BacktestsTopSetupsResponse,
   CreateBacktestBody,
   CreateBacktestResult,
+  PromoteBacktestBatchBody,
+  PromoteBacktestBatchResult,
   PromoteBacktestBody,
   PromoteBacktestResult,
   RecoverBacktestResult,
@@ -151,6 +153,19 @@ export class BacktestsController {
     @Body() body: PromoteBacktestBody
   ): Promise<ApiSuccessResponse<PromoteBacktestResult>> {
     return this.backtestsService.promoteBacktestToAutomation(
+      requireAuthUserId(request),
+      backtestId,
+      body
+    );
+  }
+
+  @Post('/:backtestId/automations/batch')
+  async promoteBacktestBatchToAutomation(
+    @Req() request: Request,
+    @Param('backtestId') backtestId: string,
+    @Body() body: PromoteBacktestBatchBody
+  ): Promise<ApiSuccessResponse<PromoteBacktestBatchResult>> {
+    return this.backtestsService.promoteBacktestBatchToAutomation(
       requireAuthUserId(request),
       backtestId,
       body

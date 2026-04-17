@@ -34,7 +34,6 @@ import {
   normalizeTimeZone,
 } from '../utils/timezone';
 import {
-  buildSystemSchedulerManualAudit,
   resolveSchedulerAuditDisplayLabels,
   toSchedulerAuditContract,
 } from '../utils/schedulerAuditContract';
@@ -211,10 +210,8 @@ export class FundsSchedulerService {
         );
       }
 
-      const updated = await this.schedulerUserConfigRepository.updateBySchedulerKeyAndUserId(
-        SCHEDULER_KEY,
-        actorUserId,
-        {
+      const applyToAllUsers = payload.applyToAllUsers === true;
+      const updatePayload = {
         ...(payload.name !== undefined ? { name: payload.name } : {}),
         ...(payload.description !== undefined ? { description: payload.description } : {}),
         ...(payload.enabled !== undefined ? { enabled: payload.enabled } : {}),
@@ -226,21 +223,47 @@ export class FundsSchedulerService {
         ...(payload.batchSize !== undefined ? { batchSize: payload.batchSize } : {}),
         schedulerType: FUNDS_SCHEDULER_OWNERSHIP,
         config: this.normalizePersistedConfigMap(nextConfig),
-        }
-      );
-      if (payload.enabled === false) {
-        await this.schedulerCommandRepository.cancelPendingBySchedulerKeyAndActor(
+      };
+      const targetUserIds = applyToAllUsers
+        ? Array.from(
+            new Set(
+              (await this.schedulerUserConfigRepository.listBySchedulerKey(SCHEDULER_KEY))
+                .map((item) => String(item.userId || '').trim())
+                .filter(Boolean)
+            )
+          )
+        : [actorUserId];
+
+      if (applyToAllUsers) {
+        await this.schedulerUserConfigRepository.updateManyBySchedulerKey(SCHEDULER_KEY, {
+          ...updatePayload,
+          lastStartedAt: current.lastStartedAt,
+          lastFinishedAt: current.lastFinishedAt,
+          lastStatus: current.lastStatus,
+          lastError: current.lastError,
+        });
+      } else {
+        await this.schedulerUserConfigRepository.updateBySchedulerKeyAndUserId(
           SCHEDULER_KEY,
           actorUserId,
-          `Cancelled because scheduler disabled by ${actorUserId}`
-        );
-        await this.schedulerRunLogRepository.cancelQueuedRunsBySchedulerKeyAndActor(
-          SCHEDULER_KEY,
-          actorUserId,
-          `Cancelled because scheduler disabled by ${actorUserId}`
+          updatePayload
         );
       }
-      const config = updated || (await this.ensureSchedulerConfig(actorUserId, timeZone));
+      if (payload.enabled === false) {
+        for (const targetUserId of targetUserIds) {
+          await this.schedulerCommandRepository.cancelPendingBySchedulerKeyAndActor(
+            SCHEDULER_KEY,
+            targetUserId,
+            `Cancelled because scheduler disabled by ${actorUserId}`
+          );
+          await this.schedulerRunLogRepository.cancelQueuedRunsBySchedulerKeyAndActor(
+            SCHEDULER_KEY,
+            targetUserId,
+            `Cancelled because scheduler disabled by ${actorUserId}`
+          );
+        }
+      }
+      const config = await this.ensureSchedulerConfig(actorUserId, timeZone);
       await this.logSchedulerActivity(
         actorUserId,
         'Funds scheduler config updated',
@@ -1799,12 +1822,17 @@ export class FundsSchedulerService {
   }
 
   private buildManualAudit(actorUserId: string) {
-    return buildSystemSchedulerManualAudit(actorUserId);
+    const normalizedActorUserId = String(actorUserId || '').trim();
+    return {
+      initiatedByType: 'manual' as const,
+      ...(normalizedActorUserId ? { initiatedByUserId: normalizedActorUserId } : {}),
+      ...(normalizedActorUserId ? { initiatedByLabel: normalizedActorUserId } : {}),
+      executionContext: 'user' as const,
+    };
   }
 
   private resolveSystemExecutionActorUserId(actorUserId: string): string {
-    const systemUserId = String(env.scheduler.systemUserId || '').trim();
-    return systemUserId || actorUserId;
+    return String(actorUserId || '').trim();
   }
 
   private formatDisplayDate(

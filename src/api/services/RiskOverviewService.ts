@@ -42,7 +42,7 @@ interface RiskOverviewQuery {
 }
 
 const DEFAULT_LIMIT = 10;
-const RISK_CENTER_CONTRACT_VERSION = 'risk-center-phase9-2026-04-09' as const;
+const RISK_CENTER_CONTRACT_VERSION = 'risk-center-phase10-2026-04-17' as const;
 const RISK_SNAPSHOT_LAG_TOLERANCE_MS = 5 * 60 * 1000;
 
 interface BrokerCoverageAggregate {
@@ -178,7 +178,7 @@ export class RiskOverviewService {
         generatedAt: this.formatDisplayTime(generatedAtIso, timeZone) || generatedAtIso,
         generatedAtIso,
         summary:
-          'Phase 9 makes the `/risk-center` activity trail operational: operators can filter the in-page risk feed, queue exports from the current trail posture, and see retention cues before handing off into the full Activity workspace.',
+          'Phase 10 keeps the activity-trail workflow intact and upgrades risk windows so daily, weekly, and monthly loss usage are now persisted in the risk snapshot contract.',
         query: {
           supported: [
             'controlsLimit',
@@ -211,14 +211,14 @@ export class RiskOverviewService {
           alerts: 'risk_alerts',
           policies: 'risk_policies',
           brokers: 'connected_broker_accounts_plus_active_definitions',
-          riskWindows: 'risk_snapshots_latest_with_explicit_unavailable_windows',
+          riskWindows: 'risk_snapshots_latest_with_persisted_loss_windows',
           brokerSnapshots:
-            'funds_snapshots_plus_position_read_models_for_connected_accounts',
+            'risk_account_snapshots_plus_funds_snapshots_plus_position_read_models_for_connected_accounts',
           activityExports: 'activity_exports_filtered_for_recent_risk_route_context',
         },
         pageTruth: {
-          riskWindowSource: 'latest_risk_snapshot_with_explicit_unavailable_windows',
-          brokerCoverageSource: 'snapshot_backed_connected_brokers',
+          riskWindowSource: 'latest_risk_snapshot_with_persisted_loss_windows',
+          brokerCoverageSource: 'risk_account_snapshots_backed_connected_brokers',
           policyWorkspace: 'selected_rule_with_pending_review_history_controls',
           policyGovernance: 'manual_review_for_sensitive_policy_mutations',
           activityTrailSource: 'activity_logs_route_and_reference_filters',
@@ -231,7 +231,7 @@ export class RiskOverviewService {
           policyRollback: true,
           liveBrokerKpis: false,
           snapshotBrokerKpis: true,
-          weeklyMonthlyRiskWindowUsage: false,
+          weeklyMonthlyRiskWindowUsage: true,
           riskCapacity: false,
           killSwitchAutomation: false,
           recomputeExecutesRealCalculation: true,
@@ -245,9 +245,17 @@ export class RiskOverviewService {
         freshness,
         lineage: {
           summary: 'risk_snapshots_latest',
-          riskWindows: 'risk_snapshots_latest_with_explicit_unavailable_windows',
-          brokerCoverage: 'funds_snapshots_plus_position_read_models_for_connected_accounts',
-          recomputeWrites: ['risk_snapshots', 'risk_controls', 'risk_alerts', 'risk_scenarios'],
+          riskWindows: 'risk_snapshots_latest_with_persisted_loss_windows',
+          brokerCoverage: 'risk_account_snapshots_plus_funds_snapshots_plus_position_read_models_for_connected_accounts',
+          recomputeWrites: [
+            'risk_snapshots',
+            'risk_account_snapshots',
+            'risk_order_snapshots',
+            'risk_position_snapshots',
+            'risk_controls',
+            'risk_alerts',
+            'risk_scenarios',
+          ],
         },
         time: buildApiTimeContract(timeZone),
       },
@@ -327,12 +335,32 @@ export class RiskOverviewService {
   }
 
   private buildRiskWindowItems(
-    summary: { drawdownBudgetUsed?: unknown } | null | undefined,
-    latestRiskSnapshot: { createdAt?: Date | null; drawdownBudgetUsed?: string | null } | null,
+    summary:
+      | {
+          drawdownBudgetUsed?: unknown;
+          weeklyDrawdownBudgetUsed?: unknown;
+          monthlyDrawdownBudgetUsed?: unknown;
+        }
+      | null
+      | undefined,
+    latestRiskSnapshot:
+      | {
+          createdAt?: Date | null;
+          drawdownBudgetUsed?: string | null;
+          weeklyDrawdownBudgetUsed?: string | null;
+          monthlyDrawdownBudgetUsed?: string | null;
+        }
+      | null,
     timeZone: string
   ): RiskWindowOverviewItem[] {
     const drawdownBudgetUsed = String(
       summary?.drawdownBudgetUsed ?? latestRiskSnapshot?.drawdownBudgetUsed ?? ''
+    ).trim();
+    const weeklyDrawdownBudgetUsed = String(
+      summary?.weeklyDrawdownBudgetUsed ?? latestRiskSnapshot?.weeklyDrawdownBudgetUsed ?? ''
+    ).trim();
+    const monthlyDrawdownBudgetUsed = String(
+      summary?.monthlyDrawdownBudgetUsed ?? latestRiskSnapshot?.monthlyDrawdownBudgetUsed ?? ''
     ).trim();
     const dailyObservedAt =
       latestRiskSnapshot?.createdAt instanceof Date
@@ -354,22 +382,28 @@ export class RiskOverviewService {
       {
         key: 'weekly',
         label: 'Weekly',
-        usedPct: null,
-        usedDisplay: 'Unavailable',
-        availability: 'unavailable',
-        observedAt: null,
-        sourceLabel: 'Not persisted in current backend contract',
-        note: 'Weekly loss usage is not persisted yet, so the UI must treat this window as unavailable.',
+        usedPct: this.parsePercent(weeklyDrawdownBudgetUsed),
+        usedDisplay: weeklyDrawdownBudgetUsed || 'Unavailable',
+        availability: weeklyDrawdownBudgetUsed ? 'snapshot' : 'unavailable',
+        observedAt: this.formatDisplayTime(dailyObservedAt, timeZone),
+        observedAtIso: dailyObservedAt,
+        sourceLabel: weeklyDrawdownBudgetUsed ? 'Latest risk snapshot' : 'Recompute required',
+        note: weeklyDrawdownBudgetUsed
+          ? 'Weekly loss usage is sourced from risk_snapshots.weeklyDrawdownBudgetUsed and represents trailing 7-day realized loss usage.'
+          : 'Weekly loss usage will appear after the next risk recompute persists the new snapshot window fields.',
       },
       {
         key: 'monthly',
         label: 'Monthly',
-        usedPct: null,
-        usedDisplay: 'Unavailable',
-        availability: 'unavailable',
-        observedAt: null,
-        sourceLabel: 'Not persisted in current backend contract',
-        note: 'Monthly loss usage is not persisted yet, so the UI must treat this window as unavailable.',
+        usedPct: this.parsePercent(monthlyDrawdownBudgetUsed),
+        usedDisplay: monthlyDrawdownBudgetUsed || 'Unavailable',
+        availability: monthlyDrawdownBudgetUsed ? 'snapshot' : 'unavailable',
+        observedAt: this.formatDisplayTime(dailyObservedAt, timeZone),
+        observedAtIso: dailyObservedAt,
+        sourceLabel: monthlyDrawdownBudgetUsed ? 'Latest risk snapshot' : 'Recompute required',
+        note: monthlyDrawdownBudgetUsed
+          ? 'Monthly loss usage is sourced from risk_snapshots.monthlyDrawdownBudgetUsed and represents trailing 30-day realized loss usage.'
+          : 'Monthly loss usage will appear after the next risk recompute persists the new snapshot window fields.',
       },
     ];
   }
