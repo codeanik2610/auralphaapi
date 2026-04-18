@@ -1733,6 +1733,8 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const checkSource = read('scripts/checks/check-suggested-trades-health.ts');
   const releaseGateSource = read('scripts/release-gates/release-gate-suggested-trades.ts');
   const signoffSource = read('scripts/signoffs/signoff-suggested-trades.ts');
+  const envSource = read('src/env.ts');
+  const serviceSource = read('src/api/services/SuggestedTradesService.ts');
 
   assert.equal(
     packageScripts['test:suggested-trades'],
@@ -1795,6 +1797,30 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     true,
     'suggested trades signoff must require dashboard verification'
   );
+  for (const marker of [
+    'SUGGESTED_TRADES_LIVE_AUTO_ENABLED',
+    'SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED',
+    'SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING',
+    'SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST',
+    'SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST',
+  ]) {
+    assert.equal(
+      envSource.includes(marker),
+      true,
+      `env.ts must expose ${marker} for live-auto rollout control`
+    );
+  }
+  for (const marker of [
+    'Live auto rollout guard passed. Broker placement remains disabled until live auto execution is explicitly enabled.',
+    'Accepted automatically by live automation execution policy',
+    'pre_trade_check',
+  ]) {
+    assert.equal(
+      serviceSource.includes(marker),
+      true,
+      `SuggestedTradesService must retain ${marker} for live-auto auditability`
+    );
+  }
 }
 
 async function main(): Promise<void> {

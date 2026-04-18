@@ -365,6 +365,38 @@ function runExecutionPolicyNormalizationTests(): void {
     true
   );
   console.log('  ✓ Preserves explicit live execution policy values\n');
+
+  const promotedConfig = normalizeAutomationConfig('trade-suggestion', {
+    kind: 'trade-suggestion',
+    source: 'backtest',
+    symbol: 'BTCUSDT',
+    timeframe: '15m',
+    config: {
+      market: 'crypto-futures',
+      libraryId: 'library-1',
+      templateVersion: 8,
+      inputSnapshot: {
+        sourceType: 'strategy_library',
+        libraryId: 'library-1',
+        templateId: 'template-1',
+        templateVersion: 8,
+      },
+    },
+  });
+
+  const promotedRootConfig = (promotedConfig?.config || null) as Record<string, unknown> | null;
+  assert.equal(promotedRootConfig?.libraryId, 'library-1');
+  assert.equal(promotedRootConfig?.templateVersion, 8);
+  assert.equal(
+    ((promotedRootConfig?.inputSnapshot as Record<string, unknown>) || {}).templateId,
+    'template-1'
+  );
+  assert.equal(
+    ((promotedConfig?.tradeSuggestion as Record<string, unknown>)?.execution as Record<string, unknown>)
+      ?.executionMode,
+    'suggestion_only'
+  );
+  console.log('  ✓ Preserves promoted snapshot config while normalizing execution policy\n');
 }
 
 // Main test runner

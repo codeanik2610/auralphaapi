@@ -463,7 +463,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     label: 'Risk Center',
     lane: 'cross-cutting',
     controllers: ['RiskController.ts', 'RiskOverviewController.ts'],
-    services: ['RiskService.ts', 'RiskOverviewService.ts'],
+    services: ['RiskService.ts', 'RiskOverviewService.ts', 'RiskPreTradeService.ts'],
     tests: [
       script('test:risk-center', 'scripts/test-risk-center.ts'),
       script('test:risk-center-contract', 'scripts/test-risk-center-contract.ts'),
@@ -688,5 +688,6 @@ export const SYSTEM_SCRIPT_SURFACE = {
   ],
   rebuildScripts: [
     script('rebuild:positions-read-model', 'scripts/rebuild/rebuild-positions-read-model.ts'),
+    script('rebuild:risk-normalized-storage', 'scripts/rebuild/rebuild-risk-normalized-storage.ts'),
   ],
 };

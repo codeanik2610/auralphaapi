@@ -10084,8 +10084,10 @@ async function runBacktestPromotionSnapshotAssertions(): Promise<void> {
   assert.equal(automationPayload?.trigger, 'timeframe:15m');
   const automationConfig = automationPayload?.config as Record<string, unknown>;
   const normalizedConfig = automationConfig?.config as Record<string, unknown>;
+  const tradeSuggestion = automationConfig?.tradeSuggestion as Record<string, unknown>;
   assert.equal(automationConfig?.source, 'backtest');
-  assert.equal(normalizedConfig?.market, 'crypto-futures');
+  assert.equal(automationConfig?.market, 'crypto-futures');
+  assert.equal(tradeSuggestion?.market, 'crypto-futures');
   assert.equal(normalizedConfig?.libraryId, 'library-1');
   assert.equal(normalizedConfig?.templateVersion, 8);
   const normalizedDiff = normalizedConfig?.templateDiffSummary as Record<string, unknown>;

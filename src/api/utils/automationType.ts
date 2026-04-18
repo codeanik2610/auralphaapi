@@ -451,9 +451,13 @@ export const normalizeAutomationConfig = (
   }
 
   const suggestion = parseRecord(root.tradeSuggestion) ?? {};
+  const rawConfig =
+    parseRecord(root.config) ??
+    parseRecord(suggestion.config) ??
+    null;
   const rawExecution =
     parseRecord(suggestion.execution) ??
-    parseRecord(root.config) ??
+    rawConfig ??
     null;
   const execution = normalizeTradeSuggestionExecutionPolicy(rawExecution);
   const setupScope = parseRecord(suggestion.setupScope) ?? parseRecord(root.setupScope) ?? null;
@@ -497,7 +501,7 @@ export const normalizeAutomationConfig = (
     ...(timeframe ? { timeframe } : {}),
     ...(market ? { market } : {}),
     ...(setupScope ? { setupScope } : {}),
-    config: execution,
+    config: rawConfig ?? execution,
     ...(sourceTemplateId ? { sourceTemplateId } : {}),
     ...(templateId ? { templateId } : {}),
     tradeSuggestion: {
