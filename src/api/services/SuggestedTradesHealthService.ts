@@ -29,6 +29,8 @@ export interface SuggestedTradesHealthSnapshot {
   dismissedSuggestions: number;
   readyForOrderCount: number;
   convertedToOrderCount: number;
+  queuedSuggestions: number;
+  submittingSuggestions: number;
   linkedSuggestions: number;
   workingSuggestions: number;
   filledSuggestions: number;
@@ -174,6 +176,8 @@ export class SuggestedTradesHealthService {
       dismissedSuggestions: operationalSnapshot.dismissed,
       readyForOrderCount: operationalSnapshot.queuedForOrder,
       convertedToOrderCount: operationalSnapshot.convertedToOrder,
+      queuedSuggestions: operationalSnapshot.queued,
+      submittingSuggestions: operationalSnapshot.submitting,
       linkedSuggestions: operationalSnapshot.linked,
       workingSuggestions: operationalSnapshot.working,
       filledSuggestions: operationalSnapshot.filled,

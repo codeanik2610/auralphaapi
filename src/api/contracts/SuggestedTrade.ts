@@ -10,6 +10,8 @@ export type SuggestedTradeReviewStage =
   | 'expired';
 export type SuggestedTradeExecutionStage =
   | 'unlinked'
+  | 'queued'
+  | 'submitting'
   | 'linked'
   | 'working'
   | 'filled'
@@ -40,13 +42,31 @@ export type SuggestedTradePageAction =
 
 export interface SuggestedTradeExecutionLink {
   executionMode?: 'live' | 'paper' | null;
+  preTradeCheckId?: string | null;
+  preTradeState?: 'not_requested' | 'queued' | 'passed' | 'blocked' | 'stale' | 'error' | null;
+  preTradeCheckedAt?: string | null;
+  preTradeBlockedReason?: string | null;
+  acceptedBy?: 'user' | 'system' | null;
+  acceptedAt?: string | null;
   orderId?: string | null;
   paperOrderId?: string | null;
   brokerKey?: string | null;
   accountId?: string | null;
   orderStatus?: string | null;
   paperOrderStatus?: string | null;
-  executionState?: 'linked' | 'working' | 'filled' | 'cancelled' | 'rejected' | 'expired' | 'failed' | 'closed' | 'unknown' | null;
+  executionState?:
+    | 'queued'
+    | 'submitting'
+    | 'linked'
+    | 'working'
+    | 'filled'
+    | 'cancelled'
+    | 'rejected'
+    | 'expired'
+    | 'failed'
+    | 'closed'
+    | 'unknown'
+    | null;
   orderType?: string | null;
   triggerType?: string | null;
   leverage?: number | null;
@@ -186,6 +206,8 @@ export interface SuggestedTradesSummary {
   actionable: number;
   buySide: number;
   sellSide: number;
+  queued: number;
+  submitting: number;
   linked: number;
   working: number;
   filled: number;
@@ -198,6 +220,7 @@ export interface SuggestedTradeStatusActionResult {
     id: string;
     status: SuggestedTradeStatus;
     updatedAt: string;
+    execution?: SuggestedTradeExecutionLink | null;
   };
 }
 

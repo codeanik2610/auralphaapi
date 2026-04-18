@@ -7,23 +7,33 @@ import {
   RiskKillSwitchBody,
   RiskKillSwitchResult,
   RiskAccountsResponse,
+  RiskPreTradeCheckBody,
+  RiskPreTradeCheckResult,
   RiskOrdersResponse,
   RiskPositionsResponse,
   RiskAlertsResponse,
+  RiskAssetSnapshotsResponse,
+  RiskBrokerAssetSnapshotsResponse,
+  RiskBrokerSnapshotsResponse,
   RiskControlsResponse,
+  RiskPolicyContextsResponse,
   RiskScenariosResponse,
   RiskPoliciesResponse,
   RiskPolicyReviewResult,
+  RiskRuleEvaluationsResponse,
   RiskPolicyVersionsResponse,
   RiskRecomputeResult,
+  RiskSourceCoverageResponse,
   RiskPolicyWriteResult,
   RiskPolicyRollbackResult,
   RollbackRiskPolicyBody,
   UpsertRiskPolicyBody,
   RiskSummary,
 } from '../contracts/Risk';
+import { RiskPreTradeService } from '../services/RiskPreTradeService';
 import { RiskService } from '../services/RiskService';
 import {
+  validateRiskPreTradeCheckBody,
   validateReviewRiskPolicyVersionBody,
   validateRollbackRiskPolicyBody,
   validateUpsertRiskPolicyBody
@@ -35,6 +45,9 @@ import { requireAuthUserId } from '../utils/auth';
 export class RiskController {
   @Inject(() => RiskService)
   private riskService!: RiskService;
+
+  @Inject(() => RiskPreTradeService)
+  private riskPreTradeService!: RiskPreTradeService;
 
   @Get('/summary')
   async getRiskSummary(@Req() request: Request): Promise<ApiSuccessResponse<RiskSummary>> {
@@ -54,6 +67,54 @@ export class RiskController {
   @Get('/orders')
   async getRiskOrders(@Req() request: Request): Promise<ApiSuccessResponse<RiskOrdersResponse>> {
     return this.riskService.getRiskOrders(requireAuthUserId(request));
+  }
+
+  @Get('/storage/brokers')
+  async getRiskBrokerSnapshots(
+    @Req() request: Request,
+    @QueryParams() query: { snapshotId?: string }
+  ): Promise<ApiSuccessResponse<RiskBrokerSnapshotsResponse>> {
+    return this.riskService.getRiskBrokerSnapshots(requireAuthUserId(request), query.snapshotId);
+  }
+
+  @Get('/storage/assets')
+  async getRiskAssetSnapshots(
+    @Req() request: Request,
+    @QueryParams() query: { snapshotId?: string }
+  ): Promise<ApiSuccessResponse<RiskAssetSnapshotsResponse>> {
+    return this.riskService.getRiskAssetSnapshots(requireAuthUserId(request), query.snapshotId);
+  }
+
+  @Get('/storage/broker-assets')
+  async getRiskBrokerAssetSnapshots(
+    @Req() request: Request,
+    @QueryParams() query: { snapshotId?: string }
+  ): Promise<ApiSuccessResponse<RiskBrokerAssetSnapshotsResponse>> {
+    return this.riskService.getRiskBrokerAssetSnapshots(requireAuthUserId(request), query.snapshotId);
+  }
+
+  @Get('/storage/policy-contexts')
+  async getRiskPolicyContexts(
+    @Req() request: Request,
+    @QueryParams() query: { snapshotId?: string }
+  ): Promise<ApiSuccessResponse<RiskPolicyContextsResponse>> {
+    return this.riskService.getRiskPolicyContexts(requireAuthUserId(request), query.snapshotId);
+  }
+
+  @Get('/storage/source-coverage')
+  async getRiskSourceCoverage(
+    @Req() request: Request,
+    @QueryParams() query: { snapshotId?: string }
+  ): Promise<ApiSuccessResponse<RiskSourceCoverageResponse>> {
+    return this.riskService.getRiskSourceCoverage(requireAuthUserId(request), query.snapshotId);
+  }
+
+  @Get('/storage/rule-evaluations')
+  async getRiskRuleEvaluations(
+    @Req() request: Request,
+    @QueryParams() query: { snapshotId?: string }
+  ): Promise<ApiSuccessResponse<RiskRuleEvaluationsResponse>> {
+    return this.riskService.getRiskRuleEvaluations(requireAuthUserId(request), query.snapshotId);
   }
 
   @Get('/snapshots/:snapshotId')
@@ -110,6 +171,25 @@ export class RiskController {
     @Req() request: Request
   ): Promise<ApiSuccessResponse<RiskRecomputeResult>> {
     return this.riskService.recomputeRiskSnapshot(requireAuthUserId(request));
+  }
+
+  @Post('/pretrade/check')
+  async createPreTradeCheck(
+    @Req() request: Request,
+    @Body() body: RiskPreTradeCheckBody
+  ): Promise<ApiSuccessResponse<RiskPreTradeCheckResult>> {
+    return this.riskPreTradeService.createPreTradeCheck(
+      requireAuthUserId(request),
+      validateRiskPreTradeCheckBody(body)
+    );
+  }
+
+  @Get('/pretrade/checks/:checkId')
+  async getPreTradeCheck(
+    @Req() request: Request,
+    @Param('checkId') checkId: string
+  ): Promise<ApiSuccessResponse<RiskPreTradeCheckResult>> {
+    return this.riskPreTradeService.getPreTradeCheck(requireAuthUserId(request), checkId);
   }
 
   @Get('/policies')

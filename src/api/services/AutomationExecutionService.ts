@@ -18,7 +18,11 @@ import { UserTimeZoneService } from './UserTimeZoneService';
 import { BadRequestAppError, NotFoundAppError } from '../errors/AppError';
 import { computeNextRun, resolveAutomationSchedule } from '../utils/automationSchedule';
 import { extractAutomationLineage } from '../utils/automationLineage';
-import { normalizeAutomationConfig, normalizeAutomationType } from '../utils/automationType';
+import {
+  normalizeAutomationConfig,
+  normalizeAutomationType,
+  normalizeTradeSuggestionExecutionPolicy,
+} from '../utils/automationType';
 import {
   buildStrategyTemplateAutomationProfile,
   StrategyTemplateAutomationProfile,
@@ -28,6 +32,8 @@ import { normalizeTimeZone } from '../utils/timezone';
 import { Logger } from '../../lib/logger';
 import type { StrategyLibraryRunBody } from '../contracts/StrategyLibrary';
 import { AutomationSignalEvaluatorService } from './AutomationSignalEvaluatorService';
+import { BrokerOrdersFacadeService } from './BrokerOrdersFacadeService';
+import { SuggestedTradesService } from './SuggestedTradesService';
 
 const log = new Logger('AutomationExecutionService');
 const AUTOMATION_RUNTIME_WORKER_ID = `${os.hostname()}:${process.pid}:automation-api`;
@@ -83,6 +89,12 @@ export class AutomationExecutionService {
 
   @Inject(() => AutomationSignalEvaluatorService)
   private automationSignalEvaluatorService!: AutomationSignalEvaluatorService;
+
+  @Inject(() => SuggestedTradesService)
+  private suggestedTradesService!: SuggestedTradesService;
+
+  @Inject(() => BrokerOrdersFacadeService)
+  private ordersService!: BrokerOrdersFacadeService;
 
   async execute(payload: ExecuteAutomationPayload): Promise<ExecuteAutomationResult> {
     const automationId = String(payload.automationId || '').trim();
@@ -256,6 +268,16 @@ export class AutomationExecutionService {
     let suggestionSymbolsSkipped = 0;
     let suggestionSymbolsEvaluated = 0;
     let suggestionSignalsDetected = 0;
+    let suggestionAutoPaperPlaced = 0;
+    let suggestionAutoPaperBlocked = 0;
+    let suggestionAutoPaperSkipped = 0;
+    let suggestionAutoPaperFailed = 0;
+    let suggestionAutoLiveReady = 0;
+    let suggestionAutoLivePlaced = 0;
+    let suggestionAutoLiveBlocked = 0;
+    let suggestionAutoLiveSkipped = 0;
+    let suggestionAutoLiveDisabled = 0;
+    let suggestionAutoLiveFailed = 0;
     try {
       if (automationType === 'backtest-runner') {
         const { libraryId, runBody } = this.resolveLibraryRunConfig(normalizedConfig);
@@ -291,6 +313,16 @@ export class AutomationExecutionService {
         suggestionSymbolsSkipped = suggestionResult.symbolsSkipped;
         suggestionSymbolsEvaluated = suggestionResult.symbolsEvaluated;
         suggestionSignalsDetected = suggestionResult.signalsDetected;
+        suggestionAutoPaperPlaced = suggestionResult.autoPaperPlaced;
+        suggestionAutoPaperBlocked = suggestionResult.autoPaperBlocked;
+        suggestionAutoPaperSkipped = suggestionResult.autoPaperSkipped;
+        suggestionAutoPaperFailed = suggestionResult.autoPaperFailed;
+        suggestionAutoLiveReady = suggestionResult.autoLiveReady;
+        suggestionAutoLivePlaced = suggestionResult.autoLivePlaced;
+        suggestionAutoLiveBlocked = suggestionResult.autoLiveBlocked;
+        suggestionAutoLiveSkipped = suggestionResult.autoLiveSkipped;
+        suggestionAutoLiveDisabled = suggestionResult.autoLiveDisabled;
+        suggestionAutoLiveFailed = suggestionResult.autoLiveFailed;
       }
 
       const finishedAt = new Date();
@@ -308,6 +340,16 @@ export class AutomationExecutionService {
               symbolsSkipped: suggestionSymbolsSkipped,
               symbolsEvaluated: suggestionSymbolsEvaluated,
               signalsDetected: suggestionSignalsDetected,
+              autoPaperPlaced: suggestionAutoPaperPlaced,
+              autoPaperBlocked: suggestionAutoPaperBlocked,
+              autoPaperSkipped: suggestionAutoPaperSkipped,
+              autoPaperFailed: suggestionAutoPaperFailed,
+              autoLiveReady: suggestionAutoLiveReady,
+              autoLivePlaced: suggestionAutoLivePlaced,
+              autoLiveBlocked: suggestionAutoLiveBlocked,
+              autoLiveSkipped: suggestionAutoLiveSkipped,
+              autoLiveDisabled: suggestionAutoLiveDisabled,
+              autoLiveFailed: suggestionAutoLiveFailed,
             }
           : {}),
       };
@@ -398,9 +440,29 @@ export class AutomationExecutionService {
           symbolsSkipped: suggestionSymbolsSkipped,
           symbolsEvaluated: suggestionSymbolsEvaluated,
           signalsDetected: suggestionSignalsDetected,
+          autoPaperPlaced: suggestionAutoPaperPlaced,
+          autoPaperBlocked: suggestionAutoPaperBlocked,
+          autoPaperSkipped: suggestionAutoPaperSkipped,
+          autoPaperFailed: suggestionAutoPaperFailed,
+          autoLiveReady: suggestionAutoLiveReady,
+          autoLivePlaced: suggestionAutoLivePlaced,
+          autoLiveBlocked: suggestionAutoLiveBlocked,
+          autoLiveSkipped: suggestionAutoLiveSkipped,
+          autoLiveDisabled: suggestionAutoLiveDisabled,
+          autoLiveFailed: suggestionAutoLiveFailed,
           note:
             suggestionSignalsDetected > 0
-              ? 'Fresh entry signals were detected on the latest closed candle and persisted as suggested trades.'
+              ? suggestionAutoPaperPlaced > 0
+                ? 'Fresh entry signals were detected on the latest closed candle, persisted as suggested trades, and eligible paper orders were placed automatically after pre-trade clearance.'
+                : suggestionAutoLivePlaced > 0
+                  ? 'Fresh entry signals were detected on the latest closed candle, persisted as suggested trades, and eligible live orders were placed automatically after pre-trade clearance.'
+                : suggestionAutoLiveReady > 0 ||
+                    suggestionAutoLiveBlocked > 0 ||
+                    suggestionAutoLiveSkipped > 0 ||
+                    suggestionAutoLiveDisabled > 0 ||
+                    suggestionAutoLiveFailed > 0
+                  ? 'Fresh entry signals were detected on the latest closed candle, persisted as suggested trades, and evaluated against the live-auto rollout guard.'
+                : 'Fresh entry signals were detected on the latest closed candle and persisted as suggested trades.'
               : 'The automation scan completed successfully but no fresh entry signals were detected on the latest closed candle.',
         },
       });
@@ -675,9 +737,22 @@ export class AutomationExecutionService {
     symbolsSkipped: number;
     symbolsEvaluated: number;
     signalsDetected: number;
+    autoPaperPlaced: number;
+    autoPaperBlocked: number;
+    autoPaperSkipped: number;
+    autoPaperFailed: number;
+    autoLiveReady: number;
+    autoLivePlaced: number;
+    autoLiveBlocked: number;
+    autoLiveSkipped: number;
+    autoLiveDisabled: number;
+    autoLiveFailed: number;
   }> {
     const config = this.parseRecord(normalizedConfig) ?? {};
     const tradeSuggestion = this.parseRecord(config.tradeSuggestion) ?? {};
+    const executionPolicy = normalizeTradeSuggestionExecutionPolicy(
+      this.parseRecord(tradeSuggestion.execution) ?? {}
+    );
     const setupScope = this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(config.setupScope);
     const profileInfo = await this.resolveTradeSuggestionProfile(automation.userId, config);
     const profile = profileInfo.profile;
@@ -722,6 +797,30 @@ export class AutomationExecutionService {
     let symbolsProcessed = 0;
     let symbolsSkipped = 0;
     let signalsDetected = 0;
+    let autoPaperPlaced = 0;
+    let autoPaperBlocked = 0;
+    let autoPaperSkipped = 0;
+    let autoPaperFailed = 0;
+    let autoLiveReady = 0;
+    let autoLivePlaced = 0;
+    let autoLiveBlocked = 0;
+    let autoLiveSkipped = 0;
+    let autoLiveDisabled = 0;
+    let autoLiveFailed = 0;
+    const autoPaperEnabled =
+      this.readString(executionPolicy.executionMode)?.toLowerCase() === 'paper_trade_auto' &&
+      this.readString(executionPolicy.approvalMode)?.toLowerCase() === 'auto_if_safe';
+    const autoLiveEnabled =
+      this.readString(executionPolicy.executionMode)?.toLowerCase() === 'live_trade_auto' &&
+      this.readString(executionPolicy.approvalMode)?.toLowerCase() === 'auto_if_safe';
+    const maxAutoPaperOrdersPerRun = Math.max(
+      1,
+      Math.floor(this.readNumber(this.parseRecord(executionPolicy.limits)?.maxOrdersPerRun) ?? 1)
+    );
+    const maxAutoLiveChecksPerRun = Math.max(
+      1,
+      Math.floor(this.readNumber(this.parseRecord(executionPolicy.limits)?.maxOrdersPerRun) ?? 1)
+    );
 
     const candleSettings = this.resolveTradeSuggestionCandleSettings(config);
     const existingCursors = await this.automationCursorRepository.listByAutomationAndScope(
@@ -918,6 +1017,114 @@ export class AutomationExecutionService {
           },
         });
 
+        if (!created.duplicate && created.item && autoPaperEnabled) {
+          const autoExecution = await this.suggestedTradesService.attemptAutoPaperExecutionForAutomation(
+            automation.userId,
+            created.item.id,
+            {
+              placedInRun: autoPaperPlaced,
+            }
+          );
+
+          if (autoExecution.outcome === 'placed') {
+            autoPaperPlaced += 1;
+          } else if (autoExecution.outcome === 'blocked') {
+            autoPaperBlocked += 1;
+          } else if (autoExecution.outcome === 'failed') {
+            autoPaperFailed += 1;
+          } else if (autoExecution.outcome === 'skipped') {
+            autoPaperSkipped += 1;
+          }
+
+          if (autoExecution.outcome !== 'disabled') {
+            await this.automationRunOutputRepository.createOutput({
+              automationId: automation.id,
+              automationRunId: runId,
+              userId: automation.userId,
+              suggestedTradeId: created.item.id,
+              outputType: 'trade-suggestion.paper-auto',
+              status:
+                autoExecution.outcome === 'placed'
+                  ? 'Created'
+                  : autoExecution.outcome === 'failed'
+                    ? 'Failed'
+                    : autoExecution.outcome === 'blocked'
+                      ? 'Blocked'
+                      : 'Skipped',
+              title: `${item.symbol} ${timeframe} paper auto execution`,
+              dedupeKey: `${dedupeKey}:paper-auto`,
+              payload: {
+                suggestedTradeId: created.item.id,
+                outcome: autoExecution.outcome,
+                message: autoExecution.message,
+                paperOrderId: autoExecution.paperOrderId ?? null,
+                preTradeCheckId: autoExecution.preTradeCheckId ?? null,
+                runLimit: maxAutoPaperOrdersPerRun,
+              },
+            });
+          }
+        }
+
+        if (!created.duplicate && created.item && autoLiveEnabled) {
+          const liveRollout = await this.suggestedTradesService.attemptAutoLiveExecutionForAutomation(
+            automation.userId,
+            created.item.id,
+            {
+              createOrder: async (assetId, body) =>
+                this.ordersService.createFuturesOrder(automation.userId, assetId, body),
+            },
+            {
+              placedInRun: autoLivePlaced,
+            }
+          );
+
+          if (liveRollout.outcome === 'placed') {
+            autoLivePlaced += 1;
+          } else if (liveRollout.outcome === 'ready') {
+            autoLiveReady += 1;
+          } else if (liveRollout.outcome === 'blocked') {
+            autoLiveBlocked += 1;
+          } else if (liveRollout.outcome === 'failed') {
+            autoLiveFailed += 1;
+          } else if (liveRollout.outcome === 'skipped') {
+            autoLiveSkipped += 1;
+          } else if (liveRollout.outcome === 'disabled') {
+            autoLiveDisabled += 1;
+          }
+
+          await this.automationRunOutputRepository.createOutput({
+            automationId: automation.id,
+            automationRunId: runId,
+            userId: automation.userId,
+            suggestedTradeId: created.item.id,
+            outputType: 'trade-suggestion.live-auto',
+            status:
+              liveRollout.outcome === 'placed'
+                ? 'Created'
+                : liveRollout.outcome === 'ready'
+                ? 'Ready'
+                : liveRollout.outcome === 'failed'
+                  ? 'Failed'
+                  : liveRollout.outcome === 'blocked'
+                    ? 'Blocked'
+                    : liveRollout.outcome === 'disabled'
+                      ? 'Skipped'
+                      : 'Skipped',
+            title: `${item.symbol} ${timeframe} live auto rollout guard`,
+            dedupeKey: `${dedupeKey}:live-auto`,
+            payload: {
+              suggestedTradeId: created.item.id,
+              outcome: liveRollout.outcome,
+              message: liveRollout.message,
+              orderId: liveRollout.orderId ?? null,
+              brokerKey: liveRollout.brokerKey ?? null,
+              accountId: liveRollout.accountId ?? null,
+              preTradeCheckId: liveRollout.preTradeCheckId ?? null,
+              runLimit: maxAutoLiveChecksPerRun,
+            },
+          });
+        }
+
         if (!latestTriggeredSignalTime || signalTime.getTime() > latestTriggeredSignalTime.getTime()) {
           latestTriggeredSignalTime = signalTime;
         }
@@ -958,7 +1165,11 @@ export class AutomationExecutionService {
       referenceId: automation.id,
       description:
         signalsDetected > 0
-          ? `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${symbolsSkipped} symbol(s) skipped`
+          ? autoPaperEnabled
+            ? `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${autoPaperPlaced} paper order(s) auto-placed, ${autoPaperBlocked} blocked, ${autoPaperSkipped} skipped, ${autoPaperFailed} failed, ${symbolsSkipped} symbol(s) skipped`
+            : autoLiveEnabled
+              ? `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${autoLivePlaced} live order(s) placed, ${autoLiveReady} rollout-ready, ${autoLiveBlocked} blocked, ${autoLiveSkipped} skipped, ${autoLiveDisabled} disabled, ${autoLiveFailed} failed, ${symbolsSkipped} symbol(s) skipped`
+            : `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${symbolsSkipped} symbol(s) skipped`
           : `No fresh entry signals detected across ${evaluation.evaluatedSymbols} evaluated symbol(s); ${symbolsSkipped} symbol(s) skipped`,
     });
 
@@ -969,6 +1180,16 @@ export class AutomationExecutionService {
       symbolsSkipped,
       symbolsEvaluated: evaluation.evaluatedSymbols,
       signalsDetected,
+      autoPaperPlaced,
+      autoPaperBlocked,
+      autoPaperSkipped,
+      autoPaperFailed,
+      autoLiveReady,
+      autoLivePlaced,
+      autoLiveBlocked,
+      autoLiveSkipped,
+      autoLiveDisabled,
+      autoLiveFailed,
     };
   }
 

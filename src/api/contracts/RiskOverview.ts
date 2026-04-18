@@ -117,6 +117,7 @@ export interface RiskOverviewLineageMeta {
     | 'risk_account_snapshots'
     | 'risk_order_snapshots'
     | 'risk_position_snapshots'
+    | 'risk_rule_evaluations'
     | 'risk_controls'
     | 'risk_alerts'
     | 'risk_scenarios'

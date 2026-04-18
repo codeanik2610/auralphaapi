@@ -1,5 +1,11 @@
 import { BadRequestAppError } from '../errors/AppError';
 import {
+  RiskPreTradeApprovalMode,
+  RiskPreTradeCheckBody,
+  RiskPreTradeExecutionMode,
+  RiskPreTradeOrderType,
+  RiskPreTradeQuantityMode,
+  RiskPreTradeRouteMode,
   ReviewRiskPolicyVersionBody,
   RiskKillSwitchBody,
   RollbackRiskPolicyBody,
@@ -48,6 +54,87 @@ export interface ValidatedRiskScenariosQuery {
   scope?: string;
 }
 
+export interface ValidatedRiskPreTradeCheckBody {
+  snapshotId?: string;
+  suggestedTradeId?: string;
+  automationId?: string;
+  automationRunId?: string;
+  sourceType: string;
+  executionMode: RiskPreTradeExecutionMode;
+  approvalMode: RiskPreTradeApprovalMode;
+  routing: {
+    routeMode: RiskPreTradeRouteMode;
+    brokerKey?: string | null;
+    accountId?: string | null;
+  };
+  order: {
+    symbol?: string;
+    timeframe?: string | null;
+    side?: 'BUY' | 'SELL';
+    orderType: RiskPreTradeOrderType;
+    timeInForce?: 'GTC' | 'IOC' | 'FOK' | null;
+    quantityMode: RiskPreTradeQuantityMode;
+    quantity?: number | null;
+    notional?: number | null;
+    riskPercent?: number | null;
+    entryPrice?: number | null;
+    stopLossPrice?: number | null;
+    takeProfitTargets?: number[] | null;
+    leverage?: number | null;
+    reduceOnly: boolean;
+  };
+}
+
+const parseRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+};
+
+const readString = (...values: unknown[]): string | null => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+};
+
+const readBoolean = (value: unknown, fallback = false): boolean => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no'].includes(normalized)) {
+      return false;
+    }
+  }
+  return fallback;
+};
+
+const readNumber = (value: unknown, field: string): number => {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    throw new BadRequestAppError(`${field} must be a number`);
+  }
+  return numeric;
+};
+
+const readOptionalNumber = (value: unknown, field: string): number | null => {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+  return readNumber(value, field);
+};
+
 export const validateRiskKillSwitchBody = (
   body: RiskKillSwitchBody = {}
 ): Required<RiskKillSwitchBody> => {
@@ -91,6 +178,156 @@ export const validateRiskScenariosQuery = (
   query: RiskScenariosQuery = {}
 ): ValidatedRiskScenariosQuery => {
   return validateRiskAlertsQuery(query);
+};
+
+export const validateRiskPreTradeCheckBody = (
+  body: RiskPreTradeCheckBody = {}
+): ValidatedRiskPreTradeCheckBody => {
+  const routing = parseRecord(body.routing) ?? {};
+  const order = parseRecord(body.order) ?? {};
+
+  const executionMode = (
+    readString(body.executionMode) || 'paper'
+  ).toLowerCase() as RiskPreTradeExecutionMode;
+  if (executionMode !== 'paper' && executionMode !== 'live') {
+    throw new BadRequestAppError('executionMode must be one of: paper, live');
+  }
+
+  const approvalMode = (
+    readString(body.approvalMode) || 'manual_review'
+  ).toLowerCase() as RiskPreTradeApprovalMode;
+  if (approvalMode !== 'manual_review' && approvalMode !== 'auto_if_safe') {
+    throw new BadRequestAppError('approvalMode must be one of: manual_review, auto_if_safe');
+  }
+
+  const routeMode = (
+    readString(routing.routeMode) || 'strategy_default'
+  ).toLowerCase() as RiskPreTradeRouteMode;
+  if (
+    routeMode !== 'strategy_default' &&
+    routeMode !== 'user_default' &&
+    routeMode !== 'fixed'
+  ) {
+    throw new BadRequestAppError(
+      'routing.routeMode must be one of: strategy_default, user_default, fixed'
+    );
+  }
+
+  const brokerKey = readString(routing.brokerKey)?.toLowerCase() || null;
+  const accountId = readString(routing.accountId) || null;
+  if (routeMode === 'fixed' && !brokerKey) {
+    throw new BadRequestAppError('routing.brokerKey is required when routing.routeMode is fixed');
+  }
+
+  const orderType = (readString(order.orderType) || 'market').toLowerCase() as RiskPreTradeOrderType;
+  if (orderType !== 'market' && orderType !== 'limit') {
+    throw new BadRequestAppError('order.orderType must be one of: market, limit');
+  }
+
+  const quantityMode = (
+    readString(order.quantityMode) || 'notional'
+  ).toLowerCase() as RiskPreTradeQuantityMode;
+  if (
+    quantityMode !== 'quantity' &&
+    quantityMode !== 'notional' &&
+    quantityMode !== 'risk_percent'
+  ) {
+    throw new BadRequestAppError(
+      'order.quantityMode must be one of: quantity, notional, risk_percent'
+    );
+  }
+
+  const timeInForce = readString(order.timeInForce)?.toUpperCase() || null;
+  if (timeInForce && !['GTC', 'IOC', 'FOK'].includes(timeInForce)) {
+    throw new BadRequestAppError('order.timeInForce must be one of: GTC, IOC, FOK');
+  }
+
+  const symbol = readString(order.symbol)?.toUpperCase();
+  const timeframe = readString(order.timeframe) || null;
+  const side = readString(order.side)?.toUpperCase() as 'BUY' | 'SELL' | undefined;
+  if (side && side !== 'BUY' && side !== 'SELL') {
+    throw new BadRequestAppError('order.side must be one of: BUY, SELL');
+  }
+
+  const entryPrice = readOptionalNumber(order.entryPrice, 'order.entryPrice');
+  const quantity = readOptionalNumber(order.quantity, 'order.quantity');
+  const notional = readOptionalNumber(order.notional, 'order.notional');
+  const riskPercent = readOptionalNumber(order.riskPercent, 'order.riskPercent');
+  const stopLossPrice = readOptionalNumber(order.stopLossPrice, 'order.stopLossPrice');
+  const leverage = readOptionalNumber(order.leverage, 'order.leverage');
+
+  if (orderType === 'limit' && !(entryPrice && entryPrice > 0)) {
+    throw new BadRequestAppError('order.entryPrice is required for limit orders');
+  }
+  if (quantityMode === 'quantity') {
+    if (!(quantity && quantity > 0)) {
+      throw new BadRequestAppError('order.quantity must be greater than 0 when quantityMode is quantity');
+    }
+    if (!(entryPrice && entryPrice > 0)) {
+      throw new BadRequestAppError(
+        'order.entryPrice must be greater than 0 when quantityMode is quantity'
+      );
+    }
+  }
+  if (quantityMode === 'notional' && !(notional && notional > 0)) {
+    throw new BadRequestAppError(
+      'order.notional must be greater than 0 when quantityMode is notional'
+    );
+  }
+  if (quantityMode === 'risk_percent' && !(riskPercent && riskPercent > 0)) {
+    throw new BadRequestAppError(
+      'order.riskPercent must be greater than 0 when quantityMode is risk_percent'
+    );
+  }
+  if (leverage !== null && leverage <= 0) {
+    throw new BadRequestAppError('order.leverage must be greater than 0 when provided');
+  }
+  if (stopLossPrice !== null && stopLossPrice <= 0) {
+    throw new BadRequestAppError('order.stopLossPrice must be greater than 0 when provided');
+  }
+
+  const takeProfitTargets = Array.isArray(order.takeProfitTargets)
+    ? order.takeProfitTargets.map((value, index) => {
+        const numeric = readNumber(value, `order.takeProfitTargets[${index}]`);
+        if (numeric <= 0) {
+          throw new BadRequestAppError(
+            `order.takeProfitTargets[${index}] must be greater than 0`
+          );
+        }
+        return numeric;
+      })
+    : null;
+
+  return {
+    snapshotId: readString(body.snapshotId) || undefined,
+    suggestedTradeId: readString(body.suggestedTradeId) || undefined,
+    automationId: readString(body.automationId) || undefined,
+    automationRunId: readString(body.automationRunId) || undefined,
+    sourceType: readString(body.sourceType) || 'suggested_trade',
+    executionMode,
+    approvalMode,
+    routing: {
+      routeMode,
+      brokerKey,
+      accountId,
+    },
+    order: {
+      symbol,
+      timeframe,
+      side,
+      orderType,
+      timeInForce: timeInForce as 'GTC' | 'IOC' | 'FOK' | null,
+      quantityMode,
+      quantity,
+      notional,
+      riskPercent,
+      entryPrice,
+      stopLossPrice,
+      takeProfitTargets,
+      leverage,
+      reduceOnly: readBoolean(order.reduceOnly, false),
+    },
+  };
 };
 
 export const validateUpsertRiskPolicyBody = (

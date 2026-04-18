@@ -737,7 +737,9 @@ async function runAdminSurfaceAssertions(): Promise<void> {
     },
   };
   const calls = {
+    updateAnchor: [] as Array<Record<string, unknown>>,
     updateUserConfig: [] as Array<Record<string, unknown>>,
+    updateManyUserConfig: [] as Array<Record<string, unknown>>,
     cancelPendingActor: [] as Array<Record<string, unknown>>,
     cancelPendingTypeActor: [] as Array<Record<string, unknown>>,
     cancelQueuedRunsActor: [] as Array<Record<string, unknown>>,
@@ -759,6 +761,7 @@ async function runAdminSurfaceAssertions(): Promise<void> {
       return { ...storedAnchorConfig };
     },
     async updateByKey(_key: string, payload: Record<string, unknown>) {
+      calls.updateAnchor.push(payload);
       Object.assign(storedAnchorConfig, payload);
       return { ...storedAnchorConfig };
     },
@@ -803,6 +806,21 @@ async function runAdminSurfaceAssertions(): Promise<void> {
         ...payload,
       };
       return { ...storedUserConfig };
+    },
+    async listBySchedulerKey(schedulerKey: string) {
+      assert.equal(schedulerKey, 'risk-recompute-sync');
+      return [
+        { userId: 'admin-1' },
+        { userId: 'user-2' },
+      ];
+    },
+    async updateManyBySchedulerKey(schedulerKey: string, payload: Record<string, unknown>) {
+      calls.updateManyUserConfig.push({ schedulerKey, payload });
+      storedUserConfig = {
+        ...(storedUserConfig || {}),
+        ...payload,
+      };
+      return 2;
     },
   };
   service.schedulerCommandRepository = {
@@ -934,18 +952,26 @@ async function runAdminSurfaceAssertions(): Promise<void> {
     const pauseResponse = await service.pauseScheduler('admin-1');
     assert.equal(pauseResponse.data.action, 'pause');
     assert.equal(
-      (calls.updateUserConfig[0]?.payload as Record<string, unknown> | undefined)?.enabled,
+      (calls.updateManyUserConfig[0]?.payload as Record<string, unknown> | undefined)?.enabled,
       false
     );
-    assert.equal(calls.cancelPendingActor[0]?.actorUserId, 'admin-1');
-    assert.equal(calls.cancelQueuedRunsActor[0]?.actorUserId, 'admin-1');
+    assert.equal(calls.updateAnchor[0]?.enabled, false);
+    assert.deepEqual(
+      calls.cancelPendingActor.slice(0, 2).map((entry) => entry.actorUserId).sort(),
+      ['admin-1', 'user-2']
+    );
+    assert.deepEqual(
+      calls.cancelQueuedRunsActor.slice(0, 2).map((entry) => entry.actorUserId).sort(),
+      ['admin-1', 'user-2']
+    );
 
     const resumeResponse = await service.resumeScheduler('admin-1');
     assert.equal(resumeResponse.data.action, 'resume');
     assert.equal(
-      (calls.updateUserConfig[1]?.payload as Record<string, unknown> | undefined)?.enabled,
+      (calls.updateManyUserConfig[1]?.payload as Record<string, unknown> | undefined)?.enabled,
       true
     );
+    assert.equal(calls.updateAnchor[1]?.enabled, true);
 
     runningState = true;
     createdCommands.length = 0;

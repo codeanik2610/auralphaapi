@@ -1399,6 +1399,12 @@ async function testSchedulerOverviewPhaseFiveSnapshots(): Promise<void> {
             status?: string;
             finishedAt?: string;
             updatedAssets?: number;
+            healthCheckCounts?: {
+              checked?: number;
+              passed?: number;
+              failed?: number;
+              skipped?: number;
+            };
           };
           ops?: {
             activeStatus?: string;

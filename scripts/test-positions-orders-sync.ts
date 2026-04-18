@@ -394,8 +394,9 @@ async function testPositionsSchedulerRuntimeMigratesToUserScope(): Promise<void>
   const createdCommands: Array<Record<string, unknown>> = [];
   let actorPendingChecks = 0;
   let actorRunningChecks = 0;
-  let actorCancelChecks = 0;
-  let actorQueuedCancels = 0;
+  const cancelledActors: string[] = [];
+  const queuedCancelledActors: string[] = [];
+  const bulkUserUpdates: Array<Record<string, unknown>> = [];
 
   service.userTimeZoneService = {
     async resolveUserTimeZone() {
@@ -429,6 +430,19 @@ async function testPositionsSchedulerRuntimeMigratesToUserScope(): Promise<void>
       Object.assign(userConfig, payload);
       return userConfig;
     },
+    async listBySchedulerKey(schedulerKey: string) {
+      assert.equal(schedulerKey, 'positions-sync');
+      return [
+        { userId: 'ops-admin' },
+        { userId: 'ops-user-2' },
+      ];
+    },
+    async updateManyBySchedulerKey(schedulerKey: string, payload: Record<string, unknown>) {
+      assert.equal(schedulerKey, 'positions-sync');
+      bulkUserUpdates.push(payload);
+      Object.assign(userConfig, payload);
+      return 2;
+    },
   };
   service.schedulerCommandRepository = {
     async findLatestBySchedulerKeyAndTypeAndActorInStatuses(
@@ -452,9 +466,8 @@ async function testPositionsSchedulerRuntimeMigratesToUserScope(): Promise<void>
       schedulerKey: string,
       actorUserId: string
     ) {
-      actorCancelChecks += 1;
+      cancelledActors.push(actorUserId);
       assert.equal(schedulerKey, 'positions-sync');
-      assert.equal(actorUserId, 'ops-admin');
       return 0;
     },
   };
@@ -473,9 +486,8 @@ async function testPositionsSchedulerRuntimeMigratesToUserScope(): Promise<void>
       schedulerKey: string,
       actorUserId: string
     ) {
-      actorQueuedCancels += 1;
+      queuedCancelledActors.push(actorUserId);
       assert.equal(schedulerKey, 'positions-sync');
-      assert.equal(actorUserId, 'ops-admin');
       return 0;
     },
   };
@@ -529,8 +541,15 @@ async function testPositionsSchedulerRuntimeMigratesToUserScope(): Promise<void>
   );
 
   await service.pauseScheduler('ops-admin');
-  assert.equal(actorCancelChecks >= 1, true);
-  assert.equal(actorQueuedCancels, 1);
+  assert.equal((bulkUserUpdates[0]?.enabled as boolean | undefined) ?? null, false);
+  assert.equal(anchorUpdates.at(-1)?.enabled, false);
+  assert.deepEqual(cancelledActors.sort(), ['ops-admin', 'ops-user-2']);
+  assert.deepEqual(queuedCancelledActors.sort(), ['ops-admin', 'ops-user-2']);
+
+  const resumeResponse = await service.resumeScheduler('ops-admin');
+  assert.equal(resumeResponse.data.action, 'resume');
+  assert.equal((bulkUserUpdates[1]?.enabled as boolean | undefined) ?? null, true);
+  assert.equal(anchorUpdates.at(-1)?.enabled, true);
 }
 
 async function testInternalPositionsControllerForcesSystemScope(): Promise<void> {
@@ -945,6 +964,9 @@ async function testOrdersSchedulerRuntimeMigratesToUserScope(): Promise<void> {
   const createdCommands: Array<Record<string, unknown>> = [];
   let actorPendingChecks = 0;
   let actorRunningChecks = 0;
+  const cancelledActors: string[] = [];
+  const queuedCancelledActors: string[] = [];
+  const bulkUserUpdates: Array<Record<string, unknown>> = [];
 
   service.userTimeZoneService = {
     async resolveUserTimeZone() {
@@ -978,6 +1000,19 @@ async function testOrdersSchedulerRuntimeMigratesToUserScope(): Promise<void> {
       Object.assign(userConfig, payload);
       return userConfig;
     },
+    async listBySchedulerKey(schedulerKey: string) {
+      assert.equal(schedulerKey, 'orders-sync');
+      return [
+        { userId: 'ops-admin' },
+        { userId: 'ops-user-2' },
+      ];
+    },
+    async updateManyBySchedulerKey(schedulerKey: string, payload: Record<string, unknown>) {
+      assert.equal(schedulerKey, 'orders-sync');
+      bulkUserUpdates.push(payload);
+      Object.assign(userConfig, payload);
+      return 2;
+    },
   };
   service.schedulerCommandRepository = {
     async findLatestBySchedulerKeyAndTypeAndActorInStatuses(
@@ -997,7 +1032,11 @@ async function testOrdersSchedulerRuntimeMigratesToUserScope(): Promise<void> {
       createdCommands.push(payload);
       return { id: `cmd-${createdCommands.length}`, ...payload };
     },
-    async cancelPendingBySchedulerKeyAndActor() {
+    async cancelPendingBySchedulerKeyAndActor(
+      _schedulerKey: string,
+      actorUserId: string
+    ) {
+      cancelledActors.push(actorUserId);
       return 0;
     },
     async cancelPendingBySchedulerKeyAndTypeAndActor() {
@@ -1015,7 +1054,11 @@ async function testOrdersSchedulerRuntimeMigratesToUserScope(): Promise<void> {
       createdRuns.push(payload);
       return payload;
     },
-    async cancelQueuedRunsBySchedulerKeyAndActor() {
+    async cancelQueuedRunsBySchedulerKeyAndActor(
+      _schedulerKey: string,
+      actorUserId: string
+    ) {
+      queuedCancelledActors.push(actorUserId);
       return 0;
     },
   };
@@ -1073,6 +1116,18 @@ async function testOrdersSchedulerRuntimeMigratesToUserScope(): Promise<void> {
     (createdCommands[0]?.payload as Record<string, unknown>)?.requestedByUserId,
     'ops-admin'
   );
+
+  const pauseResponse = await service.pauseScheduler('ops-admin');
+  assert.equal(pauseResponse.data.action, 'pause');
+  assert.equal((bulkUserUpdates[0]?.enabled as boolean | undefined) ?? null, false);
+  assert.equal(anchorUpdates.at(-1)?.enabled, false);
+  assert.deepEqual(cancelledActors.sort(), ['ops-admin', 'ops-user-2']);
+  assert.deepEqual(queuedCancelledActors.sort(), ['ops-admin', 'ops-user-2']);
+
+  const resumeResponse = await service.resumeScheduler('ops-admin');
+  assert.equal(resumeResponse.data.action, 'resume');
+  assert.equal((bulkUserUpdates[1]?.enabled as boolean | undefined) ?? null, true);
+  assert.equal(anchorUpdates.at(-1)?.enabled, true);
 }
 
 async function testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation(): Promise<void> {

@@ -43,6 +43,8 @@ export interface RiskAccountItem {
   brokerKey: string;
   accountId: string;
   accountName: string;
+  policyContextId?: string | null;
+  sourceCoverageId?: string | null;
   denominatorBasis?: string;
   walletBalance?: number | null;
   futuresBalance?: number | null;
@@ -205,6 +207,7 @@ export interface RiskSnapshotDetailResponse {
   controls: RiskControlItem[];
   alerts: RiskAlertItem[];
   scenarios: RiskScenarioItem[];
+  storage?: RiskSnapshotStorageDetail;
   counts: {
     accounts: number;
     positions: number;
@@ -213,6 +216,448 @@ export interface RiskSnapshotDetailResponse {
     alerts: number;
     scenarios: number;
   };
+  time?: ApiTimeContract;
+}
+
+export interface RiskSnapshotStorageDetail {
+  brokers: RiskBrokerSnapshotItem[];
+  assets: RiskAssetSnapshotItem[];
+  brokerAssets: RiskBrokerAssetSnapshotItem[];
+  policyContexts: RiskPolicyContextItem[];
+  sourceCoverage: RiskSourceCoverageItem[];
+  ruleEvaluations: RiskRuleEvaluationItem[];
+  counts: {
+    brokers: number;
+    assets: number;
+    brokerAssets: number;
+    policyContexts: number;
+    sourceCoverage: number;
+    ruleEvaluations: number;
+  };
+}
+
+export interface RiskBrokerSnapshotItem {
+  id: string;
+  snapshotId: string;
+  brokerKey: string;
+  policyContextId?: string | null;
+  accountCount: number;
+  trackedBalance: number;
+  walletBalance: number;
+  futuresBalance: number;
+  grossExposure: number;
+  netExposure: number;
+  longExposure: number;
+  shortExposure: number;
+  openPositions: number;
+  openOrders: number;
+  openOrderExposure: number;
+  reservedOrderMargin: number;
+  unrealizedPnl: number;
+  realizedPnl: number;
+  weightedAvgLeverage?: number | null;
+  maxLeverage?: number | null;
+  worstLiquidationDistancePct?: number | null;
+  marginUsagePct?: number;
+  portfolioAllocationPct?: number;
+  riskScore: number;
+  riskState: string;
+  primaryConcern?: string | null;
+  createdAt: string;
+  createdAtIso?: string;
+}
+
+export interface RiskBrokerSnapshotsResponse {
+  items: RiskBrokerSnapshotItem[];
+  total: number;
+  snapshotId?: string;
+  portfolioEquity?: number;
+  time?: ApiTimeContract;
+}
+
+export interface RiskAssetSnapshotItem {
+  id: string;
+  snapshotId: string;
+  symbol: string;
+  accountCount: number;
+  brokerCount: number;
+  positionCount: number;
+  openOrders: number;
+  openOrderExposure: number;
+  reservedOrderMargin: number;
+  grossExposure: number;
+  netExposure: number;
+  longExposure: number;
+  shortExposure: number;
+  unrealizedPnl: number;
+  realizedPnl: number;
+  weightedAvgLeverage?: number | null;
+  maxLeverage?: number | null;
+  worstLiquidationDistancePct?: number | null;
+  allocationPct?: number;
+  riskScore: number;
+  riskState: string;
+  primaryConcern?: string | null;
+  createdAt: string;
+  createdAtIso?: string;
+}
+
+export interface RiskAssetSnapshotsResponse {
+  items: RiskAssetSnapshotItem[];
+  total: number;
+  snapshotId?: string;
+  portfolioEquity?: number;
+  time?: ApiTimeContract;
+}
+
+export interface RiskBrokerAssetSnapshotItem {
+  id: string;
+  snapshotId: string;
+  brokerKey: string;
+  symbol: string;
+  policyContextId?: string | null;
+  accountCount: number;
+  positionCount: number;
+  openOrders: number;
+  openOrderExposure: number;
+  reservedOrderMargin: number;
+  grossExposure: number;
+  netExposure: number;
+  longExposure: number;
+  shortExposure: number;
+  unrealizedPnl: number;
+  realizedPnl: number;
+  weightedAvgLeverage?: number | null;
+  maxLeverage?: number | null;
+  worstLiquidationDistancePct?: number | null;
+  allocationPct?: number;
+  marginUsagePct?: number | null;
+  riskScore: number;
+  riskState: string;
+  primaryConcern?: string | null;
+  createdAt: string;
+  createdAtIso?: string;
+}
+
+export interface RiskBrokerAssetSnapshotsResponse {
+  items: RiskBrokerAssetSnapshotItem[];
+  total: number;
+  snapshotId?: string;
+  portfolioEquity?: number;
+  time?: ApiTimeContract;
+}
+
+export interface RiskPolicyContextItem {
+  id: string;
+  snapshotId: string;
+  contextKey: string;
+  policyId?: string | null;
+  policyScope: string;
+  policyTargetKey: string;
+  enabled: boolean;
+  monitorOnly: boolean;
+  enforceHardBlock: boolean;
+  marginUsageWarnPct: number;
+  marginUsageCriticalPct: number;
+  concentrationWarnPct: number;
+  concentrationCriticalPct: number;
+  dailyLossLimitPct: number;
+  weeklyLossLimitPct: number;
+  monthlyLossLimitPct: number;
+  maxLeverage?: number | null;
+  maxOrderAllocation?: number | null;
+  maxTotalAllocation?: number | null;
+  maxAvgLeverage?: number | null;
+  createdAt: string;
+  createdAtIso?: string;
+}
+
+export interface RiskPolicyContextsResponse {
+  items: RiskPolicyContextItem[];
+  total: number;
+  snapshotId?: string;
+  time?: ApiTimeContract;
+}
+
+export interface RiskSourceCoverageItem {
+  id: string;
+  snapshotId: string;
+  brokerKey: string;
+  accountId: string;
+  accountName: string;
+  latestFundsSnapshotId?: string | null;
+  latestFundsSnapshotDate?: string | null;
+  latestFundsObservedAt?: string | null;
+  latestFundsObservedAtIso?: string | null;
+  latestFundsComputedAt?: string | null;
+  latestFundsComputedAtIso?: string | null;
+  latestFundsLastAttemptAt?: string | null;
+  latestFundsLastAttemptAtIso?: string | null;
+  latestFundsFetchStatus?: string | null;
+  latestFundsErrorMessage?: string | null;
+  latestFundsSource?: string | null;
+  latestWalletAvailable: boolean;
+  latestFuturesAvailable: boolean;
+  latestSuccessFundsSnapshotId?: string | null;
+  latestSuccessFundsSnapshotDate?: string | null;
+  latestSuccessFundsObservedAt?: string | null;
+  latestSuccessFundsObservedAtIso?: string | null;
+  latestSuccessFundsComputedAt?: string | null;
+  latestSuccessFundsComputedAtIso?: string | null;
+  latestSuccessFundsSource?: string | null;
+  latestSuccessWalletAvailable: boolean;
+  latestSuccessFuturesAvailable: boolean;
+  positionsObservedAt?: string | null;
+  positionsObservedAtIso?: string | null;
+  positionsCheckpointAt?: string | null;
+  positionsCheckpointAtIso?: string | null;
+  openPositions: number;
+  positionTotalRows: number;
+  positionSnapshotRows: number;
+  positionReadModelRows: number;
+  rowsMissingFromReadModel: number;
+  rowsBehindSnapshot: number;
+  orphanReadModelRows: number;
+  latestPositionSnapshotSeenAt?: string | null;
+  latestPositionSnapshotSeenAtIso?: string | null;
+  latestPositionReadModelSeenAt?: string | null;
+  latestPositionReadModelSeenAtIso?: string | null;
+  openOrderRows: number;
+  latestOrderSeenAt?: string | null;
+  latestOrderSeenAtIso?: string | null;
+  createdAt: string;
+  createdAtIso?: string;
+}
+
+export interface RiskSourceCoverageResponse {
+  items: RiskSourceCoverageItem[];
+  total: number;
+  snapshotId?: string;
+  time?: ApiTimeContract;
+}
+
+export interface RiskRuleEvaluationItem {
+  id: string;
+  snapshotId: string;
+  policyContextId?: string | null;
+  sourceType: string;
+  scopeType: string;
+  scopeKey: string;
+  scopeLabel?: string | null;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  positionId?: string | null;
+  symbol?: string | null;
+  ruleCode: string;
+  metricName?: string | null;
+  actualValue?: number | null;
+  basisValue?: number | null;
+  warnThresholdValue?: number | null;
+  criticalThresholdValue?: number | null;
+  status: string;
+  bucket?: string | null;
+  exposure?: string | null;
+  threshold?: string | null;
+  action?: string | null;
+  alertSeverity?: string | null;
+  alertMessage?: string | null;
+  alertSymbol?: string | null;
+  alertChannel?: string | null;
+  alertStatus?: string | null;
+  sortOrder: number;
+  createdAt: string;
+  createdAtIso?: string;
+}
+
+export interface RiskRuleEvaluationsResponse {
+  items: RiskRuleEvaluationItem[];
+  total: number;
+  snapshotId?: string;
+  time?: ApiTimeContract;
+}
+
+export type RiskPreTradeExecutionMode = 'paper' | 'live';
+export type RiskPreTradeApprovalMode = 'manual_review' | 'auto_if_safe';
+export type RiskPreTradeRouteMode = 'strategy_default' | 'user_default' | 'fixed';
+export type RiskPreTradeOrderType = 'market' | 'limit';
+export type RiskPreTradeQuantityMode = 'quantity' | 'notional' | 'risk_percent';
+export type RiskPreTradeCheckStatus = 'passed' | 'blocked' | 'warning' | 'stale' | 'error';
+export type RiskPreTradeFreshnessState = 'fresh' | 'lagging' | 'partial' | 'unavailable';
+
+export interface RiskPreTradeCheckBody {
+  snapshotId?: string;
+  suggestedTradeId?: string;
+  automationId?: string;
+  automationRunId?: string;
+  sourceType?: string;
+  executionMode?: RiskPreTradeExecutionMode;
+  approvalMode?: RiskPreTradeApprovalMode;
+  routing?: {
+    routeMode?: RiskPreTradeRouteMode;
+    brokerKey?: string | null;
+    accountId?: string | null;
+  };
+  order?: {
+    symbol?: string;
+    timeframe?: string | null;
+    side?: 'BUY' | 'SELL';
+    orderType?: RiskPreTradeOrderType;
+    timeInForce?: 'GTC' | 'IOC' | 'FOK' | null;
+    quantityMode?: RiskPreTradeQuantityMode;
+    quantity?: number | null;
+    notional?: number | null;
+    riskPercent?: number | null;
+    entryPrice?: number | string | null;
+    stopLossPrice?: number | string | null;
+    takeProfitTargets?: Array<number | string> | null;
+    leverage?: number | null;
+    reduceOnly?: boolean;
+  };
+}
+
+export interface RiskPreTradeAppliedPolicyItem {
+  policyContextId?: string | null;
+  policyId?: string | null;
+  scope: string;
+  scopeKey: string;
+  monitorOnly: boolean;
+  enforceHardBlock: boolean;
+}
+
+export interface RiskPreTradeScopeImpactItem {
+  id: string;
+  checkId: string;
+  snapshotId?: string | null;
+  scopeType: string;
+  scopeKey: string;
+  scopeLabel?: string | null;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  symbol?: string | null;
+  beforeGrossExposure?: number | null;
+  beforeNetExposure?: number | null;
+  beforeOpenOrderExposure?: number | null;
+  beforeReservedOrderMargin?: number | null;
+  beforeMarginUsagePct?: number | null;
+  beforeAllocationPct?: number | null;
+  beforeRiskScore?: number | null;
+  beforeRiskState?: string | null;
+  deltaGrossExposure?: number | null;
+  deltaNetExposure?: number | null;
+  deltaOpenOrderExposure?: number | null;
+  deltaReservedOrderMargin?: number | null;
+  afterGrossExposure?: number | null;
+  afterNetExposure?: number | null;
+  afterOpenOrderExposure?: number | null;
+  afterReservedOrderMargin?: number | null;
+  afterMarginUsagePct?: number | null;
+  afterAllocationPct?: number | null;
+  afterRiskScore?: number | null;
+  afterRiskState?: string | null;
+  sortOrder: number;
+  createdAt: string;
+  createdAtIso?: string;
+}
+
+export interface RiskPreTradeRuleResult {
+  id: string;
+  checkId: string;
+  snapshotId?: string | null;
+  policyContextId?: string | null;
+  scopeType: string;
+  scopeKey: string;
+  scopeLabel?: string | null;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  symbol?: string | null;
+  ruleCode: string;
+  metricName?: string | null;
+  actualValue?: number | null;
+  basisValue?: number | null;
+  warnThresholdValue?: number | null;
+  criticalThresholdValue?: number | null;
+  status: string;
+  blocking: boolean;
+  message: string;
+  sortOrder: number;
+  createdAt: string;
+  createdAtIso?: string;
+}
+
+export interface RiskPreTradeCheckResult {
+  checkId: string;
+  status: RiskPreTradeCheckStatus;
+  checkedAt: string;
+  checkedAtIso?: string;
+  expiresAt?: string | null;
+  expiresAtIso?: string | null;
+  request: {
+    suggestedTradeId?: string | null;
+    automationId?: string | null;
+    automationRunId?: string | null;
+    sourceType: string;
+    executionMode: RiskPreTradeExecutionMode;
+    approvalMode: RiskPreTradeApprovalMode;
+    routing: {
+      routeMode: RiskPreTradeRouteMode;
+      brokerKey?: string | null;
+      accountId?: string | null;
+    };
+    order: {
+      symbol: string;
+      timeframe?: string | null;
+      side: 'BUY' | 'SELL';
+      orderType: RiskPreTradeOrderType;
+      timeInForce?: 'GTC' | 'IOC' | 'FOK' | null;
+      quantityMode: RiskPreTradeQuantityMode;
+      quantity?: number | null;
+      notional?: number | null;
+      riskPercent?: number | null;
+      entryPrice?: number | null;
+      stopLossPrice?: number | null;
+      takeProfitTargets?: number[] | null;
+      leverage?: number | null;
+      reduceOnly: boolean;
+    };
+  };
+  snapshot: {
+    snapshotId?: string | null;
+    freshnessState: RiskPreTradeFreshnessState;
+    snapshotLagMinutes?: number | null;
+    latestRiskSnapshotAt?: string | null;
+    latestRiskSnapshotAtIso?: string | null;
+  };
+  decision: {
+    allowed: boolean;
+    blocked: boolean;
+    approvalRequired: boolean;
+    blockingRuleCount: number;
+    warningRuleCount: number;
+    summary: string;
+  };
+  before: {
+    portfolio?: RiskPreTradeScopeImpactItem | null;
+    brokers: RiskPreTradeScopeImpactItem[];
+    assets: RiskPreTradeScopeImpactItem[];
+    brokerAssets: RiskPreTradeScopeImpactItem[];
+  };
+  delta: {
+    grossExposureDelta?: number | null;
+    netExposureDelta?: number | null;
+    openOrderExposureDelta?: number | null;
+    reservedOrderMarginDelta?: number | null;
+  };
+  after: {
+    portfolio?: RiskPreTradeScopeImpactItem | null;
+    brokers: RiskPreTradeScopeImpactItem[];
+    assets: RiskPreTradeScopeImpactItem[];
+    brokerAssets: RiskPreTradeScopeImpactItem[];
+  };
+  scopeImpacts: RiskPreTradeScopeImpactItem[];
+  blockingRules: RiskPreTradeRuleResult[];
+  warningRules: RiskPreTradeRuleResult[];
+  evaluatedRules: RiskPreTradeRuleResult[];
+  appliedPolicies: RiskPreTradeAppliedPolicyItem[];
   time?: ApiTimeContract;
 }
 
@@ -237,6 +682,7 @@ export interface RiskRecomputeResult {
   snapshotId?: string;
   portfolioRisk?: string;
   orderSnapshotsCreated?: number;
+  ruleEvaluationsCreated?: number;
   controlsCreated?: number;
   alertsCreated?: number;
   scenariosCreated?: number;

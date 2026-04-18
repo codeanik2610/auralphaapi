@@ -197,7 +197,8 @@
     "db:seed:backtests-chart-smoke": "node --import tsx scripts/db/db-seed-backtests-chart-smoke.ts",
     "db:bootstrap": "npm run db:baseline && npm run db:migrate",
     "db:encrypt-broker-secrets": "node --import tsx scripts/db/db-encrypt-broker-account-secrets.ts",
-    "rebuild:positions-read-model": "node --import tsx scripts/rebuild/rebuild-positions-read-model.ts"
+    "rebuild:positions-read-model": "node --import tsx scripts/rebuild/rebuild-positions-read-model.ts",
+    "rebuild:risk-normalized-storage": "node --import tsx scripts/rebuild/rebuild-risk-normalized-storage.ts"
   },
   "dependencies": {
     "@types/nodemailer": "^7.0.11",

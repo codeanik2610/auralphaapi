@@ -11,16 +11,29 @@ import {
   RiskAlertsSummary,
   RiskAlertItem,
   RiskAccountsResponse,
+  RiskAssetSnapshotItem,
+  RiskAssetSnapshotsResponse,
   RiskAccountItem,
+  RiskBrokerAssetSnapshotItem,
+  RiskBrokerAssetSnapshotsResponse,
+  RiskBrokerSnapshotItem,
+  RiskBrokerSnapshotsResponse,
   RiskOrdersResponse,
   RiskOrderItem,
   RiskPositionsResponse,
   RiskPositionItem,
+  RiskPolicyContextItem,
+  RiskPolicyContextsResponse,
+  RiskRuleEvaluationItem,
+  RiskRuleEvaluationsResponse,
   RiskSnapshotDetailResponse,
+  RiskSnapshotStorageDetail,
   RiskControlsResponse,
   RiskControlItem,
   RiskScenariosResponse,
   RiskScenarioItem,
+  RiskSourceCoverageItem,
+  RiskSourceCoverageResponse,
   RiskBatchRecomputeResult,
   RiskPolicyVersionItem,
   RiskPolicyVersionsResponse,
@@ -51,9 +64,14 @@ import { RiskControlRepository } from '../../database';
 import { RiskScenarioRepository } from '../../database';
 import { RiskPolicyRepository } from '../../database';
 import { BrokerAccountRepository } from '../../database';
-import { FundsSnapshotRepository, FundsSnapshotRow } from '../../database/repositories/FundsSnapshotRepository';
+import {
+  FundsSnapshotCoverageRow,
+  FundsSnapshotRepository,
+  FundsSnapshotRow,
+} from '../../database/repositories/FundsSnapshotRepository';
 import {
   PositionAccountFreshnessRow,
+  PositionReadModelCoverageRow,
   PositionReadModelRepository,
 } from '../../database/repositories/PositionReadModelRepository';
 import { ComputedRiskSnapshotPayload } from '../../database/repositories/RiskRepository';
@@ -73,9 +91,33 @@ import {
   ComputedRiskOrderSnapshotPayload,
   RiskOrderSnapshotRepository,
 } from '../../database/repositories/RiskOrderSnapshotRepository';
+import {
+  ComputedRiskAssetSnapshotPayload,
+  RiskAssetSnapshotRepository,
+} from '../../database/repositories/RiskAssetSnapshotRepository';
 import { ComputedRiskAlertPayload } from '../../database/repositories/RiskAlertRepository';
+import {
+  ComputedRiskBrokerAssetSnapshotPayload,
+  RiskBrokerAssetSnapshotRepository,
+} from '../../database/repositories/RiskBrokerAssetSnapshotRepository';
+import {
+  ComputedRiskBrokerSnapshotPayload,
+  RiskBrokerSnapshotRepository,
+} from '../../database/repositories/RiskBrokerSnapshotRepository';
 import { ComputedRiskControlPayload } from '../../database/repositories/RiskControlRepository';
+import {
+  ComputedRiskRuleEvaluationPayload,
+  RiskRuleEvaluationRepository,
+} from '../../database/repositories/RiskRuleEvaluationRepository';
 import { ComputedRiskScenarioPayload } from '../../database/repositories/RiskScenarioRepository';
+import {
+  ComputedRiskSnapshotPolicyContextPayload,
+  RiskSnapshotPolicyContextRepository,
+} from '../../database/repositories/RiskSnapshotPolicyContextRepository';
+import {
+  ComputedRiskSnapshotSourceCoveragePayload,
+  RiskSnapshotSourceCoverageRepository,
+} from '../../database/repositories/RiskSnapshotSourceCoverageRepository';
 import { OperationalEventService } from './OperationalEventService';
 import { BrokerRouteResolution } from '../../brokers/core/BrokerAccountRoutingService';
 import { getUtcDateRangeFromLocalDates } from '../utils/timezone';
@@ -86,6 +128,15 @@ import {
   formatApiDisplayTime,
   formatApiRawIso,
 } from '../utils/apiTimeContract';
+import { RiskAccountSnapshot } from '../../database/entities/RiskAccountSnapshot';
+import { RiskAssetSnapshot } from '../../database/entities/RiskAssetSnapshot';
+import { RiskBrokerAssetSnapshot } from '../../database/entities/RiskBrokerAssetSnapshot';
+import { RiskBrokerSnapshot } from '../../database/entities/RiskBrokerSnapshot';
+import { RiskPolicy } from '../../database/entities/RiskPolicy';
+import { RiskSnapshot } from '../../database/entities/RiskSnapshot';
+import { RiskSnapshotPolicyContext } from '../../database/entities/RiskSnapshotPolicyContext';
+import { RiskSnapshotSourceCoverage } from '../../database/entities/RiskSnapshotSourceCoverage';
+import { RiskRuleEvaluation } from '../../database/entities/RiskRuleEvaluation';
 
 interface PreTradeOrderInput {
   assetId: string;
@@ -152,6 +203,7 @@ interface RiskThresholdProfile {
   weeklyLossLimitPct: number;
   monthlyLossLimitPct: number;
   maxLeverage: number;
+  maxOrderAllocation: number | null;
   maxTotalAllocation: number;
   maxAvgLeverage: number;
 }
@@ -165,6 +217,7 @@ interface RiskThresholdProfileInput {
   weeklyLossLimitPct?: number | null;
   monthlyLossLimitPct?: number | null;
   maxLeverage?: number | null;
+  maxOrderAllocation?: number | null;
   maxTotalAllocation?: number | null;
   maxAvgLeverage?: number | null;
 }
@@ -180,12 +233,15 @@ interface AccountRiskSnapshotInput {
   brokerKey: string;
   accountName: string;
   fundsSnapshot: FundsSnapshotRow | null;
+  fundsCoverage: FundsSnapshotCoverageRow | null;
   walletBalance: number | null;
   futuresBalance: number | null;
   balance: number | null;
   positions: PositionRecord[];
   positionsFreshness: PositionAccountFreshnessRow | null;
+  positionCoverage: PositionReadModelCoverageRow | null;
   thresholds: RiskThresholdProfile;
+  policyContext: EffectiveRiskPolicyContext;
 }
 
 interface PositionRiskEvaluation {
@@ -194,6 +250,8 @@ interface PositionRiskEvaluation {
   brokerKey: string;
   accountId: string;
   accountName: string;
+  policyContextKey: string | null;
+  sideKey: string | null;
   exposure: number;
   leverage: number | null;
   unrealizedPnl: number | null;
@@ -209,11 +267,47 @@ interface ComputedRiskOrderAccountSummary {
   reservedOrderMargin: number;
 }
 
+interface EffectiveRiskPolicyContext {
+  contextKey: string;
+  policyId: string | null;
+  policyScope: string;
+  policyTargetKey: string;
+  enabled: boolean;
+  monitorOnly: boolean;
+  enforceHardBlock: boolean;
+  marginUsageWarnPct: number;
+  marginUsageCriticalPct: number;
+  concentrationWarnPct: number;
+  concentrationCriticalPct: number;
+  dailyLossLimitPct: number;
+  weeklyLossLimitPct: number;
+  monthlyLossLimitPct: number;
+  maxLeverage: number | null;
+  maxOrderAllocation: number | null;
+  maxTotalAllocation: number | null;
+  maxAvgLeverage: number | null;
+}
+
+interface ComputedRiskBrokerSnapshotDraft extends Omit<ComputedRiskBrokerSnapshotPayload, 'policyContextId'> {
+  policyContextKey: string | null;
+}
+
+interface ComputedRiskBrokerAssetSnapshotDraft
+  extends Omit<ComputedRiskBrokerAssetSnapshotPayload, 'policyContextId'> {
+  policyContextKey: string | null;
+}
+
 interface RiskComputationResult {
   snapshot: ComputedRiskSnapshotPayload;
   accountSnapshots: ComputedRiskAccountSnapshotPayload[];
+  assetSnapshots: ComputedRiskAssetSnapshotPayload[];
+  brokerSnapshots: ComputedRiskBrokerSnapshotDraft[];
+  brokerAssetSnapshots: ComputedRiskBrokerAssetSnapshotDraft[];
   orderSnapshots: ComputedRiskOrderSnapshotPayload[];
   positionSnapshots: ComputedRiskPositionSnapshotPayload[];
+  policyContexts: ComputedRiskSnapshotPolicyContextPayload[];
+  sourceCoverage: ComputedRiskSnapshotSourceCoveragePayload[];
+  ruleEvaluations: ComputedRiskRuleEvaluationPayload[];
   alerts: ComputedRiskAlertPayload[];
   controls: ComputedRiskControlPayload[];
   scenarios: ComputedRiskScenarioPayload[];
@@ -248,14 +342,32 @@ export class RiskService {
   @Inject(() => RiskAccountSnapshotRepository)
   private riskAccountSnapshotRepository!: RiskAccountSnapshotRepository;
 
+  @Inject(() => RiskAssetSnapshotRepository)
+  private riskAssetSnapshotRepository!: RiskAssetSnapshotRepository;
+
+  @Inject(() => RiskBrokerAssetSnapshotRepository)
+  private riskBrokerAssetSnapshotRepository!: RiskBrokerAssetSnapshotRepository;
+
+  @Inject(() => RiskBrokerSnapshotRepository)
+  private riskBrokerSnapshotRepository!: RiskBrokerSnapshotRepository;
+
   @Inject(() => RiskPositionSnapshotRepository)
   private riskPositionSnapshotRepository!: RiskPositionSnapshotRepository;
 
   @Inject(() => RiskOrderSnapshotRepository)
   private riskOrderSnapshotRepository!: RiskOrderSnapshotRepository;
 
+  @Inject(() => RiskSnapshotPolicyContextRepository)
+  private riskSnapshotPolicyContextRepository!: RiskSnapshotPolicyContextRepository;
+
+  @Inject(() => RiskSnapshotSourceCoverageRepository)
+  private riskSnapshotSourceCoverageRepository!: RiskSnapshotSourceCoverageRepository;
+
   @Inject(() => RiskControlRepository)
   private riskControlRepository!: RiskControlRepository;
+
+  @Inject(() => RiskRuleEvaluationRepository)
+  private riskRuleEvaluationRepository!: RiskRuleEvaluationRepository;
 
   @Inject(() => RiskScenarioRepository)
   private riskScenarioRepository!: RiskScenarioRepository;
@@ -348,51 +460,18 @@ export class RiskService {
       });
     }
 
-    const accountSnapshots = await this.riskAccountSnapshotRepository.listBySnapshotId(snapshot.id);
+    const [accountSnapshots, policyContextRows, sourceCoverageRows] = await Promise.all([
+      this.riskAccountSnapshotRepository.listBySnapshotId(snapshot.id),
+      this.riskSnapshotPolicyContextRepository.listBySnapshotId(snapshot.id),
+      this.riskSnapshotSourceCoverageRepository.listBySnapshotId(snapshot.id),
+    ]);
 
-    const items: RiskAccountItem[] = accountSnapshots.map((item) => ({
-      id: item.id,
-      snapshotId: item.snapshotId,
-      brokerKey: item.brokerKey,
-      accountId: item.accountId,
-      accountName: item.accountName,
-      denominatorBasis: item.denominatorBasis ?? undefined,
-      walletBalance: item.walletBalance,
-      futuresBalance: item.futuresBalance,
-      trackedBalance: item.trackedBalance,
-      grossExposure: item.grossExposure,
-      netExposure: item.netExposure,
-      longExposure: item.longExposure,
-      shortExposure: item.shortExposure,
-      openOrders: item.openOrders,
-      openOrderExposure: item.openOrderExposure,
-      reservedOrderMargin: item.reservedOrderMargin,
-      marginUsagePct: item.marginUsagePct,
-      portfolioConcentrationPct: item.portfolioConcentrationPct,
-      dailyLossUsagePct: item.dailyLossUsagePct,
-      unrealizedPnl: item.unrealizedPnl,
-      openPositions: item.openPositions,
-      maxPositionLeverage: item.maxPositionLeverage,
-      closestLiquidationDistancePct: item.closestLiquidationDistancePct,
-      marginUsageWarnPct: item.marginUsageWarnPct,
-      marginUsageCriticalPct: item.marginUsageCriticalPct,
-      concentrationWarnPct: item.concentrationWarnPct,
-      concentrationCriticalPct: item.concentrationCriticalPct,
-      dailyLossLimitPct: item.dailyLossLimitPct,
-      weeklyLossLimitPct: item.weeklyLossLimitPct,
-      monthlyLossLimitPct: item.monthlyLossLimitPct,
-      maxLeverage: item.maxLeverage,
-      maxTotalAllocation: item.maxTotalAllocation,
-      maxAvgLeverage: item.maxAvgLeverage,
-      fundsObservedAt: this.formatDisplayTime(item.fundsObservedAt, timeZone) || null,
-      fundsObservedAtIso: this.formatRawIso(item.fundsObservedAt) || null,
-      positionsObservedAt: this.formatDisplayTime(item.positionsObservedAt, timeZone) || null,
-      positionsObservedAtIso: this.formatRawIso(item.positionsObservedAt) || null,
-      ordersObservedAt: this.formatDisplayTime(item.ordersObservedAt, timeZone) || null,
-      ordersObservedAtIso: this.formatRawIso(item.ordersObservedAt) || null,
-      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
-      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
-    }));
+    const items = this.mapRiskAccountItems(
+      accountSnapshots,
+      policyContextRows,
+      sourceCoverageRows,
+      timeZone
+    );
 
     return successResponse({
       items,
@@ -537,6 +616,180 @@ export class RiskService {
     });
   }
 
+  async getRiskBrokerSnapshots(
+    userId: string,
+    snapshotId?: string
+  ): Promise<ApiSuccessResponse<RiskBrokerSnapshotsResponse>> {
+    const [snapshot, timeZone] = await Promise.all([
+      this.resolveRequestedRiskSnapshot(userId, snapshotId),
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+    ]);
+
+    if (!snapshot) {
+      return successResponse({
+        items: [],
+        total: 0,
+        time: buildApiTimeContract(timeZone),
+      });
+    }
+
+    const rows = await this.riskBrokerSnapshotRepository.listBySnapshotId(snapshot.id);
+    const items = this.mapRiskBrokerSnapshotItems(rows, snapshot, timeZone);
+
+    return successResponse({
+      items,
+      total: items.length,
+      snapshotId: snapshot.id,
+      portfolioEquity: snapshot.portfolioEquity,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
+  async getRiskAssetSnapshots(
+    userId: string,
+    snapshotId?: string
+  ): Promise<ApiSuccessResponse<RiskAssetSnapshotsResponse>> {
+    const [snapshot, timeZone] = await Promise.all([
+      this.resolveRequestedRiskSnapshot(userId, snapshotId),
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+    ]);
+
+    if (!snapshot) {
+      return successResponse({
+        items: [],
+        total: 0,
+        time: buildApiTimeContract(timeZone),
+      });
+    }
+
+    const rows = await this.riskAssetSnapshotRepository.listBySnapshotId(snapshot.id);
+    const items = this.mapRiskAssetSnapshotItems(rows, snapshot, timeZone);
+
+    return successResponse({
+      items,
+      total: items.length,
+      snapshotId: snapshot.id,
+      portfolioEquity: snapshot.portfolioEquity,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
+  async getRiskBrokerAssetSnapshots(
+    userId: string,
+    snapshotId?: string
+  ): Promise<ApiSuccessResponse<RiskBrokerAssetSnapshotsResponse>> {
+    const [snapshot, timeZone] = await Promise.all([
+      this.resolveRequestedRiskSnapshot(userId, snapshotId),
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+    ]);
+
+    if (!snapshot) {
+      return successResponse({
+        items: [],
+        total: 0,
+        time: buildApiTimeContract(timeZone),
+      });
+    }
+
+    const [rows, brokerRows] = await Promise.all([
+      this.riskBrokerAssetSnapshotRepository.listBySnapshotId(snapshot.id),
+      this.riskBrokerSnapshotRepository.listBySnapshotId(snapshot.id),
+    ]);
+    const items = this.mapRiskBrokerAssetSnapshotItems(rows, brokerRows, snapshot, timeZone);
+
+    return successResponse({
+      items,
+      total: items.length,
+      snapshotId: snapshot.id,
+      portfolioEquity: snapshot.portfolioEquity,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
+  async getRiskPolicyContexts(
+    userId: string,
+    snapshotId?: string
+  ): Promise<ApiSuccessResponse<RiskPolicyContextsResponse>> {
+    const [snapshot, timeZone] = await Promise.all([
+      this.resolveRequestedRiskSnapshot(userId, snapshotId),
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+    ]);
+
+    if (!snapshot) {
+      return successResponse({
+        items: [],
+        total: 0,
+        time: buildApiTimeContract(timeZone),
+      });
+    }
+
+    const rows = await this.riskSnapshotPolicyContextRepository.listBySnapshotId(snapshot.id);
+    const items = this.mapRiskPolicyContextItems(rows, timeZone);
+
+    return successResponse({
+      items,
+      total: items.length,
+      snapshotId: snapshot.id,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
+  async getRiskSourceCoverage(
+    userId: string,
+    snapshotId?: string
+  ): Promise<ApiSuccessResponse<RiskSourceCoverageResponse>> {
+    const [snapshot, timeZone] = await Promise.all([
+      this.resolveRequestedRiskSnapshot(userId, snapshotId),
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+    ]);
+
+    if (!snapshot) {
+      return successResponse({
+        items: [],
+        total: 0,
+        time: buildApiTimeContract(timeZone),
+      });
+    }
+
+    const rows = await this.riskSnapshotSourceCoverageRepository.listBySnapshotId(snapshot.id);
+    const items = this.mapRiskSourceCoverageItems(rows, timeZone);
+
+    return successResponse({
+      items,
+      total: items.length,
+      snapshotId: snapshot.id,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
+  async getRiskRuleEvaluations(
+    userId: string,
+    snapshotId?: string
+  ): Promise<ApiSuccessResponse<RiskRuleEvaluationsResponse>> {
+    const [snapshot, timeZone] = await Promise.all([
+      this.resolveRequestedRiskSnapshot(userId, snapshotId),
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+    ]);
+
+    if (!snapshot) {
+      return successResponse({
+        items: [],
+        total: 0,
+        time: buildApiTimeContract(timeZone),
+      });
+    }
+
+    const rows = await this.riskRuleEvaluationRepository.listBySnapshotId(snapshot.id);
+    const items = this.mapRiskRuleEvaluationItems(rows, timeZone);
+
+    return successResponse({
+      items,
+      total: items.length,
+      snapshotId: snapshot.id,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
   async getRiskSnapshotDetail(
     userId: string,
     snapshotId: string
@@ -558,6 +811,12 @@ export class RiskService {
       controlRows,
       alertRows,
       scenarioRows,
+      ruleEvaluationRows,
+      brokerSnapshotRows,
+      assetSnapshotRows,
+      brokerAssetSnapshotRows,
+      policyContextRows,
+      sourceCoverageRows,
     ] = await Promise.all([
       this.riskRepository.getPreviousSnapshot(userId, snapshot),
       this.riskAccountSnapshotRepository.listBySnapshotId(snapshot.id),
@@ -566,6 +825,12 @@ export class RiskService {
       this.riskControlRepository.listBySnapshotId(userId, snapshot.id),
       this.riskAlertRepository.listBySnapshotId(userId, snapshot.id),
       this.riskScenarioRepository.listBySnapshotId(userId, snapshot.id),
+      this.riskRuleEvaluationRepository.listBySnapshotId(snapshot.id),
+      this.riskBrokerSnapshotRepository.listBySnapshotId(snapshot.id),
+      this.riskAssetSnapshotRepository.listBySnapshotId(snapshot.id),
+      this.riskBrokerAssetSnapshotRepository.listBySnapshotId(snapshot.id),
+      this.riskSnapshotPolicyContextRepository.listBySnapshotId(snapshot.id),
+      this.riskSnapshotSourceCoverageRepository.listBySnapshotId(snapshot.id),
     ]);
 
     const summary: RiskSummary = {
@@ -604,49 +869,12 @@ export class RiskService {
       ordersObservedAtIso: this.formatRawIso(snapshot.ordersObservedAt) || undefined,
     };
 
-    const accounts: RiskAccountItem[] = accountSnapshots.map((item) => ({
-      id: item.id,
-      snapshotId: item.snapshotId,
-      brokerKey: item.brokerKey,
-      accountId: item.accountId,
-      accountName: item.accountName,
-      denominatorBasis: item.denominatorBasis ?? undefined,
-      walletBalance: item.walletBalance,
-      futuresBalance: item.futuresBalance,
-      trackedBalance: item.trackedBalance,
-      grossExposure: item.grossExposure,
-      netExposure: item.netExposure,
-      longExposure: item.longExposure,
-      shortExposure: item.shortExposure,
-      openOrders: item.openOrders,
-      openOrderExposure: item.openOrderExposure,
-      reservedOrderMargin: item.reservedOrderMargin,
-      marginUsagePct: item.marginUsagePct,
-      portfolioConcentrationPct: item.portfolioConcentrationPct,
-      dailyLossUsagePct: item.dailyLossUsagePct,
-      unrealizedPnl: item.unrealizedPnl,
-      openPositions: item.openPositions,
-      maxPositionLeverage: item.maxPositionLeverage,
-      closestLiquidationDistancePct: item.closestLiquidationDistancePct,
-      marginUsageWarnPct: item.marginUsageWarnPct,
-      marginUsageCriticalPct: item.marginUsageCriticalPct,
-      concentrationWarnPct: item.concentrationWarnPct,
-      concentrationCriticalPct: item.concentrationCriticalPct,
-      dailyLossLimitPct: item.dailyLossLimitPct,
-      weeklyLossLimitPct: item.weeklyLossLimitPct,
-      monthlyLossLimitPct: item.monthlyLossLimitPct,
-      maxLeverage: item.maxLeverage,
-      maxTotalAllocation: item.maxTotalAllocation,
-      maxAvgLeverage: item.maxAvgLeverage,
-      fundsObservedAt: this.formatDisplayTime(item.fundsObservedAt, timeZone) || null,
-      fundsObservedAtIso: this.formatRawIso(item.fundsObservedAt) || null,
-      positionsObservedAt: this.formatDisplayTime(item.positionsObservedAt, timeZone) || null,
-      positionsObservedAtIso: this.formatRawIso(item.positionsObservedAt) || null,
-      ordersObservedAt: this.formatDisplayTime(item.ordersObservedAt, timeZone) || null,
-      ordersObservedAtIso: this.formatRawIso(item.ordersObservedAt) || null,
-      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
-      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
-    }));
+    const accounts = this.mapRiskAccountItems(
+      accountSnapshots,
+      policyContextRows,
+      sourceCoverageRows,
+      timeZone
+    );
 
     const positions: RiskPositionItem[] = positionSnapshots.map((item) => ({
       id: item.id,
@@ -722,29 +950,15 @@ export class RiskService {
       createdAtIso: this.formatRawIso(item.createdAt) || undefined,
     }));
 
-    const controls: RiskControlItem[] = controlRows.map((item) => ({
-      id: item.id,
-      snapshotId: item.snapshotId,
-      bucket: item.bucket,
-      exposure: item.exposure,
-      threshold: item.threshold,
-      status: item.status,
-      action: item.action,
-      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || String(item.createdAt),
-      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
-    }));
+    const controls =
+      ruleEvaluationRows.length > 0
+        ? this.mapRiskControlItemsFromEvaluations(ruleEvaluationRows, timeZone)
+        : this.mapLegacyRiskControlItems(controlRows, timeZone);
 
-    const alerts: RiskAlertItem[] = alertRows.map((item) => ({
-      id: item.id,
-      snapshotId: item.snapshotId,
-      severity: item.severity,
-      message: item.message,
-      symbol: item.symbol,
-      channel: item.channel ?? undefined,
-      status: item.status ?? undefined,
-      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || String(item.createdAt),
-      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
-    }));
+    const alerts =
+      ruleEvaluationRows.length > 0
+        ? this.mapRiskAlertItemsFromEvaluations(ruleEvaluationRows, timeZone)
+        : this.mapLegacyRiskAlertItems(alertRows, timeZone);
 
     const scenarios: RiskScenarioItem[] = scenarioRows.map((item) => ({
       id: item.id,
@@ -755,6 +969,17 @@ export class RiskService {
       createdAt: this.formatDisplayTime(item.createdAt, timeZone) || String(item.createdAt),
       createdAtIso: this.formatRawIso(item.createdAt) || undefined,
     }));
+
+    const storage = this.buildRiskSnapshotStorageDetail(
+      snapshot,
+      brokerSnapshotRows,
+      assetSnapshotRows,
+      brokerAssetSnapshotRows,
+      policyContextRows,
+      sourceCoverageRows,
+      ruleEvaluationRows,
+      timeZone
+    );
 
     return successResponse({
       snapshotId: snapshot.id,
@@ -772,6 +997,7 @@ export class RiskService {
       controls,
       alerts,
       scenarios,
+      storage,
       counts: {
         accounts: accounts.length,
         positions: positions.length,
@@ -784,15 +1010,366 @@ export class RiskService {
     });
   }
 
-  async getRiskAlerts(
-    userId: string,
-    query: { limit?: string; offset?: string; status?: string; scope?: string }
-  ): Promise<ApiSuccessResponse<RiskAlertsResponse>> {
-    const params = validateRiskAlertsQuery(query);
-    const { items, total } = await this.riskAlertRepository.listRiskAlerts(userId, params);
-    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+  private mapRiskAccountItems(
+    accountSnapshots: RiskAccountSnapshot[],
+    policyContextRows: RiskSnapshotPolicyContext[],
+    sourceCoverageRows: RiskSnapshotSourceCoverage[],
+    timeZone: string
+  ): RiskAccountItem[] {
+    const { defaultPolicyContext, brokerPolicyContextByKey } =
+      this.buildPolicyContextLookup(policyContextRows);
+    const sourceCoverageByAccountId = new Map(
+      sourceCoverageRows.map((item) => [String(item.accountId || '').trim(), item] as const)
+    );
 
-    const mapped: RiskAlertItem[] = items.map((item) => ({
+    return accountSnapshots.map((item) => {
+      const brokerKey = String(item.brokerKey || '').trim().toLowerCase();
+      const policyContext =
+        brokerPolicyContextByKey.get(brokerKey) || defaultPolicyContext || null;
+      const sourceCoverage =
+        sourceCoverageByAccountId.get(String(item.accountId || '').trim()) || null;
+
+      const fundsObservedAt = sourceCoverage?.latestFundsObservedAt ?? item.fundsObservedAt;
+      const positionsObservedAt = sourceCoverage?.positionsObservedAt ?? item.positionsObservedAt;
+      const ordersObservedAt = sourceCoverage?.latestOrderSeenAt ?? item.ordersObservedAt;
+
+      return {
+        id: item.id,
+        snapshotId: item.snapshotId,
+        brokerKey: item.brokerKey,
+        accountId: item.accountId,
+        accountName: sourceCoverage?.accountName || item.accountName,
+        policyContextId: policyContext?.id ?? null,
+        sourceCoverageId: sourceCoverage?.id ?? null,
+        denominatorBasis: item.denominatorBasis ?? undefined,
+        walletBalance: item.walletBalance,
+        futuresBalance: item.futuresBalance,
+        trackedBalance: item.trackedBalance,
+        grossExposure: item.grossExposure,
+        netExposure: item.netExposure,
+        longExposure: item.longExposure,
+        shortExposure: item.shortExposure,
+        openOrders: item.openOrders,
+        openOrderExposure: item.openOrderExposure,
+        reservedOrderMargin: item.reservedOrderMargin,
+        marginUsagePct: item.marginUsagePct,
+        portfolioConcentrationPct: item.portfolioConcentrationPct,
+        dailyLossUsagePct: item.dailyLossUsagePct,
+        unrealizedPnl: item.unrealizedPnl,
+        openPositions: item.openPositions,
+        maxPositionLeverage: item.maxPositionLeverage,
+        closestLiquidationDistancePct: item.closestLiquidationDistancePct,
+        marginUsageWarnPct: policyContext?.marginUsageWarnPct ?? item.marginUsageWarnPct,
+        marginUsageCriticalPct:
+          policyContext?.marginUsageCriticalPct ?? item.marginUsageCriticalPct,
+        concentrationWarnPct: policyContext?.concentrationWarnPct ?? item.concentrationWarnPct,
+        concentrationCriticalPct:
+          policyContext?.concentrationCriticalPct ?? item.concentrationCriticalPct,
+        dailyLossLimitPct: policyContext?.dailyLossLimitPct ?? item.dailyLossLimitPct,
+        weeklyLossLimitPct: policyContext?.weeklyLossLimitPct ?? item.weeklyLossLimitPct,
+        monthlyLossLimitPct: policyContext?.monthlyLossLimitPct ?? item.monthlyLossLimitPct,
+        maxLeverage: policyContext?.maxLeverage ?? item.maxLeverage,
+        maxTotalAllocation: policyContext?.maxTotalAllocation ?? item.maxTotalAllocation,
+        maxAvgLeverage: policyContext?.maxAvgLeverage ?? item.maxAvgLeverage,
+        fundsObservedAt: this.formatDisplayTime(fundsObservedAt, timeZone) || null,
+        fundsObservedAtIso: this.formatRawIso(fundsObservedAt) || null,
+        positionsObservedAt: this.formatDisplayTime(positionsObservedAt, timeZone) || null,
+        positionsObservedAtIso: this.formatRawIso(positionsObservedAt) || null,
+        ordersObservedAt: this.formatDisplayTime(ordersObservedAt, timeZone) || null,
+        ordersObservedAtIso: this.formatRawIso(ordersObservedAt) || null,
+        createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+        createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+      };
+    });
+  }
+
+  private mapRiskBrokerSnapshotItems(
+    rows: RiskBrokerSnapshot[],
+    snapshot: RiskSnapshot,
+    timeZone: string
+  ): RiskBrokerSnapshotItem[] {
+    return rows
+      .map((item) => ({
+        id: item.id,
+        snapshotId: item.snapshotId,
+        brokerKey: item.brokerKey,
+        policyContextId: item.policyContextId,
+        accountCount: item.accountCount,
+        trackedBalance: item.trackedBalance,
+        walletBalance: item.walletBalance,
+        futuresBalance: item.futuresBalance,
+        grossExposure: item.grossExposure,
+        netExposure: item.netExposure,
+        longExposure: item.longExposure,
+        shortExposure: item.shortExposure,
+        openPositions: item.openPositions,
+        openOrders: item.openOrders,
+        openOrderExposure: item.openOrderExposure,
+        reservedOrderMargin: item.reservedOrderMargin,
+        unrealizedPnl: item.unrealizedPnl,
+        realizedPnl: item.realizedPnl,
+        weightedAvgLeverage: item.weightedAvgLeverage,
+        maxLeverage: item.maxLeverage,
+        worstLiquidationDistancePct: item.worstLiquidationDistancePct,
+        marginUsagePct: this.toRatioPct(item.grossExposure, item.trackedBalance) ?? undefined,
+        portfolioAllocationPct:
+          this.toRatioPct(item.grossExposure, snapshot.portfolioEquity) ?? undefined,
+        riskScore: item.riskScore,
+        riskState: item.riskState,
+        primaryConcern: item.primaryConcern,
+        createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+        createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+      }))
+      .sort((left, right) =>
+        this.compareRiskSeverityRows(left, right, (item) => item.brokerKey)
+      );
+  }
+
+  private mapRiskAssetSnapshotItems(
+    rows: RiskAssetSnapshot[],
+    snapshot: RiskSnapshot,
+    timeZone: string
+  ): RiskAssetSnapshotItem[] {
+    return rows
+      .map((item) => ({
+        id: item.id,
+        snapshotId: item.snapshotId,
+        symbol: item.symbol,
+        accountCount: item.accountCount,
+        brokerCount: item.brokerCount,
+        positionCount: item.positionCount,
+        openOrders: item.openOrders,
+        openOrderExposure: item.openOrderExposure,
+        reservedOrderMargin: item.reservedOrderMargin,
+        grossExposure: item.grossExposure,
+        netExposure: item.netExposure,
+        longExposure: item.longExposure,
+        shortExposure: item.shortExposure,
+        unrealizedPnl: item.unrealizedPnl,
+        realizedPnl: item.realizedPnl,
+        weightedAvgLeverage: item.weightedAvgLeverage,
+        maxLeverage: item.maxLeverage,
+        worstLiquidationDistancePct: item.worstLiquidationDistancePct,
+        allocationPct: this.toRatioPct(item.grossExposure, snapshot.portfolioEquity) ?? undefined,
+        riskScore: item.riskScore,
+        riskState: item.riskState,
+        primaryConcern: item.primaryConcern,
+        createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+        createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+      }))
+      .sort((left, right) =>
+        this.compareRiskSeverityRows(left, right, (item) => item.symbol)
+      );
+  }
+
+  private mapRiskBrokerAssetSnapshotItems(
+    rows: RiskBrokerAssetSnapshot[],
+    brokerRows: RiskBrokerSnapshot[],
+    snapshot: RiskSnapshot,
+    timeZone: string
+  ): RiskBrokerAssetSnapshotItem[] {
+    const brokerBalanceByKey = new Map(
+      brokerRows.map((item) => [item.brokerKey, item.trackedBalance] as const)
+    );
+
+    return rows
+      .map((item) => ({
+        id: item.id,
+        snapshotId: item.snapshotId,
+        brokerKey: item.brokerKey,
+        symbol: item.symbol,
+        policyContextId: item.policyContextId,
+        accountCount: item.accountCount,
+        positionCount: item.positionCount,
+        openOrders: item.openOrders,
+        openOrderExposure: item.openOrderExposure,
+        reservedOrderMargin: item.reservedOrderMargin,
+        grossExposure: item.grossExposure,
+        netExposure: item.netExposure,
+        longExposure: item.longExposure,
+        shortExposure: item.shortExposure,
+        unrealizedPnl: item.unrealizedPnl,
+        realizedPnl: item.realizedPnl,
+        weightedAvgLeverage: item.weightedAvgLeverage,
+        maxLeverage: item.maxLeverage,
+        worstLiquidationDistancePct: item.worstLiquidationDistancePct,
+        allocationPct: this.toRatioPct(item.grossExposure, snapshot.portfolioEquity) ?? undefined,
+        marginUsagePct:
+          this.toRatioPct(item.grossExposure, brokerBalanceByKey.get(item.brokerKey) ?? null) ??
+          undefined,
+        riskScore: item.riskScore,
+        riskState: item.riskState,
+        primaryConcern: item.primaryConcern,
+        createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+        createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+      }))
+      .sort((left, right) =>
+        this.compareRiskSeverityRows(left, right, (item) => `${item.brokerKey}|${item.symbol}`)
+      );
+  }
+
+  private mapRiskPolicyContextItems(
+    rows: RiskSnapshotPolicyContext[],
+    timeZone: string
+  ): RiskPolicyContextItem[] {
+    return [...rows]
+      .sort((left, right) => {
+        const scopeDiff =
+          this.resolvePolicyScopeRank(left.policyScope) - this.resolvePolicyScopeRank(right.policyScope);
+        if (scopeDiff !== 0) {
+          return scopeDiff;
+        }
+
+        const targetDiff = String(left.policyTargetKey || '').localeCompare(
+          String(right.policyTargetKey || '')
+        );
+        if (targetDiff !== 0) {
+          return targetDiff;
+        }
+
+        return String(left.contextKey || '').localeCompare(String(right.contextKey || ''));
+      })
+      .map((item) => ({
+        id: item.id,
+        snapshotId: item.snapshotId,
+        contextKey: item.contextKey,
+        policyId: item.policyId,
+        policyScope: item.policyScope,
+        policyTargetKey: item.policyTargetKey,
+        enabled: item.enabled,
+        monitorOnly: item.monitorOnly,
+        enforceHardBlock: item.enforceHardBlock,
+        marginUsageWarnPct: item.marginUsageWarnPct,
+        marginUsageCriticalPct: item.marginUsageCriticalPct,
+        concentrationWarnPct: item.concentrationWarnPct,
+        concentrationCriticalPct: item.concentrationCriticalPct,
+        dailyLossLimitPct: item.dailyLossLimitPct,
+        weeklyLossLimitPct: item.weeklyLossLimitPct,
+        monthlyLossLimitPct: item.monthlyLossLimitPct,
+        maxLeverage: item.maxLeverage,
+        maxOrderAllocation: item.maxOrderAllocation,
+        maxTotalAllocation: item.maxTotalAllocation,
+        maxAvgLeverage: item.maxAvgLeverage,
+        createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+        createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+      }));
+  }
+
+  private mapRiskSourceCoverageItems(
+    rows: RiskSnapshotSourceCoverage[],
+    timeZone: string
+  ): RiskSourceCoverageItem[] {
+    return [...rows]
+      .sort((left, right) => {
+        const brokerDiff = String(left.brokerKey || '').localeCompare(String(right.brokerKey || ''));
+        if (brokerDiff !== 0) {
+          return brokerDiff;
+        }
+        const accountDiff = String(left.accountName || '').localeCompare(String(right.accountName || ''));
+        if (accountDiff !== 0) {
+          return accountDiff;
+        }
+        return String(left.accountId || '').localeCompare(String(right.accountId || ''));
+      })
+      .map((item) => ({
+        id: item.id,
+        snapshotId: item.snapshotId,
+        brokerKey: item.brokerKey,
+        accountId: item.accountId,
+        accountName: item.accountName,
+        latestFundsSnapshotId: item.latestFundsSnapshotId,
+        latestFundsSnapshotDate: item.latestFundsSnapshotDate,
+        latestFundsObservedAt: this.formatDisplayTime(item.latestFundsObservedAt, timeZone) || null,
+        latestFundsObservedAtIso: this.formatRawIso(item.latestFundsObservedAt) || null,
+        latestFundsComputedAt: this.formatDisplayTime(item.latestFundsComputedAt, timeZone) || null,
+        latestFundsComputedAtIso: this.formatRawIso(item.latestFundsComputedAt) || null,
+        latestFundsLastAttemptAt:
+          this.formatDisplayTime(item.latestFundsLastAttemptAt, timeZone) || null,
+        latestFundsLastAttemptAtIso: this.formatRawIso(item.latestFundsLastAttemptAt) || null,
+        latestFundsFetchStatus: item.latestFundsFetchStatus,
+        latestFundsErrorMessage: item.latestFundsErrorMessage,
+        latestFundsSource: item.latestFundsSource,
+        latestWalletAvailable: item.latestWalletAvailable,
+        latestFuturesAvailable: item.latestFuturesAvailable,
+        latestSuccessFundsSnapshotId: item.latestSuccessFundsSnapshotId,
+        latestSuccessFundsSnapshotDate: item.latestSuccessFundsSnapshotDate,
+        latestSuccessFundsObservedAt:
+          this.formatDisplayTime(item.latestSuccessFundsObservedAt, timeZone) || null,
+        latestSuccessFundsObservedAtIso: this.formatRawIso(item.latestSuccessFundsObservedAt) || null,
+        latestSuccessFundsComputedAt:
+          this.formatDisplayTime(item.latestSuccessFundsComputedAt, timeZone) || null,
+        latestSuccessFundsComputedAtIso:
+          this.formatRawIso(item.latestSuccessFundsComputedAt) || null,
+        latestSuccessFundsSource: item.latestSuccessFundsSource,
+        latestSuccessWalletAvailable: item.latestSuccessWalletAvailable,
+        latestSuccessFuturesAvailable: item.latestSuccessFuturesAvailable,
+        positionsObservedAt: this.formatDisplayTime(item.positionsObservedAt, timeZone) || null,
+        positionsObservedAtIso: this.formatRawIso(item.positionsObservedAt) || null,
+        positionsCheckpointAt: this.formatDisplayTime(item.positionsCheckpointAt, timeZone) || null,
+        positionsCheckpointAtIso: this.formatRawIso(item.positionsCheckpointAt) || null,
+        openPositions: item.openPositions,
+        positionTotalRows: item.positionTotalRows,
+        positionSnapshotRows: item.positionSnapshotRows,
+        positionReadModelRows: item.positionReadModelRows,
+        rowsMissingFromReadModel: item.rowsMissingFromReadModel,
+        rowsBehindSnapshot: item.rowsBehindSnapshot,
+        orphanReadModelRows: item.orphanReadModelRows,
+        latestPositionSnapshotSeenAt:
+          this.formatDisplayTime(item.latestPositionSnapshotSeenAt, timeZone) || null,
+        latestPositionSnapshotSeenAtIso:
+          this.formatRawIso(item.latestPositionSnapshotSeenAt) || null,
+        latestPositionReadModelSeenAt:
+          this.formatDisplayTime(item.latestPositionReadModelSeenAt, timeZone) || null,
+        latestPositionReadModelSeenAtIso:
+          this.formatRawIso(item.latestPositionReadModelSeenAt) || null,
+        openOrderRows: item.openOrderRows,
+        latestOrderSeenAt: this.formatDisplayTime(item.latestOrderSeenAt, timeZone) || null,
+        latestOrderSeenAtIso: this.formatRawIso(item.latestOrderSeenAt) || null,
+        createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+        createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+      }));
+  }
+
+  private mapLegacyRiskControlItems(
+    rows: Array<{
+      id: string;
+      snapshotId: string;
+      bucket: string;
+      exposure: string;
+      threshold: string;
+      status: string;
+      action: string;
+      createdAt: Date;
+    }>,
+    timeZone: string
+  ): RiskControlItem[] {
+    return rows.map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      bucket: item.bucket,
+      exposure: item.exposure,
+      threshold: item.threshold,
+      status: item.status,
+      action: item.action,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || String(item.createdAt),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
+  }
+
+  private mapLegacyRiskAlertItems(
+    rows: Array<{
+      id: string;
+      snapshotId: string;
+      severity: string;
+      message: string;
+      symbol: string;
+      channel?: string | null;
+      status?: string | null;
+      createdAt: Date;
+    }>,
+    timeZone: string
+  ): RiskAlertItem[] {
+    return rows.map((item) => ({
       id: item.id,
       snapshotId: item.snapshotId,
       severity: item.severity,
@@ -803,6 +1380,148 @@ export class RiskService {
       createdAt: this.formatDisplayTime(item.createdAt, timeZone) || String(item.createdAt),
       createdAtIso: this.formatRawIso(item.createdAt) || undefined,
     }));
+  }
+
+  private mapRiskRuleEvaluationItems(
+    rows: RiskRuleEvaluation[],
+    timeZone: string
+  ): RiskRuleEvaluationItem[] {
+    return rows.map((item) => ({
+        id: item.id,
+        snapshotId: item.snapshotId,
+        policyContextId: item.policyContextId,
+        sourceType: item.sourceType,
+        scopeType: item.scopeType,
+        scopeKey: item.scopeKey,
+        scopeLabel: item.scopeLabel,
+        brokerKey: item.brokerKey,
+        accountId: item.accountId,
+        positionId: item.positionId,
+        symbol: item.symbol,
+        ruleCode: item.ruleCode,
+        metricName: item.metricName,
+        actualValue: item.actualValue,
+        basisValue: item.basisValue,
+        warnThresholdValue: item.warnThresholdValue,
+        criticalThresholdValue: item.criticalThresholdValue,
+        status: item.status,
+        bucket: item.bucket,
+        exposure: item.exposure,
+        threshold: item.threshold,
+        action: item.action,
+        alertSeverity: item.alertSeverity,
+        alertMessage: item.alertMessage,
+        alertSymbol: item.alertSymbol,
+        alertChannel: item.alertChannel,
+        alertStatus: item.alertStatus,
+        sortOrder: item.sortOrder,
+        createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+        createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+      }));
+  }
+
+  private mapRiskControlItemsFromEvaluations(
+    rows: RiskRuleEvaluation[],
+    timeZone: string
+  ): RiskControlItem[] {
+    return this.mapRiskRuleEvaluationItems(
+      rows.filter((item) => String(item.sourceType || '').trim().toLowerCase() === 'control'),
+      timeZone
+    ).map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      bucket: item.bucket || '--',
+      exposure: item.exposure || '--',
+      threshold: item.threshold || '--',
+      status: item.status,
+      action: item.action || '--',
+      createdAt: item.createdAt,
+      createdAtIso: item.createdAtIso,
+    }));
+  }
+
+  private mapRiskAlertItemsFromEvaluations(
+    rows: RiskRuleEvaluation[],
+    timeZone: string
+  ): RiskAlertItem[] {
+    return this.mapRiskRuleEvaluationItems(
+      rows.filter(
+        (item) =>
+          String(item.alertSeverity || '').trim() &&
+          String(item.alertMessage || '').trim()
+      ),
+      timeZone
+    ).map((item) => ({
+      id: item.id,
+      snapshotId: item.snapshotId,
+      severity: item.alertSeverity || '--',
+      message: item.alertMessage || '--',
+      symbol: item.alertSymbol || 'PORTFOLIO',
+      channel: item.alertChannel || undefined,
+      status: item.alertStatus || undefined,
+      createdAt: item.createdAt,
+      createdAtIso: item.createdAtIso,
+    }));
+  }
+
+  private buildRiskSnapshotStorageDetail(
+    snapshot: RiskSnapshot,
+    brokerRows: RiskBrokerSnapshot[],
+    assetRows: RiskAssetSnapshot[],
+    brokerAssetRows: RiskBrokerAssetSnapshot[],
+    policyContextRows: RiskSnapshotPolicyContext[],
+    sourceCoverageRows: RiskSnapshotSourceCoverage[],
+    ruleEvaluationRows: RiskRuleEvaluation[],
+    timeZone: string
+  ): RiskSnapshotStorageDetail {
+    const brokers = this.mapRiskBrokerSnapshotItems(brokerRows, snapshot, timeZone);
+    const assets = this.mapRiskAssetSnapshotItems(assetRows, snapshot, timeZone);
+    const brokerAssets = this.mapRiskBrokerAssetSnapshotItems(
+      brokerAssetRows,
+      brokerRows,
+      snapshot,
+      timeZone
+    );
+    const policyContexts = this.mapRiskPolicyContextItems(policyContextRows, timeZone);
+    const sourceCoverage = this.mapRiskSourceCoverageItems(sourceCoverageRows, timeZone);
+    const ruleEvaluations = this.mapRiskRuleEvaluationItems(ruleEvaluationRows, timeZone);
+
+    return {
+      brokers,
+      assets,
+      brokerAssets,
+      policyContexts,
+      sourceCoverage,
+      ruleEvaluations,
+      counts: {
+        brokers: brokers.length,
+        assets: assets.length,
+        brokerAssets: brokerAssets.length,
+        policyContexts: policyContexts.length,
+        sourceCoverage: sourceCoverage.length,
+        ruleEvaluations: ruleEvaluations.length,
+      },
+    };
+  }
+
+  async getRiskAlerts(
+    userId: string,
+    query: { limit?: string; offset?: string; status?: string; scope?: string }
+  ): Promise<ApiSuccessResponse<RiskAlertsResponse>> {
+    const params = validateRiskAlertsQuery(query);
+    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+    const normalized = await this.riskRuleEvaluationRepository.listRiskAlerts(userId, params);
+    const hasNormalizedAlerts =
+      normalized.total > 0 ||
+      Boolean(await this.riskRuleEvaluationRepository.getLatestCreatedAtForUsers([userId]));
+    const legacy =
+      hasNormalizedAlerts ? null : await this.riskAlertRepository.listRiskAlerts(userId, params);
+
+    const mapped =
+      hasNormalizedAlerts
+        ? this.mapRiskAlertItemsFromEvaluations(normalized.items, timeZone)
+        : this.mapLegacyRiskAlertItems(legacy?.items || [], timeZone);
+    const total = hasNormalizedAlerts ? normalized.total : legacy?.total || 0;
 
     return successResponse({
       items: mapped,
@@ -823,9 +1542,15 @@ export class RiskService {
       status: query.status,
       scope: query.scope,
     });
-    const summary = await this.riskAlertRepository.getRiskAlertsSummary(userId, params);
+    const summary = await this.riskRuleEvaluationRepository.getRiskAlertsSummary(userId, params);
+    const hasNormalizedAlerts =
+      summary.total > 0 ||
+      Boolean(await this.riskRuleEvaluationRepository.getLatestCreatedAtForUsers([userId]));
+    if (hasNormalizedAlerts) {
+      return successResponse(summary);
+    }
 
-    return successResponse(summary);
+    return successResponse(await this.riskAlertRepository.getRiskAlertsSummary(userId, params));
   }
 
   async getRiskControls(
@@ -833,20 +1558,19 @@ export class RiskService {
     query: { limit?: string; offset?: string; status?: string; scope?: string }
   ): Promise<ApiSuccessResponse<RiskControlsResponse>> {
     const params = validateRiskControlsQuery(query);
-    const { items, total } = await this.riskControlRepository.listRiskControls(userId, params);
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+    const normalized = await this.riskRuleEvaluationRepository.listRiskControls(userId, params);
+    const hasNormalizedControls =
+      normalized.total > 0 ||
+      Boolean(await this.riskRuleEvaluationRepository.getLatestControlCreatedAtForUsers([userId]));
+    const legacy =
+      hasNormalizedControls ? null : await this.riskControlRepository.listRiskControls(userId, params);
 
-    const mapped: RiskControlItem[] = items.map((item) => ({
-      id: item.id,
-      snapshotId: item.snapshotId,
-      bucket: item.bucket,
-      exposure: item.exposure,
-      threshold: item.threshold,
-      status: item.status,
-      action: item.action,
-      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || String(item.createdAt),
-      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
-    }));
+    const mapped =
+      hasNormalizedControls
+        ? this.mapRiskControlItemsFromEvaluations(normalized.items, timeZone)
+        : this.mapLegacyRiskControlItems(legacy?.items || [], timeZone);
+    const total = hasNormalizedControls ? normalized.total : legacy?.total || 0;
 
     return successResponse({
       items: mapped,
@@ -1443,10 +2167,23 @@ export class RiskService {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
     const computed = await this.buildComputedRiskSnapshot(userId);
     const snapshot = await this.riskRepository.createComputedSnapshot(userId, computed.snapshot);
+    const createdPolicyContexts = await this.riskSnapshotPolicyContextRepository.createComputedPolicyContexts(
+      userId,
+      snapshot.id,
+      computed.policyContexts
+    );
+    const policyContextIdByKey = new Map(
+      createdPolicyContexts.map((context) => [context.contextKey, context.id] as const)
+    );
     const [
       accountSnapshotsCreated,
+      assetSnapshotsCreated,
+      brokerSnapshotsCreated,
+      brokerAssetSnapshotsCreated,
       orderSnapshotsCreated,
       positionSnapshotsCreated,
+      sourceCoverageCreated,
+      ruleEvaluationsCreated,
       controlsCreated,
       alertsCreated,
       scenariosCreated,
@@ -1455,6 +2192,31 @@ export class RiskService {
         userId,
         snapshot.id,
         computed.accountSnapshots
+      ),
+      this.riskAssetSnapshotRepository.createComputedAssetSnapshots(
+        userId,
+        snapshot.id,
+        computed.assetSnapshots
+      ),
+      this.riskBrokerSnapshotRepository.createComputedBrokerSnapshots(
+        userId,
+        snapshot.id,
+        computed.brokerSnapshots.map(({ policyContextKey, ...item }) => ({
+          ...item,
+          policyContextId: policyContextKey
+            ? policyContextIdByKey.get(policyContextKey) || null
+            : null,
+        }))
+      ),
+      this.riskBrokerAssetSnapshotRepository.createComputedBrokerAssetSnapshots(
+        userId,
+        snapshot.id,
+        computed.brokerAssetSnapshots.map(({ policyContextKey, ...item }) => ({
+          ...item,
+          policyContextId: policyContextKey
+            ? policyContextIdByKey.get(policyContextKey) || null
+            : null,
+        }))
       ),
       this.riskOrderSnapshotRepository.createComputedOrderSnapshots(
         userId,
@@ -1465,6 +2227,22 @@ export class RiskService {
         userId,
         snapshot.id,
         computed.positionSnapshots
+      ),
+      this.riskSnapshotSourceCoverageRepository.createComputedSourceCoverage(
+        userId,
+        snapshot.id,
+        computed.sourceCoverage
+      ),
+      this.riskRuleEvaluationRepository.createComputedRuleEvaluations(
+        userId,
+        snapshot.id,
+        computed.ruleEvaluations.map(({ policyContextKey, ...item }) => ({
+          ...item,
+          policyContextId:
+            policyContextKey && policyContextIdByKey.has(policyContextKey)
+              ? policyContextIdByKey.get(policyContextKey) || null
+              : null,
+        }))
       ),
       this.riskControlRepository.createComputedControls(userId, snapshot.id, computed.controls),
       this.riskAlertRepository.createComputedAlerts(userId, snapshot.id, computed.alerts),
@@ -1479,7 +2257,7 @@ export class RiskService {
       stream: 'Controls',
       referenceId: snapshot.id,
       related: computed.snapshot.portfolioRisk,
-      description: `Persisted risk snapshot with ${accountSnapshotsCreated} account rows, ${orderSnapshotsCreated} order rows, ${positionSnapshotsCreated} position rows, ${controlsCreated} controls, ${alertsCreated} alerts, and ${scenariosCreated} scenarios.`,
+      description: `Persisted risk snapshot with ${createdPolicyContexts.length} policy contexts, ${sourceCoverageCreated} source coverage rows, ${brokerSnapshotsCreated} broker rows, ${assetSnapshotsCreated} asset rows, ${brokerAssetSnapshotsCreated} broker-asset rows, ${accountSnapshotsCreated} account rows, ${orderSnapshotsCreated} order rows, ${positionSnapshotsCreated} position rows, ${ruleEvaluationsCreated} rule evaluations, ${controlsCreated} controls, ${alertsCreated} alerts, and ${scenariosCreated} scenarios.`,
     });
 
     return successResponse({
@@ -1490,6 +2268,7 @@ export class RiskService {
       snapshotId: snapshot.id,
       portfolioRisk: computed.snapshot.portfolioRisk,
       orderSnapshotsCreated,
+      ruleEvaluationsCreated,
       controlsCreated,
       alertsCreated,
       scenariosCreated,
@@ -1641,28 +2420,34 @@ export class RiskService {
     );
 
     const accountIds = uniqueAccounts.map((account) => String(account.id || '').trim()).filter(Boolean);
-    const [livePositionsByAccount, positionFreshnessByAccount, openOrdersByAccount] = accountIds.length
+    const [fundsCoverageRows, livePositionsByAccount, positionCoverageByAccount, positionFreshnessByAccount, openOrdersByAccount] = accountIds.length
       ? await Promise.all([
+          this.fundsSnapshotRepository.listLatestAccountCoverage(userId),
           this.positionReadModelRepository.listLivePositionsForAccounts(userId, accountIds),
+          this.positionReadModelRepository.getReadModelCoverageByAccountIds(accountIds),
           this.positionReadModelRepository.getAccountFreshness(userId, accountIds),
           this.ordersSnapshotSourceRepository.listOpenOrdersForAccounts(userId, accountIds),
         ])
       : [
+          [],
           new Map<string, PositionRecord[]>(),
+          new Map<string, PositionReadModelCoverageRow>(),
           new Map<string, PositionAccountFreshnessRow>(),
           new Map<string, OpenOrderSnapshotSourceRow[]>(),
         ];
 
-    const brokerPolicyCache = new Map<string, RiskThresholdProfile>();
+    const fundsCoverageByAccount = new Map(
+      fundsCoverageRows.map((row) => [String(row.account_id || '').trim(), row] as const)
+    );
+    const brokerPolicyCache = new Map<string, EffectiveRiskPolicyContext>();
     const accountInputs = await Promise.all(
       uniqueAccounts.map(async (account) => {
         const brokerKey = String(account.brokerKey || '').trim().toLowerCase();
         if (!brokerPolicyCache.has(brokerKey)) {
+          const effectivePolicy = await this.riskPolicyRepository.getEffectivePolicy(userId, brokerKey);
           brokerPolicyCache.set(
             brokerKey,
-            this.buildRiskThresholdProfile(
-              await this.riskPolicyRepository.getEffectivePolicy(userId, brokerKey)
-            )
+            this.buildEffectiveRiskPolicyContext(effectivePolicy, brokerKey)
           );
         }
 
@@ -1677,13 +2462,20 @@ export class RiskService {
           brokerKey,
           accountName: String(account.accountName || account.accountKey || account.id || '--').trim(),
           fundsSnapshot,
+          fundsCoverage: fundsCoverageByAccount.get(String(account.id || '').trim()) || null,
           walletBalance: fundsBreakdown.walletBalance,
           futuresBalance: fundsBreakdown.futuresBalance,
           balance: fundsBreakdown.trackedBalance,
           positions: livePositionsByAccount.get(String(account.id || '').trim()) || [],
           positionsFreshness:
             positionFreshnessByAccount.get(String(account.id || '').trim()) || null,
-          thresholds: brokerPolicyCache.get(brokerKey) || this.buildRiskThresholdProfile(null),
+          positionCoverage:
+            positionCoverageByAccount.get(String(account.id || '').trim()) || null,
+          thresholds: this.buildRiskThresholdProfile(
+            brokerPolicyCache.get(brokerKey) || this.buildEffectiveRiskPolicyContext(null, brokerKey)
+          ),
+          policyContext:
+            brokerPolicyCache.get(brokerKey) || this.buildEffectiveRiskPolicyContext(null, brokerKey),
         } satisfies AccountRiskSnapshotInput;
       })
     );
@@ -1762,7 +2554,6 @@ export class RiskService {
     const controls = this.buildRiskControls(
       accountInputs,
       equity,
-      capitalAtRisk,
       marginUsagePct,
       lossWindowUsage,
       averageLeverage,
@@ -1776,6 +2567,11 @@ export class RiskService {
       capitalAtRisk,
       averageLeverage,
       brokerExposureTotals,
+      positionEvaluations
+    );
+    const ruleEvaluations = this.buildComputedRiskRuleEvaluations(
+      accountInputs,
+      controls,
       positionEvaluations
     );
 
@@ -1949,6 +2745,30 @@ export class RiskService {
         } satisfies ComputedRiskPositionSnapshotPayload;
       })
     );
+    const policyContexts = this.buildComputedRiskPolicyContexts(accountInputs);
+    const sourceCoverage = this.buildComputedRiskSourceCoverage(
+      accountInputs,
+      ordersObservedAtByAccount,
+      orderSummaryByAccount
+    );
+    const brokerSnapshots = this.buildComputedRiskBrokerSnapshots(
+      accountInputs,
+      positionEvaluations,
+      orderSummaryByAccount,
+      equity
+    );
+    const assetSnapshots = this.buildComputedRiskAssetSnapshots(
+      accountInputs,
+      positionEvaluations,
+      orderSnapshots,
+      equity
+    );
+    const brokerAssetSnapshots = this.buildComputedRiskBrokerAssetSnapshots(
+      accountInputs,
+      positionEvaluations,
+      orderSnapshots,
+      equity
+    );
     const fundsObservedAt = this.resolveLatestDate(
       accountSnapshots.map((account) => account.fundsObservedAt)
     );
@@ -2013,8 +2833,14 @@ export class RiskService {
         ordersObservedAt,
       },
       accountSnapshots,
+      assetSnapshots,
+      brokerSnapshots,
+      brokerAssetSnapshots,
       orderSnapshots,
       positionSnapshots,
+      policyContexts,
+      sourceCoverage,
+      ruleEvaluations,
       alerts,
       controls,
       scenarios,
@@ -2033,8 +2859,106 @@ export class RiskService {
           dayPnL: this.roundNumber(evaluation.unrealizedPnl || 0),
           strategy: 'Risk Center recompute',
           riskState: this.resolveWorstRiskState(evaluation.statuses),
-        })),
+      })),
     };
+  }
+
+  private async resolveRequestedRiskSnapshot(userId: string, snapshotId?: string) {
+    const normalizedSnapshotId = String(snapshotId || '').trim();
+    if (!normalizedSnapshotId) {
+      return this.riskRepository.getLatestSnapshot(userId);
+    }
+
+    const snapshot = await this.riskRepository.getSnapshotById(userId, normalizedSnapshotId);
+    if (!snapshot) {
+      throw new NotFoundAppError('Risk snapshot not found');
+    }
+    return snapshot;
+  }
+
+  private buildPolicyContextLookup(rows: RiskSnapshotPolicyContext[]): {
+    defaultPolicyContext: RiskSnapshotPolicyContext | null;
+    brokerPolicyContextByKey: Map<string, RiskSnapshotPolicyContext>;
+  } {
+    let defaultPolicyContext: RiskSnapshotPolicyContext | null = null;
+    const brokerPolicyContextByKey = new Map<string, RiskSnapshotPolicyContext>();
+
+    rows.forEach((row) => {
+      const scope = String(row.policyScope || '').trim().toLowerCase();
+      if (scope === 'user') {
+        defaultPolicyContext ??= row;
+        return;
+      }
+      if (scope === 'broker') {
+        const brokerKey = String(row.policyTargetKey || '').trim().toLowerCase();
+        if (brokerKey && !brokerPolicyContextByKey.has(brokerKey)) {
+          brokerPolicyContextByKey.set(brokerKey, row);
+        }
+      }
+    });
+
+    return {
+      defaultPolicyContext,
+      brokerPolicyContextByKey,
+    };
+  }
+
+  private compareRiskSeverityRows<
+    T extends {
+      riskState?: string | null;
+      riskScore?: number | null;
+    },
+  >(left: T, right: T, labelResolver: (item: T) => string): number {
+    const leftRank = this.resolveRiskStateRank(left.riskState);
+    const rightRank = this.resolveRiskStateRank(right.riskState);
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+
+    const scoreDiff = this.toFiniteNumber(right.riskScore, 0) - this.toFiniteNumber(left.riskScore, 0);
+    if (scoreDiff !== 0) {
+      return scoreDiff;
+    }
+
+    return labelResolver(left).localeCompare(labelResolver(right));
+  }
+
+  private resolveRiskStateRank(state: unknown): number {
+    const normalized = String(state || '').trim().toLowerCase();
+    if (normalized === 'critical') {
+      return 0;
+    }
+    if (normalized === 'watch') {
+      return 1;
+    }
+    if (normalized === 'ok') {
+      return 2;
+    }
+    return 3;
+  }
+
+  private resolvePolicyScopeRank(scope: unknown): number {
+    const normalized = String(scope || '').trim().toLowerCase();
+    if (normalized === 'user') {
+      return 0;
+    }
+    if (normalized === 'broker') {
+      return 1;
+    }
+    return 2;
+  }
+
+  private toRatioPct(numerator: unknown, denominator: unknown): number | null {
+    const normalizedNumerator = this.toFiniteNumber(numerator, null);
+    const normalizedDenominator = this.toFiniteNumber(denominator, null);
+    if (
+      normalizedNumerator === null ||
+      normalizedDenominator === null ||
+      normalizedDenominator <= 0
+    ) {
+      return null;
+    }
+    return this.roundNumber((normalizedNumerator / normalizedDenominator) * 100, 2);
   }
 
   private buildComputedRiskOrderSnapshots(
@@ -2087,6 +3011,740 @@ export class RiskService {
     };
   }
 
+  private buildEffectiveRiskPolicyContext(
+    policy: RiskPolicy | null | undefined,
+    brokerKey?: string | null
+  ): EffectiveRiskPolicyContext {
+    const normalizedBrokerKey = String(brokerKey || policy?.brokerKey || '')
+      .trim()
+      .toLowerCase();
+    const thresholds = this.buildRiskThresholdProfile(policy);
+
+    if (policy?.scope === 'broker' && normalizedBrokerKey) {
+      return {
+        contextKey: `policy:broker:${normalizedBrokerKey}:${policy.id}`,
+        policyId: policy.id,
+        policyScope: 'broker',
+        policyTargetKey: normalizedBrokerKey,
+        enabled: Boolean(policy.enabled),
+        monitorOnly: Boolean(policy.monitorOnly),
+        enforceHardBlock: Boolean(policy.enforceHardBlock),
+        marginUsageWarnPct: thresholds.marginUsageWarnPct,
+        marginUsageCriticalPct: thresholds.marginUsageCriticalPct,
+        concentrationWarnPct: thresholds.concentrationWarnPct,
+        concentrationCriticalPct: thresholds.concentrationCriticalPct,
+        dailyLossLimitPct: thresholds.dailyLossLimitPct,
+        weeklyLossLimitPct: thresholds.weeklyLossLimitPct,
+        monthlyLossLimitPct: thresholds.monthlyLossLimitPct,
+        maxLeverage: thresholds.maxLeverage,
+        maxOrderAllocation: thresholds.maxOrderAllocation,
+        maxTotalAllocation: thresholds.maxTotalAllocation,
+        maxAvgLeverage: thresholds.maxAvgLeverage,
+      };
+    }
+
+    if (policy?.scope === 'user') {
+      return {
+        contextKey: `policy:user:__user__:${policy.id}`,
+        policyId: policy.id,
+        policyScope: 'user',
+        policyTargetKey: '__user__',
+        enabled: Boolean(policy.enabled),
+        monitorOnly: Boolean(policy.monitorOnly),
+        enforceHardBlock: Boolean(policy.enforceHardBlock),
+        marginUsageWarnPct: thresholds.marginUsageWarnPct,
+        marginUsageCriticalPct: thresholds.marginUsageCriticalPct,
+        concentrationWarnPct: thresholds.concentrationWarnPct,
+        concentrationCriticalPct: thresholds.concentrationCriticalPct,
+        dailyLossLimitPct: thresholds.dailyLossLimitPct,
+        weeklyLossLimitPct: thresholds.weeklyLossLimitPct,
+        monthlyLossLimitPct: thresholds.monthlyLossLimitPct,
+        maxLeverage: thresholds.maxLeverage,
+        maxOrderAllocation: thresholds.maxOrderAllocation,
+        maxTotalAllocation: thresholds.maxTotalAllocation,
+        maxAvgLeverage: thresholds.maxAvgLeverage,
+      };
+    }
+
+    return {
+      contextKey: 'policy:default:__default__',
+      policyId: null,
+      policyScope: 'default',
+      policyTargetKey: '__default__',
+      enabled: true,
+      monitorOnly: true,
+      enforceHardBlock: false,
+      marginUsageWarnPct: thresholds.marginUsageWarnPct,
+      marginUsageCriticalPct: thresholds.marginUsageCriticalPct,
+      concentrationWarnPct: thresholds.concentrationWarnPct,
+      concentrationCriticalPct: thresholds.concentrationCriticalPct,
+      dailyLossLimitPct: thresholds.dailyLossLimitPct,
+      weeklyLossLimitPct: thresholds.weeklyLossLimitPct,
+      monthlyLossLimitPct: thresholds.monthlyLossLimitPct,
+      maxLeverage: thresholds.maxLeverage,
+      maxOrderAllocation: thresholds.maxOrderAllocation,
+      maxTotalAllocation: thresholds.maxTotalAllocation,
+      maxAvgLeverage: thresholds.maxAvgLeverage,
+    };
+  }
+
+  private buildComputedRiskPolicyContexts(
+    accounts: AccountRiskSnapshotInput[]
+  ): ComputedRiskSnapshotPolicyContextPayload[] {
+    const byContextKey = new Map<string, ComputedRiskSnapshotPolicyContextPayload>();
+
+    accounts.forEach((account) => {
+      const context = account.policyContext;
+      if (!context.contextKey || byContextKey.has(context.contextKey)) {
+        return;
+      }
+
+      byContextKey.set(context.contextKey, {
+        contextKey: context.contextKey,
+        policyId: context.policyId,
+        policyScope: context.policyScope,
+        policyTargetKey: context.policyTargetKey,
+        enabled: context.enabled,
+        monitorOnly: context.monitorOnly,
+        enforceHardBlock: context.enforceHardBlock,
+        marginUsageWarnPct: context.marginUsageWarnPct,
+        marginUsageCriticalPct: context.marginUsageCriticalPct,
+        concentrationWarnPct: context.concentrationWarnPct,
+        concentrationCriticalPct: context.concentrationCriticalPct,
+        dailyLossLimitPct: context.dailyLossLimitPct,
+        weeklyLossLimitPct: context.weeklyLossLimitPct,
+        monthlyLossLimitPct: context.monthlyLossLimitPct,
+        maxLeverage: context.maxLeverage,
+        maxOrderAllocation: context.maxOrderAllocation,
+        maxTotalAllocation: context.maxTotalAllocation,
+        maxAvgLeverage: context.maxAvgLeverage,
+      });
+    });
+
+    return Array.from(byContextKey.values()).sort((left, right) =>
+      left.contextKey.localeCompare(right.contextKey)
+    );
+  }
+
+  private buildComputedRiskSourceCoverage(
+    accounts: AccountRiskSnapshotInput[],
+    ordersObservedAtByAccount: Map<string, Date | null>,
+    orderSummaryByAccount: Map<string, ComputedRiskOrderAccountSummary>
+  ): ComputedRiskSnapshotSourceCoveragePayload[] {
+    return accounts
+      .map((account) => {
+        const fundsCoverage = account.fundsCoverage;
+        const positionCoverage = account.positionCoverage;
+        const freshness = account.positionsFreshness;
+        const orderSummary = orderSummaryByAccount.get(account.accountId) || {
+          openOrders: 0,
+          openOrderExposure: 0,
+          reservedOrderMargin: 0,
+        };
+
+        return {
+          brokerKey: account.brokerKey,
+          accountId: account.accountId,
+          accountName: account.accountName,
+          latestFundsSnapshotId: fundsCoverage?.latest_snapshot_id || null,
+          latestFundsSnapshotDate: fundsCoverage?.latest_snapshot_date || null,
+          latestFundsObservedAt: fundsCoverage?.latest_observed_at || null,
+          latestFundsComputedAt: fundsCoverage?.latest_computed_at || null,
+          latestFundsLastAttemptAt: fundsCoverage?.latest_last_attempt_at || null,
+          latestFundsFetchStatus: fundsCoverage?.latest_fetch_status || null,
+          latestFundsErrorMessage: fundsCoverage?.latest_error_message || null,
+          latestFundsSource: fundsCoverage?.latest_source || null,
+          latestWalletAvailable: Boolean(fundsCoverage?.latest_wallet_available),
+          latestFuturesAvailable: Boolean(fundsCoverage?.latest_futures_available),
+          latestSuccessFundsSnapshotId: fundsCoverage?.latest_success_snapshot_id || null,
+          latestSuccessFundsSnapshotDate: fundsCoverage?.latest_success_snapshot_date || null,
+          latestSuccessFundsObservedAt: fundsCoverage?.latest_success_observed_at || null,
+          latestSuccessFundsComputedAt: fundsCoverage?.latest_success_computed_at || null,
+          latestSuccessFundsSource: fundsCoverage?.latest_success_source || null,
+          latestSuccessWalletAvailable: Boolean(fundsCoverage?.latest_success_wallet_available),
+          latestSuccessFuturesAvailable: Boolean(fundsCoverage?.latest_success_futures_available),
+          positionsObservedAt: freshness?.observedAt || null,
+          positionsCheckpointAt: freshness?.checkpointAt || null,
+          openPositions: freshness?.openPositions ?? account.positions.length,
+          positionTotalRows: freshness?.totalRows ?? account.positions.length,
+          positionSnapshotRows: positionCoverage?.snapshotRows ?? 0,
+          positionReadModelRows: positionCoverage?.readModelRows ?? 0,
+          rowsMissingFromReadModel: positionCoverage?.rowsMissingFromReadModel ?? 0,
+          rowsBehindSnapshot: positionCoverage?.rowsBehindSnapshot ?? 0,
+          orphanReadModelRows: positionCoverage?.orphanReadModelRows ?? 0,
+          latestPositionSnapshotSeenAt: positionCoverage?.latestSnapshotSeenAt ?? null,
+          latestPositionReadModelSeenAt: positionCoverage?.latestReadModelSeenAt ?? null,
+          openOrderRows: orderSummary.openOrders,
+          latestOrderSeenAt: ordersObservedAtByAccount.get(account.accountId) || null,
+        } satisfies ComputedRiskSnapshotSourceCoveragePayload;
+      })
+      .sort((left, right) => {
+        if (left.brokerKey !== right.brokerKey) {
+          return left.brokerKey.localeCompare(right.brokerKey);
+        }
+        return left.accountName.localeCompare(right.accountName);
+      });
+  }
+
+  private buildComputedRiskBrokerSnapshots(
+    accounts: AccountRiskSnapshotInput[],
+    evaluations: PositionRiskEvaluation[],
+    orderSummaryByAccount: Map<string, ComputedRiskOrderAccountSummary>,
+    equity: number
+  ): ComputedRiskBrokerSnapshotDraft[] {
+    const brokers = Array.from(new Set(accounts.map((account) => account.brokerKey))).sort();
+
+    return brokers.map((brokerKey) => {
+      const scopedAccounts = accounts.filter((account) => account.brokerKey === brokerKey);
+      const scopedEvaluations = evaluations.filter((evaluation) => evaluation.brokerKey === brokerKey);
+      const thresholds = scopedAccounts[0]?.thresholds || this.buildRiskThresholdProfile(null);
+      const trackedBalance = this.roundNumber(
+        scopedAccounts.reduce((sum, account) => sum + this.toFiniteNumber(account.balance, 0), 0),
+        4
+      );
+      const walletBalance = this.roundNumber(
+        scopedAccounts.reduce((sum, account) => sum + this.toFiniteNumber(account.walletBalance, 0), 0),
+        4
+      );
+      const futuresBalance = this.roundNumber(
+        scopedAccounts.reduce((sum, account) => sum + this.toFiniteNumber(account.futuresBalance, 0), 0),
+        4
+      );
+      const grossExposure = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => sum + evaluation.exposure, 0),
+        2
+      );
+      const longExposure = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => {
+          return evaluation.sideKey === 'long' ? sum + evaluation.exposure : sum;
+        }, 0),
+        2
+      );
+      const shortExposure = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => {
+          return evaluation.sideKey === 'short' ? sum + evaluation.exposure : sum;
+        }, 0),
+        2
+      );
+      const netExposure = this.roundNumber(longExposure - shortExposure, 2);
+      const openPositions = scopedAccounts.reduce(
+        (sum, account) => sum + (account.positionsFreshness?.openPositions ?? account.positions.length),
+        0
+      );
+      const openOrders = scopedAccounts.reduce(
+        (sum, account) => sum + (orderSummaryByAccount.get(account.accountId)?.openOrders || 0),
+        0
+      );
+      const openOrderExposure = this.roundNumber(
+        scopedAccounts.reduce(
+          (sum, account) => sum + (orderSummaryByAccount.get(account.accountId)?.openOrderExposure || 0),
+          0
+        ),
+        2
+      );
+      const reservedOrderMargin = this.roundNumber(
+        scopedAccounts.reduce(
+          (sum, account) => sum + (orderSummaryByAccount.get(account.accountId)?.reservedOrderMargin || 0),
+          0
+        ),
+        2
+      );
+      const unrealizedPnl = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => sum + this.toFiniteNumber(evaluation.unrealizedPnl, 0), 0),
+        2
+      );
+      const weightedAvgLeverage = this.weightedAverage(
+        scopedEvaluations.map((evaluation) => ({
+          value: evaluation.leverage,
+          weight: evaluation.exposure,
+        }))
+      );
+      const maxLeverage = this.maxNumber(scopedEvaluations.map((evaluation) => evaluation.leverage));
+      const worstLiquidationDistancePct = this.minNumber(
+        scopedEvaluations.map((evaluation) => evaluation.liquidationDistancePct)
+      );
+      const allocationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
+      const marginUsagePct = trackedBalance > 0 ? (grossExposure / trackedBalance) * 100 : 0;
+      const assessment = this.buildScopedRiskAssessment({
+        criticalSignals: [
+          ...(marginUsagePct >= thresholds.marginUsageCriticalPct
+            ? ['Broker margin usage exceeds the configured critical threshold.']
+            : []),
+          ...(allocationPct >= thresholds.maxTotalAllocation
+            ? ['Broker total allocation exceeds the configured critical threshold.']
+            : []),
+          ...(weightedAvgLeverage !== null && weightedAvgLeverage >= thresholds.maxAvgLeverage
+            ? ['Average leverage exceeds the configured broker threshold.']
+            : []),
+          ...(worstLiquidationDistancePct !== null && worstLiquidationDistancePct <= 5
+            ? ['At least one position is within 5% of liquidation.']
+            : []),
+        ],
+        watchSignals: [
+          ...(marginUsagePct >= thresholds.marginUsageWarnPct &&
+          marginUsagePct < thresholds.marginUsageCriticalPct
+            ? ['Broker margin usage is approaching its warning band.']
+            : []),
+          ...(allocationPct >= thresholds.concentrationWarnPct &&
+          allocationPct < thresholds.maxTotalAllocation
+            ? ['Broker allocation is becoming concentrated.']
+            : []),
+          ...(weightedAvgLeverage !== null &&
+          weightedAvgLeverage >= thresholds.maxAvgLeverage * 0.8 &&
+          weightedAvgLeverage < thresholds.maxAvgLeverage
+            ? ['Average leverage is close to the configured broker threshold.']
+            : []),
+          ...(worstLiquidationDistancePct !== null &&
+          worstLiquidationDistancePct > 5 &&
+          worstLiquidationDistancePct <= 10
+            ? ['At least one position is within 10% of liquidation.']
+            : []),
+        ],
+        fallbackCriticalSignal:
+          scopedEvaluations.find((evaluation) => evaluation.statuses.includes('critical'))?.notes?.[0] || null,
+        fallbackWatchSignal:
+          scopedEvaluations.find((evaluation) => !evaluation.statuses.includes('critical') && evaluation.statuses.includes('watch'))?.notes?.[0] ||
+          null,
+        baseScore:
+          Math.min(20, marginUsagePct / 4) +
+          Math.min(20, allocationPct / 4) +
+          (weightedAvgLeverage !== null ? Math.min(15, weightedAvgLeverage * 2) : 0) +
+          (worstLiquidationDistancePct !== null
+            ? worstLiquidationDistancePct <= 5
+              ? 12
+              : worstLiquidationDistancePct <= 10
+                ? 6
+                : 0
+            : 0),
+      });
+
+      return {
+        brokerKey,
+        policyContextKey: scopedAccounts[0]?.policyContext.contextKey || null,
+        accountCount: scopedAccounts.length,
+        trackedBalance,
+        walletBalance,
+        futuresBalance,
+        grossExposure,
+        netExposure,
+        longExposure,
+        shortExposure,
+        openPositions,
+        openOrders,
+        openOrderExposure,
+        reservedOrderMargin,
+        unrealizedPnl,
+        realizedPnl: 0,
+        weightedAvgLeverage,
+        maxLeverage,
+        worstLiquidationDistancePct:
+          worstLiquidationDistancePct === null ? null : this.roundNumber(worstLiquidationDistancePct, 2),
+        riskScore: assessment.riskScore,
+        riskState: assessment.riskState,
+        primaryConcern: assessment.primaryConcern,
+      } satisfies ComputedRiskBrokerSnapshotDraft;
+    });
+  }
+
+  private buildComputedRiskAssetSnapshots(
+    accounts: AccountRiskSnapshotInput[],
+    evaluations: PositionRiskEvaluation[],
+    orderSnapshots: ComputedRiskOrderSnapshotPayload[],
+    equity: number
+  ): ComputedRiskAssetSnapshotPayload[] {
+    const accountsById = new Map(accounts.map((account) => [account.accountId, account] as const));
+    const orderSummaryBySymbol = this.buildOrderSummaryMap(orderSnapshots, (order) =>
+      String(order.symbol || '').trim().toUpperCase()
+    );
+    const symbols = Array.from(
+      new Set(
+        evaluations
+          .map((evaluation) => String(evaluation.symbol || '').trim().toUpperCase())
+          .filter(Boolean)
+      )
+    ).sort();
+
+    return symbols.map((symbol) => {
+      const scopedEvaluations = evaluations.filter(
+        (evaluation) => String(evaluation.symbol || '').trim().toUpperCase() === symbol
+      );
+      const scopedAccounts = Array.from(
+        new Map(
+          scopedEvaluations
+            .map((evaluation) => accountsById.get(evaluation.accountId))
+            .filter((account): account is AccountRiskSnapshotInput => Boolean(account))
+            .map((account) => [account.accountId, account] as const)
+        ).values()
+      );
+      const thresholds = this.buildGlobalThresholdProfile(scopedAccounts);
+      const grossExposure = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => sum + evaluation.exposure, 0),
+        2
+      );
+      const longExposure = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => {
+          return evaluation.sideKey === 'long' ? sum + evaluation.exposure : sum;
+        }, 0),
+        2
+      );
+      const shortExposure = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => {
+          return evaluation.sideKey === 'short' ? sum + evaluation.exposure : sum;
+        }, 0),
+        2
+      );
+      const netExposure = this.roundNumber(longExposure - shortExposure, 2);
+      const allocationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
+      const weightedAvgLeverage = this.weightedAverage(
+        scopedEvaluations.map((evaluation) => ({
+          value: evaluation.leverage,
+          weight: evaluation.exposure,
+        }))
+      );
+      const maxLeverage = this.maxNumber(scopedEvaluations.map((evaluation) => evaluation.leverage));
+      const worstLiquidationDistancePct = this.minNumber(
+        scopedEvaluations.map((evaluation) => evaluation.liquidationDistancePct)
+      );
+      const unrealizedPnl = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => sum + this.toFiniteNumber(evaluation.unrealizedPnl, 0), 0),
+        2
+      );
+      const orderSummary = orderSummaryBySymbol.get(symbol) || {
+        openOrders: 0,
+        openOrderExposure: 0,
+        reservedOrderMargin: 0,
+      };
+      const assessment = this.buildScopedRiskAssessment({
+        criticalSignals: [
+          ...(allocationPct >= thresholds.concentrationCriticalPct
+            ? ['Asset concentration exceeds the configured critical threshold.']
+            : []),
+          ...(maxLeverage !== null && maxLeverage >= thresholds.maxLeverage
+            ? ['Observed leverage exceeds the configured max leverage.']
+            : []),
+          ...(worstLiquidationDistancePct !== null && worstLiquidationDistancePct <= 5
+            ? ['At least one position is within 5% of liquidation.']
+            : []),
+        ],
+        watchSignals: [
+          ...(allocationPct >= thresholds.concentrationWarnPct &&
+          allocationPct < thresholds.concentrationCriticalPct
+            ? ['Asset concentration is approaching the warning band.']
+            : []),
+          ...(maxLeverage !== null &&
+          maxLeverage >= thresholds.maxLeverage * 0.8 &&
+          maxLeverage < thresholds.maxLeverage
+            ? ['Observed leverage is close to the configured max leverage.']
+            : []),
+          ...(worstLiquidationDistancePct !== null &&
+          worstLiquidationDistancePct > 5 &&
+          worstLiquidationDistancePct <= 10
+            ? ['At least one position is within 10% of liquidation.']
+            : []),
+        ],
+        fallbackCriticalSignal:
+          scopedEvaluations.find((evaluation) => evaluation.statuses.includes('critical'))?.notes?.[0] || null,
+        fallbackWatchSignal:
+          scopedEvaluations.find((evaluation) => !evaluation.statuses.includes('critical') && evaluation.statuses.includes('watch'))?.notes?.[0] ||
+          null,
+        baseScore:
+          Math.min(25, allocationPct / 4) +
+          (maxLeverage !== null ? Math.min(15, maxLeverage * 2) : 0) +
+          (worstLiquidationDistancePct !== null
+            ? worstLiquidationDistancePct <= 5
+              ? 12
+              : worstLiquidationDistancePct <= 10
+                ? 6
+                : 0
+            : 0),
+      });
+
+      return {
+        symbol,
+        accountCount: new Set(scopedEvaluations.map((evaluation) => evaluation.accountId)).size,
+        brokerCount: new Set(scopedEvaluations.map((evaluation) => evaluation.brokerKey)).size,
+        positionCount: scopedEvaluations.length,
+        openOrders: orderSummary.openOrders,
+        openOrderExposure: this.roundNumber(orderSummary.openOrderExposure, 2),
+        reservedOrderMargin: this.roundNumber(orderSummary.reservedOrderMargin, 2),
+        grossExposure,
+        netExposure,
+        longExposure,
+        shortExposure,
+        unrealizedPnl,
+        realizedPnl: 0,
+        weightedAvgLeverage,
+        maxLeverage,
+        worstLiquidationDistancePct:
+          worstLiquidationDistancePct === null ? null : this.roundNumber(worstLiquidationDistancePct, 2),
+        riskScore: assessment.riskScore,
+        riskState: assessment.riskState,
+        primaryConcern: assessment.primaryConcern,
+      } satisfies ComputedRiskAssetSnapshotPayload;
+    });
+  }
+
+  private buildComputedRiskBrokerAssetSnapshots(
+    accounts: AccountRiskSnapshotInput[],
+    evaluations: PositionRiskEvaluation[],
+    orderSnapshots: ComputedRiskOrderSnapshotPayload[],
+    equity: number
+  ): ComputedRiskBrokerAssetSnapshotDraft[] {
+    const accountsById = new Map(accounts.map((account) => [account.accountId, account] as const));
+    const orderSummaryByBrokerAsset = this.buildOrderSummaryMap(orderSnapshots, (order) => {
+      const brokerKey = String(order.brokerKey || '').trim().toLowerCase();
+      const symbol = String(order.symbol || '').trim().toUpperCase();
+      return brokerKey && symbol ? `${brokerKey}|${symbol}` : '';
+    });
+    const keys = Array.from(
+      new Set(
+        evaluations
+          .map((evaluation) => {
+            const brokerKey = String(evaluation.brokerKey || '').trim().toLowerCase();
+            const symbol = String(evaluation.symbol || '').trim().toUpperCase();
+            return brokerKey && symbol ? `${brokerKey}|${symbol}` : '';
+          })
+          .filter(Boolean)
+      )
+    ).sort();
+
+    return keys.map((key) => {
+      const [brokerKey, symbol] = key.split('|');
+      const scopedEvaluations = evaluations.filter(
+        (evaluation) =>
+          String(evaluation.brokerKey || '').trim().toLowerCase() === brokerKey &&
+          String(evaluation.symbol || '').trim().toUpperCase() === symbol
+      );
+      const scopedAccounts = Array.from(
+        new Map(
+          scopedEvaluations
+            .map((evaluation) => accountsById.get(evaluation.accountId))
+            .filter((account): account is AccountRiskSnapshotInput => Boolean(account))
+            .map((account) => [account.accountId, account] as const)
+        ).values()
+      );
+      const thresholds = scopedAccounts[0]?.thresholds || this.buildRiskThresholdProfile(null);
+      const brokerTrackedBalance = this.roundNumber(
+        scopedAccounts.reduce((sum, account) => sum + this.toFiniteNumber(account.balance, 0), 0),
+        4
+      );
+      const grossExposure = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => sum + evaluation.exposure, 0),
+        2
+      );
+      const longExposure = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => {
+          return evaluation.sideKey === 'long' ? sum + evaluation.exposure : sum;
+        }, 0),
+        2
+      );
+      const shortExposure = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => {
+          return evaluation.sideKey === 'short' ? sum + evaluation.exposure : sum;
+        }, 0),
+        2
+      );
+      const netExposure = this.roundNumber(longExposure - shortExposure, 2);
+      const allocationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
+      const marginUsagePct = brokerTrackedBalance > 0 ? (grossExposure / brokerTrackedBalance) * 100 : 0;
+      const weightedAvgLeverage = this.weightedAverage(
+        scopedEvaluations.map((evaluation) => ({
+          value: evaluation.leverage,
+          weight: evaluation.exposure,
+        }))
+      );
+      const maxLeverage = this.maxNumber(scopedEvaluations.map((evaluation) => evaluation.leverage));
+      const worstLiquidationDistancePct = this.minNumber(
+        scopedEvaluations.map((evaluation) => evaluation.liquidationDistancePct)
+      );
+      const unrealizedPnl = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => sum + this.toFiniteNumber(evaluation.unrealizedPnl, 0), 0),
+        2
+      );
+      const orderSummary = orderSummaryByBrokerAsset.get(key) || {
+        openOrders: 0,
+        openOrderExposure: 0,
+        reservedOrderMargin: 0,
+      };
+      const assessment = this.buildScopedRiskAssessment({
+        criticalSignals: [
+          ...(marginUsagePct >= thresholds.marginUsageCriticalPct
+            ? ['Broker-asset margin usage exceeds the configured critical threshold.']
+            : []),
+          ...(allocationPct >= thresholds.concentrationCriticalPct
+            ? ['Broker-asset concentration exceeds the configured critical threshold.']
+            : []),
+          ...(maxLeverage !== null && maxLeverage >= thresholds.maxLeverage
+            ? ['Observed leverage exceeds the configured max leverage.']
+            : []),
+          ...(worstLiquidationDistancePct !== null && worstLiquidationDistancePct <= 5
+            ? ['At least one position is within 5% of liquidation.']
+            : []),
+        ],
+        watchSignals: [
+          ...(marginUsagePct >= thresholds.marginUsageWarnPct &&
+          marginUsagePct < thresholds.marginUsageCriticalPct
+            ? ['Broker-asset margin usage is approaching its warning band.']
+            : []),
+          ...(allocationPct >= thresholds.concentrationWarnPct &&
+          allocationPct < thresholds.concentrationCriticalPct
+            ? ['Broker-asset concentration is approaching the warning band.']
+            : []),
+          ...(maxLeverage !== null &&
+          maxLeverage >= thresholds.maxLeverage * 0.8 &&
+          maxLeverage < thresholds.maxLeverage
+            ? ['Observed leverage is close to the configured max leverage.']
+            : []),
+          ...(worstLiquidationDistancePct !== null &&
+          worstLiquidationDistancePct > 5 &&
+          worstLiquidationDistancePct <= 10
+            ? ['At least one position is within 10% of liquidation.']
+            : []),
+        ],
+        fallbackCriticalSignal:
+          scopedEvaluations.find((evaluation) => evaluation.statuses.includes('critical'))?.notes?.[0] || null,
+        fallbackWatchSignal:
+          scopedEvaluations.find((evaluation) => !evaluation.statuses.includes('critical') && evaluation.statuses.includes('watch'))?.notes?.[0] ||
+          null,
+        baseScore:
+          Math.min(20, marginUsagePct / 4) +
+          Math.min(20, allocationPct / 4) +
+          (maxLeverage !== null ? Math.min(15, maxLeverage * 2) : 0) +
+          (worstLiquidationDistancePct !== null
+            ? worstLiquidationDistancePct <= 5
+              ? 12
+              : worstLiquidationDistancePct <= 10
+                ? 6
+                : 0
+            : 0),
+      });
+
+      return {
+        brokerKey,
+        symbol,
+        policyContextKey: scopedAccounts[0]?.policyContext.contextKey || null,
+        accountCount: new Set(scopedEvaluations.map((evaluation) => evaluation.accountId)).size,
+        positionCount: scopedEvaluations.length,
+        openOrders: orderSummary.openOrders,
+        openOrderExposure: this.roundNumber(orderSummary.openOrderExposure, 2),
+        reservedOrderMargin: this.roundNumber(orderSummary.reservedOrderMargin, 2),
+        grossExposure,
+        netExposure,
+        longExposure,
+        shortExposure,
+        unrealizedPnl,
+        realizedPnl: 0,
+        weightedAvgLeverage,
+        maxLeverage,
+        worstLiquidationDistancePct:
+          worstLiquidationDistancePct === null ? null : this.roundNumber(worstLiquidationDistancePct, 2),
+        riskScore: assessment.riskScore,
+        riskState: assessment.riskState,
+        primaryConcern: assessment.primaryConcern,
+      } satisfies ComputedRiskBrokerAssetSnapshotDraft;
+    });
+  }
+
+  private buildOrderSummaryMap(
+    orderSnapshots: ComputedRiskOrderSnapshotPayload[],
+    keyResolver: (order: ComputedRiskOrderSnapshotPayload) => string
+  ): Map<string, ComputedRiskOrderAccountSummary> {
+    const summaryByKey = new Map<string, ComputedRiskOrderAccountSummary>();
+
+    orderSnapshots.forEach((order) => {
+      const key = keyResolver(order);
+      if (!key) {
+        return;
+      }
+
+      const existing = summaryByKey.get(key) || {
+        openOrders: 0,
+        openOrderExposure: 0,
+        reservedOrderMargin: 0,
+      };
+      existing.openOrders += 1;
+      if (!order.reduceOnly) {
+        existing.openOrderExposure = this.roundNumber(
+          existing.openOrderExposure + Math.abs(order.notional || 0),
+          2
+        );
+        existing.reservedOrderMargin = this.roundNumber(
+          existing.reservedOrderMargin + Math.abs(order.reservedMargin || 0),
+          2
+        );
+      }
+      summaryByKey.set(key, existing);
+    });
+
+    return summaryByKey;
+  }
+
+  private buildScopedRiskAssessment(input: {
+    criticalSignals: string[];
+    watchSignals: string[];
+    fallbackCriticalSignal?: string | null;
+    fallbackWatchSignal?: string | null;
+    baseScore: number;
+  }): { riskScore: number; riskState: string; primaryConcern: string | null } {
+    const criticalSignals = [...input.criticalSignals];
+    const watchSignals = [...input.watchSignals];
+
+    if (!criticalSignals.length && input.fallbackCriticalSignal) {
+      criticalSignals.push(input.fallbackCriticalSignal);
+    }
+    if (!watchSignals.length && input.fallbackWatchSignal) {
+      watchSignals.push(input.fallbackWatchSignal);
+    }
+
+    const riskState = criticalSignals.length ? 'critical' : watchSignals.length ? 'watch' : 'ok';
+    const rawScore = input.baseScore + criticalSignals.length * 18 + watchSignals.length * 7;
+
+    return {
+      riskScore: Math.max(0, Math.min(100, Math.round(rawScore))),
+      riskState,
+      primaryConcern:
+        criticalSignals[0] ||
+        watchSignals[0] ||
+        'No acute risk breach detected in the latest recompute.',
+    };
+  }
+
+  private weightedAverage(
+    items: Array<{
+      value: number | null;
+      weight: number;
+    }>
+  ): number | null {
+    let weightedSum = 0;
+    let totalWeight = 0;
+    let fallbackSum = 0;
+    let fallbackCount = 0;
+
+    items.forEach((item) => {
+      const value = this.toFiniteNumber(item.value, null);
+      if (value === null) {
+        return;
+      }
+
+      fallbackSum += value;
+      fallbackCount += 1;
+
+      const weight = Math.max(0, this.toFiniteNumber(item.weight, 0));
+      if (weight > 0) {
+        weightedSum += value * weight;
+        totalWeight += weight;
+      }
+    });
+
+    if (totalWeight > 0) {
+      return this.roundNumber(weightedSum / totalWeight, 2);
+    }
+    if (fallbackCount > 0) {
+      return this.roundNumber(fallbackSum / fallbackCount, 2);
+    }
+    return null;
+  }
+
   private buildRiskThresholdProfile(
     policy: RiskThresholdProfileInput | null | undefined
   ): RiskThresholdProfile {
@@ -2099,6 +3757,7 @@ export class RiskService {
       weeklyLossLimitPct: this.toFiniteNumber(policy?.weeklyLossLimitPct, 12),
       monthlyLossLimitPct: this.toFiniteNumber(policy?.monthlyLossLimitPct, 20),
       maxLeverage: this.toFiniteNumber(policy?.maxLeverage, 5),
+      maxOrderAllocation: this.toFiniteNumber(policy?.maxOrderAllocation, null),
       maxTotalAllocation: this.toFiniteNumber(policy?.maxTotalAllocation, 80),
       maxAvgLeverage: this.toFiniteNumber(policy?.maxAvgLeverage, 4),
     };
@@ -2107,7 +3766,6 @@ export class RiskService {
   private buildRiskControls(
     accounts: AccountRiskSnapshotInput[],
     equity: number,
-    capitalAtRisk: number,
     marginUsagePct: number,
     lossWindowUsage: LossWindowUsage,
     averageLeverage: number | null,
@@ -2117,104 +3775,171 @@ export class RiskService {
   ): ComputedRiskControlPayload[] {
     const controls: ComputedRiskControlPayload[] = [];
     const globalThresholds = this.buildGlobalThresholdProfile(accounts);
+    let sortOrder = 0;
+    const pushControl = (item: ComputedRiskControlPayload) => {
+      controls.push({
+        ...item,
+        sortOrder,
+      });
+      sortOrder += 1;
+    };
 
-    controls.push({
+    const portfolioMarginStatus = this.resolveThresholdState(
+      marginUsagePct,
+      globalThresholds.marginUsageWarnPct,
+      globalThresholds.marginUsageCriticalPct
+    );
+    pushControl({
       bucket: 'Portfolio margin usage',
       exposure: this.formatPercent(marginUsagePct),
       threshold: `Warn ${this.formatPercent(globalThresholds.marginUsageWarnPct)} / Critical ${this.formatPercent(globalThresholds.marginUsageCriticalPct)}`,
-      status: this.resolveThresholdState(
-        marginUsagePct,
-        globalThresholds.marginUsageWarnPct,
-        globalThresholds.marginUsageCriticalPct
-      ),
+      status: portfolioMarginStatus,
       action:
         marginUsagePct >= globalThresholds.marginUsageCriticalPct
           ? 'Reduce gross exposure or add margin before the next rebalance window.'
           : marginUsagePct >= globalThresholds.marginUsageWarnPct
             ? 'Review leverage-heavy routes before increasing exposure.'
             : 'Margin usage is within configured tolerance.',
+      scopeType: 'portfolio',
+      scopeKey: 'portfolio',
+      ruleCode: 'portfolio_margin_usage',
+      metricName: 'marginUsagePct',
+      actualValue: this.roundNumber(marginUsagePct, 2),
+      basisValue: this.roundNumber(equity, 2),
+      warnThresholdValue: globalThresholds.marginUsageWarnPct,
+      criticalThresholdValue: globalThresholds.marginUsageCriticalPct,
     });
 
-    controls.push({
+    const dailyDrawdownStatus = this.resolveLossWindowState(
+      lossWindowUsage.dailyUsagePct,
+      globalThresholds.dailyLossLimitPct
+    );
+    pushControl({
       bucket: 'Daily drawdown usage',
       exposure: this.formatPercent(lossWindowUsage.dailyUsagePct),
       threshold: `Limit ${this.formatPercent(globalThresholds.dailyLossLimitPct)}`,
-      status: this.resolveLossWindowState(
-        lossWindowUsage.dailyUsagePct,
-        globalThresholds.dailyLossLimitPct
-      ),
+      status: dailyDrawdownStatus,
       action:
         lossWindowUsage.dailyUsagePct >= globalThresholds.dailyLossLimitPct
           ? 'De-risk open positions or tighten losses before the daily budget is exhausted.'
           : lossWindowUsage.dailyUsagePct >= globalThresholds.dailyLossLimitPct * 0.8
             ? 'Watch daily drawdown closely; one more adverse move could hit the limit.'
             : 'Daily drawdown usage remains within the configured budget.',
+      scopeType: 'portfolio',
+      scopeKey: 'portfolio',
+      ruleCode: 'daily_drawdown_usage',
+      metricName: 'dailyLossUsagePct',
+      actualValue: this.roundNumber(lossWindowUsage.dailyUsagePct, 2),
+      basisValue: this.roundNumber(equity, 2),
+      warnThresholdValue: this.roundNumber(globalThresholds.dailyLossLimitPct * 0.8, 2),
+      criticalThresholdValue: globalThresholds.dailyLossLimitPct,
     });
 
-    controls.push({
+    const weeklyLossStatus = this.resolveLossWindowState(
+      lossWindowUsage.weeklyUsagePct,
+      globalThresholds.weeklyLossLimitPct
+    );
+    pushControl({
       bucket: 'Weekly loss usage',
       exposure: this.formatPercent(lossWindowUsage.weeklyUsagePct),
       threshold: `Limit ${this.formatPercent(globalThresholds.weeklyLossLimitPct)}`,
-      status: this.resolveLossWindowState(
-        lossWindowUsage.weeklyUsagePct,
-        globalThresholds.weeklyLossLimitPct
-      ),
+      status: weeklyLossStatus,
       action:
         lossWindowUsage.weeklyUsagePct >= globalThresholds.weeklyLossLimitPct
           ? 'Trailing 7-day realized losses have exhausted the weekly budget. Reduce risk and review recent closed-trade activity before adding exposure.'
           : lossWindowUsage.weeklyUsagePct >= globalThresholds.weeklyLossLimitPct * 0.8
             ? 'Weekly loss usage is nearing its limit. Review the last 7 days of realized losses before scaling up.'
             : 'Weekly loss usage remains within the configured budget.',
+      scopeType: 'portfolio',
+      scopeKey: 'portfolio',
+      ruleCode: 'weekly_loss_usage',
+      metricName: 'weeklyLossUsagePct',
+      actualValue: this.roundNumber(lossWindowUsage.weeklyUsagePct, 2),
+      basisValue: this.roundNumber(equity, 2),
+      warnThresholdValue: this.roundNumber(globalThresholds.weeklyLossLimitPct * 0.8, 2),
+      criticalThresholdValue: globalThresholds.weeklyLossLimitPct,
     });
 
-    controls.push({
+    const monthlyLossStatus = this.resolveLossWindowState(
+      lossWindowUsage.monthlyUsagePct,
+      globalThresholds.monthlyLossLimitPct
+    );
+    pushControl({
       bucket: 'Monthly loss usage',
       exposure: this.formatPercent(lossWindowUsage.monthlyUsagePct),
       threshold: `Limit ${this.formatPercent(globalThresholds.monthlyLossLimitPct)}`,
-      status: this.resolveLossWindowState(
-        lossWindowUsage.monthlyUsagePct,
-        globalThresholds.monthlyLossLimitPct
-      ),
+      status: monthlyLossStatus,
       action:
         lossWindowUsage.monthlyUsagePct >= globalThresholds.monthlyLossLimitPct
           ? 'Trailing 30-day realized losses have exhausted the monthly budget. Pause new risk and review strategy quality before re-entering.'
           : lossWindowUsage.monthlyUsagePct >= globalThresholds.monthlyLossLimitPct * 0.8
             ? 'Monthly loss usage is approaching its limit. Inspect the last 30 days of realized losses before increasing risk.'
             : 'Monthly loss usage remains within the configured budget.',
+      scopeType: 'portfolio',
+      scopeKey: 'portfolio',
+      ruleCode: 'monthly_loss_usage',
+      metricName: 'monthlyLossUsagePct',
+      actualValue: this.roundNumber(lossWindowUsage.monthlyUsagePct, 2),
+      basisValue: this.roundNumber(equity, 2),
+      warnThresholdValue: this.roundNumber(globalThresholds.monthlyLossLimitPct * 0.8, 2),
+      criticalThresholdValue: globalThresholds.monthlyLossLimitPct,
     });
 
     if (averageLeverage !== null) {
-      controls.push({
+      const averageLeverageStatus =
+        averageLeverage >= globalThresholds.maxAvgLeverage ? 'Critical' : 'Ok';
+      pushControl({
         bucket: 'Average leverage',
         exposure: `${this.roundNumber(averageLeverage, 2)}x`,
         threshold: `Max ${this.roundNumber(globalThresholds.maxAvgLeverage, 2)}x`,
-        status: averageLeverage >= globalThresholds.maxAvgLeverage ? 'Critical' : 'Ok',
+        status: averageLeverageStatus,
         action:
           averageLeverage >= globalThresholds.maxAvgLeverage
             ? 'Reduce average leverage across the book before adding new trades.'
             : 'Average leverage stays inside the configured guardrail.',
+        scopeType: 'portfolio',
+        scopeKey: 'portfolio',
+        ruleCode: 'average_leverage',
+        metricName: 'averageLeverage',
+        actualValue: this.roundNumber(averageLeverage, 2),
+        basisValue: null,
+        warnThresholdValue: null,
+        criticalThresholdValue: globalThresholds.maxAvgLeverage,
       });
     }
 
     brokerExposureTotals.forEach((exposure, brokerKey) => {
+      const brokerAccount =
+        accounts.find((account) => account.brokerKey === brokerKey) || null;
+      const thresholds = brokerAccount?.thresholds || globalThresholds;
+      const criticalLimit = Math.min(100, thresholds.maxTotalAllocation);
       const pct = equity > 0 ? (exposure / equity) * 100 : 0;
-      const thresholds =
-        accounts.find((account) => account.brokerKey === brokerKey)?.thresholds || globalThresholds;
-      controls.push({
+      const brokerStatus = this.resolveThresholdState(
+        pct,
+        thresholds.concentrationWarnPct,
+        criticalLimit
+      );
+      pushControl({
         bucket: `${brokerKey || 'broker'} total allocation`,
         exposure: this.formatPercent(pct),
-        threshold: `Warn ${this.formatPercent(thresholds.concentrationWarnPct)} / Critical ${this.formatPercent(Math.min(100, thresholds.maxTotalAllocation))}`,
-        status: this.resolveThresholdState(
-          pct,
-          thresholds.concentrationWarnPct,
-          Math.min(100, thresholds.maxTotalAllocation)
-        ),
+        threshold: `Warn ${this.formatPercent(thresholds.concentrationWarnPct)} / Critical ${this.formatPercent(criticalLimit)}`,
+        status: brokerStatus,
         action:
-          pct >= Math.min(100, thresholds.maxTotalAllocation)
+          pct >= criticalLimit
             ? `Reduce ${brokerKey || 'broker'} concentration before it dominates portfolio risk.`
             : pct >= thresholds.concentrationWarnPct
               ? `Keep ${brokerKey || 'broker'} exposure under watch; it is becoming the dominant sleeve.`
               : `${brokerKey || 'Broker'} allocation remains inside the configured posture.`,
+        policyContextKey: brokerAccount?.policyContext.contextKey || null,
+        scopeType: 'broker',
+        scopeKey: brokerKey || 'broker',
+        brokerKey: brokerKey || null,
+        ruleCode: 'broker_total_allocation',
+        metricName: 'allocationPct',
+        actualValue: this.roundNumber(pct, 2),
+        basisValue: this.roundNumber(equity, 2),
+        warnThresholdValue: thresholds.concentrationWarnPct,
+        criticalThresholdValue: criticalLimit,
       });
     });
 
@@ -2222,21 +3947,33 @@ export class RiskService {
       const accountExposure = accountExposureTotals.get(account.accountId) || 0;
       const accountBalance = account.balance || 0;
       const accountMarginUsagePct = accountBalance > 0 ? (accountExposure / accountBalance) * 100 : 0;
-      controls.push({
+      const accountStatus = this.resolveThresholdState(
+        accountMarginUsagePct,
+        account.thresholds.marginUsageWarnPct,
+        account.thresholds.marginUsageCriticalPct
+      );
+      pushControl({
         bucket: `${account.accountName} margin usage`,
         exposure: this.formatPercent(accountMarginUsagePct),
         threshold: `Warn ${this.formatPercent(account.thresholds.marginUsageWarnPct)} / Critical ${this.formatPercent(account.thresholds.marginUsageCriticalPct)}`,
-        status: this.resolveThresholdState(
-          accountMarginUsagePct,
-          account.thresholds.marginUsageWarnPct,
-          account.thresholds.marginUsageCriticalPct
-        ),
+        status: accountStatus,
         action:
           accountMarginUsagePct >= account.thresholds.marginUsageCriticalPct
             ? `Add funds or trim exposure on ${account.accountName}.`
             : accountMarginUsagePct >= account.thresholds.marginUsageWarnPct
               ? `Monitor ${account.accountName}; margin usage is rising.`
               : `${account.accountName} remains comfortably within margin tolerance.`,
+        policyContextKey: account.policyContext.contextKey,
+        scopeType: 'account',
+        scopeKey: account.accountId,
+        brokerKey: account.brokerKey,
+        accountId: account.accountId,
+        ruleCode: 'account_margin_usage',
+        metricName: 'marginUsagePct',
+        actualValue: this.roundNumber(accountMarginUsagePct, 2),
+        basisValue: this.roundNumber(accountBalance, 4),
+        warnThresholdValue: account.thresholds.marginUsageWarnPct,
+        criticalThresholdValue: account.thresholds.marginUsageCriticalPct,
       });
     });
 
@@ -2247,21 +3984,35 @@ export class RiskService {
       .forEach((evaluation) => {
         const account = accounts.find((item) => item.accountId === evaluation.accountId);
         const thresholds = account?.thresholds || globalThresholds;
-        controls.push({
+        const concentrationPct = evaluation.concentrationPct || 0;
+        const concentrationStatus = this.resolveThresholdState(
+          concentrationPct,
+          thresholds.concentrationWarnPct,
+          thresholds.concentrationCriticalPct
+        );
+        pushControl({
           bucket: `${evaluation.symbol} concentration`,
-          exposure: this.formatPercent(evaluation.concentrationPct || 0),
+          exposure: this.formatPercent(concentrationPct),
           threshold: `Warn ${this.formatPercent(thresholds.concentrationWarnPct)} / Critical ${this.formatPercent(thresholds.concentrationCriticalPct)}`,
-          status: this.resolveThresholdState(
-            evaluation.concentrationPct || 0,
-            thresholds.concentrationWarnPct,
-            thresholds.concentrationCriticalPct
-          ),
+          status: concentrationStatus,
           action:
-            (evaluation.concentrationPct || 0) >= thresholds.concentrationCriticalPct
+            concentrationPct >= thresholds.concentrationCriticalPct
               ? `Cut ${evaluation.symbol} concentration or hedge the position.`
-              : (evaluation.concentrationPct || 0) >= thresholds.concentrationWarnPct
+              : concentrationPct >= thresholds.concentrationWarnPct
                 ? `Keep ${evaluation.symbol} under review; it is becoming oversized.`
                 : `${evaluation.symbol} concentration remains inside the configured posture.`,
+          policyContextKey: account?.policyContext.contextKey || null,
+          scopeType: 'asset',
+          scopeKey: evaluation.symbol,
+          brokerKey: evaluation.brokerKey,
+          accountId: evaluation.accountId,
+          symbol: evaluation.symbol,
+          ruleCode: 'asset_concentration',
+          metricName: 'allocationPct',
+          actualValue: this.roundNumber(concentrationPct, 2),
+          basisValue: this.roundNumber(equity, 2),
+          warnThresholdValue: thresholds.concentrationWarnPct,
+          criticalThresholdValue: thresholds.concentrationCriticalPct,
         });
       });
 
@@ -2308,6 +4059,102 @@ export class RiskService {
       });
 
     return alerts.slice(0, 10);
+  }
+
+  private buildComputedRiskRuleEvaluations(
+    accounts: AccountRiskSnapshotInput[],
+    controls: ComputedRiskControlPayload[],
+    evaluations: PositionRiskEvaluation[]
+  ): ComputedRiskRuleEvaluationPayload[] {
+    const accountNameById = new Map(
+      accounts.map((account) => [account.accountId, account.accountName] as const)
+    );
+
+    const controlRows = controls.map((control, index) => {
+      const normalizedStatus = this.normalizeRiskState(control.status);
+      const hasAlert = normalizedStatus !== 'ok';
+
+      return {
+        policyContextKey: control.policyContextKey ?? null,
+        sourceType: 'control',
+        scopeType: control.scopeType || 'portfolio',
+        scopeKey: control.scopeKey || control.bucket,
+        scopeLabel: control.bucket,
+        brokerKey: control.brokerKey ?? null,
+        accountId: control.accountId ?? null,
+        positionId: null,
+        symbol: control.symbol ?? null,
+        ruleCode: control.ruleCode || 'risk_control',
+        metricName: control.metricName ?? null,
+        actualValue: control.actualValue ?? null,
+        basisValue: control.basisValue ?? null,
+        warnThresholdValue: control.warnThresholdValue ?? null,
+        criticalThresholdValue: control.criticalThresholdValue ?? null,
+        status: control.status,
+        bucket: control.bucket,
+        exposure: control.exposure,
+        threshold: control.threshold,
+        action: control.action,
+        alertSeverity: hasAlert
+          ? normalizedStatus === 'critical'
+            ? 'Critical'
+            : 'Watch'
+          : null,
+        alertMessage: hasAlert ? `${control.bucket}: ${control.action}` : null,
+        alertSymbol: hasAlert ? 'PORTFOLIO' : null,
+        alertChannel: hasAlert ? 'Risk' : null,
+        alertStatus: hasAlert ? 'Open' : null,
+        sortOrder: control.sortOrder ?? index,
+      } satisfies ComputedRiskRuleEvaluationPayload;
+    });
+
+    const positionRows = [...evaluations]
+      .sort((left, right) => right.exposure - left.exposure)
+      .map((evaluation, index) => {
+        const normalizedStatus = this.resolveWorstRiskState(evaluation.statuses);
+        const hasAlert = normalizedStatus !== 'ok';
+        const accountName =
+          accountNameById.get(evaluation.accountId) || evaluation.accountName || evaluation.accountId;
+
+        return {
+          policyContextKey: evaluation.policyContextKey,
+          sourceType: 'position',
+          scopeType: 'position',
+          scopeKey: evaluation.positionId,
+          scopeLabel: `${accountName} / ${evaluation.symbol}`,
+          brokerKey: evaluation.brokerKey,
+          accountId: evaluation.accountId,
+          positionId: evaluation.positionId,
+          symbol: evaluation.symbol,
+          ruleCode: 'position_risk_summary',
+          metricName: 'exposure',
+          actualValue: this.roundNumber(evaluation.exposure, 2),
+          basisValue: null,
+          warnThresholdValue: null,
+          criticalThresholdValue: null,
+          status: this.formatRiskStateLabel(normalizedStatus),
+          bucket: null,
+          exposure: null,
+          threshold: null,
+          action: null,
+          alertSeverity: hasAlert
+            ? normalizedStatus === 'critical'
+              ? 'Critical'
+              : 'Watch'
+            : null,
+          alertMessage:
+            hasAlert
+              ? evaluation.notes[0] ||
+                `${evaluation.symbol} is carrying elevated position risk on ${accountName}.`
+              : null,
+          alertSymbol: hasAlert ? evaluation.symbol : null,
+          alertChannel: hasAlert ? 'Risk' : null,
+          alertStatus: hasAlert ? 'Open' : null,
+          sortOrder: 1000 + index,
+        } satisfies ComputedRiskRuleEvaluationPayload;
+      });
+
+    return [...controlRows, ...positionRows];
   }
 
   private buildRiskScenarios(
@@ -2435,6 +4282,8 @@ export class RiskService {
       brokerKey: account.brokerKey,
       accountId: account.accountId,
       accountName: account.accountName,
+      policyContextKey: account.policyContext.contextKey,
+      sideKey: this.resolvePositionSideKey(position),
       exposure,
       leverage,
       unrealizedPnl,
@@ -2583,6 +4432,12 @@ export class RiskService {
         weeklyLossLimitPct: Math.min(accumulator.weeklyLossLimitPct, account.thresholds.weeklyLossLimitPct),
         monthlyLossLimitPct: Math.min(accumulator.monthlyLossLimitPct, account.thresholds.monthlyLossLimitPct),
         maxLeverage: Math.min(accumulator.maxLeverage, account.thresholds.maxLeverage),
+        maxOrderAllocation:
+          accumulator.maxOrderAllocation === null
+            ? account.thresholds.maxOrderAllocation
+            : account.thresholds.maxOrderAllocation === null
+              ? accumulator.maxOrderAllocation
+              : Math.min(accumulator.maxOrderAllocation, account.thresholds.maxOrderAllocation),
         maxTotalAllocation: Math.min(accumulator.maxTotalAllocation, account.thresholds.maxTotalAllocation),
         maxAvgLeverage: Math.min(accumulator.maxAvgLeverage, account.thresholds.maxAvgLeverage),
       }),
@@ -2696,6 +4551,17 @@ export class RiskService {
       return 'watch';
     }
     return 'ok';
+  }
+
+  private formatRiskStateLabel(value: string): 'Ok' | 'Watch' | 'Critical' {
+    const normalized = this.normalizeRiskState(value);
+    if (normalized === 'critical') {
+      return 'Critical';
+    }
+    if (normalized === 'watch') {
+      return 'Watch';
+    }
+    return 'Ok';
   }
 
   private resolvePositionExposure(position: PositionRecord): number {

@@ -26,6 +26,19 @@ export interface ComputedRiskControlPayload {
   threshold: string;
   status: string;
   action: string;
+  policyContextKey?: string | null;
+  scopeType?: string | null;
+  scopeKey?: string | null;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  symbol?: string | null;
+  ruleCode?: string | null;
+  metricName?: string | null;
+  actualValue?: number | null;
+  basisValue?: number | null;
+  warnThresholdValue?: number | null;
+  criticalThresholdValue?: number | null;
+  sortOrder?: number;
 }
 
 @Service()

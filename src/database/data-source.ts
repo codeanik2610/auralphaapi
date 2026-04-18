@@ -17,9 +17,18 @@ import { PortfolioHolding } from './entities/PortfolioHolding';
 import { RiskPolicy } from './entities/RiskPolicy';
 import { RiskPolicyVersion } from './entities/RiskPolicyVersion';
 import { RiskAccountSnapshot } from './entities/RiskAccountSnapshot';
+import { RiskAssetSnapshot } from './entities/RiskAssetSnapshot';
+import { RiskBrokerAssetSnapshot } from './entities/RiskBrokerAssetSnapshot';
+import { RiskBrokerSnapshot } from './entities/RiskBrokerSnapshot';
 import { RiskOrderSnapshot } from './entities/RiskOrderSnapshot';
 import { RiskPositionSnapshot } from './entities/RiskPositionSnapshot';
+import { RiskRequestCheck } from './entities/RiskRequestCheck';
+import { RiskRequestRuleEvaluation } from './entities/RiskRequestRuleEvaluation';
+import { RiskRequestScopeImpact } from './entities/RiskRequestScopeImpact';
+import { RiskRuleEvaluation } from './entities/RiskRuleEvaluation';
 import { RiskSnapshot } from './entities/RiskSnapshot';
+import { RiskSnapshotPolicyContext } from './entities/RiskSnapshotPolicyContext';
+import { RiskSnapshotSourceCoverage } from './entities/RiskSnapshotSourceCoverage';
 import { RefreshToken } from './entities/RefreshToken';
 import { User } from './entities/User';
 import { PortfolioSnapshot } from './entities/PortfolioSnapshot';
@@ -59,6 +68,6 @@ export const coreDataSource = new DataSource({
   timezone: 'Z',
   synchronize: env.db.synchronize,
   logging: env.db.logging,
-  entities: [Trade, ActivityExport, ActivityLog, ActivitySavedView, Alert, AlertAction, AssetPrice, Asset, ExchangeAsset, ExchangeAssetUpdateLog, SchedulerHealthCheckResult, MarketSymbolSnapshot, Signal, SignalAction, SignalAlertLink, SuggestedTrade, SuggestedTradeExecution, Automation, AutomationCursor, AutomationEvent, AutomationAlert, AutomationRun, AutomationRunOutput, Watchlist, WatchlistItem, Connection, BrokerAccount, Broker, Exchange, EmailDelivery, AppSetting, SettingsAuditLog, SchedulerConfig, SchedulerCommand, SchedulerRunLog, SchedulerUserConfig, PortfolioSnapshot, PortfolioHolding, PaperOrder, OrderSubmissionRequest, RiskAccountSnapshot, RiskOrderSnapshot, RiskPositionSnapshot, RiskSnapshot, RiskPolicy, RiskPolicyVersion, User, RefreshToken],
+  entities: [Trade, ActivityExport, ActivityLog, ActivitySavedView, Alert, AlertAction, AssetPrice, Asset, ExchangeAsset, ExchangeAssetUpdateLog, SchedulerHealthCheckResult, MarketSymbolSnapshot, Signal, SignalAction, SignalAlertLink, SuggestedTrade, SuggestedTradeExecution, Automation, AutomationCursor, AutomationEvent, AutomationAlert, AutomationRun, AutomationRunOutput, Watchlist, WatchlistItem, Connection, BrokerAccount, Broker, Exchange, EmailDelivery, AppSetting, SettingsAuditLog, SchedulerConfig, SchedulerCommand, SchedulerRunLog, SchedulerUserConfig, PortfolioSnapshot, PortfolioHolding, PaperOrder, OrderSubmissionRequest, RiskAccountSnapshot, RiskAssetSnapshot, RiskBrokerAssetSnapshot, RiskBrokerSnapshot, RiskOrderSnapshot, RiskPositionSnapshot, RiskRequestCheck, RiskRequestRuleEvaluation, RiskRequestScopeImpact, RiskRuleEvaluation, RiskSnapshot, RiskSnapshotPolicyContext, RiskSnapshotSourceCoverage, RiskPolicy, RiskPolicyVersion, User, RefreshToken],
   migrations: [`${__dirname}/migrations/*.{ts,js}`],
 });

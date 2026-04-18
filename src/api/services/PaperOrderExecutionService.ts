@@ -141,6 +141,10 @@ export class PaperOrderExecutionService {
     let nextStatus = currentStatus;
     let transitionDescription: string | null = null;
 
+    if (currentStatus === 'OPEN') {
+      nextSimulation.executionState = 'working';
+    }
+
     if (currentStatus === 'OPEN' && this.shouldFillOrder(order, observation)) {
       const fillPrice = this.resolveFillPrice(order, observation);
       const quantity = this.toNumber(order.quantity);

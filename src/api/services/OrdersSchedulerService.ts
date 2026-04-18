@@ -457,21 +457,42 @@ export class OrdersSchedulerService {
     }
     const timeZone = await this.resolveUserTimeZone(actorUserId);
     await this.ensureSchedulerConfig(actorUserId, timeZone);
-    await this.schedulerUserConfigRepository.updateBySchedulerKeyAndUserId(SCHEDULER_KEY, actorUserId, {
+    const targetUserIds = Array.from(
+      new Set(
+        [
+          actorUserId,
+          ...(await this.schedulerUserConfigRepository.listBySchedulerKey(SCHEDULER_KEY))
+            .map((item) => String(item.userId || '').trim())
+            .filter(Boolean),
+        ].filter(Boolean)
+      )
+    );
+    await this.schedulerUserConfigRepository.updateManyBySchedulerKey(SCHEDULER_KEY, {
       enabled: false,
       schedulerType: ORDERS_SCHEDULER_OWNERSHIP,
     });
-    await this.schedulerCommandRepository.cancelPendingBySchedulerKeyAndActor(
-      SCHEDULER_KEY,
+    await this.schedulerConfigRepository.updateByKey(SCHEDULER_KEY, {
+      enabled: false,
+      schedulerType: ORDERS_SCHEDULER_OWNERSHIP,
+    });
+    for (const targetUserId of targetUserIds) {
+      await this.schedulerCommandRepository.cancelPendingBySchedulerKeyAndActor(
+        SCHEDULER_KEY,
+        targetUserId,
+        `Cancelled because scheduler disabled by ${actorUserId}`
+      );
+      await this.schedulerRunLogRepository.cancelQueuedRunsBySchedulerKeyAndActor(
+        SCHEDULER_KEY,
+        targetUserId,
+        `Cancelled because scheduler disabled by ${actorUserId}`
+      );
+    }
+    await this.logSchedulerActivity(
       actorUserId,
-      `Cancelled because scheduler disabled by ${actorUserId}`
+      'Orders scheduler paused',
+      'Success',
+      `Paused ${SCHEDULER_KEY} for all users`
     );
-    await this.schedulerRunLogRepository.cancelQueuedRunsBySchedulerKeyAndActor(
-      SCHEDULER_KEY,
-      actorUserId,
-      `Cancelled because scheduler disabled by ${actorUserId}`
-    );
-    await this.logSchedulerActivity(actorUserId, 'Orders scheduler paused', 'Success', `Paused ${SCHEDULER_KEY}`);
     return successResponse({
       queued: false,
       action: 'pause',
@@ -487,11 +508,20 @@ export class OrdersSchedulerService {
     }
     const timeZone = await this.resolveUserTimeZone(actorUserId);
     await this.ensureSchedulerConfig(actorUserId, timeZone);
-    await this.schedulerUserConfigRepository.updateBySchedulerKeyAndUserId(SCHEDULER_KEY, actorUserId, {
+    await this.schedulerUserConfigRepository.updateManyBySchedulerKey(SCHEDULER_KEY, {
       enabled: true,
       schedulerType: ORDERS_SCHEDULER_OWNERSHIP,
     });
-    await this.logSchedulerActivity(actorUserId, 'Orders scheduler resumed', 'Success', `Resumed ${SCHEDULER_KEY}`);
+    await this.schedulerConfigRepository.updateByKey(SCHEDULER_KEY, {
+      enabled: true,
+      schedulerType: ORDERS_SCHEDULER_OWNERSHIP,
+    });
+    await this.logSchedulerActivity(
+      actorUserId,
+      'Orders scheduler resumed',
+      'Success',
+      `Resumed ${SCHEDULER_KEY} for all users`
+    );
     return successResponse({
       queued: false,
       action: 'resume',

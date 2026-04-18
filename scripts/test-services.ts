@@ -11235,9 +11235,24 @@ async function runSuggestedTradeTransitionAssertions(): Promise<void> {
   {
     const service = new SuggestedTradesService() as any;
     let savedTrade: Record<string, unknown> | null = null;
+    let lookupCount = 0;
+
+    service.runPreTradeGate = async () => ({
+      result: {
+        decision: {
+          summary: 'Pre-trade passed',
+        },
+      },
+      execution: {
+        preTradeState: 'passed',
+        preTradeCheckedAt: '2026-04-04T10:02:30.000Z',
+      },
+      ready: true,
+    });
 
     service.suggestedTradeRepository = {
       async getSuggestedTradeById() {
+        lookupCount += 1;
         return {
           id: 'st-open',
           automationId: 'auto-1',
@@ -11247,7 +11262,7 @@ async function runSuggestedTradeTransitionAssertions(): Promise<void> {
           timeframe: '1h',
           side: 'BUY',
           signalTime: new Date('2026-04-04T10:00:00.000Z'),
-          status: 'Open',
+          status: lookupCount > 1 ? 'Accepted' : 'Open',
           confidence: 0.82,
           score: 82,
           entryPrice: '100',
@@ -11257,7 +11272,17 @@ async function runSuggestedTradeTransitionAssertions(): Promise<void> {
           exitRule: null,
           rationale: null,
           dedupeKey: 'dedupe-1',
-          meta: null,
+          meta:
+            lookupCount > 1
+              ? {
+                  review: {
+                    status: 'Accepted',
+                    note: 'ready to execute',
+                    updatedAt: '2026-04-04T10:03:00.000Z',
+                    actor: 'user-1',
+                  },
+                }
+              : null,
           createdAt: new Date('2026-04-04T10:01:00.000Z'),
           updatedAt: new Date('2026-04-04T10:02:00.000Z'),
         };
@@ -11266,6 +11291,13 @@ async function runSuggestedTradeTransitionAssertions(): Promise<void> {
         savedTrade = { ...trade };
         return {
           ...trade,
+          updatedAt: new Date('2026-04-04T10:03:00.000Z'),
+        };
+      },
+      async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+        return {
+          ...payload,
+          createdAt: new Date('2026-04-04T10:03:00.000Z'),
           updatedAt: new Date('2026-04-04T10:03:00.000Z'),
         };
       },
@@ -11392,6 +11424,22 @@ async function runSuggestedTradeExecutionPersistenceAssertions(): Promise<void> 
   let savedTradeMeta: Record<string, unknown> | null = null;
   let savedExecutionPayload: Record<string, unknown> | null = null;
   const attachedLinks: string[][] = [];
+
+  service.runPreTradeGate = async () => ({
+    result: {
+      decision: {
+        summary: 'Pre-trade passed',
+      },
+    },
+    execution: {
+      executionMode: 'paper',
+      preTradeState: 'passed',
+      preTradeCheckedAt: '2026-04-04T10:02:30.000Z',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+    },
+    ready: true,
+  });
 
   const trade = {
     id: 'st-link',

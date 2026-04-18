@@ -9,6 +9,8 @@ const VALID_STATUSES: SuggestedTradeStatus[] = [
   'Expired',
 ];
 const VALID_EXECUTION_STATES = [
+  'queued',
+  'submitting',
   'linked',
   'working',
   'filled',

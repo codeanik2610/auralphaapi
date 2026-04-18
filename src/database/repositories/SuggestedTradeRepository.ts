@@ -75,6 +75,8 @@ export interface SuggestedTradeOperationalSnapshot {
   dismissed: number;
   queuedForOrder: number;
   convertedToOrder: number;
+  queued: number;
+  submitting: number;
   linked: number;
   working: number;
   filled: number;
@@ -102,6 +104,12 @@ export interface SuggestedTradeExecutionUpsertPayload {
   suggestedTradeId: string;
   userId: string;
   executionMode?: string | null;
+  preTradeCheckId?: string | null;
+  preTradeState?: string | null;
+  preTradeCheckedAt?: Date | string | null;
+  preTradeBlockedReason?: string | null;
+  acceptedBy?: string | null;
+  acceptedAt?: Date | string | null;
   orderId?: string | null;
   paperOrderId?: string | null;
   brokerKey?: string | null;
@@ -246,6 +254,12 @@ export class SuggestedTradeRepository {
       suggestedTradeId: payload.suggestedTradeId,
       userId: payload.userId,
       executionMode: normalizeOptionalString(payload.executionMode)?.toLowerCase() ?? null,
+      preTradeCheckId: normalizeOptionalString(payload.preTradeCheckId),
+      preTradeState: normalizeOptionalString(payload.preTradeState)?.toLowerCase() ?? null,
+      preTradeCheckedAt: normalizeOptionalDate(payload.preTradeCheckedAt),
+      preTradeBlockedReason: normalizeOptionalString(payload.preTradeBlockedReason),
+      acceptedBy: normalizeOptionalString(payload.acceptedBy)?.toLowerCase() ?? null,
+      acceptedAt: normalizeOptionalDate(payload.acceptedAt),
       orderId: normalizeOptionalString(payload.orderId),
       paperOrderId: normalizeOptionalString(payload.paperOrderId),
       brokerKey: normalizeOptionalString(payload.brokerKey)?.toLowerCase() ?? null,
@@ -603,6 +617,51 @@ export class SuggestedTradeRepository {
     return this.loadSuggestedTradesByIds(userId, Array.from(collectedIds));
   }
 
+  async countSystemAcceptedExecutionsSince(
+    automationId: string,
+    executionMode: 'paper' | 'live',
+    since: Date
+  ): Promise<number> {
+    return this.repository
+      .createQueryBuilder('suggested_trade')
+      .innerJoin('suggested_trade.executionRecord', 'execution_record')
+      .where('suggested_trade.automationId = :automationId', { automationId })
+      .andWhere("LOWER(COALESCE(execution_record.executionMode, '')) = :executionMode", {
+        executionMode,
+      })
+      .andWhere("LOWER(COALESCE(execution_record.acceptedBy, '')) = 'system'")
+      .andWhere('execution_record.acceptedAt >= :since', { since })
+      .getCount();
+  }
+
+  async countSystemAcceptedPaperExecutionsSince(
+    automationId: string,
+    since: Date
+  ): Promise<number> {
+    return this.countSystemAcceptedExecutionsSince(automationId, 'paper', since);
+  }
+
+  async countActiveExecutionsForAutomation(
+    automationId: string,
+    executionMode: 'paper' | 'live'
+  ): Promise<number> {
+    return this.repository
+      .createQueryBuilder('suggested_trade')
+      .innerJoin('suggested_trade.executionRecord', 'execution_record')
+      .where('suggested_trade.automationId = :automationId', { automationId })
+      .andWhere("LOWER(COALESCE(execution_record.executionMode, '')) = :executionMode", {
+        executionMode,
+      })
+      .andWhere("LOWER(COALESCE(execution_record.executionState, '')) IN (:...states)", {
+        states: ['linked', 'working', 'filled'],
+      })
+      .getCount();
+  }
+
+  async countActivePaperExecutionsForAutomation(automationId: string): Promise<number> {
+    return this.countActiveExecutionsForAutomation(automationId, 'paper');
+  }
+
   private parsePayloadObject(payload: unknown): Record<string, unknown> | null {
     if (typeof payload === 'string') {
       try {
@@ -634,6 +693,8 @@ export class SuggestedTradeRepository {
     actionable: number;
     buySide: number;
     sellSide: number;
+    queued: number;
+    submitting: number;
     linked: number;
     working: number;
     filled: number;
@@ -646,7 +707,7 @@ export class SuggestedTradeRepository {
       withExecution: true,
     });
 
-    const [open, reviewed, accepted, dismissed, actionable, buySide, sellSide, linked, working, filled, closed] = await Promise.all([
+    const [open, reviewed, accepted, dismissed, actionable, buySide, sellSide, queued, submitting, linked, working, filled, closed] = await Promise.all([
       baseQuery
         .clone()
         .andWhere('suggested_trade.status = :openStatus', { openStatus: 'Open' })
@@ -676,6 +737,18 @@ export class SuggestedTradeRepository {
       baseQuery
         .clone()
         .andWhere('suggested_trade.side = :sellSide', { sellSide: 'SELL' })
+        .getCount(),
+      baseQuery
+        .clone()
+        .andWhere('LOWER(COALESCE(execution_record.executionState, \'\')) = :queuedState', {
+          queuedState: 'queued',
+        })
+        .getCount(),
+      baseQuery
+        .clone()
+        .andWhere('LOWER(COALESCE(execution_record.executionState, \'\')) = :submittingState', {
+          submittingState: 'submitting',
+        })
         .getCount(),
       baseQuery
         .clone()
@@ -711,6 +784,8 @@ export class SuggestedTradeRepository {
       actionable,
       buySide,
       sellSide,
+      queued,
+      submitting,
       linked,
       working,
       filled,
@@ -868,6 +943,14 @@ export class SuggestedTradeRepository {
         'convertedToOrder'
       )
       .addSelect(
+        "COALESCE(SUM(CASE WHEN LOWER(COALESCE(execution_record.executionState, '')) = 'queued' THEN 1 ELSE 0 END), 0)",
+        'queued'
+      )
+      .addSelect(
+        "COALESCE(SUM(CASE WHEN LOWER(COALESCE(execution_record.executionState, '')) = 'submitting' THEN 1 ELSE 0 END), 0)",
+        'submitting'
+      )
+      .addSelect(
         "COALESCE(SUM(CASE WHEN LOWER(COALESCE(execution_record.executionState, '')) = 'linked' THEN 1 ELSE 0 END), 0)",
         'linked'
       )
@@ -891,6 +974,8 @@ export class SuggestedTradeRepository {
         dismissed?: string | number | null;
         queuedForOrder?: string | number | null;
         convertedToOrder?: string | number | null;
+        queued?: string | number | null;
+        submitting?: string | number | null;
         linked?: string | number | null;
         working?: string | number | null;
         filled?: string | number | null;
@@ -908,6 +993,8 @@ export class SuggestedTradeRepository {
       dismissed: Number(raw?.dismissed || 0),
       queuedForOrder: Number(raw?.queuedForOrder || 0),
       convertedToOrder,
+      queued: Number(raw?.queued || 0),
+      submitting: Number(raw?.submitting || 0),
       linked: Number(raw?.linked || 0),
       working: Number(raw?.working || 0),
       filled: Number(raw?.filled || 0),

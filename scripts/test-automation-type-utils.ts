@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   normalizeAutomationConfig,
-  normalizeAutomationType,
-  inferAutomationTypeFromConfig,
+  normalizeTradeSuggestionExecutionPolicy,
 } from '../src/api/utils/automationType';
 
 // Test Suite 1: Basic Template ID Promotion
@@ -26,9 +25,10 @@ function runTemplateIdPromotionTests(): void {
     'Should promote templateId from config.config to top-level'
   );
   assert.strictEqual(
-    (result1?.config as Record<string, unknown>)?.templateId,
-    'template-123',
-    'Should preserve original nested templateId'
+    ((result1?.tradeSuggestion as Record<string, unknown>)?.execution as Record<string, unknown>)
+      ?.executionMode,
+    'suggestion_only',
+    'Trade-suggestion automations should receive a normalized default execution policy'
   );
   console.log('  ✓ Promotes templateId from nested config');
 
@@ -320,6 +320,53 @@ function runEdgeCaseTests(): void {
   console.log('  ✓ Handles multiple nested references\n');
 }
 
+function runExecutionPolicyNormalizationTests(): void {
+  console.log('Test Suite 6: Execution Policy Normalization\n');
+
+  const defaults = normalizeTradeSuggestionExecutionPolicy(null);
+  assert.equal(defaults.executionMode, 'suggestion_only');
+  assert.equal(defaults.approvalMode, 'manual_review');
+  assert.equal(
+    (defaults.preTrade as Record<string, unknown>)?.required,
+    true,
+    'Pre-trade should always be required'
+  );
+  console.log('  ✓ Supplies safe defaults for legacy automations');
+
+  const liveConfig = normalizeAutomationConfig('trade-suggestion', {
+    kind: 'trade-suggestion',
+    symbol: 'BTCUSDT',
+    timeframe: '1h',
+    sourceTemplateId: 'template-live',
+    tradeSuggestion: {
+      execution: {
+        executionMode: 'live_trade_auto',
+        approvalMode: 'auto_if_safe',
+        liveConsent: {
+          enabled: true,
+        },
+        routing: {
+          routeMode: 'fixed',
+          brokerKey: 'mudrex',
+        },
+      },
+    },
+  });
+
+  const liveExecution = (liveConfig?.tradeSuggestion as Record<string, unknown>)
+    ?.execution as Record<string, unknown>;
+  assert.equal(liveExecution?.executionMode, 'live_trade_auto');
+  assert.equal(
+    ((liveExecution?.routing as Record<string, unknown>) || {}).brokerKey,
+    'mudrex'
+  );
+  assert.equal(
+    ((liveExecution?.liveConsent as Record<string, unknown>) || {}).enabled,
+    true
+  );
+  console.log('  ✓ Preserves explicit live execution policy values\n');
+}
+
 // Main test runner
 export async function main(): Promise<void> {
   console.log('Running automationType utils tests...\n');
@@ -329,6 +376,7 @@ export async function main(): Promise<void> {
   runDuplicateHandlingTests();
   runBackwardCompatibilityTests();
   runEdgeCaseTests();
+  runExecutionPolicyNormalizationTests();
 
   console.log('✅ All automationType tests passed!\n');
 }

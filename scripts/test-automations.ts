@@ -709,6 +709,70 @@ function runAutomationTimeZoneValidationAssertions(): void {
   );
 }
 
+function runTradeSuggestionExecutionPolicyValidationAssertions(): void {
+  const paperDraft = validateAutomationCreateBody({
+    name: 'Paper Momentum',
+    status: 'Draft',
+    automationType: 'trade-suggestion',
+    config: {
+      symbol: 'BTCUSDT',
+      timeframe: '1h',
+      sourceTemplateId: 'template-1',
+      tradeSuggestion: {
+        execution: {
+          executionMode: 'paper_trade_auto',
+          approvalMode: 'auto_if_safe',
+        },
+      },
+    },
+  });
+
+  assert.equal(paperDraft.automationType, 'trade-suggestion');
+
+  assert.throws(
+    () =>
+      validateAutomationCreateBody({
+        name: 'Unsafe Live',
+        status: 'Draft',
+        automationType: 'trade-suggestion',
+        config: {
+          symbol: 'BTCUSDT',
+          timeframe: '1h',
+          sourceTemplateId: 'template-1',
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'live_trade_auto',
+            },
+          },
+        },
+      }),
+    /liveConsent\.enabled must be true/
+  );
+
+  assert.throws(
+    () =>
+      validateAutomationCreateBody({
+        name: 'Missing Fixed Broker',
+        status: 'Draft',
+        automationType: 'trade-suggestion',
+        config: {
+          symbol: 'BTCUSDT',
+          timeframe: '1h',
+          sourceTemplateId: 'template-1',
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'paper_trade_auto',
+              routing: {
+                routeMode: 'fixed',
+              },
+            },
+          },
+        },
+      }),
+    /routing\.brokerKey is required when routeMode is fixed/
+  );
+}
+
 function runAutomationScheduleAuditAssertions(): void {
   const normalizedDaily = normalizeAutomationScheduleRecord(
     { runAt: '09:30', intervalDays: 2 },
@@ -1523,6 +1587,7 @@ async function main(): Promise<void> {
   await runAutomationOperationalSnapshotAssertions();
   await runAutomationsOperationalAssertions();
   runAutomationSignalEvaluatorAssertions();
+  runTradeSuggestionExecutionPolicyValidationAssertions();
   runAutomationsScriptWiringAssertions();
   console.log('Automations module assertions passed.');
 }

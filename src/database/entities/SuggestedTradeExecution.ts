@@ -41,6 +41,24 @@ export class SuggestedTradeExecution {
   @Column({ name: 'execution_mode', type: 'varchar', length: 16, nullable: true })
   executionMode!: string | null;
 
+  @Column({ name: 'pre_trade_check_id', type: 'char', length: 36, nullable: true })
+  preTradeCheckId!: string | null;
+
+  @Column({ name: 'pre_trade_state', type: 'varchar', length: 20, nullable: true })
+  preTradeState!: string | null;
+
+  @Column({ name: 'pre_trade_checked_at', type: 'timestamp', nullable: true })
+  preTradeCheckedAt!: Date | null;
+
+  @Column({ name: 'pre_trade_blocked_reason', type: 'text', nullable: true })
+  preTradeBlockedReason!: string | null;
+
+  @Column({ name: 'accepted_by', type: 'varchar', length: 16, nullable: true })
+  acceptedBy!: string | null;
+
+  @Column({ name: 'accepted_at', type: 'timestamp', nullable: true })
+  acceptedAt!: Date | null;
+
   @Column({ name: 'order_id', type: 'varchar', length: 191, nullable: true })
   orderId!: string | null;
 

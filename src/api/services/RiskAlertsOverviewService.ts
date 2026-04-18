@@ -11,7 +11,7 @@ interface RiskAlertsOverviewQuery {
   scope?: string;
 }
 
-const RISK_CENTER_CONTRACT_VERSION = 'risk-center-phase2-2026-04-09' as const;
+const RISK_CENTER_CONTRACT_VERSION = 'risk-center-phase3-2026-04-18' as const;
 
 @Service()
 export class RiskAlertsOverviewService {
@@ -48,8 +48,8 @@ export class RiskAlertsOverviewService {
           },
         },
         sources: {
-          summary: 'risk_alerts_aggregate',
-          alerts: 'risk_alerts',
+          summary: 'risk_rule_evaluations_alert_aggregate',
+          alerts: 'risk_rule_evaluations_derived_alerts',
         },
       },
       summary,

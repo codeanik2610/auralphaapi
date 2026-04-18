@@ -31,6 +31,250 @@ const readString = (...values: unknown[]): string | null => {
   return null;
 };
 
+const readNumber = (...values: unknown[]): number | null => {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return null;
+};
+
+const readBoolean = (...values: unknown[]): boolean | null => {
+  for (const value of values) {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true') {
+        return true;
+      }
+      if (normalized === 'false') {
+        return false;
+      }
+    }
+  }
+  return null;
+};
+
+const normalizeNumeric = (
+  value: number | null,
+  fallback: number,
+  {
+    min = Number.NEGATIVE_INFINITY,
+    max = Number.POSITIVE_INFINITY,
+    integer = false,
+  }: {
+    min?: number;
+    max?: number;
+    integer?: boolean;
+  } = {}
+): number => {
+  if (value === null || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const normalized = integer ? Math.trunc(value) : value;
+  if (normalized < min || normalized > max) {
+    return fallback;
+  }
+
+  return normalized;
+};
+
+const normalizeNullableNumeric = (
+  value: number | null,
+  {
+    min = Number.NEGATIVE_INFINITY,
+    max = Number.POSITIVE_INFINITY,
+    integer = false,
+  }: {
+    min?: number;
+    max?: number;
+    integer?: boolean;
+  } = {}
+): number | null => {
+  if (value === null || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const normalized = integer ? Math.trunc(value) : value;
+  if (normalized < min || normalized > max) {
+    return null;
+  }
+
+  return normalized;
+};
+
+const normalizeEnum = <T extends readonly string[]>(
+  value: string | null,
+  allowed: T,
+  fallback: T[number]
+): T[number] => {
+  const normalized = value?.trim().toLowerCase() ?? null;
+  return normalized && allowed.includes(normalized as T[number])
+    ? (normalized as T[number])
+    : fallback;
+};
+
+export const TRADE_SUGGESTION_EXECUTION_MODES = [
+  'suggestion_only',
+  'paper_trade_auto',
+  'live_trade_auto',
+] as const;
+export const TRADE_SUGGESTION_APPROVAL_MODES = [
+  'manual_review',
+  'auto_if_safe',
+] as const;
+export const TRADE_SUGGESTION_ROUTE_MODES = [
+  'strategy_default',
+  'user_default',
+  'fixed',
+] as const;
+export const TRADE_SUGGESTION_ORDER_TYPES = ['market', 'limit'] as const;
+export const TRADE_SUGGESTION_QUANTITY_MODES = [
+  'quantity',
+  'notional',
+  'risk_percent',
+] as const;
+export const TRADE_SUGGESTION_TIME_IN_FORCE = ['GTC', 'IOC', 'FOK'] as const;
+
+export const normalizeTradeSuggestionExecutionPolicy = (
+  value: unknown
+): Record<string, unknown> => {
+  const root = parseRecord(value) ?? {};
+  const preTrade = parseRecord(root.preTrade) ?? {};
+  const routing = parseRecord(root.routing) ?? {};
+  const orderTemplate = parseRecord(root.orderTemplate) ?? {};
+  const limits = parseRecord(root.limits) ?? {};
+  const liveConsent = parseRecord(root.liveConsent) ?? {};
+
+  const executionMode = normalizeEnum(
+    readString(root.executionMode, root.mode),
+    TRADE_SUGGESTION_EXECUTION_MODES,
+    'suggestion_only'
+  );
+  const approvalMode =
+    executionMode === 'suggestion_only'
+      ? 'manual_review'
+      : normalizeEnum(
+          readString(root.approvalMode),
+          TRADE_SUGGESTION_APPROVAL_MODES,
+          'manual_review'
+        );
+  const routeMode = normalizeEnum(
+    readString(routing.routeMode, root.routeMode),
+    TRADE_SUGGESTION_ROUTE_MODES,
+    'strategy_default'
+  );
+  const orderType = normalizeEnum(
+    readString(orderTemplate.orderType),
+    TRADE_SUGGESTION_ORDER_TYPES,
+    'market'
+  );
+  const timeInForceInput = readString(orderTemplate.timeInForce);
+  const quantityMode = normalizeEnum(
+    readString(orderTemplate.quantityMode),
+    TRADE_SUGGESTION_QUANTITY_MODES,
+    'risk_percent'
+  );
+  const liveConsentEnabled =
+    executionMode === 'live_trade_auto'
+      ? (readBoolean(liveConsent.enabled) ?? false)
+      : false;
+
+  return {
+    executionMode,
+    approvalMode,
+    preTrade: {
+      required: true,
+      maxSnapshotAgeSeconds: normalizeNumeric(
+        readNumber(preTrade.maxSnapshotAgeSeconds),
+        900,
+        { min: 60, max: 86400, integer: true }
+      ),
+      blockOnCritical: readBoolean(preTrade.blockOnCritical) ?? true,
+      blockOnWarning: readBoolean(preTrade.blockOnWarning) ?? false,
+      blockOnCoverageGap: readBoolean(preTrade.blockOnCoverageGap) ?? true,
+      blockOnStaleRiskSnapshot: readBoolean(preTrade.blockOnStaleRiskSnapshot) ?? true,
+      blockOnUnavailableBrokerSnapshot:
+        readBoolean(preTrade.blockOnUnavailableBrokerSnapshot) ?? true,
+      blockOnInsufficientFunds: readBoolean(preTrade.blockOnInsufficientFunds) ?? true,
+      blockOnDuplicateSignal: readBoolean(preTrade.blockOnDuplicateSignal) ?? true,
+    },
+    routing: {
+      routeMode,
+      brokerKey: readString(routing.brokerKey, root.brokerKey),
+      accountId: readString(routing.accountId, root.accountId),
+    },
+    orderTemplate: {
+      orderType,
+      timeInForce:
+        timeInForceInput &&
+        TRADE_SUGGESTION_TIME_IN_FORCE.includes(timeInForceInput.toUpperCase() as 'GTC')
+          ? timeInForceInput.toUpperCase()
+          : null,
+      quantityMode,
+      quantity: normalizeNullableNumeric(readNumber(orderTemplate.quantity), { min: 0 }),
+      notional: normalizeNullableNumeric(readNumber(orderTemplate.notional), { min: 0 }),
+      riskPercent: normalizeNullableNumeric(readNumber(orderTemplate.riskPercent), {
+        min: 0,
+        max: 100,
+      }),
+      leverage: normalizeNullableNumeric(readNumber(orderTemplate.leverage), { min: 0 }),
+      reduceOnly: readBoolean(orderTemplate.reduceOnly) ?? false,
+      slippageBps: normalizeNullableNumeric(readNumber(orderTemplate.slippageBps), {
+        min: 0,
+        integer: true,
+      }),
+    },
+    limits: {
+      maxOrdersPerRun: normalizeNumeric(readNumber(limits.maxOrdersPerRun), 1, {
+        min: 1,
+        max: 100,
+        integer: true,
+      }),
+      maxOrdersPerDay: normalizeNumeric(readNumber(limits.maxOrdersPerDay), 3, {
+        min: 1,
+        max: 1000,
+        integer: true,
+      }),
+      maxConcurrentOpenTrades: normalizeNumeric(
+        readNumber(limits.maxConcurrentOpenTrades),
+        1,
+        {
+          min: 1,
+          max: 1000,
+          integer: true,
+        }
+      ),
+      maxNotionalPerTrade: normalizeNullableNumeric(readNumber(limits.maxNotionalPerTrade), {
+        min: 0,
+      }),
+      maxNotionalPerDay: normalizeNullableNumeric(readNumber(limits.maxNotionalPerDay), {
+        min: 0,
+      }),
+      dedupeWindowSeconds: normalizeNumeric(readNumber(limits.dedupeWindowSeconds), 3600, {
+        min: 0,
+        max: 604800,
+        integer: true,
+      }),
+    },
+    liveConsent: {
+      enabled: liveConsentEnabled,
+      confirmedByUserId: readString(liveConsent.confirmedByUserId),
+      confirmedAt: readString(liveConsent.confirmedAt),
+    },
+  };
+};
+
 const readBacktestId = (...records: Array<Record<string, unknown> | null>): string | null =>
   readString(...records.map((record) => record?.backtestId));
 
@@ -207,10 +451,11 @@ export const normalizeAutomationConfig = (
   }
 
   const suggestion = parseRecord(root.tradeSuggestion) ?? {};
-  const execution =
+  const rawExecution =
     parseRecord(suggestion.execution) ??
     parseRecord(root.config) ??
     null;
+  const execution = normalizeTradeSuggestionExecutionPolicy(rawExecution);
   const setupScope = parseRecord(suggestion.setupScope) ?? parseRecord(root.setupScope) ?? null;
   const source =
     readString(suggestion.source, root.source, root.sourceType) ?? 'manual';
@@ -222,21 +467,21 @@ export const normalizeAutomationConfig = (
     root.timeframe,
     setupScope?.timeframe
   ) ?? null;
-  const market = readString(suggestion.market, root.market, execution?.market) ?? null;
+  const market = readString(suggestion.market, root.market, rawExecution?.market) ?? null;
 
   // Extract template IDs with clear precedence:
   // Priority: explicit top-level > nested config > tradeSuggestion > execution
-  const executionTemplate = parseRecord(execution?.template);
+  const executionTemplate = parseRecord(rawExecution?.template);
   const sourceTemplateId = readString(
     root.sourceTemplateId,              // 1. Explicit top-level (highest priority)
-    execution?.sourceTemplateId,         // 2. Nested in execution/config
+    rawExecution?.sourceTemplateId,      // 2. Nested in execution/config
     suggestion.sourceTemplateId,         // 3. Nested in tradeSuggestion
     executionTemplate?.id                // 4. Nested template object
   ) ?? null;
 
   const templateId = readString(
     root.templateId,                     // 1. Explicit top-level (highest priority)
-    execution?.templateId,               // 2. Nested in execution/config
+    rawExecution?.templateId,            // 2. Nested in execution/config
     suggestion.templateId,               // 3. Nested in tradeSuggestion
     executionTemplate?.id,               // 4. Nested template object
     executionTemplate?.templateId        // 5. Template object's templateId field
@@ -252,7 +497,7 @@ export const normalizeAutomationConfig = (
     ...(timeframe ? { timeframe } : {}),
     ...(market ? { market } : {}),
     ...(setupScope ? { setupScope } : {}),
-    ...(execution ? { config: execution } : {}),
+    config: execution,
     ...(sourceTemplateId ? { sourceTemplateId } : {}),
     ...(templateId ? { templateId } : {}),
     tradeSuggestion: {

@@ -386,6 +386,7 @@ async function run(): Promise<void> {
     updateAnchor: [] as Array<Record<string, unknown>>,
     createUserConfig: [] as Array<Record<string, unknown>>,
     updateUserConfig: [] as Array<Record<string, unknown>>,
+    updateManyUserConfig: [] as Array<Record<string, unknown>>,
     createRun: [] as Array<Record<string, unknown>>,
     createCommand: [] as Array<Record<string, unknown>>,
     cancelPendingActor: [] as Array<Record<string, unknown>>,
@@ -478,6 +479,21 @@ async function run(): Promise<void> {
         ...payload,
       };
       return { ...storedUserConfig };
+    },
+    async listBySchedulerKey(schedulerKey: string) {
+      assert.equal(schedulerKey, 'funds-sync');
+      return [
+        { userId: 'user-1' },
+        { userId: 'user-2' },
+      ];
+    },
+    async updateManyBySchedulerKey(schedulerKey: string, payload: Record<string, unknown>) {
+      calls.updateManyUserConfig.push({ schedulerKey, payload });
+      storedUserConfig = {
+        ...(storedUserConfig || {}),
+        ...payload,
+      };
+      return 2;
     },
   };
 
@@ -643,18 +659,26 @@ async function run(): Promise<void> {
     const pauseResponse = await service.pauseScheduler('user-1');
     assert.equal(pauseResponse.data.state, 'applied');
     assert.equal(
-      (calls.updateUserConfig.at(-1)?.payload as Record<string, unknown> | undefined)?.enabled,
+      (calls.updateManyUserConfig.at(-1)?.payload as Record<string, unknown> | undefined)?.enabled,
       false
     );
-    assert.equal(calls.cancelPendingActor.at(-1)?.actorUserId, 'user-1');
-    assert.equal(calls.cancelQueuedRunsActor.at(-1)?.actorUserId, 'user-1');
+    assert.equal(calls.updateAnchor.at(-1)?.enabled, false);
+    assert.deepEqual(
+      calls.cancelPendingActor.slice(-2).map((entry) => entry.actorUserId).sort(),
+      ['user-1', 'user-2']
+    );
+    assert.deepEqual(
+      calls.cancelQueuedRunsActor.slice(-2).map((entry) => entry.actorUserId).sort(),
+      ['user-1', 'user-2']
+    );
 
     const resumeResponse = await service.resumeScheduler('user-1');
     assert.equal(resumeResponse.data.state, 'applied');
     assert.equal(
-      (calls.updateUserConfig.at(-1)?.payload as Record<string, unknown> | undefined)?.enabled,
+      (calls.updateManyUserConfig.at(-1)?.payload as Record<string, unknown> | undefined)?.enabled,
       true
     );
+    assert.equal(calls.updateAnchor.at(-1)?.enabled, true);
 
     runningState = true;
     const stopResponse = await service.stopScheduler('user-1');

@@ -18,7 +18,11 @@ import {
   resolveAutomationSchedule,
 } from '../utils/automationSchedule';
 import { extractAutomationLineage } from '../utils/automationLineage';
-import { normalizeAutomationConfig, normalizeAutomationType } from '../utils/automationType';
+import {
+  normalizeAutomationConfig,
+  normalizeAutomationType,
+  normalizeTradeSuggestionExecutionPolicy,
+} from '../utils/automationType';
 import {
   AutomationActionBody,
   AutomationsQuery,
@@ -1591,13 +1595,24 @@ export class AutomationsService {
     const normalized = normalizeAutomationConfig('trade-suggestion', rawConfig);
     const root = this.parseRecord(normalized) ?? {};
     const tradeSuggestion = this.parseRecord(root.tradeSuggestion) ?? {};
+    const executionPolicy = this.finalizeTradeSuggestionExecutionPolicy(
+      userId,
+      tradeSuggestion.execution ?? root.config ?? null
+    );
     const setupScope = this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(root.setupScope);
     const backtestId = this.readString(root.backtestId, tradeSuggestion.backtestId);
     const symbol = this.readString(root.symbol, tradeSuggestion.symbol, setupScope?.symbol);
     const timeframe = this.readString(root.timeframe, tradeSuggestion.timeframe, setupScope?.timeframe);
 
     if (!backtestId) {
-      return normalized;
+      return normalizeAutomationConfig('trade-suggestion', {
+        ...root,
+        config: executionPolicy,
+        tradeSuggestion: {
+          ...tradeSuggestion,
+          execution: executionPolicy,
+        },
+      });
     }
 
     const sourceBacktest = await this.backtestRepository.getBacktestById(userId, backtestId);
@@ -1663,6 +1678,7 @@ export class AutomationsService {
       ...(sourceTemplateName ? { sourceTemplateName } : {}),
       ...(sourceTemplateVersion !== null ? { sourceTemplateVersion } : {}),
       ...(hydratedSetupScope ? { setupScope: hydratedSetupScope } : {}),
+      config: executionPolicy,
       tradeSuggestion: {
         ...tradeSuggestion,
         kind: 'trade-suggestion',
@@ -1676,8 +1692,33 @@ export class AutomationsService {
         ...(sourceTemplateName ? { sourceTemplateName } : {}),
         ...(sourceTemplateVersion !== null ? { sourceTemplateVersion } : {}),
         ...(hydratedSetupScope ? { setupScope: hydratedSetupScope } : {}),
+        execution: executionPolicy,
       },
     });
+  }
+
+  private finalizeTradeSuggestionExecutionPolicy(
+    userId: string,
+    value: unknown
+  ): Record<string, unknown> {
+    const normalized = normalizeTradeSuggestionExecutionPolicy(value);
+    const liveConsent = this.parseRecord(normalized.liveConsent) ?? {};
+    const executionMode = this.readString(normalized.executionMode) ?? 'suggestion_only';
+    const isLiveAuto = executionMode === 'live_trade_auto';
+    const liveEnabled = isLiveAuto && liveConsent.enabled === true;
+
+    return {
+      ...normalized,
+      liveConsent: {
+        enabled: liveEnabled,
+        confirmedByUserId: liveEnabled
+          ? this.readString(liveConsent.confirmedByUserId) ?? userId
+          : null,
+        confirmedAt: liveEnabled
+          ? this.readString(liveConsent.confirmedAt) ?? new Date().toISOString()
+          : null,
+      },
+    };
   }
 
   private sanitizeBacktestRunnerSourceConfig(

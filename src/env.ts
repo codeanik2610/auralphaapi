@@ -344,6 +344,18 @@ export const env = {
         ? getBool('SUGGESTED_TRADES_ROLLOUT_ENABLED', true)
         : !process.env.NODE_ENV || process.env.NODE_ENV !== 'test',
     rolloutStage: process.env.SUGGESTED_TRADES_ROLLOUT_STAGE || 'internal',
+    liveAuto: {
+      enabled: getBool('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', false),
+      executionEnabled: getBool('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED', false),
+      requireFixedRouting:
+        process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING !== undefined
+          ? getBool('SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING', true)
+          : true,
+      userAllowlist: getArray('SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST'),
+      brokerAllowlist: getArray('SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST').map((item) =>
+        item.trim().toLowerCase()
+      ),
+    },
   },
   positions: {
     liveSnapshotStaleAfterMs: Math.max(

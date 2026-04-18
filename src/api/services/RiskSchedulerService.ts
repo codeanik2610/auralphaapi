@@ -42,8 +42,7 @@ import {
   ExchangeAssetUpdateLogRepository,
   FundsSnapshotRepository,
   PositionSnapshotRepository,
-  RiskAlertRepository,
-  RiskControlRepository,
+  RiskRuleEvaluationRepository,
   RiskRepository,
   RiskScenarioRepository,
   SchedulerCommandRepository,
@@ -119,11 +118,8 @@ export class RiskSchedulerService {
   @Inject(() => RiskRepository)
   private riskRepository!: RiskRepository;
 
-  @Inject(() => RiskControlRepository)
-  private riskControlRepository!: RiskControlRepository;
-
-  @Inject(() => RiskAlertRepository)
-  private riskAlertRepository!: RiskAlertRepository;
+  @Inject(() => RiskRuleEvaluationRepository)
+  private riskRuleEvaluationRepository!: RiskRuleEvaluationRepository;
 
   @Inject(() => RiskScenarioRepository)
   private riskScenarioRepository!: RiskScenarioRepository;
@@ -396,22 +392,42 @@ export class RiskSchedulerService {
     }
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(actorUserId);
     await this.ensureSchedulerConfig(actorUserId, timeZone);
-    await this.schedulerUserConfigRepository.updateBySchedulerKeyAndUserId(
-      SCHEDULER_KEY,
-      actorUserId,
-      { enabled: false }
+    const targetUserIds = Array.from(
+      new Set(
+        [
+          actorUserId,
+          ...(await this.schedulerUserConfigRepository.listBySchedulerKey(SCHEDULER_KEY))
+            .map((item) => String(item.userId || '').trim())
+            .filter(Boolean),
+        ].filter(Boolean)
+      )
     );
-    await this.schedulerCommandRepository.cancelPendingBySchedulerKeyAndActor(
-      SCHEDULER_KEY,
+    await this.schedulerUserConfigRepository.updateManyBySchedulerKey(SCHEDULER_KEY, {
+      enabled: false,
+      schedulerType: RISK_SCHEDULER_OWNERSHIP,
+    });
+    await this.schedulerConfigRepository.updateByKey(SCHEDULER_KEY, {
+      enabled: false,
+      schedulerType: RISK_SCHEDULER_OWNERSHIP,
+    });
+    for (const targetUserId of targetUserIds) {
+      await this.schedulerCommandRepository.cancelPendingBySchedulerKeyAndActor(
+        SCHEDULER_KEY,
+        targetUserId,
+        `Cancelled because scheduler disabled by ${actorUserId}`
+      );
+      await this.schedulerRunLogRepository.cancelQueuedRunsBySchedulerKeyAndActor(
+        SCHEDULER_KEY,
+        targetUserId,
+        `Cancelled because scheduler disabled by ${actorUserId}`
+      );
+    }
+    await this.logSchedulerActivity(
       actorUserId,
-      `Cancelled because scheduler disabled by ${actorUserId}`
+      'Risk scheduler paused',
+      'Success',
+      `Paused ${SCHEDULER_KEY} for all users`
     );
-    await this.schedulerRunLogRepository.cancelQueuedRunsBySchedulerKeyAndActor(
-      SCHEDULER_KEY,
-      actorUserId,
-      `Cancelled because scheduler disabled by ${actorUserId}`
-    );
-    await this.logSchedulerActivity(actorUserId, 'Risk scheduler paused', 'Success', `Paused ${SCHEDULER_KEY}`);
     return successResponse({
       queued: false,
       action: 'pause',
@@ -427,12 +443,20 @@ export class RiskSchedulerService {
     }
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(actorUserId);
     await this.ensureSchedulerConfig(actorUserId, timeZone);
-    await this.schedulerUserConfigRepository.updateBySchedulerKeyAndUserId(
-      SCHEDULER_KEY,
+    await this.schedulerUserConfigRepository.updateManyBySchedulerKey(SCHEDULER_KEY, {
+      enabled: true,
+      schedulerType: RISK_SCHEDULER_OWNERSHIP,
+    });
+    await this.schedulerConfigRepository.updateByKey(SCHEDULER_KEY, {
+      enabled: true,
+      schedulerType: RISK_SCHEDULER_OWNERSHIP,
+    });
+    await this.logSchedulerActivity(
       actorUserId,
-      { enabled: true }
+      'Risk scheduler resumed',
+      'Success',
+      `Resumed ${SCHEDULER_KEY} for all users`
     );
-    await this.logSchedulerActivity(actorUserId, 'Risk scheduler resumed', 'Success', `Resumed ${SCHEDULER_KEY}`);
     return successResponse({
       queued: false,
       action: 'resume',
@@ -684,8 +708,8 @@ export class RiskSchedulerService {
       [latestSnapshotsByUser, latestControlAt, latestAlertAt, latestScenarioAt] =
         await Promise.all([
           this.riskRepository.listLatestSnapshotsForUsers(userIds),
-          this.riskControlRepository.getLatestCreatedAtForUsers(userIds),
-          this.riskAlertRepository.getLatestCreatedAtForUsers(userIds),
+          this.riskRuleEvaluationRepository.getLatestControlCreatedAtForUsers(userIds),
+          this.riskRuleEvaluationRepository.getLatestAlertCreatedAtForUsers(userIds),
           this.riskScenarioRepository.getLatestCreatedAtForUsers(userIds),
         ]);
 

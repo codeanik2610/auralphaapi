@@ -185,6 +185,22 @@ export class SuggestedTradesOverviewService {
         group: 'review',
       },
       {
+        id: 'queued',
+        label: 'Queued',
+        count: summary.queued,
+        selected: selectedExecutionState === 'queued',
+        description: 'Execution requests waiting to start submission.',
+        group: 'execution',
+      },
+      {
+        id: 'submitting',
+        label: 'Submitting',
+        count: summary.submitting,
+        selected: selectedExecutionState === 'submitting',
+        description: 'Execution requests currently being submitted.',
+        group: 'execution',
+      },
+      {
         id: 'linked',
         label: 'Linked',
         count: summary.linked,

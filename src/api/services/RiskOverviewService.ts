@@ -16,8 +16,7 @@ import {
   BrokerAccountRepository,
   FundsSnapshotRepository,
   PositionSnapshotRepository,
-  RiskAlertRepository,
-  RiskControlRepository,
+  RiskRuleEvaluationRepository,
   RiskRepository,
   RiskScenarioRepository,
 } from '../../database';
@@ -42,7 +41,7 @@ interface RiskOverviewQuery {
 }
 
 const DEFAULT_LIMIT = 10;
-const RISK_CENTER_CONTRACT_VERSION = 'risk-center-phase10-2026-04-17' as const;
+const RISK_CENTER_CONTRACT_VERSION = 'risk-center-phase11-2026-04-18' as const;
 const RISK_SNAPSHOT_LAG_TOLERANCE_MS = 5 * 60 * 1000;
 
 interface BrokerCoverageAggregate {
@@ -78,11 +77,8 @@ export class RiskOverviewService {
   @Inject(() => PositionSnapshotRepository)
   private positionSnapshotRepository!: PositionSnapshotRepository;
 
-  @Inject(() => RiskControlRepository)
-  private riskControlRepository!: RiskControlRepository;
-
-  @Inject(() => RiskAlertRepository)
-  private riskAlertRepository!: RiskAlertRepository;
+  @Inject(() => RiskRuleEvaluationRepository)
+  private riskRuleEvaluationRepository!: RiskRuleEvaluationRepository;
 
   @Inject(() => RiskScenarioRepository)
   private riskScenarioRepository!: RiskScenarioRepository;
@@ -128,8 +124,8 @@ export class RiskOverviewService {
       this.brokerDefinitionService.listActiveDefinitions(),
       this.activityExportRepository.listExports(userId, { limit: 10, offset: 0 }),
       this.riskRepository.getLatestSnapshot(userId),
-      this.riskControlRepository.getLatestCreatedAtForUsers([userId]),
-      this.riskAlertRepository.getLatestCreatedAtForUsers([userId]),
+      this.riskRuleEvaluationRepository.getLatestControlCreatedAtForUsers([userId]),
+      this.riskRuleEvaluationRepository.getLatestAlertCreatedAtForUsers([userId]),
       this.riskScenarioRepository.getLatestCreatedAtForUsers([userId]),
     ]);
 
@@ -178,7 +174,7 @@ export class RiskOverviewService {
         generatedAt: this.formatDisplayTime(generatedAtIso, timeZone) || generatedAtIso,
         generatedAtIso,
         summary:
-          'Phase 10 keeps the activity-trail workflow intact and upgrades risk windows so daily, weekly, and monthly loss usage are now persisted in the risk snapshot contract.',
+          'Phase 11 keeps the activity-trail workflow intact and moves controls/alerts freshness plus operator read paths onto normalized risk_rule_evaluations storage while preserving persisted daily, weekly, and monthly risk windows.',
         query: {
           supported: [
             'controlsLimit',
@@ -206,9 +202,9 @@ export class RiskOverviewService {
         },
         sources: {
           summary: 'risk_snapshots_latest',
-          controls: 'risk_controls',
+          controls: 'risk_rule_evaluations_derived_controls',
           scenarios: 'risk_scenarios',
-          alerts: 'risk_alerts',
+          alerts: 'risk_rule_evaluations_derived_alerts',
           policies: 'risk_policies',
           brokers: 'connected_broker_accounts_plus_active_definitions',
           riskWindows: 'risk_snapshots_latest_with_persisted_loss_windows',
@@ -252,6 +248,7 @@ export class RiskOverviewService {
             'risk_account_snapshots',
             'risk_order_snapshots',
             'risk_position_snapshots',
+            'risk_rule_evaluations',
             'risk_controls',
             'risk_alerts',
             'risk_scenarios',
@@ -717,9 +714,13 @@ export class RiskOverviewService {
     );
   }
 
-  private parseSnapshotJson(value: string | null | undefined): Record<string, unknown> | null {
+  private parseSnapshotJson(value: unknown): Record<string, unknown> | null {
     if (!value) {
       return null;
+    }
+
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
     }
 
     try {

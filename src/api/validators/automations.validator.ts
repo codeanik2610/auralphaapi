@@ -4,7 +4,10 @@ import { isValidIanaTimeZone, normalizeTimeZone } from '../utils/timezone';
 import {
   ACCEPTED_AUTOMATION_TYPE_INPUTS,
   CANONICAL_AUTOMATION_TYPES,
+  normalizeTradeSuggestionExecutionPolicy,
   normalizeAutomationType,
+  TRADE_SUGGESTION_EXECUTION_MODES,
+  TRADE_SUGGESTION_ROUTE_MODES,
 } from '../utils/automationType';
 
 const VALID_STATUSES: AutomationStatus[] = ['Running', 'Paused', 'Failed', 'Draft'];
@@ -150,6 +153,39 @@ const validateTradeSuggestionConfig = (
   if (!sourceTemplateId && !backtestId) {
     throw new BadRequestAppError(
       `${fieldLabel} must include sourceTemplateId/templateId or backtestId for trade-suggestion automations`
+    );
+  }
+
+  const executionPolicy = normalizeTradeSuggestionExecutionPolicy(
+    tradeSuggestion?.execution ?? config.config ?? null
+  );
+  const routing = parseRecord(executionPolicy.routing) ?? {};
+  const liveConsent = parseRecord(executionPolicy.liveConsent) ?? {};
+  const executionMode = readString(executionPolicy.executionMode) ?? 'suggestion_only';
+  const routeMode = readString(routing.routeMode) ?? 'strategy_default';
+  const brokerKey = readString(routing.brokerKey);
+
+  if (!TRADE_SUGGESTION_EXECUTION_MODES.includes(executionMode as (typeof TRADE_SUGGESTION_EXECUTION_MODES)[number])) {
+    throw new BadRequestAppError(
+      `${fieldLabel}.tradeSuggestion.execution.executionMode must be one of: ${TRADE_SUGGESTION_EXECUTION_MODES.join(', ')}`
+    );
+  }
+
+  if (!TRADE_SUGGESTION_ROUTE_MODES.includes(routeMode as (typeof TRADE_SUGGESTION_ROUTE_MODES)[number])) {
+    throw new BadRequestAppError(
+      `${fieldLabel}.tradeSuggestion.execution.routing.routeMode must be one of: ${TRADE_SUGGESTION_ROUTE_MODES.join(', ')}`
+    );
+  }
+
+  if (routeMode === 'fixed' && !brokerKey) {
+    throw new BadRequestAppError(
+      `${fieldLabel}.tradeSuggestion.execution.routing.brokerKey is required when routeMode is fixed`
+    );
+  }
+
+  if (executionMode === 'live_trade_auto' && liveConsent.enabled !== true) {
+    throw new BadRequestAppError(
+      `${fieldLabel}.tradeSuggestion.execution.liveConsent.enabled must be true for live_trade_auto automations`
     );
   }
 };
