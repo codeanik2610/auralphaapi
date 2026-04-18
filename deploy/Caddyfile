@@ -1,0 +1,14 @@
+{$APP_DOMAIN} {
+  encode gzip zstd
+  reverse_proxy auralphaapp:80
+}
+
+{$API_DOMAIN} {
+  encode gzip zstd
+  reverse_proxy auralpha-api:3000
+}
+
+{$DISCOVERY_DOMAIN} {
+  encode gzip zstd
+  reverse_proxy discovery-engine:8000
+}

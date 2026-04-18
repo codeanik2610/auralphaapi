@@ -1,0 +1,80 @@
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${SELFHOSTED_MYSQL_DATABASE:-auralpha}
+      MYSQL_USER: ${SELFHOSTED_MYSQL_USERNAME:-auralpha}
+      MYSQL_PASSWORD: ${SELFHOSTED_MYSQL_PASSWORD:-change-me-mysql-password}
+      MYSQL_ROOT_PASSWORD: ${SELFHOSTED_MYSQL_ROOT_PASSWORD:-change-me-root-password}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    expose:
+      - "3306"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - core
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SELFHOSTED_POSTGRES_DATABASE:-auralpha}
+      POSTGRES_USER: ${SELFHOSTED_POSTGRES_USERNAME:-auralpha}
+      POSTGRES_PASSWORD: ${SELFHOSTED_POSTGRES_PASSWORD:-change-me-postgres-password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -h 127.0.0.1"
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - core
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${SELFHOSTED_REDIS_PASSWORD:-change-me-redis-password}
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+    volumes:
+      - redis-data:/data
+    expose:
+      - "6379"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - core
+
+volumes:
+  mysql-data:
+  postgres-data:
+  redis-data:

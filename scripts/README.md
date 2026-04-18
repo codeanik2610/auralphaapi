@@ -8,6 +8,7 @@ This directory is intentionally split into two groups:
   - `_support`
   - `checks`
   - `db`
+  - `deploy`
   - `rebuild`
   - `release-gates`
   - `signoffs`
@@ -21,6 +22,15 @@ This directory is intentionally split into two groups:
 - `_support`: shared test and coverage infrastructure
 - `checks`: health and operational checks
 - `db`: migration/bootstrap/DB maintenance scripts
+- `deploy`: operator-facing Docker platform helpers
+  - validate stack inputs and rendered compose
+  - audit production env completeness and shared-secret consistency
+  - one-command launch sequence
+  - first-run bring-up
+  - routine update
+  - post-bootstrap rebuilds
+  - live status, logs, stop, and restart helpers
+  - public smoke checks
 - `rebuild`: derived-data rebuild scripts
 - `release-gates`: release gate entrypoints
 - `signoffs`: signoff entrypoints
