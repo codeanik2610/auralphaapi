@@ -199,6 +199,8 @@
   "db:encrypt-broker-secrets": "node --import tsx scripts/db/db-encrypt-broker-account-secrets.ts",
   "deploy:platform:validate": "bash scripts/deploy/platform-validate.sh",
   "deploy:platform:env-audit": "bash scripts/deploy/platform-env-audit.sh",
+  "deploy:platform:write-ip-env": "bash scripts/deploy/platform-write-ip-env.sh",
+  "deploy:platform:launch-ip-selfhosted": "bash scripts/deploy/platform-launch-ip-selfhosted.sh",
   "deploy:platform:launch": "bash scripts/deploy/platform-launch.sh",
   "deploy:platform:first-run": "bash scripts/deploy/platform-first-run.sh",
   "deploy:platform:status": "bash scripts/deploy/platform-status.sh",

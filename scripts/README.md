@@ -23,6 +23,8 @@ This directory is intentionally split into two groups:
 - `checks`: health and operational checks
 - `db`: migration/bootstrap/DB maintenance scripts
 - `deploy`: operator-facing Docker platform helpers
+  - write IP-only self-hosted production env files with generated secrets
+  - one-command IP-only self-hosted Droplet launch
   - validate stack inputs and rendered compose
   - audit production env completeness and shared-secret consistency
   - one-command launch sequence

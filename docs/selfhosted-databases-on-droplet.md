@@ -32,6 +32,51 @@ They are not published on public host ports.
 
 ## Required env changes
 
+### Fast path: generate the env files
+
+For an IP-only Droplet deployment, the one-command launch path is:
+
+```bash
+cd /opt/auralpha/Backend/aurAlpha
+bash scripts/deploy/platform-launch-ip-selfhosted.sh 168.144.66.167
+```
+
+That command writes all env files, generates internal secrets, starts the self-hosted databases, builds images, runs migrations, launches the stack, and runs smoke checks.
+
+If you already have a real LLM key:
+
+```bash
+cd /opt/auralpha/Backend/aurAlpha
+LLM_API_KEY=your_real_llm_key bash scripts/deploy/platform-launch-ip-selfhosted.sh 168.144.66.167
+```
+
+If you only want to generate the env files without launching, run:
+
+```bash
+cd /opt/auralpha/Backend/aurAlpha
+bash scripts/deploy/platform-write-ip-env.sh 168.144.66.167
+```
+
+If you already have a real LLM key, pass it in the same command:
+
+```bash
+cd /opt/auralpha/Backend/aurAlpha
+LLM_API_KEY=your_real_llm_key bash scripts/deploy/platform-write-ip-env.sh 168.144.66.167
+```
+
+That helper writes:
+- `deploy/.env.platform`
+- `environments/production/.env`
+- `../aurAlphaSchedulerWorker/environments/production/.env`
+- `../discovery-engine/environments/production/.env`
+
+It also selects:
+- `CADDYFILE_PATH=./deploy/Caddyfile.ip-only`
+- `PUBLIC_SCHEME=http`
+- self-hosted service hosts: `mysql`, `postgres`, and `redis`
+
+Use the manual sections below only if you want to edit the files yourself.
+
 ### 1. Platform env file
 
 Fill these in `deploy/.env.platform`:

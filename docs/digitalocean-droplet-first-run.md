@@ -76,6 +76,24 @@ Environment directory naming is intentionally split across repos:
 
 For the Docker platform stack, you usually create only the backend, worker, discovery, and platform env files manually. The frontend production file is generated during the Docker build from `deploy/.env.platform`.
 
+For an IP-only Droplet with self-hosted databases, use the one-command launcher instead of manual copying/editing:
+
+```bash
+cd /opt/auralpha/Backend/aurAlpha
+bash scripts/deploy/platform-launch-ip-selfhosted.sh 168.144.66.167
+```
+
+If you already have a real LLM key:
+
+```bash
+cd /opt/auralpha/Backend/aurAlpha
+LLM_API_KEY=your_real_llm_key bash scripts/deploy/platform-launch-ip-selfhosted.sh 168.144.66.167
+```
+
+The launcher creates the four env files with the correct folder names, HTTP IP-only URLs, self-hosted database hosts, and generated strong secrets. It then validates the config, starts the database containers, builds images, runs backend migrations, launches the platform, and runs smoke checks.
+
+If you are using domain-based routing or managed databases, create the files manually:
+
 ```bash
 cp environments/production/.env.example environments/production/.env
 cp ../aurAlphaSchedulerWorker/environments/production/.env.example ../aurAlphaSchedulerWorker/environments/production/.env

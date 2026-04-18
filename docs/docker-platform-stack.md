@@ -13,6 +13,7 @@ Use:
 - [docker-compose.platform.yml](/Users/apple/Documents/Project/Backend/aurAlpha/docker-compose.platform.yml)
 - [docker-compose.selfhosted-db.yml](/Users/apple/Documents/Project/Backend/aurAlpha/docker-compose.selfhosted-db.yml)
 - [deploy/Caddyfile](/Users/apple/Documents/Project/Backend/aurAlpha/deploy/Caddyfile)
+- [deploy/Caddyfile.ip-only](/Users/apple/Documents/Project/Backend/aurAlpha/deploy/Caddyfile.ip-only)
 - [deploy/.env.platform.example](/Users/apple/Documents/Project/Backend/aurAlpha/deploy/.env.platform.example)
 - [platform-production-env-matrix.md](/Users/apple/Documents/Project/Backend/aurAlpha/docs/platform-production-env-matrix.md)
 - [digitalocean-droplet-first-run.md](/Users/apple/Documents/Project/Backend/aurAlpha/docs/digitalocean-droplet-first-run.md)
@@ -31,6 +32,9 @@ Use:
 - In the Docker platform flow, the frontend production env is normally generated during image build from `deploy/.env.platform`, not copied manually.
 - The platform compose env file is supplied with:
   - `--env-file ./deploy/.env.platform`
+- IP-only deployments should use:
+  - `CADDYFILE_PATH=./deploy/Caddyfile.ip-only`
+  - `PUBLIC_SCHEME=http`
 
 ## Public routes
 
@@ -91,6 +95,7 @@ docker compose \
 - For operator wrappers, use:
   - `npm run deploy:platform:env-audit`
   - `npm run deploy:platform:validate`
+  - `npm run deploy:platform:launch-ip-selfhosted`
   - `npm run deploy:platform:launch`
   - `npm run deploy:platform:first-run`
   - `npm run deploy:platform:status`

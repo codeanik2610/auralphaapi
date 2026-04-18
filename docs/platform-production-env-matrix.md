@@ -64,6 +64,8 @@ Real file on server:
 | `APP_DOMAIN` | `app.example.com` |
 | `API_DOMAIN` | `api.example.com` |
 | `DISCOVERY_DOMAIN` | `discovery.example.com` |
+| `PUBLIC_SCHEME` | `https`, or `http` for IP-only |
+| `CADDYFILE_PATH` | `./deploy/Caddyfile`, or `./deploy/Caddyfile.ip-only` for IP-only |
 | `PLATFORM_HTTP_PORT` | `80` |
 | `PLATFORM_HTTPS_PORT` | `443` |
 | `FRONTEND_API_BASE_URL` | `https://api.example.com/api/v1` |

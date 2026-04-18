@@ -10,6 +10,8 @@ validate_platform_inputs
 APP_DOMAIN="$(read_env_value "${PLATFORM_ENV_FILE}" "APP_DOMAIN")"
 API_DOMAIN="$(read_env_value "${PLATFORM_ENV_FILE}" "API_DOMAIN")"
 DISCOVERY_DOMAIN="$(read_env_value "${PLATFORM_ENV_FILE}" "DISCOVERY_DOMAIN")"
+PUBLIC_SCHEME="${PUBLIC_SCHEME:-$(read_env_value "${PLATFORM_ENV_FILE}" "PUBLIC_SCHEME")}"
+PUBLIC_SCHEME="${PUBLIC_SCHEME:-https}"
 
 if [[ -z "${APP_DOMAIN}" || -z "${API_DOMAIN}" || -z "${DISCOVERY_DOMAIN}" ]]; then
   echo "APP_DOMAIN, API_DOMAIN, and DISCOVERY_DOMAIN must all be set in ${PLATFORM_ENV_FILE}" >&2

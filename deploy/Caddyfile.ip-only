@@ -1,0 +1,27 @@
+:80 {
+  encode gzip zstd
+
+  @discovery_api path /api/v1/discovery*
+  handle @discovery_api {
+    reverse_proxy discovery-engine:8000
+  }
+
+  @discovery_ws path /ws/discovery*
+  handle @discovery_ws {
+    reverse_proxy discovery-engine:8000
+  }
+
+  @discovery_health path /health/ready
+  handle @discovery_health {
+    reverse_proxy discovery-engine:8000
+  }
+
+  @api path /api/v1*
+  handle @api {
+    reverse_proxy auralpha-api:3000
+  }
+
+  handle {
+    reverse_proxy auralphaapp:80
+  }
+}
