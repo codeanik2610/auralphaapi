@@ -68,11 +68,25 @@ cd /opt/auralpha/Backend/aurAlpha
 
 ## 3. Create the production env files
 
+Environment directory naming is intentionally split across repos:
+- backend: `environments/production`
+- scheduler worker: `environments/production`
+- discovery engine: `environments/production`
+- frontend: `environment/production`
+
+For the Docker platform stack, you usually create only the backend, worker, discovery, and platform env files manually. The frontend production file is generated during the Docker build from `deploy/.env.platform`.
+
 ```bash
 cp environments/production/.env.example environments/production/.env
 cp ../aurAlphaSchedulerWorker/environments/production/.env.example ../aurAlphaSchedulerWorker/environments/production/.env
 cp ../discovery-engine/environments/production/.env.example ../discovery-engine/environments/production/.env
 cp deploy/.env.platform.example deploy/.env.platform
+```
+
+If you want to create the frontend production file manually too, the correct path is:
+
+```bash
+cp ../../Frontend/aurAlphaApp/environment/production/.env.example ../../Frontend/aurAlphaApp/environment/production/.env
 ```
 
 Fill the real values using:

@@ -146,6 +146,19 @@ In the platform compose stack, these are injected automatically:
 | `ACTIVITY_EXPORT_STORAGE_MODE` | `filesystem` |
 | `ACTIVITY_EXPORT_STORAGE_DIR` | `/app/storage/activity-exports` |
 
+## Frontend build inputs
+
+Frontend repo:
+- `../../Frontend/aurAlphaApp`
+
+Frontend example file:
+- `../../Frontend/aurAlphaApp/environment/production/.env.example`
+
+Important note:
+- the frontend repo uses the singular directory name `environment`, not `environments`
+- in the Docker platform stack, the frontend production env is generated during the image build from `deploy/.env.platform`
+- if you ever need to create it manually outside the Docker flow, the real file path is `../../Frontend/aurAlphaApp/environment/production/.env`
+
 ## 3. Scheduler worker
 
 File:

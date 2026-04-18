@@ -27,6 +27,8 @@ Use:
   - `./environments/production/.env`
   - `../aurAlphaSchedulerWorker/environments/production/.env`
   - `../discovery-engine/environments/production/.env`
+- Frontend source lives in `../../Frontend/aurAlphaApp`, which uses `environment/production/.env.example` with the singular directory name `environment`.
+- In the Docker platform flow, the frontend production env is normally generated during image build from `deploy/.env.platform`, not copied manually.
 - The platform compose env file is supplied with:
   - `--env-file ./deploy/.env.platform`
 

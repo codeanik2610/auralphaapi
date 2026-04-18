@@ -14,6 +14,12 @@ Use it with:
 - shared platform env file:
   - [deploy/.env.platform.example](/Users/apple/Documents/Project/Backend/aurAlpha/deploy/.env.platform.example)
 
+Directory naming reminder:
+- backend uses `environments`
+- scheduler worker uses `environments`
+- discovery engine uses `environments`
+- frontend uses `environment`
+
 ## What this adds
 
 The override adds three internal-only services on the Docker `core` network:
