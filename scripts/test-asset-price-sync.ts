@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { CreateAssetPriceTable1770713000000 } from '../src/database/migrations/1770713000000-CreateAssetPriceTable';
-import { DropLegacyMarketPricesBinanceTable1770714000000 } from '../src/database/migrations/1770714000000-DropLegacyMarketPricesBinanceTable';
+import { CreateAssetPriceTable1770713000000 } from './_fixtures/migrations/1770713000000-CreateAssetPriceTable';
+import { DropLegacyMarketPricesBinanceTable1770714000000 } from './_fixtures/migrations/1770714000000-DropLegacyMarketPricesBinanceTable';
 import { AssetPriceSchedulerService } from '../src/api/services/AssetPriceSchedulerService';
 import { AssetPriceRepository } from '../src/database/repositories/AssetPriceRepository';
 import { BrokerReferenceDataService } from '../src/api/services/BrokerReferenceDataService';
@@ -168,8 +168,8 @@ function runPhase1Assertions(): void {
   }
 
   for (const relativePath of [
-    'src/database/migrations/1770710000000-NormalizeGlobalSystemSchedulerOwnership.ts',
-    'src/database/migrations/1770711000000-EnforceGlobalSystemSchedulerScope.ts',
+    'scripts/_fixtures/migrations/1770710000000-NormalizeGlobalSystemSchedulerOwnership.ts',
+    'scripts/_fixtures/migrations/1770711000000-EnforceGlobalSystemSchedulerScope.ts',
   ]) {
     const source = read(relativePath);
     if (
@@ -306,7 +306,7 @@ async function runPhase2Assertions(): Promise<void> {
     'data-source.ts'
   );
 
-  const migrationSource = read('src/database/migrations/1770713000000-CreateAssetPriceTable.ts');
+  const migrationSource = read('scripts/_fixtures/migrations/1770713000000-CreateAssetPriceTable.ts');
   ensureMarkers(
     migrationSource,
     [
@@ -534,7 +534,7 @@ async function runPhase3Assertions(): Promise<void> {
   ensureMarkers(
     workerExecutionSource,
     [
-      'scope.assets could not be resolved to broker assets',
+      'scope.assetIds could not be resolved to broker assets',
       'INSERT INTO asset_price',
       'broker_asset_id',
       'fetchMudrexAssetPriceMap',
@@ -814,7 +814,7 @@ async function runPhase5Assertions(): Promise<void> {
   }
 
   ensureMarkers(
-    read('src/database/migrations/1770714000000-DropLegacyMarketPricesBinanceTable.ts'),
+    read('scripts/_fixtures/migrations/1770714000000-DropLegacyMarketPricesBinanceTable.ts'),
     [
       'DropLegacyMarketPricesBinanceTable1770714000000',
       'asset_price must exist before dropping market_prices_binance',

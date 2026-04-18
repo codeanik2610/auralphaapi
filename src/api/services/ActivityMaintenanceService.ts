@@ -1,9 +1,9 @@
-import { unlink } from 'node:fs/promises';
 import { Inject, Service } from 'typedi';
 import { ActivityExportRepository, ActivityRepository } from '../../database';
 import { env } from '../../env';
 import { Logger } from '../../lib/logger';
 import { RuntimeLoopSnapshot } from '../contracts/Runtime';
+import { ActivityExportStorageService } from './ActivityExportStorageService';
 
 const log = new Logger(__filename);
 
@@ -20,6 +20,9 @@ export class ActivityMaintenanceService {
 
   @Inject(() => ActivityExportRepository)
   private activityExportRepository!: ActivityExportRepository;
+
+  @Inject(() => ActivityExportStorageService)
+  private activityExportStorageService!: ActivityExportStorageService;
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -169,7 +172,7 @@ export class ActivityMaintenanceService {
           continue;
         }
         try {
-          await unlink(item.storagePath);
+          await this.activityExportStorageService.deleteStoredFile(item.storagePath);
         } catch (error) {
           const code = (error as NodeJS.ErrnoException | undefined)?.code;
           if (code !== 'ENOENT') {

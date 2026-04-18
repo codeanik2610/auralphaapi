@@ -13,9 +13,6 @@ async function runOverviewServiceAssertions(): Promise<void> {
 
   try {
   const service = new OverviewService() as any;
-  let capturedAssetsQuery: Record<string, string | undefined> | null = null;
-  const selectedSymbols: string[] = [];
-  const leverageSymbols: string[] = [];
 
   service.brokerAccountRepository = {
     async getConnectedBrokerAccounts() {
@@ -100,58 +97,6 @@ async function runOverviewServiceAssertions(): Promise<void> {
       return {
         computed_at: new Date('2026-04-09T10:15:00.000Z'),
       };
-    },
-  };
-
-  service.brokerReferenceDataService = {
-    async getFuturesAssets(
-      brokerKey: string,
-      query: Record<string, string | undefined>
-    ) {
-      assert.equal(brokerKey, 'mudrex');
-      capturedAssetsQuery = query;
-      return createSuccess([
-        {
-          id: 'asset-btc',
-          name: 'Bitcoin',
-          symbol: 'BTCUSDT',
-          price: '64000',
-          change_perc: '2.5',
-          volume: '999999',
-        },
-        {
-          id: 'asset-eth',
-          name: 'Ethereum',
-          symbol: 'ETHUSDT',
-          price: '3200',
-          change_perc: '-1.2',
-          volume: '777777',
-        },
-      ]);
-    },
-    async getFuturesAssetDetailBySymbol(brokerKey: string, symbol: string) {
-      assert.equal(brokerKey, 'mudrex');
-      selectedSymbols.push(symbol);
-      return createSuccess({
-        id: `asset-${symbol.toLowerCase()}`,
-        name: symbol === 'ETHUSDT' ? 'Ethereum' : 'Bitcoin',
-        symbol,
-        funding_interval: 8,
-        price: symbol === 'ETHUSDT' ? '3200' : '64000',
-        change_perc: symbol === 'ETHUSDT' ? '-1.2' : '2.5',
-        volume: symbol === 'ETHUSDT' ? '777777' : '999999',
-        '1d_high': symbol === 'ETHUSDT' ? 3300 : 65000,
-        '1d_low': symbol === 'ETHUSDT' ? 3100 : 62000,
-        '1d_volume': symbol === 'ETHUSDT' ? 777777 : 999999,
-      });
-    },
-    async getLeverageBySymbol(brokerKey: string, symbol: string) {
-      assert.equal(brokerKey, 'mudrex');
-      leverageSymbols.push(symbol);
-      return createSuccess({
-        Leverage: '25x',
-        MarginType: 'Isolated',
-      });
     },
   };
 
@@ -273,23 +218,15 @@ async function runOverviewServiceAssertions(): Promise<void> {
     order: 'desc',
   });
 
-  assert.deepEqual(capturedAssetsQuery, {
-    sort: 'volume',
-    order: 'desc',
-    offset: '0',
-    limit: '8',
-  });
-  assert.deepEqual(selectedSymbols, ['ETHUSDT']);
-  assert.deepEqual(leverageSymbols, ['ETHUSDT']);
   assert.equal(requestedResponse.data.meta.contractVersion, 'overview-phase4-2026-04-09');
   assert.equal(requestedResponse.data.meta.purpose, 'operator_command_center');
   assert.equal(
     requestedResponse.data.meta.summary,
-    'Phase 4 overview contract adds snapshot freshness, explicit operator warnings, automation diagnostics, live-reference cache fallback metadata, and request observability for the operator dashboard.'
+    'Phase 4 overview contract focuses on snapshot-backed capital posture, portfolio state, automation diagnostics, and request observability for the operator dashboard.'
   );
   assert.equal(requestedResponse.data.meta.query.supported.join(','), 'selectedSymbol,sort,order');
   assert.equal(requestedResponse.data.meta.query.ignored.join(','), 'brokerKey,accountId,limit');
-  assert.equal(requestedResponse.data.meta.query.sectionLimits.assets, 8);
+  assert.equal(requestedResponse.data.meta.query.sectionLimits.assets, 0);
   assert.equal(requestedResponse.data.meta.query.sectionLimits.portfolioHoldings, 5);
   assert.equal(requestedResponse.data.meta.routing.brokerKey, 'mudrex');
   assert.equal(requestedResponse.data.meta.routing.accountId, 'acct-default');
@@ -313,9 +250,9 @@ async function runOverviewServiceAssertions(): Promise<void> {
   assert.equal(requestedResponse.data.meta.observability.staleSectionCount, 0);
   assert.equal(requestedResponse.data.meta.observability.criticalSectionCount, 0);
   assert.equal(requestedResponse.data.meta.observability.warningCount, 0);
-  assert.equal(requestedResponse.data.meta.observability.referenceCache.assets, 'live');
-  assert.equal(requestedResponse.data.meta.observability.referenceCache.selectedAsset, 'live');
-  assert.equal(requestedResponse.data.meta.observability.referenceCache.leverage, 'live');
+  assert.equal(requestedResponse.data.meta.observability.referenceCache.assets, 'not_applicable');
+  assert.equal(requestedResponse.data.meta.observability.referenceCache.selectedAsset, 'not_applicable');
+  assert.equal(requestedResponse.data.meta.observability.referenceCache.leverage, 'not_applicable');
   assert.equal(
     requestedResponse.data.meta.observability.summary,
     'Overview assembled in 0ms with 0 degraded sections, 0 stale sections, and 0 operator warnings.'
@@ -343,13 +280,11 @@ async function runOverviewServiceAssertions(): Promise<void> {
   assert.equal(requestedResponse.data.activeFunds.walletItems[0]?.funds.balance, 12500);
   assert.equal(requestedResponse.data.activeFunds.walletItems[0]?.funds.available, 6100);
   assert.equal(requestedResponse.data.activeFunds.futuresItems[0]?.funds.balance, 8450.5);
-  assert.equal(requestedResponse.data.meta.sections.assets.sourceType, 'live_external');
-  assert.equal(requestedResponse.data.meta.sections.assets.observedAt !== null, true);
-  assert.equal(requestedResponse.data.meta.sections.assets.availability, 'available');
+  assert.equal(requestedResponse.data.meta.sections.assets.sourceType, 'computed_summary');
+  assert.equal(requestedResponse.data.meta.sections.assets.observedAt, null);
+  assert.equal(requestedResponse.data.meta.sections.assets.availability, 'missing');
   assert.equal(requestedResponse.data.meta.sections.assets.requestStatus, 'ok');
-  assert.equal(requestedResponse.data.meta.sections.assets.fetchMode, 'primary');
-  assert.equal(requestedResponse.data.meta.sections.assets.freshness?.state, 'fresh');
-  assert.equal(requestedResponse.data.meta.sections.assets.cache?.state, 'live');
+  assert.equal(requestedResponse.data.meta.sections.assets.fetchMode, 'skipped');
   assert.equal(
     requestedResponse.data.meta.sections.portfolioSummary.uiUsage,
     'rendered'
@@ -376,12 +311,94 @@ async function runOverviewServiceAssertions(): Promise<void> {
     'Overview payload assembled successfully from primary dependencies. This is a request-level overview status, not a platform-wide health signal.'
   );
   assert.equal(requestedResponse.data.portfolioSummary.dayPnL, 420);
-  assert.equal(requestedResponse.data.selectedAsset?.symbol, 'ETHUSDT');
+  assert.deepEqual(requestedResponse.data.assets, []);
+  assert.equal(requestedResponse.data.selectedAsset, null);
+  assert.equal(requestedResponse.data.leverage, null);
 
   const defaultResponse = await service.getOverview('user-1', {});
   assert.equal(defaultResponse.data.meta.selection.requestedSymbol, null);
-  assert.equal(defaultResponse.data.meta.selection.resolvedSymbol, 'BTCUSDT');
-  assert.equal(defaultResponse.data.meta.selection.mode, 'first_asset_default');
+  assert.equal(defaultResponse.data.meta.selection.resolvedSymbol, null);
+  assert.equal(defaultResponse.data.meta.selection.mode, 'none');
+
+  service.portfolioService = {
+    async getPortfolioSummary() {
+      return createSuccess({
+        equity: 0,
+        dayPnL: 0,
+        netExposure: '--',
+        diversification: '--',
+        observedAt: null,
+        observedAtIso: null,
+      });
+    },
+    async getPortfolioHoldings() {
+      return createSuccess({
+        items: [],
+        total: 0,
+        limit: 5,
+        offset: 0,
+        observedAt: null,
+        observedAtIso: null,
+      });
+    },
+  };
+
+  service.portfolioRepository = {
+    async getLatestSnapshot() {
+      return null;
+    },
+  };
+
+  service.portfolioOverviewService = {
+    async getOverview() {
+      return createSuccess({
+        summary: {
+          equity: 18450,
+          dayPnL: 125,
+          netExposure: '$0',
+          diversification: 'No open futures positions',
+          source: 'portfolio_overview_futures_legacy_alias',
+          observedAt: '2026-04-09T10:15:00.000Z',
+          observedAtIso: '2026-04-09T10:15:00.000Z',
+        },
+        holdings: {
+          items: [],
+          total: 0,
+          limit: 5,
+          offset: 0,
+          source: 'portfolio_overview_futures_legacy_alias',
+          observedAt: '2026-04-09T10:15:00.000Z',
+          observedAtIso: '2026-04-09T10:15:00.000Z',
+        },
+      });
+    },
+  };
+
+  const liveAliasFallbackResponse = await service.getOverview('user-1', {
+    selectedSymbol: 'BTCUSDT',
+  });
+  assert.equal(
+    liveAliasFallbackResponse.data.portfolioSummary.source,
+    'portfolio_overview_futures_legacy_alias'
+  );
+  assert.equal(
+    liveAliasFallbackResponse.data.meta.sections.portfolioSummary.observedAt,
+    '2026-04-09T10:15:00.000Z'
+  );
+  assert.equal(
+    liveAliasFallbackResponse.data.meta.sections.portfolioSummary.availability,
+    'available'
+  );
+  assert.equal(
+    liveAliasFallbackResponse.data.meta.sections.portfolioHoldings.availability,
+    'available'
+  );
+  assert.equal(
+    liveAliasFallbackResponse.data.meta.warnings.some(
+      (warning: { code: string }) => warning.code === 'portfolio_snapshot_attention'
+    ),
+    false
+  );
   } finally {
     Date.now = originalDateNow;
   }

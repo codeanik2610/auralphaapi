@@ -261,7 +261,14 @@ async function runRuntimeSourceCoverageAssertions(): Promise<void> {
     },
     {
       relativePath: 'src/api/controllers/HealthController.ts',
-      markers: ["@Get('/runtime')", 'getRuntimeHealth(', 'getRuntimeOverview()'],
+      markers: [
+        "@Get('/runtime')",
+        'getRuntimeHealth(',
+        'getRuntimeOverview()',
+        'assertSecureEnvironmentConfig({',
+        'activityExportStorageMode: env.activity.exportStorageMode',
+        'activityExportStorageDir: env.activity.exportStorageDir',
+      ],
     },
     {
       relativePath: 'src/api/services/ActivityExportProcessorService.ts',

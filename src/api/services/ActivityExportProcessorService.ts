@@ -1,12 +1,11 @@
-import { mkdir, open } from 'node:fs/promises';
 import os from 'node:os';
-import * as path from 'node:path';
 import { Inject, Service } from 'typedi';
 import { ActivityLog, ActivityExportRepository, ActivityRepository } from '../../database';
 import { env } from '../../env';
 import { normalizeActivityStream } from '../../lib/activityEvents';
 import { Logger } from '../../lib/logger';
 import { RuntimeLoopSnapshot } from '../contracts/Runtime';
+import { ActivityExportStorageService } from './ActivityExportStorageService';
 import { OperationalEventService } from './OperationalEventService';
 
 const log = new Logger(__filename);
@@ -21,6 +20,9 @@ export class ActivityExportProcessorService {
 
   @Inject(() => OperationalEventService)
   private operationalEventService!: OperationalEventService;
+
+  @Inject(() => ActivityExportStorageService)
+  private activityExportStorageService!: ActivityExportStorageService;
 
   private readonly exportRetentionMs = env.activity.exportRetentionDays * 24 * 60 * 60 * 1000;
   private readonly workerId = `${os.hostname()}:${process.pid}:activity-export-processor`;
@@ -308,11 +310,10 @@ export class ActivityExportProcessorService {
       filters: Record<string, string> | null;
     }
   ): Promise<{ filePath: string; exportedCount: number }> {
-    const safeFileName = item.fileName.replace(/[^a-zA-Z0-9._-]/g, '-');
-    const storageDir = env.activity.exportStorageDir;
-    await mkdir(storageDir, { recursive: true });
-    const filePath = path.join(storageDir, `${item.id}-${safeFileName}`);
-    const file = await open(filePath, 'w');
+    const { filePath, file } = await this.activityExportStorageService.openWritableExportFile({
+      id: item.id,
+      fileName: item.fileName,
+    });
     const query = this.buildExportQuery(item.scope, item.filters ?? undefined);
     let cursor: { createdAt: Date; id: string } | undefined;
     let exportedCount = 0;

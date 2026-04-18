@@ -69,5 +69,5 @@ export const coreDataSource = new DataSource({
   synchronize: env.db.synchronize,
   logging: env.db.logging,
   entities: [Trade, ActivityExport, ActivityLog, ActivitySavedView, Alert, AlertAction, AssetPrice, Asset, ExchangeAsset, ExchangeAssetUpdateLog, SchedulerHealthCheckResult, MarketSymbolSnapshot, Signal, SignalAction, SignalAlertLink, SuggestedTrade, SuggestedTradeExecution, Automation, AutomationCursor, AutomationEvent, AutomationAlert, AutomationRun, AutomationRunOutput, Watchlist, WatchlistItem, Connection, BrokerAccount, Broker, Exchange, EmailDelivery, AppSetting, SettingsAuditLog, SchedulerConfig, SchedulerCommand, SchedulerRunLog, SchedulerUserConfig, PortfolioSnapshot, PortfolioHolding, PaperOrder, OrderSubmissionRequest, RiskAccountSnapshot, RiskAssetSnapshot, RiskBrokerAssetSnapshot, RiskBrokerSnapshot, RiskOrderSnapshot, RiskPositionSnapshot, RiskRequestCheck, RiskRequestRuleEvaluation, RiskRequestScopeImpact, RiskRuleEvaluation, RiskSnapshot, RiskSnapshotPolicyContext, RiskSnapshotSourceCoverage, RiskPolicy, RiskPolicyVersion, User, RefreshToken],
-  migrations: [`${__dirname}/migrations/*.{ts,js}`],
+  migrations: [`${__dirname}/migrations_baseline/*.{ts,js}`],
 });

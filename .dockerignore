@@ -1,0 +1,16 @@
+.git
+.gitignore
+.claude
+.idea
+.env
+environments/*/.env
+node_modules
+dist
+artifacts
+coverage
+tmp
+*.log
+.DS_Store
+dump.rdb
+scripts/archive
+docs

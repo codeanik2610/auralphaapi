@@ -241,7 +241,7 @@ function run(): void {
   }
 
   const migrationSource = read(
-    'src/database/migrations/1770712000000-AddGlobalSystemSchedulerInitiatorAudit.ts'
+    'scripts/_fixtures/migrations/1770712000000-AddGlobalSystemSchedulerInitiatorAudit.ts'
   );
   for (const marker of [
     'AddGlobalSystemSchedulerInitiatorAudit1770712000000',

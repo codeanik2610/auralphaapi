@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { NormalizeRetiredLegacySchedulerTimezones1770708000000 } from '../src/database/migrations/1770708000000-NormalizeRetiredLegacySchedulerTimezones';
+import { NormalizeRetiredLegacySchedulerTimezones1770708000000 } from './_fixtures/migrations/1770708000000-NormalizeRetiredLegacySchedulerTimezones';
 
 function createMigrationQueryRunner(options: { hasTable?: Record<string, boolean> }) {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];

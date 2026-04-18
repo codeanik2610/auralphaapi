@@ -15,7 +15,7 @@ import {
 } from '../src/api/validators/suggestedTrades.validator';
 import { SuggestedTrade } from '../src/database/entities/SuggestedTrade';
 import { SuggestedTradeExecution } from '../src/database/entities/SuggestedTradeExecution';
-import { HardenSuggestedTradeExecutionStorage1767300010000 } from '../src/database/migrations/1767300010000-HardenSuggestedTradeExecutionStorage';
+import { HardenSuggestedTradeExecutionStorage1767300010000 } from './_fixtures/migrations/1767300010000-HardenSuggestedTradeExecutionStorage';
 import { env } from '../src/env';
 import { getMetadataArgsStorage } from 'typeorm';
 

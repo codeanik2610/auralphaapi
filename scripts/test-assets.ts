@@ -7,6 +7,7 @@ import { CryptoAssetsController } from '../src/api/controllers/CryptoAssetsContr
 import { ExchangeAssetsController } from '../src/api/controllers/ExchangeAssetsController';
 import { BrokerReferenceDataService } from '../src/api/services/BrokerReferenceDataService';
 import { ExchangeAssetsService } from '../src/api/services/ExchangeAssetsService';
+import { LeverageService } from '../src/brokers/providers/mudrex/LeverageService';
 
 function createSuccess<T>(data: T) {
   return { success: true as const, data };
@@ -153,6 +154,9 @@ async function runBrokerReferenceDataAssertions(): Promise<void> {
     async getRemoteFuturesAsset(assetId: string) {
       return createSuccess({ assetId });
     },
+    async getRemoteFuturesAssetBySymbol(symbol: string) {
+      return createSuccess({ id: `${symbol}-asset` });
+    },
   };
   service.leverageService = {
     async getLeverageByAssetId(assetId: string) {
@@ -198,6 +202,92 @@ async function runBrokerReferenceDataAssertions(): Promise<void> {
     () => service.getLeverageBySymbol('delta_exchange', 'BTCUSDT'),
     /Leverage lookup is not configured for broker: delta_exchange/
   );
+
+  service.leverageService = {
+    async getLeverageByAssetId(assetId: string) {
+      return createSuccess({ assetId });
+    },
+    async getLeverageBySymbol() {
+      throw new Error('leverage not found');
+    },
+  };
+
+  await assert.rejects(
+    () => service.getLeverageBySymbol('mudrex', 'BTCUSDT'),
+    /leverage not found/
+  );
+
+  service.leverageService = {
+    async getLeverageByAssetId(assetId: string) {
+      return createSuccess({ assetId });
+    },
+    async getLeverageBySymbol() {
+      const error = new Error('leverage not found') as Error & { httpCode?: number };
+      error.httpCode = 404;
+      throw error;
+    },
+  };
+
+  const fallbackLeverage = await service.getLeverageBySymbol('mudrex', 'BTCUSDT');
+  assert.equal(fallbackLeverage.data.assetId, 'BTCUSDT-asset');
+}
+
+async function runLeverageServiceAssertions(): Promise<void> {
+  const service = new LeverageService() as any;
+  const authenticatedCalls: Array<{ settings: Record<string, unknown>; path: string }> = [];
+  const publicCalls: string[] = [];
+
+  service.brokerAccountRepository = {
+    async listSystemBrokerAccounts() {
+      return [
+        {
+          settings: {
+            apiSecret: 'system-secret',
+          },
+        },
+      ];
+    },
+  };
+
+  service.mudrexHttpClient = {
+    async authenticatedGetWithSettings(
+      settings: Record<string, unknown>,
+      path: string
+    ) {
+      authenticatedCalls.push({ settings, path });
+      return {
+        leverage: '25x',
+        margin_type: 'Cross',
+      };
+    },
+    async get(path: string) {
+      publicCalls.push(path);
+      return {
+        leverage: '10x',
+        margin_type: 'Isolated',
+      };
+    },
+  };
+
+  const authenticatedResponse = await service.getLeverageBySymbol('BTCUSDT');
+  assert.equal(authenticatedResponse.data.Leverage, '25x');
+  assert.equal(authenticatedResponse.data.MarginType, 'Cross');
+  assert.equal(authenticatedCalls.length, 1);
+  assert.match(authenticatedCalls[0]?.path || '', /BTCUSDT\/leverage\?is_symbol$/);
+  assert.equal(authenticatedCalls[0]?.settings.apiSecret, 'system-secret');
+  assert.equal(publicCalls.length, 0);
+
+  service.brokerAccountRepository = {
+    async listSystemBrokerAccounts() {
+      return [];
+    },
+  };
+
+  const publicResponse = await service.getLeverageByAssetId('asset-1');
+  assert.equal(publicResponse.data.Leverage, '10x');
+  assert.equal(publicResponse.data.MarginType, 'Isolated');
+  assert.equal(publicCalls.length, 1);
+  assert.match(publicCalls[0] || '', /asset-1\/leverage$/);
 }
 
 async function runExchangeAssetsProviderCompatibilityAssertions(): Promise<void> {
@@ -512,6 +602,7 @@ async function main(): Promise<void> {
   await runCryptoAssetsControllerAssertions();
   await runBrokerReferenceCatalogAssertions();
   await runBrokerReferenceDataAssertions();
+  await runLeverageServiceAssertions();
   await runExchangeAssetsProviderCompatibilityAssertions();
   await runExchangeAssetsVisibilityAssertions();
   runAssetsScriptWiringAssertions();

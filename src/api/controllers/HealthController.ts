@@ -258,6 +258,22 @@ export class HealthController {
         authSeedEmail: env.auth.seedEmail,
         authSeedPassword: env.auth.seedPassword,
         authSeedFullName: env.auth.seedFullName,
+        schedulerExecutionMode: env.scheduler.executionMode,
+        schedulerWorkerBaseUrl: env.scheduler.worker.baseUrl,
+        redisHost: env.redis.host,
+        redisAutoStart: env.redis.autoStart,
+        dbHost: env.db.host,
+        dbUsername: env.db.username,
+        dbPassword: env.db.password,
+        dbDatabase: env.db.database,
+        dbSynchronize: env.db.synchronize,
+        pgEnabled: env.pg.enabled,
+        pgHost: env.pg.host,
+        pgUsername: env.pg.username,
+        pgPassword: env.pg.password,
+        pgDatabase: env.pg.database,
+        activityExportStorageMode: env.activity.exportStorageMode,
+        activityExportStorageDir: env.activity.exportStorageDir,
       });
       return { ok: true };
     } catch (error) {

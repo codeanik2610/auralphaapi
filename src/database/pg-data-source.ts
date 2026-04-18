@@ -30,5 +30,5 @@ export const strategyDataSource = new DataSource({
     BacktestResult,
     BacktestTrade,
   ],
-  migrations: [__dirname + '/pg-migrations/*.{ts,js}'],
+  migrations: [__dirname + '/pg-migrations_baseline/*.{ts,js}'],
 });

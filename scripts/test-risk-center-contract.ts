@@ -338,14 +338,12 @@ async function runRiskOverviewServiceAssertions(): Promise<void> {
       };
     },
   };
-  service.riskControlRepository = {
-    async getLatestCreatedAtForUsers(userIds: string[]) {
+  service.riskRuleEvaluationRepository = {
+    async getLatestControlCreatedAtForUsers(userIds: string[]) {
       assert.deepEqual(userIds, ['user-1']);
       return new Date('2026-04-09T10:08:00.000Z');
     },
-  };
-  service.riskAlertRepository = {
-    async getLatestCreatedAtForUsers(userIds: string[]) {
+    async getLatestAlertCreatedAtForUsers(userIds: string[]) {
       assert.deepEqual(userIds, ['user-1']);
       return new Date('2026-04-09T10:09:00.000Z');
     },
@@ -444,12 +442,12 @@ async function runRiskOverviewServiceAssertions(): Promise<void> {
 
   assert.equal(response.success, true);
   assert.deepEqual(response.data.time, buildApiTimeContract(timeZone));
-  assert.equal(response.data.meta.contractVersion, 'risk-center-phase9-2026-04-09');
+  assert.equal(response.data.meta.contractVersion, 'risk-center-phase11-2026-04-18');
   assert.equal(response.data.meta.purpose, 'operator_risk_workspace');
   assert.deepEqual(response.data.meta.time, buildApiTimeContract(timeZone));
   assert.equal(
     response.data.meta.summary,
-    'Phase 9 makes the `/risk-center` activity trail operational: operators can filter the in-page risk feed, queue exports from the current trail posture, and see retention cues before handing off into the full Activity workspace.'
+    'Phase 11 keeps the activity-trail workflow intact and moves controls/alerts freshness plus operator read paths onto normalized risk_rule_evaluations storage while preserving persisted daily, weekly, and monthly risk windows.'
   );
   assert.deepEqual(response.data.meta.query.supported, [
     'controlsLimit',
@@ -466,18 +464,19 @@ async function runRiskOverviewServiceAssertions(): Promise<void> {
   });
   assert.deepEqual(response.data.meta.sources, {
     summary: 'risk_snapshots_latest',
-    controls: 'risk_controls',
+    controls: 'risk_rule_evaluations_derived_controls',
     scenarios: 'risk_scenarios',
-    alerts: 'risk_alerts',
+    alerts: 'risk_rule_evaluations_derived_alerts',
     policies: 'risk_policies',
     brokers: 'connected_broker_accounts_plus_active_definitions',
-    riskWindows: 'risk_snapshots_latest_with_explicit_unavailable_windows',
-    brokerSnapshots: 'funds_snapshots_plus_position_read_models_for_connected_accounts',
+    riskWindows: 'risk_snapshots_latest_with_persisted_loss_windows',
+    brokerSnapshots:
+      'risk_account_snapshots_plus_funds_snapshots_plus_position_read_models_for_connected_accounts',
     activityExports: 'activity_exports_filtered_for_recent_risk_route_context',
   });
   assert.deepEqual(response.data.meta.pageTruth, {
-    riskWindowSource: 'latest_risk_snapshot_with_explicit_unavailable_windows',
-    brokerCoverageSource: 'snapshot_backed_connected_brokers',
+    riskWindowSource: 'latest_risk_snapshot_with_persisted_loss_windows',
+    brokerCoverageSource: 'risk_account_snapshots_backed_connected_brokers',
     policyWorkspace: 'selected_rule_with_pending_review_history_controls',
     policyGovernance: 'manual_review_for_sensitive_policy_mutations',
     activityTrailSource: 'activity_logs_route_and_reference_filters',
@@ -490,7 +489,7 @@ async function runRiskOverviewServiceAssertions(): Promise<void> {
     policyRollback: true,
     liveBrokerKpis: false,
     snapshotBrokerKpis: true,
-    weeklyMonthlyRiskWindowUsage: false,
+    weeklyMonthlyRiskWindowUsage: true,
     riskCapacity: false,
     killSwitchAutomation: false,
     recomputeExecutesRealCalculation: true,
@@ -527,9 +526,19 @@ async function runRiskOverviewServiceAssertions(): Promise<void> {
   });
   assert.deepEqual(response.data.meta.lineage, {
     summary: 'risk_snapshots_latest',
-    riskWindows: 'risk_snapshots_latest_with_explicit_unavailable_windows',
-    brokerCoverage: 'funds_snapshots_plus_position_read_models_for_connected_accounts',
-    recomputeWrites: ['risk_snapshots', 'risk_controls', 'risk_alerts', 'risk_scenarios'],
+    riskWindows: 'risk_snapshots_latest_with_persisted_loss_windows',
+    brokerCoverage:
+      'risk_account_snapshots_plus_funds_snapshots_plus_position_read_models_for_connected_accounts',
+    recomputeWrites: [
+      'risk_snapshots',
+      'risk_account_snapshots',
+      'risk_order_snapshots',
+      'risk_position_snapshots',
+      'risk_rule_evaluations',
+      'risk_controls',
+      'risk_alerts',
+      'risk_scenarios',
+    ],
   });
   assert.deepEqual(response.data.activityTrail, {
     defaultFilters: {
@@ -591,9 +600,10 @@ async function runRiskOverviewServiceAssertions(): Promise<void> {
       usedPct: null,
       usedDisplay: 'Unavailable',
       availability: 'unavailable',
-      observedAt: null,
-      sourceLabel: 'Not persisted in current backend contract',
-      note: 'Weekly loss usage is not persisted yet, so the UI must treat this window as unavailable.',
+      observedAt: formatApiDisplayTime('2026-04-09T10:00:00.000Z', timeZone),
+      observedAtIso: '2026-04-09T10:00:00.000Z',
+      sourceLabel: 'Recompute required',
+      note: 'Weekly loss usage will appear after the next risk recompute persists the new snapshot window fields.',
     },
     {
       key: 'monthly',
@@ -601,9 +611,10 @@ async function runRiskOverviewServiceAssertions(): Promise<void> {
       usedPct: null,
       usedDisplay: 'Unavailable',
       availability: 'unavailable',
-      observedAt: null,
-      sourceLabel: 'Not persisted in current backend contract',
-      note: 'Monthly loss usage is not persisted yet, so the UI must treat this window as unavailable.',
+      observedAt: formatApiDisplayTime('2026-04-09T10:00:00.000Z', timeZone),
+      observedAtIso: '2026-04-09T10:00:00.000Z',
+      sourceLabel: 'Recompute required',
+      note: 'Monthly loss usage will appear after the next risk recompute persists the new snapshot window fields.',
     },
   ]);
   assert.deepEqual(response.data.brokers.brokerKeys, ['binance', 'mudrex']);
@@ -718,7 +729,7 @@ async function runRiskAlertsOverviewServiceAssertions(): Promise<void> {
   });
 
   assert.equal(response.success, true);
-  assert.equal(response.data.meta.contractVersion, 'risk-center-phase2-2026-04-09');
+  assert.equal(response.data.meta.contractVersion, 'risk-center-phase3-2026-04-18');
   assert.equal(response.data.meta.purpose, 'risk_alerts_digest_for_risk_center');
   assert.deepEqual(response.data.meta.query, {
     supported: ['limit', 'offset', 'status', 'scope'],
@@ -730,8 +741,8 @@ async function runRiskAlertsOverviewServiceAssertions(): Promise<void> {
     },
   });
   assert.deepEqual(response.data.meta.sources, {
-    summary: 'risk_alerts_aggregate',
-    alerts: 'risk_alerts',
+    summary: 'risk_rule_evaluations_alert_aggregate',
+    alerts: 'risk_rule_evaluations_derived_alerts',
   });
   assert.equal(response.data.summary.total, 1);
   assert.equal(response.data.alerts.items[0].severity, 'High');

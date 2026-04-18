@@ -4,6 +4,8 @@ import { MudrexLeverage, MudrexLeveragePayload } from '../../../api';
 import { BadGatewayAppError } from '../../../api';
 import { successResponse } from '../../../api';
 import { validateAssetId, validateAssetSymbol } from '../../../api/validators/assets.validator';
+import { BrokerAccountRepository } from '../../../database';
+import { decryptBrokerAccountSettings } from '../../../lib/brokerAccountSecrets';
 import { rethrowMudrexError } from './MudrexErrorMapper';
 import { MudrexHttpClient } from './MudrexHttpClient';
 
@@ -11,6 +13,9 @@ import { MudrexHttpClient } from './MudrexHttpClient';
 export class LeverageService {
   @Inject(() => MudrexHttpClient)
   private mudrexHttpClient!: MudrexHttpClient;
+
+  @Inject(() => BrokerAccountRepository)
+  private brokerAccountRepository!: BrokerAccountRepository;
 
   async getLeverageByAssetId(assetId: string): Promise<ApiSuccessResponse<MudrexLeverage>> {
     const validatedAssetId = validateAssetId(assetId);
@@ -35,7 +40,7 @@ export class LeverageService {
   }
 
   private async fetchLeverageByAssetId(assetId: string): Promise<MudrexLeverage> {
-    const payload = await this.mudrexHttpClient.get<MudrexLeveragePayload>(
+    const payload = await this.requestLeverage<MudrexLeveragePayload>(
       `/fapi/v1/futures/${encodeURIComponent(assetId)}/leverage`
     );
 
@@ -47,7 +52,7 @@ export class LeverageService {
   }
 
   private async fetchLeverageBySymbol(symbol: string): Promise<MudrexLeverage> {
-    const payload = await this.mudrexHttpClient.get<MudrexLeveragePayload>(
+    const payload = await this.requestLeverage<MudrexLeveragePayload>(
       `/fapi/v1/futures/${encodeURIComponent(symbol)}/leverage?is_symbol`
     );
 
@@ -63,5 +68,32 @@ export class LeverageService {
       Leverage: payload.leverage,
       MarginType: payload.margin_type,
     };
+  }
+
+  private async requestLeverage<T>(path: string): Promise<T> {
+    const settings = await this.getSystemMudrexSettings();
+    if (settings) {
+      return this.mudrexHttpClient.authenticatedGetWithSettings<T>(settings, path, undefined, 'mudrex');
+    }
+
+    return this.mudrexHttpClient.get<T>(path);
+  }
+
+  private async getSystemMudrexSettings(): Promise<Record<string, unknown> | null> {
+    const systemAccounts = await this.brokerAccountRepository.listSystemBrokerAccounts({
+      brokerKey: 'mudrex',
+      statuses: ['Connected', 'Idle'],
+    });
+
+    for (const account of systemAccounts) {
+      const decrypted = decryptBrokerAccountSettings(
+        ((account.settings ?? {}) as Record<string, unknown>)
+      );
+      if (decrypted && String(decrypted.apiSecret || '').trim()) {
+        return decrypted;
+      }
+    }
+
+    return null;
   }
 }

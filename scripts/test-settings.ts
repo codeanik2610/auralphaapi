@@ -11,9 +11,9 @@ import {
 } from '../src/api/validators/settings.validator';
 import { coreDataSource } from '../src/database/data-source';
 import { ActivityLog, AppSetting, SettingsAuditLog } from '../src/database';
-import { CreateAppSettingsTable1741474200000 } from '../src/database/migrations/1741474200000-CreateAppSettingsTable';
-import { NormalizeAppSettingsPrimaryKey1765401000000 } from '../src/database/migrations/1765401000000-NormalizeAppSettingsPrimaryKey';
-import { AddBacktestPromotionRulesToAppSettings1770715000000 } from '../src/database/migrations/1770715000000-AddBacktestPromotionRulesToAppSettings';
+import { CreateAppSettingsTable1741474200000 } from './_fixtures/migrations/1741474200000-CreateAppSettingsTable';
+import { NormalizeAppSettingsPrimaryKey1765401000000 } from './_fixtures/migrations/1765401000000-NormalizeAppSettingsPrimaryKey';
+import { AddBacktestPromotionRulesToAppSettings1770715000000 } from './_fixtures/migrations/1770715000000-AddBacktestPromotionRulesToAppSettings';
 
 type MigrationColumn = {
   name: string;

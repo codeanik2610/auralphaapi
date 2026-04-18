@@ -13,12 +13,15 @@ import {
   OverviewWarning,
 } from '../contracts/Overview';
 import { MudrexFuturesFunds, MudrexWalletFunds } from '../contracts/Mudrex';
-import { PortfolioActiveFundsResponse } from '../contracts/PortfolioOverview';
+import {
+  PortfolioActiveFundsResponse,
+  PortfolioOverviewResponse,
+} from '../contracts/PortfolioOverview';
 import { successResponse } from '../utils/response';
 import { BrokerWalletFacadeService } from './BrokerWalletFacadeService';
-import { BrokerReferenceDataService } from './BrokerReferenceDataService';
 import { AlertsService } from './AlertsService';
 import { AutomationsService } from './AutomationsService';
+import { PortfolioOverviewService } from './PortfolioOverviewService';
 import { PortfolioService } from './PortfolioService';
 import { SignalsService } from './SignalsService';
 import {
@@ -29,7 +32,6 @@ import {
 import { FundsSnapshotRepository } from '../../database/repositories/FundsSnapshotRepository';
 import { PortfolioRepository } from '../../database/repositories/PortfolioRepository';
 import { Logger } from '../../lib/logger';
-import { ServiceUnavailableAppError } from '../errors/AppError';
 
 interface OverviewQuery {
   selectedSymbol?: string;
@@ -58,19 +60,6 @@ interface SectionLoadResult<T> {
   timedOut: boolean;
 }
 
-interface ReferenceCacheEntry<T> {
-  value: T;
-  cachedAt: number;
-  expiresAt: number;
-  staleExpiresAt: number;
-}
-
-interface ReferenceSectionLoadResult<T> extends SectionLoadResult<T> {
-  cacheState: OverviewSectionCacheState;
-  cacheObservedAt: string | null;
-  cacheDetail: string;
-}
-
 interface SectionProvenanceRuntime {
   observedAt: string | null;
   availability: 'available' | 'missing';
@@ -86,14 +75,9 @@ const AUTOMATIONS_LIMIT = 5;
 const ALERTS_LIMIT = 5;
 const SIGNALS_LIMIT = 3;
 const HOLDINGS_LIMIT = 5;
-const ASSETS_LIMIT = 8;
 const OVERVIEW_CONTRACT_VERSION = 'overview-phase4-2026-04-09' as const;
 const SUPPORTED_OVERVIEW_QUERY_PARAMS = ['selectedSymbol', 'sort', 'order'] as const;
 const IGNORED_OVERVIEW_QUERY_PARAMS = ['brokerKey', 'accountId', 'limit'] as const;
-const DEFAULT_EXTERNAL_SECTION_TIMEOUT_MS = 2500;
-const REFERENCE_CACHE_TTL_MS = 15_000;
-const REFERENCE_STALE_CACHE_TTL_MS = 5 * 60_000;
-const REFERENCE_CACHE_MAX_ENTRIES = 200;
 const FUNDS_SNAPSHOT_STALE_AFTER_MS = 30 * 60 * 60 * 1000;
 const FUNDS_SNAPSHOT_CRITICAL_AFTER_MS = 48 * 60 * 60 * 1000;
 const ACTIVE_FUNDS_SNAPSHOT_STALE_AFTER_MS = 30 * 60 * 1000;
@@ -105,28 +89,8 @@ const log = new Logger(__filename);
 
 @Service()
 export class OverviewService {
-  private externalSectionTimeoutMs = DEFAULT_EXTERNAL_SECTION_TIMEOUT_MS;
-  private referenceCacheTtlMs = REFERENCE_CACHE_TTL_MS;
-  private referenceCacheStaleTtlMs = REFERENCE_STALE_CACHE_TTL_MS;
-  private referenceCacheMaxEntries = REFERENCE_CACHE_MAX_ENTRIES;
-  private readonly assetsReferenceCache = new Map<
-    string,
-    ReferenceCacheEntry<OverviewResponse['assets']>
-  >();
-  private readonly selectedAssetReferenceCache = new Map<
-    string,
-    ReferenceCacheEntry<OverviewResponse['selectedAsset']>
-  >();
-  private readonly leverageReferenceCache = new Map<
-    string,
-    ReferenceCacheEntry<OverviewResponse['leverage']>
-  >();
-
   @Inject(() => BrokerWalletFacadeService)
   private brokerWalletFacadeService!: BrokerWalletFacadeService;
-
-  @Inject(() => BrokerReferenceDataService)
-  private brokerReferenceDataService!: BrokerReferenceDataService;
 
   @Inject(() => AutomationsService)
   private automationsService!: AutomationsService;
@@ -139,6 +103,9 @@ export class OverviewService {
 
   @Inject(() => PortfolioService)
   private portfolioService!: PortfolioService;
+
+  @Inject(() => PortfolioOverviewService)
+  private portfolioOverviewService!: PortfolioOverviewService;
 
   @Inject(() => BrokerAccountRepository)
   private brokerAccountRepository!: BrokerAccountRepository;
@@ -154,9 +121,27 @@ export class OverviewService {
     const generatedAt = new Date().toISOString();
     const routeResolution = await this.resolveBrokerRouteSafely(userId);
     const { brokerKey, accountId } = routeResolution.route;
-    const referenceBrokerKey = 'mudrex';
     const requestedSymbol = this.normalizeOptionalSymbol(query.selectedSymbol);
-    const assetsCacheKey = this.buildAssetsCacheKey(referenceBrokerKey, query);
+    const loadPortfolioWorkspaceOverview = (() => {
+      let task: Promise<SupportTaskResult<PortfolioOverviewResponse | null>> | null = null;
+      return () => {
+        if (!task) {
+          task = this.runSupportTask('portfolioWorkspaceOverview', async () => {
+            return (
+              this.extractData(
+                await this.portfolioOverviewService.getOverview(userId, {
+                  timeframe: 'daily',
+                  holdingsLimit: String(HOLDINGS_LIMIT),
+                  snapshotsLimit: '1',
+                  snapshotsOffset: '0',
+                })
+              ) ?? null
+            );
+          });
+        }
+        return task;
+      };
+    })();
 
     const fundsSnapshotTask = this.runSupportTask(
       'fundsSnapshot',
@@ -171,7 +156,6 @@ export class OverviewService {
       walletFundsTask,
       futuresFundsTask,
       activeFundsTask,
-      assetsTask,
       automationsTask,
       automationsSummaryTask,
       alertsTask,
@@ -236,30 +220,6 @@ export class OverviewService {
         successDetail:
           'Loaded per-account capital routes from the latest funds snapshots across connected accounts.',
       }),
-      this.loadCachedReferenceSection<OverviewResponse['assets']>('assets', {
-        cache: this.assetsReferenceCache,
-        cacheKey: assetsCacheKey,
-        defaultValue: [],
-        run: async () =>
-          this.extractData<OverviewResponse['assets']>(
-            await this.withTimeout(
-              this.brokerReferenceDataService.getFuturesAssets(referenceBrokerKey, {
-                sort: query.sort,
-                order: query.order,
-                offset: '0',
-                limit: String(ASSETS_LIMIT),
-              }),
-              this.externalSectionTimeoutMs,
-              'Overview market opportunities request timed out'
-            )
-          ) || [],
-        successDetail: 'Loaded market opportunities from the live Mudrex futures reference feed.',
-        freshFallbackDetail:
-          'Live market opportunities degraded, so a recent cached futures feed response was reused.',
-        staleFallbackDetail:
-          'Live market opportunities degraded, so the last cached futures feed response was reused beyond the fresh cache window.',
-        timeoutMs: this.externalSectionTimeoutMs,
-      }),
       this.loadSection('automations', {
         defaultValue: this.getDefaultAutomationsResponse(),
         run: async () =>
@@ -310,28 +270,57 @@ export class OverviewService {
       }),
       this.loadSection('portfolioSummary', {
         defaultValue: this.getDefaultPortfolioSummary(),
-        run: async () =>
-          this.extractData(await this.portfolioService.getPortfolioSummary(userId)) ??
-          this.getDefaultPortfolioSummary(),
+        run: async () => {
+          const summary =
+            this.extractData(await this.portfolioService.getPortfolioSummary(userId)) ??
+            this.getDefaultPortfolioSummary();
+          const portfolioSnapshot = (await portfolioSnapshotTask).value;
+          if (this.hasPortfolioSummarySource(summary, portfolioSnapshot)) {
+            return summary;
+          }
+
+          const workspaceOverview = (await loadPortfolioWorkspaceOverview()).value;
+          if (this.hasPortfolioSummarySource(workspaceOverview?.summary ?? null)) {
+            return workspaceOverview?.summary ?? summary;
+          }
+
+          return summary;
+        },
         fallback: async () =>
           this.mapPortfolioSummaryFromSnapshot((await portfolioSnapshotTask).value) ??
           this.getDefaultPortfolioSummary(),
-        successDetail: 'Loaded the latest portfolio summary from the portfolio snapshot read model.',
+        successDetail:
+          'Loaded the latest portfolio posture from the available portfolio desk model.',
         fallbackDetail:
           'Portfolio summary degraded, so the latest stored portfolio snapshot was mapped directly.',
       }),
       this.loadSection('portfolioHoldings', {
         defaultValue: this.getDefaultPortfolioHoldingsResponse(),
-        run: async () =>
-          this.extractData(await this.portfolioService.getPortfolioHoldings(userId, {
-            limit: String(HOLDINGS_LIMIT),
-            offset: '0',
-          })) ?? this.getDefaultPortfolioHoldingsResponse(),
+        run: async () => {
+          const holdings =
+            this.extractData(
+              await this.portfolioService.getPortfolioHoldings(userId, {
+                limit: String(HOLDINGS_LIMIT),
+                offset: '0',
+              })
+            ) ?? this.getDefaultPortfolioHoldingsResponse();
+          const portfolioSnapshot = (await portfolioSnapshotTask).value;
+          if (this.hasPortfolioHoldingsSource(holdings, portfolioSnapshot)) {
+            return holdings;
+          }
+
+          const workspaceOverview = (await loadPortfolioWorkspaceOverview()).value;
+          if (this.hasPortfolioHoldingsSource(workspaceOverview?.holdings ?? null)) {
+            return workspaceOverview?.holdings ?? holdings;
+          }
+
+          return holdings;
+        },
         fallback: async () =>
           this.mapPortfolioHoldingsFromSnapshot((await portfolioSnapshotTask).value) ??
           this.getDefaultPortfolioHoldingsResponse(),
         successDetail:
-          'Loaded the latest portfolio holdings digest from the portfolio snapshot read model.',
+          'Loaded the latest portfolio posture holdings from the available portfolio desk model.',
         fallbackDetail:
           'Portfolio holdings degraded, so the latest stored portfolio snapshot holdings were reused.',
       }),
@@ -339,61 +328,21 @@ export class OverviewService {
       portfolioSnapshotTask,
     ]);
 
-    const assets = assetsTask.value || [];
-    const selectedSymbol = requestedSymbol || this.normalizeOptionalSymbol(assets[0]?.symbol) || '';
-
-    const [selectedAssetTask, leverageTask] = await Promise.all([
-      this.loadCachedReferenceSection('selectedAsset', {
-        cache: this.selectedAssetReferenceCache,
-        cacheKey: selectedSymbol || 'none',
-        defaultValue: null,
-        skip: !selectedSymbol,
-        skipDetail: 'No selected symbol was available for this overview request.',
-        run: async () =>
-          this.extractData(
-            await this.withTimeout(
-              this.brokerReferenceDataService.getFuturesAssetDetailBySymbol(
-                referenceBrokerKey,
-                selectedSymbol
-              ),
-              this.externalSectionTimeoutMs,
-              `Overview selected asset detail timed out for ${selectedSymbol}`
-            )
-          ),
-        successDetail: `Loaded live selected-asset detail for ${selectedSymbol}.`,
-        freshFallbackDetail: `Live selected-asset detail degraded, so a recent cached response was reused for ${selectedSymbol}.`,
-        staleFallbackDetail: `Live selected-asset detail degraded, so the last cached response was reused beyond the fresh cache window for ${selectedSymbol}.`,
-        timeoutMs: this.externalSectionTimeoutMs,
-      }),
-      this.loadCachedReferenceSection('leverage', {
-        cache: this.leverageReferenceCache,
-        cacheKey: selectedSymbol || 'none',
-        defaultValue: null,
-        skip: !selectedSymbol,
-        skipDetail: 'No selected symbol was available for this overview request.',
-        run: async () =>
-          this.extractData(
-            await this.withTimeout(
-              this.brokerReferenceDataService.getLeverageBySymbol(
-                referenceBrokerKey,
-                selectedSymbol
-              ),
-              this.externalSectionTimeoutMs,
-              `Overview leverage lookup timed out for ${selectedSymbol}`
-            )
-          ),
-        successDetail: `Loaded live leverage detail for ${selectedSymbol}.`,
-        freshFallbackDetail: `Live leverage detail degraded, so a recent cached response was reused for ${selectedSymbol}.`,
-        staleFallbackDetail: `Live leverage detail degraded, so the last cached response was reused beyond the fresh cache window for ${selectedSymbol}.`,
-        timeoutMs: this.externalSectionTimeoutMs,
-      }),
-    ]);
+    const assets: OverviewResponse['assets'] = [];
+    const selectedAsset: OverviewResponse['selectedAsset'] = null;
+    const leverage: OverviewResponse['leverage'] = null;
+    const disabledReferenceTask = {
+      requestStatus: 'ok' as const,
+      fetchMode: 'skipped' as const,
+      statusDetail:
+        'Market reference detail is intentionally excluded from /overview. Use /markets for asset and leverage context.',
+      timeoutMs: null,
+      timedOut: false,
+    };
 
     const walletFunds = walletFundsTask.value;
     const futuresFunds = futuresFundsTask.value;
     const activeFunds = activeFundsTask.value;
-    const selectedAsset = selectedAssetTask.value;
-    const leverage = leverageTask.value;
     const automations = automationsTask.value;
     const automationsSummary = automationsSummaryTask.value;
     const alerts = alertsTask.value;
@@ -409,23 +358,17 @@ export class OverviewService {
       fundsSnapshot?.computed_at?.toISOString?.() ??
       null;
     const portfolioSnapshotObservedAt = portfolioSnapshot?.createdAt?.toISOString?.() ?? null;
-    const assetsObservedAt = assets.length
-      ? this.resolveReferenceObservedAt(assetsTask.cacheState, assetsTask.cacheObservedAt, generatedAt)
-      : null;
-    const selectedAssetObservedAt = selectedAsset
-      ? this.resolveReferenceObservedAt(
-          selectedAssetTask.cacheState,
-          selectedAssetTask.cacheObservedAt,
-          generatedAt
-        )
-      : null;
-    const leverageObservedAt = leverage
-      ? this.resolveReferenceObservedAt(
-          leverageTask.cacheState,
-          leverageTask.cacheObservedAt,
-          generatedAt
-        )
-      : null;
+    const portfolioSummaryObservedAt =
+      portfolioSummary?.observedAtIso ??
+      portfolioSummary?.observedAt ??
+      portfolioSnapshotObservedAt;
+    const portfolioHoldingsObservedAt =
+      portfolioHoldings?.observedAtIso ??
+      portfolioHoldings?.observedAt ??
+      portfolioSummaryObservedAt;
+    const assetsObservedAt = null;
+    const selectedAssetObservedAt = null;
+    const leverageObservedAt = null;
     const automationsObservedAt =
       this.pickLatestTimestamp(
         automations.items[0]?.updatedAt,
@@ -456,29 +399,10 @@ export class OverviewService {
       ACTIVE_FUNDS_SNAPSHOT_CRITICAL_AFTER_MS
     );
     const portfolioFreshness = this.buildFreshness(
-      portfolioSnapshotObservedAt,
+      portfolioSummaryObservedAt,
       PORTFOLIO_SNAPSHOT_STALE_AFTER_MS,
       PORTFOLIO_SNAPSHOT_CRITICAL_AFTER_MS
     );
-    const assetsFreshness = this.buildFreshness(
-      assetsObservedAt,
-      this.referenceCacheTtlMs,
-      this.referenceCacheStaleTtlMs
-    );
-    const selectedAssetFreshness = this.buildFreshness(
-      selectedAssetObservedAt,
-      this.referenceCacheTtlMs,
-      this.referenceCacheStaleTtlMs
-    );
-    const leverageFreshness = this.buildFreshness(
-      leverageObservedAt,
-      this.referenceCacheTtlMs,
-      this.referenceCacheStaleTtlMs
-    );
-    const assetsCache = this.buildReferenceCacheMetadata(assetsTask);
-    const selectedAssetCache = this.buildReferenceCacheMetadata(selectedAssetTask);
-    const leverageCache = this.buildReferenceCacheMetadata(leverageTask);
-
     const sections = {
       health: this.createSectionProvenance(
         {
@@ -565,58 +489,55 @@ export class OverviewService {
       ),
       assets: this.createSectionProvenance(
         {
-          sourceType: 'live_external',
-          source: 'Mudrex futures reference feed via BrokerReferenceDataService.getFuturesAssets',
-          sourceLabel: 'Live Mudrex futures feed',
-          uiUsage: 'rendered',
+          sourceType: 'computed_summary',
+          source: 'OverviewService static omission of market reference context',
+          sourceLabel: 'Market reference moved to Markets workspace',
+          uiUsage: 'available_not_rendered',
+          notes:
+            'Overview no longer hydrates asset reference, selected asset detail, or leverage. Use /markets for market context.',
         },
         {
           observedAt: assetsObservedAt,
-          availability: assets.length ? 'available' : 'missing',
-          requestStatus: assetsTask.requestStatus,
-          fetchMode: assetsTask.fetchMode,
-          statusDetail: assetsTask.statusDetail,
-          timeoutMs: assetsTask.timeoutMs,
-          freshness: assetsFreshness,
-          cache: assetsCache,
+          availability: 'missing',
+          requestStatus: disabledReferenceTask.requestStatus,
+          fetchMode: disabledReferenceTask.fetchMode,
+          statusDetail: disabledReferenceTask.statusDetail,
+          timeoutMs: disabledReferenceTask.timeoutMs,
         }
       ),
       selectedAsset: this.createSectionProvenance(
         {
-          sourceType: 'live_external',
-          source: 'Mudrex symbol detail via BrokerReferenceDataService.getFuturesAssetDetailBySymbol',
-          sourceLabel: 'Live selected asset detail',
-          uiUsage: 'rendered',
+          sourceType: 'computed_summary',
+          source: 'OverviewService static omission of selected asset detail',
+          sourceLabel: 'Selected asset detail moved to Markets workspace',
+          uiUsage: 'available_not_rendered',
           notes:
-            'Resolved from selectedSymbol when present, otherwise from the first asset in the returned assets list.',
+            'Selected asset detail is intentionally excluded from /overview.',
         },
         {
           observedAt: selectedAssetObservedAt,
-          availability: selectedAsset ? 'available' : 'missing',
-          requestStatus: selectedAssetTask.requestStatus,
-          fetchMode: selectedAssetTask.fetchMode,
-          statusDetail: selectedAssetTask.statusDetail,
-          timeoutMs: selectedAssetTask.timeoutMs,
-          freshness: selectedAssetFreshness,
-          cache: selectedAssetCache,
+          availability: 'missing',
+          requestStatus: disabledReferenceTask.requestStatus,
+          fetchMode: disabledReferenceTask.fetchMode,
+          statusDetail: disabledReferenceTask.statusDetail,
+          timeoutMs: disabledReferenceTask.timeoutMs,
         }
       ),
       leverage: this.createSectionProvenance(
         {
-          sourceType: 'live_external',
-          source: 'Mudrex leverage lookup via BrokerReferenceDataService.getLeverageBySymbol',
-          sourceLabel: 'Live leverage reference',
-          uiUsage: 'rendered',
+          sourceType: 'computed_summary',
+          source: 'OverviewService static omission of leverage detail',
+          sourceLabel: 'Leverage detail moved to Markets workspace',
+          uiUsage: 'available_not_rendered',
+          notes: 'Leverage detail is intentionally excluded from /overview.',
         },
         {
           observedAt: leverageObservedAt,
-          availability: leverage ? 'available' : 'missing',
-          requestStatus: leverageTask.requestStatus,
-          fetchMode: leverageTask.fetchMode,
-          statusDetail: leverageTask.statusDetail,
-          timeoutMs: leverageTask.timeoutMs,
-          freshness: leverageFreshness,
-          cache: leverageCache,
+          availability: 'missing',
+          requestStatus: disabledReferenceTask.requestStatus,
+          fetchMode: disabledReferenceTask.fetchMode,
+          statusDetail: disabledReferenceTask.statusDetail,
+          timeoutMs: disabledReferenceTask.timeoutMs,
         }
       ),
       automations: this.createSectionProvenance(
@@ -740,20 +661,15 @@ export class OverviewService {
         }
       ),
       portfolioSummary: this.createSectionProvenance(
-        {
-          sourceType: 'computed_summary',
-          source: 'PortfolioService.getPortfolioSummary latest portfolio snapshot summary',
-          sourceLabel: 'Portfolio summary',
-          uiUsage: 'rendered',
-        },
+        this.getPortfolioSummarySectionBase(portfolioSummary),
         {
           observedAt:
             portfolioSummaryTask.requestStatus === 'ok' ||
             portfolioSummaryTask.fetchMode === 'fallback'
-              ? portfolioSnapshotObservedAt
+              ? portfolioSummaryObservedAt
               : null,
           availability:
-            portfolioSnapshotObservedAt &&
+            portfolioSummaryObservedAt &&
             (portfolioSummaryTask.requestStatus === 'ok' ||
               portfolioSummaryTask.fetchMode === 'fallback')
               ? 'available'
@@ -766,20 +682,15 @@ export class OverviewService {
         }
       ),
       portfolioHoldings: this.createSectionProvenance(
-        {
-          sourceType: 'db_snapshot',
-          source: 'PortfolioService.getPortfolioHoldings latest holdings snapshot digest',
-          sourceLabel: 'Portfolio holdings snapshot',
-          uiUsage: 'rendered',
-        },
+        this.getPortfolioHoldingsSectionBase(portfolioHoldings),
         {
           observedAt:
-            portfolioHoldings.items.length &&
+            portfolioHoldingsObservedAt &&
             (portfolioHoldingsTask.requestStatus === 'ok' ||
               portfolioHoldingsTask.fetchMode === 'fallback')
-              ? portfolioSnapshotObservedAt
+              ? portfolioHoldingsObservedAt
               : null,
-          availability: portfolioHoldings.items.length ? 'available' : 'missing',
+          availability: portfolioHoldingsObservedAt ? 'available' : 'missing',
           requestStatus: portfolioHoldingsTask.requestStatus,
           fetchMode: portfolioHoldingsTask.fetchMode,
           statusDetail: portfolioHoldingsTask.statusDetail,
@@ -792,11 +703,7 @@ export class OverviewService {
     const degradedSections = (Object.entries(sections) as Array<[OverviewSectionKey, OverviewSectionProvenance]>)
       .filter(([sectionKey, section]) => sectionKey !== 'health' && section.requestStatus === 'degraded')
       .map(([sectionKey]) => sectionKey);
-    const timeoutSections = [
-      ...(assetsTask.timedOut ? (['assets'] as OverviewSectionKey[]) : []),
-      ...(selectedAssetTask.timedOut ? (['selectedAsset'] as OverviewSectionKey[]) : []),
-      ...(leverageTask.timedOut ? (['leverage'] as OverviewSectionKey[]) : []),
-    ];
+    const timeoutSections: OverviewSectionKey[] = [];
     const resilienceSummary = this.buildResilienceSummary({
       degradedSections,
       timeoutSections,
@@ -806,6 +713,7 @@ export class OverviewService {
       routeResolution,
       sections,
       automationsSummary,
+      portfolioSummary,
     });
     const observability = this.buildOverviewObservability({
       totalMs: Date.now() - startedAt,
@@ -813,9 +721,9 @@ export class OverviewService {
       timeoutSections,
       warnings,
       sections,
-      assetsCacheState: assetsTask.cacheState,
-      selectedAssetCacheState: selectedAssetTask.cacheState,
-      leverageCacheState: leverageTask.cacheState,
+      assetsCacheState: 'not_applicable',
+      selectedAssetCacheState: 'not_applicable',
+      leverageCacheState: 'not_applicable',
     });
     const overviewHealth = this.buildOverviewHealth({
       generatedAt,
@@ -853,18 +761,17 @@ export class OverviewService {
       staleSectionCount: observability.staleSectionCount,
       criticalSectionCount: observability.criticalSectionCount,
       routeResolution,
-      assetsCacheState: assetsTask.cacheState,
-      selectedAssetCacheState: selectedAssetTask.cacheState,
-      leverageCacheState: leverageTask.cacheState,
+      assetsCacheState: 'not_applicable',
+      selectedAssetCacheState: 'not_applicable',
+      leverageCacheState: 'not_applicable',
     });
 
     return successResponse<OverviewResponse>({
       meta: this.buildOverviewMeta({
         generatedAt,
         routeResolution,
-        referenceBrokerKey,
         requestedSymbol: requestedSymbol || null,
-        resolvedSymbol: selectedSymbol || null,
+        resolvedSymbol: requestedSymbol || null,
         resilienceSummary,
         degradedSections,
         timeoutSections,
@@ -893,7 +800,6 @@ export class OverviewService {
   private buildOverviewMeta(input: {
     generatedAt: string;
     routeResolution: ResolvedOverviewRoute;
-    referenceBrokerKey: 'mudrex';
     requestedSymbol: string | null;
     resolvedSymbol: string | null;
     resilienceSummary: string;
@@ -908,12 +814,12 @@ export class OverviewService {
       purpose: 'operator_command_center',
       generatedAt: input.generatedAt,
       summary:
-        'Phase 4 overview contract adds snapshot freshness, explicit operator warnings, automation diagnostics, live-reference cache fallback metadata, and request observability for the operator dashboard.',
+        'Phase 4 overview contract focuses on snapshot-backed capital posture, portfolio state, automation diagnostics, and request observability for the operator dashboard.',
       query: {
         supported: [...SUPPORTED_OVERVIEW_QUERY_PARAMS],
         ignored: [...IGNORED_OVERVIEW_QUERY_PARAMS],
         sectionLimits: {
-          assets: ASSETS_LIMIT,
+          assets: 0,
           automations: AUTOMATIONS_LIMIT,
           alerts: ALERTS_LIMIT,
           signals: SIGNALS_LIMIT,
@@ -924,7 +830,7 @@ export class OverviewService {
         accountSelection: 'default_connected_account_or_first_connected_account',
         brokerKey: input.routeResolution.route.brokerKey,
         accountId: input.routeResolution.route.accountId || null,
-        referenceBrokerKey: input.referenceBrokerKey,
+        referenceBrokerKey: 'mudrex',
         resolution: input.routeResolution.resolution,
         detail: input.routeResolution.detail,
       },
@@ -1009,17 +915,13 @@ export class OverviewService {
     routeResolution: ResolvedOverviewRoute;
     sections: Record<OverviewSectionKey, OverviewSectionProvenance>;
     automationsSummary: OverviewResponse['automationsSummary'];
+    portfolioSummary: OverviewResponse['portfolioSummary'];
   }): OverviewWarning[] {
     const warnings: OverviewWarning[] = [];
     const walletSection = input.sections.walletFunds;
     const futuresSection = input.sections.futuresFunds;
     const portfolioSection = input.sections.portfolioSummary;
     const automationSummarySection = input.sections.automationsSummary;
-    const referenceSections = [
-      ['assets', input.sections.assets],
-      ['selectedAsset', input.sections.selectedAsset],
-      ['leverage', input.sections.leverage],
-    ] as Array<[OverviewSectionKey, OverviewSectionProvenance]>;
 
     const capitalFreshness = walletSection.freshness ?? futuresSection.freshness;
     if (
@@ -1064,6 +966,8 @@ export class OverviewService {
       portfolioSection.freshness?.state === 'stale' ||
       portfolioSection.freshness?.state === 'critical'
     ) {
+      const portfolioUsesLiveAlias =
+        input.portfolioSummary?.source === 'portfolio_overview_futures_legacy_alias';
       warnings.push({
         code: 'portfolio_snapshot_attention',
         level:
@@ -1075,12 +979,20 @@ export class OverviewService {
         section: 'portfolioSummary',
         summary:
           portfolioSection.availability === 'missing' || !portfolioSection.observedAt
-            ? 'Portfolio snapshot is unavailable for this overview request.'
-            : 'Portfolio snapshot is stale for operator decision-making.',
+            ? portfolioUsesLiveAlias
+              ? 'Portfolio posture is unavailable for this overview request.'
+              : 'Portfolio snapshot is unavailable for this overview request.'
+            : portfolioUsesLiveAlias
+              ? 'Portfolio posture is stale for operator decision-making.'
+              : 'Portfolio snapshot is stale for operator decision-making.',
         detail:
           portfolioSection.availability === 'missing' || !portfolioSection.observedAt
-            ? 'Daily PnL, net exposure, and holdings posture are unavailable until a fresh portfolio snapshot is written.'
-            : `Latest portfolio snapshot is ${this.describeFreshness(portfolioSection.freshness)}.`,
+            ? portfolioUsesLiveAlias
+              ? 'Daily PnL, exposure posture, and holdings posture are unavailable until the futures summary and positions surfaces recover.'
+              : 'Daily PnL, net exposure, and holdings posture are unavailable until a fresh portfolio snapshot is written.'
+            : portfolioUsesLiveAlias
+              ? `Latest portfolio posture is ${this.describeFreshness(portfolioSection.freshness)}.`
+              : `Latest portfolio snapshot is ${this.describeFreshness(portfolioSection.freshness)}.`,
       });
     }
 
@@ -1101,34 +1013,6 @@ export class OverviewService {
           input.automationsSummary?.diagnostics?.workerDetail ||
           automationSummarySection.statusDetail ||
           'Worker, queue, overlap, or cursor diagnostics need review.',
-      });
-    }
-
-    const degradedReferenceSections = referenceSections.filter(
-      ([, section]) =>
-        section.requestStatus === 'degraded' ||
-        section.cache?.state === 'fresh-cache-fallback' ||
-        section.cache?.state === 'stale-cache-fallback' ||
-        section.cache?.state === 'unavailable'
-    );
-
-    if (degradedReferenceSections.length) {
-      warnings.push({
-        code: 'live_reference_feed_attention',
-        level: degradedReferenceSections.some(
-          ([, section]) => section.cache?.state === 'unavailable'
-        )
-          ? 'critical'
-          : 'warning',
-        section: degradedReferenceSections[0][0],
-        summary: degradedReferenceSections.some(
-          ([, section]) => section.cache?.state === 'unavailable'
-        )
-          ? 'Live reference feed is unavailable for part of this overview request.'
-          : 'Live reference feed is degraded and cached market data is in use.',
-        detail: degradedReferenceSections
-          .map(([sectionKey, section]) => `${this.describeSectionKey(sectionKey)}: ${section.statusDetail}`)
-          .join(' '),
       });
     }
 
@@ -1319,201 +1203,6 @@ export class OverviewService {
     };
   }
 
-  private buildReferenceCacheMetadata<T>(
-    result: ReferenceSectionLoadResult<T>
-  ): OverviewSectionProvenance['cache'] {
-    return {
-      enabled: true,
-      state: result.cacheState,
-      cachedAt: result.cacheObservedAt,
-      ttlMs: this.referenceCacheTtlMs,
-      staleTtlMs: this.referenceCacheStaleTtlMs,
-      detail: result.cacheDetail,
-    };
-  }
-
-  private resolveReferenceObservedAt(
-    cacheState: OverviewSectionCacheState,
-    cacheObservedAt: string | null,
-    generatedAt: string
-  ): string {
-    return cacheState === 'fresh-cache-fallback' || cacheState === 'stale-cache-fallback'
-      ? cacheObservedAt || generatedAt
-      : generatedAt;
-  }
-
-  private buildAssetsCacheKey(
-    brokerKey: string,
-    query: Pick<OverviewQuery, 'sort' | 'order'>
-  ): string {
-    return JSON.stringify({
-      brokerKey,
-      sort: String(query.sort || 'default').trim().toLowerCase(),
-      order: String(query.order || 'default').trim().toLowerCase(),
-      limit: ASSETS_LIMIT,
-    });
-  }
-
-  private getFreshReferenceCache<T>(
-    cache: Map<string, ReferenceCacheEntry<T>>,
-    cacheKey: string
-  ): ReferenceCacheEntry<T> | null {
-    const entry = cache.get(cacheKey);
-    if (!entry) {
-      return null;
-    }
-    if (entry.expiresAt <= Date.now()) {
-      return null;
-    }
-    return entry;
-  }
-
-  private getStaleReferenceCache<T>(
-    cache: Map<string, ReferenceCacheEntry<T>>,
-    cacheKey: string
-  ): ReferenceCacheEntry<T> | null {
-    const entry = cache.get(cacheKey);
-    if (!entry) {
-      return null;
-    }
-    if (entry.staleExpiresAt <= Date.now()) {
-      cache.delete(cacheKey);
-      return null;
-    }
-    return entry;
-  }
-
-  private setReferenceCache<T>(
-    cache: Map<string, ReferenceCacheEntry<T>>,
-    cacheKey: string,
-    value: T
-  ): number {
-    const cachedAt = Date.now();
-    cache.set(cacheKey, {
-      value,
-      cachedAt,
-      expiresAt: cachedAt + this.referenceCacheTtlMs,
-      staleExpiresAt: cachedAt + this.referenceCacheStaleTtlMs,
-    });
-    this.pruneReferenceCache(cache);
-    return cachedAt;
-  }
-
-  private pruneReferenceCache<T>(cache: Map<string, ReferenceCacheEntry<T>>): void {
-    const now = Date.now();
-    for (const [key, value] of cache.entries()) {
-      if (value.staleExpiresAt <= now) {
-        cache.delete(key);
-      }
-    }
-
-    if (cache.size <= this.referenceCacheMaxEntries) {
-      return;
-    }
-
-    const overflow = [...cache.entries()]
-      .sort((left, right) => left[1].staleExpiresAt - right[1].staleExpiresAt)
-      .slice(0, cache.size - this.referenceCacheMaxEntries);
-
-    for (const [key] of overflow) {
-      cache.delete(key);
-    }
-  }
-
-  private async loadCachedReferenceSection<T>(
-    sectionKey: OverviewSectionKey,
-    options: {
-      cache: Map<string, ReferenceCacheEntry<T>>;
-      cacheKey: string;
-      defaultValue: T;
-      run?: () => Promise<T>;
-      successDetail: string;
-      freshFallbackDetail: string;
-      staleFallbackDetail: string;
-      skip?: boolean;
-      skipDetail?: string;
-      timeoutMs?: number;
-    }
-  ): Promise<ReferenceSectionLoadResult<T>> {
-    if (options.skip || !options.run) {
-      return {
-        value: options.defaultValue,
-        requestStatus: 'ok',
-        fetchMode: 'skipped',
-        statusDetail: options.skipDetail || 'Skipped for this overview request.',
-        timeoutMs: null,
-        timedOut: false,
-        cacheState: 'not_applicable',
-        cacheObservedAt: null,
-        cacheDetail: 'Reference cache was not used for this overview request.',
-      };
-    }
-
-    try {
-      const value = await options.run();
-      const cachedAt = this.setReferenceCache(options.cache, options.cacheKey, value);
-      return {
-        value,
-        requestStatus: 'ok',
-        fetchMode: 'primary',
-        statusDetail: options.successDetail,
-        timeoutMs: options.timeoutMs ?? null,
-        timedOut: false,
-        cacheState: 'live',
-        cacheObservedAt: new Date(cachedAt).toISOString(),
-        cacheDetail: 'Live reference data succeeded and the overview fallback cache was refreshed.',
-      };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const timedOut = this.isTimeoutError(error);
-      const freshCache = this.getFreshReferenceCache(options.cache, options.cacheKey);
-      const staleCache = freshCache
-        ? null
-        : this.getStaleReferenceCache(options.cache, options.cacheKey);
-      const cacheEntry = freshCache || staleCache;
-
-      if (cacheEntry) {
-        const staleFallback = cacheEntry === staleCache;
-        return {
-          value: cacheEntry.value,
-          requestStatus: 'degraded',
-          fetchMode: 'fallback',
-          statusDetail: staleFallback
-            ? options.staleFallbackDetail
-            : options.freshFallbackDetail,
-          timeoutMs: options.timeoutMs ?? null,
-          timedOut,
-          cacheState: staleFallback ? 'stale-cache-fallback' : 'fresh-cache-fallback',
-          cacheObservedAt: new Date(cacheEntry.cachedAt).toISOString(),
-          cacheDetail: staleFallback
-            ? `Live ${this.describeSectionKey(sectionKey)} degraded, so a stale cached fallback response was reused.`
-            : `Live ${this.describeSectionKey(sectionKey)} degraded, so a recent cached fallback response was reused.`,
-        };
-      }
-
-      log.warn(`overview ${sectionKey} degraded`, {
-        error: errorMessage,
-        timeoutMs: options.timeoutMs ?? null,
-        timedOut,
-        cacheFallback: false,
-      });
-
-      return {
-        value: options.defaultValue,
-        requestStatus: 'degraded',
-        fetchMode: 'primary',
-        statusDetail: timedOut
-          ? `${this.describeSectionKey(sectionKey)} timed out and no cached reference response was available.`
-          : `${this.describeSectionKey(sectionKey)} degraded: ${errorMessage}`,
-        timeoutMs: options.timeoutMs ?? null,
-        timedOut,
-        cacheState: 'unavailable',
-        cacheObservedAt: null,
-        cacheDetail: 'Live reference data degraded and no cached fallback response was available.',
-      };
-    }
-  }
-
   private async loadSection<T>(
     sectionKey: OverviewSectionKey,
     options: {
@@ -1640,34 +1329,6 @@ export class OverviewService {
     }
   }
 
-  private withTimeout<T>(
-    promise: Promise<T>,
-    timeoutMs: number,
-    timeoutMessage: string
-  ): Promise<T> {
-    let timeoutHandle: NodeJS.Timeout | null = null;
-
-    return new Promise<T>((resolve, reject) => {
-      timeoutHandle = setTimeout(() => {
-        reject(new ServiceUnavailableAppError(timeoutMessage));
-      }, timeoutMs);
-
-      promise
-        .then((value) => {
-          if (timeoutHandle) {
-            clearTimeout(timeoutHandle);
-          }
-          resolve(value);
-        })
-        .catch((error) => {
-          if (timeoutHandle) {
-            clearTimeout(timeoutHandle);
-          }
-          reject(error);
-        });
-    });
-  }
-
   private extractData<T>(value: T | { data?: T } | null | undefined): T | null {
     if (!value) {
       return null;
@@ -1741,6 +1402,94 @@ export class OverviewService {
       total: holdings.length,
       limit: HOLDINGS_LIMIT,
       offset: 0,
+    };
+  }
+
+  private hasPortfolioSummarySource(
+    summary: OverviewResponse['portfolioSummary'] | null | undefined,
+    snapshot?: PortfolioSnapshot | null
+  ): boolean {
+    if (!summary) {
+      return false;
+    }
+
+    return Boolean(summary.observedAtIso || summary.observedAt || snapshot?.createdAt);
+  }
+
+  private hasPortfolioHoldingsSource(
+    holdings: OverviewResponse['portfolioHoldings'] | null | undefined,
+    snapshot?: PortfolioSnapshot | null
+  ): boolean {
+    if (!holdings) {
+      return false;
+    }
+
+    return Boolean(holdings.observedAtIso || holdings.observedAt || snapshot?.createdAt);
+  }
+
+  private getPortfolioSummarySectionBase(
+    summary: OverviewResponse['portfolioSummary']
+  ): Omit<
+    OverviewSectionProvenance,
+    | 'observedAt'
+    | 'availability'
+    | 'requestStatus'
+    | 'fetchMode'
+    | 'statusDetail'
+    | 'timeoutMs'
+    | 'freshness'
+    | 'cache'
+  > {
+    if (summary?.source === 'portfolio_overview_futures_legacy_alias') {
+      return {
+        sourceType: 'computed_summary',
+        source: 'PortfolioOverviewService.getOverview legacy futures summary alias',
+        sourceLabel: 'Portfolio posture',
+        uiUsage: 'rendered',
+        notes:
+          'Portfolio posture is synthesized from futures capital, open positions, and realized activity when the legacy snapshot table is empty.',
+      };
+    }
+
+    return {
+      sourceType: 'computed_summary',
+      source: 'PortfolioService.getPortfolioSummary latest portfolio snapshot summary',
+      sourceLabel: 'Portfolio summary',
+      uiUsage: 'rendered',
+      notes: 'Portfolio summary is sourced from the latest stored portfolio snapshot when available.',
+    };
+  }
+
+  private getPortfolioHoldingsSectionBase(
+    holdings: OverviewResponse['portfolioHoldings']
+  ): Omit<
+    OverviewSectionProvenance,
+    | 'observedAt'
+    | 'availability'
+    | 'requestStatus'
+    | 'fetchMode'
+    | 'statusDetail'
+    | 'timeoutMs'
+    | 'freshness'
+    | 'cache'
+  > {
+    if (holdings?.source === 'portfolio_overview_futures_legacy_alias') {
+      return {
+        sourceType: 'computed_summary',
+        source: 'PortfolioOverviewService.getOverview legacy positions-to-holdings alias',
+        sourceLabel: 'Portfolio posture holdings',
+        uiUsage: 'rendered',
+        notes:
+          'Holdings posture is synthesized from live futures positions when the legacy portfolio snapshot holdings table is empty.',
+      };
+    }
+
+    return {
+      sourceType: 'db_snapshot',
+      source: 'PortfolioService.getPortfolioHoldings latest holdings snapshot digest',
+      sourceLabel: 'Portfolio holdings snapshot',
+      uiUsage: 'rendered',
+      notes: 'Holdings posture is sourced from the latest stored portfolio snapshot when available.',
     };
   }
 

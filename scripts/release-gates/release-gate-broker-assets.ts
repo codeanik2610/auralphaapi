@@ -249,7 +249,7 @@ async function run(): Promise<void> {
         'src/api/services/ExchangeAssetsService.ts',
         'src/api/services/ConnectionsService.ts',
         'src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter.ts',
-        'src/database/migrations/1770709000000-DropBrokerAssetLegacyUserOwnership.ts',
+        'scripts/_fixtures/migrations/1770709000000-DropBrokerAssetLegacyUserOwnership.ts',
         'scripts/test-broker-assets.ts',
         'scripts/checks/check-broker-assets-health.ts',
         'scripts/release-gates/release-gate-broker-assets.ts',

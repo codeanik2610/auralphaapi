@@ -52,7 +52,23 @@ function runEnvironmentValidationAssertions(): void {
       authSeedEnabled: false,
       authSeedEmail: '',
       authSeedPassword: '',
-      authSeedFullName: ''
+      authSeedFullName: '',
+      schedulerExecutionMode: 'queue',
+      schedulerWorkerBaseUrl: 'http://scheduler.internal:3001',
+      redisHost: 'redis.internal',
+      redisAutoStart: false,
+      dbHost: 'mysql.internal',
+      dbUsername: 'auralpha',
+      dbPassword: 'strong-db-password',
+      dbDatabase: 'auralpha',
+      dbSynchronize: false,
+      pgEnabled: true,
+      pgHost: 'postgres.internal',
+      pgUsername: 'auralpha_pg',
+      pgPassword: 'strong-pg-password',
+      pgDatabase: 'auralpha',
+      activityExportStorageMode: 'filesystem',
+      activityExportStorageDir: '/srv/auralpha/activity-exports'
     })
   );
 
@@ -69,7 +85,23 @@ function runEnvironmentValidationAssertions(): void {
         authSeedEnabled: false,
         authSeedEmail: '',
         authSeedPassword: '',
-        authSeedFullName: ''
+        authSeedFullName: '',
+        schedulerExecutionMode: 'queue',
+        schedulerWorkerBaseUrl: 'http://scheduler.internal:3001',
+        redisHost: 'redis.internal',
+        redisAutoStart: false,
+        dbHost: 'mysql.internal',
+        dbUsername: 'auralpha',
+        dbPassword: 'strong-db-password',
+        dbDatabase: 'auralpha',
+        dbSynchronize: false,
+        pgEnabled: true,
+        pgHost: 'postgres.internal',
+        pgUsername: 'auralpha_pg',
+        pgPassword: 'strong-pg-password',
+        pgDatabase: 'auralpha',
+        activityExportStorageMode: 'filesystem',
+        activityExportStorageDir: '/srv/auralpha/activity-exports'
       }),
     /AUTH_ACCESS_TOKEN_SECRET/
   );
@@ -87,7 +119,23 @@ function runEnvironmentValidationAssertions(): void {
         authSeedEnabled: false,
         authSeedEmail: '',
         authSeedPassword: '',
-        authSeedFullName: ''
+        authSeedFullName: '',
+        schedulerExecutionMode: 'queue',
+        schedulerWorkerBaseUrl: 'http://scheduler.internal:3001',
+        redisHost: 'redis.internal',
+        redisAutoStart: false,
+        dbHost: 'mysql.internal',
+        dbUsername: 'auralpha',
+        dbPassword: 'strong-db-password',
+        dbDatabase: 'auralpha',
+        dbSynchronize: false,
+        pgEnabled: true,
+        pgHost: 'postgres.internal',
+        pgUsername: 'auralpha_pg',
+        pgPassword: 'strong-pg-password',
+        pgDatabase: 'auralpha',
+        activityExportStorageMode: 'filesystem',
+        activityExportStorageDir: '/srv/auralpha/activity-exports'
       }),
     /APP_API_KEY/
   );
@@ -105,9 +153,195 @@ function runEnvironmentValidationAssertions(): void {
         authSeedEnabled: true,
         authSeedEmail: 'admin@auralpha.com',
         authSeedPassword: 'Admin@123',
-        authSeedFullName: 'AurAlpha Admin'
+        authSeedFullName: 'AurAlpha Admin',
+        schedulerExecutionMode: 'queue',
+        schedulerWorkerBaseUrl: 'http://scheduler.internal:3001',
+        redisHost: 'redis.internal',
+        redisAutoStart: false,
+        dbHost: 'mysql.internal',
+        dbUsername: 'auralpha',
+        dbPassword: 'strong-db-password',
+        dbDatabase: 'auralpha',
+        dbSynchronize: false,
+        pgEnabled: true,
+        pgHost: 'postgres.internal',
+        pgUsername: 'auralpha_pg',
+        pgPassword: 'strong-pg-password',
+        pgDatabase: 'auralpha',
+        activityExportStorageMode: 'filesystem',
+        activityExportStorageDir: '/srv/auralpha/activity-exports'
       }),
     /AUTH_SEED_EMAIL, AUTH_SEED_PASSWORD, and AUTH_SEED_FULL_NAME/
+  );
+
+  assert.throws(
+    () =>
+      assertSecureEnvironmentConfig({
+        node: 'production',
+        appEnvironment: 'qa',
+        appRequireApiKey: true,
+        appApiKey: 'strong-api-key',
+        authAccessTokenSecret: 'strong-access-secret',
+        discoverySchedulerSecret: 'strong-scheduler-secret',
+        brokerAccountSecretsKey: 'strong-broker-secret',
+        authSeedEnabled: false,
+        authSeedEmail: '',
+        authSeedPassword: '',
+        authSeedFullName: '',
+        schedulerExecutionMode: 'queue',
+        schedulerWorkerBaseUrl: '',
+        redisHost: 'redis.internal',
+        redisAutoStart: false,
+        dbHost: 'mysql.internal',
+        dbUsername: 'auralpha',
+        dbPassword: 'strong-db-password',
+        dbDatabase: 'auralpha',
+        dbSynchronize: false,
+        pgEnabled: true,
+        pgHost: 'postgres.internal',
+        pgUsername: 'auralpha_pg',
+        pgPassword: 'strong-pg-password',
+        pgDatabase: 'auralpha',
+        activityExportStorageMode: 'filesystem',
+        activityExportStorageDir: '/srv/auralpha/activity-exports'
+      }),
+    /SCHEDULER_WORKER_BASE_URL/
+  );
+
+  assert.throws(
+    () =>
+      assertSecureEnvironmentConfig({
+        node: 'production',
+        appEnvironment: 'qa',
+        appRequireApiKey: true,
+        appApiKey: 'strong-api-key',
+        authAccessTokenSecret: 'strong-access-secret',
+        discoverySchedulerSecret: 'strong-scheduler-secret',
+        brokerAccountSecretsKey: 'strong-broker-secret',
+        authSeedEnabled: false,
+        authSeedEmail: '',
+        authSeedPassword: '',
+        authSeedFullName: '',
+        schedulerExecutionMode: 'queue',
+        schedulerWorkerBaseUrl: 'http://scheduler.internal:3001',
+        redisHost: 'redis.internal',
+        redisAutoStart: true,
+        dbHost: 'mysql.internal',
+        dbUsername: 'auralpha',
+        dbPassword: 'strong-db-password',
+        dbDatabase: 'auralpha',
+        dbSynchronize: false,
+        pgEnabled: true,
+        pgHost: 'postgres.internal',
+        pgUsername: 'auralpha_pg',
+        pgPassword: 'strong-pg-password',
+        pgDatabase: 'auralpha',
+        activityExportStorageMode: 'filesystem',
+        activityExportStorageDir: '/srv/auralpha/activity-exports'
+      }),
+    /REDIS_AUTO_START/
+  );
+
+  assert.throws(
+    () =>
+      assertSecureEnvironmentConfig({
+        node: 'production',
+        appEnvironment: 'qa',
+        appRequireApiKey: true,
+        appApiKey: 'strong-api-key',
+        authAccessTokenSecret: 'strong-access-secret',
+        discoverySchedulerSecret: 'strong-scheduler-secret',
+        brokerAccountSecretsKey: 'strong-broker-secret',
+        authSeedEnabled: false,
+        authSeedEmail: '',
+        authSeedPassword: '',
+        authSeedFullName: '',
+        schedulerExecutionMode: 'queue',
+        schedulerWorkerBaseUrl: 'http://scheduler.internal:3001',
+        redisHost: 'redis.internal',
+        redisAutoStart: false,
+        dbHost: 'mysql.internal',
+        dbUsername: 'auralpha',
+        dbPassword: 'strong-db-password',
+        dbDatabase: 'auralpha',
+        dbSynchronize: true,
+        pgEnabled: true,
+        pgHost: 'postgres.internal',
+        pgUsername: 'auralpha_pg',
+        pgPassword: 'strong-pg-password',
+        pgDatabase: 'auralpha',
+        activityExportStorageMode: 'filesystem',
+        activityExportStorageDir: '/srv/auralpha/activity-exports'
+      }),
+    /DB_SYNCHRONIZE/
+  );
+
+  assert.throws(
+    () =>
+      assertSecureEnvironmentConfig({
+        node: 'production',
+        appEnvironment: 'qa',
+        appRequireApiKey: true,
+        appApiKey: 'strong-api-key',
+        authAccessTokenSecret: 'strong-access-secret',
+        discoverySchedulerSecret: 'strong-scheduler-secret',
+        brokerAccountSecretsKey: 'strong-broker-secret',
+        authSeedEnabled: false,
+        authSeedEmail: '',
+        authSeedPassword: '',
+        authSeedFullName: '',
+        schedulerExecutionMode: 'queue',
+        schedulerWorkerBaseUrl: 'http://scheduler.internal:3001',
+        redisHost: 'redis.internal',
+        redisAutoStart: false,
+        dbHost: '',
+        dbUsername: 'auralpha',
+        dbPassword: 'strong-db-password',
+        dbDatabase: 'auralpha',
+        dbSynchronize: false,
+        pgEnabled: true,
+        pgHost: 'postgres.internal',
+        pgUsername: 'auralpha_pg',
+        pgPassword: 'strong-pg-password',
+        pgDatabase: 'auralpha',
+        activityExportStorageMode: 'filesystem',
+        activityExportStorageDir: '/srv/auralpha/activity-exports'
+      }),
+    /DB_HOST/
+  );
+
+  assert.throws(
+    () =>
+      assertSecureEnvironmentConfig({
+        node: 'production',
+        appEnvironment: 'qa',
+        appRequireApiKey: true,
+        appApiKey: 'strong-api-key',
+        authAccessTokenSecret: 'strong-access-secret',
+        discoverySchedulerSecret: 'strong-scheduler-secret',
+        brokerAccountSecretsKey: 'strong-broker-secret',
+        authSeedEnabled: false,
+        authSeedEmail: '',
+        authSeedPassword: '',
+        authSeedFullName: '',
+        schedulerExecutionMode: 'queue',
+        schedulerWorkerBaseUrl: 'http://scheduler.internal:3001',
+        redisHost: 'redis.internal',
+        redisAutoStart: false,
+        dbHost: 'mysql.internal',
+        dbUsername: 'auralpha',
+        dbPassword: 'strong-db-password',
+        dbDatabase: 'auralpha',
+        dbSynchronize: false,
+        pgEnabled: true,
+        pgHost: 'postgres.internal',
+        pgUsername: 'auralpha_pg',
+        pgPassword: 'strong-pg-password',
+        pgDatabase: 'auralpha',
+        activityExportStorageMode: 'filesystem',
+        activityExportStorageDir: ''
+      }),
+    /ACTIVITY_EXPORT_STORAGE_DIR/
   );
 }
 

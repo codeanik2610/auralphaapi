@@ -1065,6 +1065,11 @@ async function runActivityExportAssertions(): Promise<void> {
       };
     },
   };
+  service.activityExportStorageService = {
+    async pathExists(storagePath: string) {
+      return storagePath === rebuiltStoragePath;
+    },
+  };
   service.activityExportRepository = {
     async createExport(payload: CreatedExportPayload) {
       createdExportPayload = { ...payload };
@@ -1417,6 +1422,10 @@ function runActivityScriptWiringAssertions(): void {
   const packageScripts = packageJson.scripts || {};
   const runPackageSuiteSource = read('scripts/_support/run-package-suite.ts');
   const smokeModulesSource = read('scripts/smokes/smoke-modules.sh');
+  const activityServiceSource = read('src/api/services/ActivityService.ts');
+  const activityExportProcessorSource = read('src/api/services/ActivityExportProcessorService.ts');
+  const activityMaintenanceSource = read('src/api/services/ActivityMaintenanceService.ts');
+  const activityExportStorageSource = read('src/api/services/ActivityExportStorageService.ts');
 
   assert.equal(
     packageScripts['test:activity'],
@@ -1441,6 +1450,50 @@ function runActivityScriptWiringAssertions(): void {
     true,
     'activity smoke should exercise the list and summary surfaces'
   );
+
+  for (const marker of [
+    'private activityExportStorageService!: ActivityExportStorageService;',
+    'activityExportStorageService.pathExists(',
+    'activityExportStorageService.materializeTextContent(',
+  ]) {
+    assert.ok(
+      activityServiceSource.includes(marker),
+      `ActivityService should include export storage marker ${marker}`
+    );
+  }
+
+  for (const marker of [
+    'private activityExportStorageService!: ActivityExportStorageService;',
+    'activityExportStorageService.openWritableExportFile(',
+  ]) {
+    assert.ok(
+      activityExportProcessorSource.includes(marker),
+      `ActivityExportProcessorService should include export storage marker ${marker}`
+    );
+  }
+
+  for (const marker of [
+    'private activityExportStorageService!: ActivityExportStorageService;',
+    'activityExportStorageService.deleteStoredFile(',
+  ]) {
+    assert.ok(
+      activityMaintenanceSource.includes(marker),
+      `ActivityMaintenanceService should include export storage marker ${marker}`
+    );
+  }
+
+  for (const marker of [
+    "getStorageMode(): 'filesystem'",
+    'materializeTextContent(',
+    'openWritableExportFile(',
+    'deleteStoredFile(',
+    'ACTIVITY_EXPORT_STORAGE_DIR is required for filesystem export storage',
+  ]) {
+    assert.ok(
+      activityExportStorageSource.includes(marker),
+      `ActivityExportStorageService should include storage marker ${marker}`
+    );
+  }
 }
 
 async function main(): Promise<void> {

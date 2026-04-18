@@ -1,5 +1,3 @@
-import { access, mkdir, writeFile } from 'node:fs/promises';
-import * as path from 'node:path';
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import {
@@ -67,6 +65,7 @@ import {
 import { env } from '../../env';
 import { normalizeActivityStream } from '../../lib/activityEvents';
 import { ActivityExportProcessorService } from './ActivityExportProcessorService';
+import { ActivityExportStorageService } from './ActivityExportStorageService';
 import { OperationalEventService } from './OperationalEventService';
 import { UserTimeZoneService } from './UserTimeZoneService';
 
@@ -111,6 +110,9 @@ export class ActivityService {
 
   @Inject(() => ActivityExportProcessorService)
   private activityExportProcessorService!: ActivityExportProcessorService;
+
+  @Inject(() => ActivityExportStorageService)
+  private activityExportStorageService!: ActivityExportStorageService;
 
   @Inject(() => AlertRepository)
   private alertRepository!: AlertRepository;
@@ -1032,12 +1034,10 @@ export class ActivityService {
 
   private async ensureActivityExportFile(item: ActivityExport): Promise<string | null> {
     if (item.storagePath) {
-      try {
-        await access(item.storagePath);
+      if (await this.activityExportStorageService.pathExists(item.storagePath)) {
         return item.storagePath;
-      } catch {
-        // Fall through and rebuild or materialize the file on the current node.
       }
+      // Fall through and rebuild or materialize the file on the current node.
     }
 
     if (item.content) {
@@ -1067,10 +1067,11 @@ export class ActivityService {
   }
 
   private async materializeLegacyActivityExportFile(item: ActivityExport): Promise<string> {
-    await mkdir(env.activity.exportStorageDir, { recursive: true });
-    const safeFileName = item.fileName.replace(/[^a-zA-Z0-9._-]/g, '-');
-    const filePath = path.join(env.activity.exportStorageDir, `${item.id}-${safeFileName}`);
-    await writeFile(filePath, item.content || '', 'utf8');
+    const filePath = await this.activityExportStorageService.materializeTextContent({
+      id: item.id,
+      fileName: item.fileName,
+      content: item.content || '',
+    });
     await this.activityExportRepository.updateExportStoragePath?.(item.id, filePath);
     return filePath;
   }

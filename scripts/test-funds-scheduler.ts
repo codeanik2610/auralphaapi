@@ -766,7 +766,7 @@ async function funds_schedulerGuard03(): Promise<void> {
   const { FundsSchedulerService } = await import("../src/api/services/FundsSchedulerService");
   const { FundsSnapshotRepository } = await import("../src/database/repositories/FundsSnapshotRepository");
   const { coreDataSource } = await import("../src/database/data-source");
-  const { HardenFundsSnapshotsRuntime1770707000000 } = await import("../src/database/migrations/1770707000000-HardenFundsSnapshotsRuntime");
+  const { HardenFundsSnapshotsRuntime1770707000000 } = await import("./_fixtures/migrations/1770707000000-HardenFundsSnapshotsRuntime");
 
 function createMigrationQueryRunner(options: {
   hasTable?: Record<string, boolean>;

@@ -1,6 +1,9 @@
 node_modules
 dist
 .env
+environments/*/.env
+.claude/
+.idea/
 .DS_Store
 dump.rdb
 artifacts/

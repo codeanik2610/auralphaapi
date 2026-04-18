@@ -7,9 +7,9 @@ import { SchedulerOverviewService } from '../src/api/services/SchedulerOverviewS
 import { SchedulerService } from '../src/api/services/SchedulerService';
 import { env } from '../src/env';
 import { coreDataSource } from '../src/database/data-source';
-import { NormalizeGlobalSystemSchedulerOwnership1770710000000 } from '../src/database/migrations/1770710000000-NormalizeGlobalSystemSchedulerOwnership';
-import { EnforceGlobalSystemSchedulerScope1770711000000 } from '../src/database/migrations/1770711000000-EnforceGlobalSystemSchedulerScope';
-import { AddGlobalSystemSchedulerInitiatorAudit1770712000000 } from '../src/database/migrations/1770712000000-AddGlobalSystemSchedulerInitiatorAudit';
+import { NormalizeGlobalSystemSchedulerOwnership1770710000000 } from './_fixtures/migrations/1770710000000-NormalizeGlobalSystemSchedulerOwnership';
+import { EnforceGlobalSystemSchedulerScope1770711000000 } from './_fixtures/migrations/1770711000000-EnforceGlobalSystemSchedulerScope';
+import { AddGlobalSystemSchedulerInitiatorAudit1770712000000 } from './_fixtures/migrations/1770712000000-AddGlobalSystemSchedulerInitiatorAudit';
 
 type GlobalSchedulerCase = {
   label: string;

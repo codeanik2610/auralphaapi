@@ -96,13 +96,13 @@ import { Connection } from '../src/database/entities/Connection';
 import { PaperOrder } from '../src/database/entities/PaperOrder';
 import { SuggestedTrade } from '../src/database/entities/SuggestedTrade';
 import { SuggestedTradeExecution } from '../src/database/entities/SuggestedTradeExecution';
-import { CreateAppSettingsTable1741474200000 } from '../src/database/migrations/1741474200000-CreateAppSettingsTable';
-import { NormalizeAppSettingsPrimaryKey1765401000000 } from '../src/database/migrations/1765401000000-NormalizeAppSettingsPrimaryKey';
-import { AddBacktestPromotionRulesToAppSettings1770715000000 } from '../src/database/migrations/1770715000000-AddBacktestPromotionRulesToAppSettings';
-import { HardenSuggestedTradeExecutionStorage1767300010000 } from '../src/database/migrations/1767300010000-HardenSuggestedTradeExecutionStorage';
-import { CleanupBrokerExchangeMasters1769800000000 } from '../src/database/migrations/1769800000000-CleanupBrokerExchangeMasters';
-import { DropConnectionExchangeId1770000000000 } from '../src/database/migrations/1770000000000-DropConnectionExchangeId';
-import { DropBrokerAssetExchangeId1770100000000 } from '../src/database/migrations/1770100000000-DropBrokerAssetExchangeId';
+import { CreateAppSettingsTable1741474200000 } from './_fixtures/migrations/1741474200000-CreateAppSettingsTable';
+import { NormalizeAppSettingsPrimaryKey1765401000000 } from './_fixtures/migrations/1765401000000-NormalizeAppSettingsPrimaryKey';
+import { AddBacktestPromotionRulesToAppSettings1770715000000 } from './_fixtures/migrations/1770715000000-AddBacktestPromotionRulesToAppSettings';
+import { HardenSuggestedTradeExecutionStorage1767300010000 } from './_fixtures/migrations/1767300010000-HardenSuggestedTradeExecutionStorage';
+import { CleanupBrokerExchangeMasters1769800000000 } from './_fixtures/migrations/1769800000000-CleanupBrokerExchangeMasters';
+import { DropConnectionExchangeId1770000000000 } from './_fixtures/migrations/1770000000000-DropConnectionExchangeId';
+import { DropBrokerAssetExchangeId1770100000000 } from './_fixtures/migrations/1770100000000-DropBrokerAssetExchangeId';
 import { decryptBrokerAccountSettings } from '../src/lib/brokerAccountSecrets';
 import { BrokerDefinitionRuntimeSupportService } from '../src/brokers/core/BrokerDefinitionRuntimeSupportService';
 import { BrokerDefinitionService as CoreBrokerDefinitionService } from '../src/brokers/core/BrokerDefinitionService';
@@ -870,6 +870,20 @@ async function runActivityExportAssertions(): Promise<void> {
         filePath: rebuiltStoragePath,
         exportedCount: 1,
       };
+    },
+  };
+  service.activityExportStorageService = {
+    async pathExists(filePath: string) {
+      return filePath === rebuiltStoragePath;
+    },
+    async materializeTextContent({ fileName, content }: { fileName: string; content: string }) {
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const filePath = join(tmpdir(), 'activity-exports', fileName);
+      await mkdir(join(tmpdir(), 'activity-exports'), { recursive: true });
+      await writeFile(filePath, content, 'utf8');
+      return filePath;
     },
   };
   service.activityExportRepository = {

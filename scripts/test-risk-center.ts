@@ -942,9 +942,9 @@ async function main(): Promise<void> {
 async function risk_centerGuard05(): Promise<void> {
   const { BadRequestAppError } = await import("../src/api/errors/AppError");
   const { BrokerOrdersFacadeService } = await import("../src/api/services/BrokerOrdersFacadeService");
-  const { RemoveRiskCenterTables1763800000000 } = await import("../src/database/migrations/1763800000000-RemoveRiskCenterTables");
-  const { RestoreRiskCenterTables1763800001000 } = await import("../src/database/migrations/1763800001000-RestoreRiskCenterTables");
-  const { HardenRiskPolicyTargetIntegrity1770600000000 } = await import("../src/database/migrations/1770600000000-HardenRiskPolicyTargetIntegrity");
+  const { RemoveRiskCenterTables1763800000000 } = await import("./_fixtures/migrations/1763800000000-RemoveRiskCenterTables");
+  const { RestoreRiskCenterTables1763800001000 } = await import("./_fixtures/migrations/1763800001000-RestoreRiskCenterTables");
+  const { HardenRiskPolicyTargetIntegrity1770600000000 } = await import("./_fixtures/migrations/1770600000000-HardenRiskPolicyTargetIntegrity");
 
 function createOrderBody(overrides: Record<string, unknown> = {}) {
   return {

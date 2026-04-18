@@ -44,6 +44,30 @@ const getArray = (key: string): string[] => {
     .filter(Boolean);
 };
 
+const resolveActivityExportStorageMode = (
+  value: string | undefined
+): 'filesystem' => {
+  const normalized = normalizeEnvValue(value).toLowerCase();
+  if (!normalized || normalized === 'filesystem') {
+    return 'filesystem';
+  }
+
+  throw new Error('ACTIVITY_EXPORT_STORAGE_MODE must be set to "filesystem"');
+};
+
+const resolveStringWithLocalFallback = (
+  value: string | undefined,
+  localFallback: string,
+  localEnvironment: boolean
+): string => {
+  const normalized = normalizeEnvValue(value);
+  if (normalized) {
+    return normalized;
+  }
+
+  return localEnvironment ? localFallback : '';
+};
+
 export function isLocalAppEnvironment(environment: string | undefined): boolean {
   return normalizeEnvValue(environment || 'localhost').toLowerCase() === 'localhost';
 }
@@ -89,6 +113,22 @@ type SecurityConfigValidationInput = {
   authSeedEmail: string;
   authSeedPassword: string;
   authSeedFullName: string;
+  schedulerExecutionMode: 'direct' | 'queue';
+  schedulerWorkerBaseUrl: string;
+  redisHost: string;
+  redisAutoStart: boolean;
+  dbHost: string;
+  dbUsername: string;
+  dbPassword: string;
+  dbDatabase: string;
+  dbSynchronize: boolean;
+  pgEnabled: boolean;
+  pgHost: string;
+  pgUsername: string;
+  pgPassword: string;
+  pgDatabase: string;
+  activityExportStorageMode: 'filesystem';
+  activityExportStorageDir: string;
 };
 
 function isUnsafeConfiguredValue(value: string, disallowed: string[] = []): boolean {
@@ -161,10 +201,80 @@ export function assertSecureEnvironmentConfig(
       );
     }
   }
+
+  if (config.redisAutoStart) {
+    throw new Error('REDIS_AUTO_START must remain disabled outside localhost');
+  }
+
+  if (config.schedulerExecutionMode === 'queue' && isUnsafeConfiguredValue(config.schedulerWorkerBaseUrl)) {
+    throw new Error(
+      'SCHEDULER_WORKER_BASE_URL must be explicitly set when SCHEDULER_EXECUTION_MODE=queue outside localhost'
+    );
+  }
+
+  if (isUnsafeConfiguredValue(config.redisHost)) {
+    throw new Error('REDIS_HOST must be explicitly set outside localhost');
+  }
+
+  if (isUnsafeConfiguredValue(config.dbHost)) {
+    throw new Error('DB_HOST must be explicitly set outside localhost');
+  }
+
+  if (isUnsafeConfiguredValue(config.dbUsername)) {
+    throw new Error('DB_USERNAME must be explicitly set outside localhost');
+  }
+
+  if (isUnsafeConfiguredValue(config.dbPassword)) {
+    throw new Error('DB_PASSWORD must be explicitly set outside localhost');
+  }
+
+  if (isUnsafeConfiguredValue(config.dbDatabase)) {
+    throw new Error('DB_NAME must be explicitly set outside localhost');
+  }
+
+  if (config.dbSynchronize) {
+    throw new Error('DB_SYNCHRONIZE must remain disabled outside localhost');
+  }
+
+  if (config.pgEnabled) {
+    if (isUnsafeConfiguredValue(config.pgHost)) {
+      throw new Error('PG_DB_HOST must be explicitly set when PG_DB_ENABLED=true outside localhost');
+    }
+
+    if (isUnsafeConfiguredValue(config.pgUsername)) {
+      throw new Error(
+        'PG_DB_USERNAME must be explicitly set when PG_DB_ENABLED=true outside localhost'
+      );
+    }
+
+    if (isUnsafeConfiguredValue(config.pgPassword)) {
+      throw new Error(
+        'PG_DB_PASSWORD must be explicitly set when PG_DB_ENABLED=true outside localhost'
+      );
+    }
+
+    if (isUnsafeConfiguredValue(config.pgDatabase)) {
+      throw new Error(
+        'PG_DB_NAME must be explicitly set when PG_DB_ENABLED=true outside localhost'
+      );
+    }
+  }
+
+  if (
+    config.activityExportStorageMode === 'filesystem' &&
+    isUnsafeConfiguredValue(config.activityExportStorageDir)
+  ) {
+    throw new Error(
+      'ACTIVITY_EXPORT_STORAGE_DIR must be explicitly set when ACTIVITY_EXPORT_STORAGE_MODE=filesystem outside localhost'
+    );
+  }
 }
 
 const appEnvironment = process.env.APP_ENV || 'localhost';
+const localAppEnvironment = isLocalAppEnvironment(appEnvironment);
 const authSeedConfig = resolveAuthSeedConfig(process.env, appEnvironment);
+const schedulerExecutionMode: 'direct' | 'queue' =
+  process.env.SCHEDULER_EXECUTION_MODE === 'queue' ? 'queue' : 'direct';
 const loginMaxAttempts = Math.max(1, getNumber('AUTH_LOGIN_MAX_ATTEMPTS', 5));
 const loginIpMaxAttempts = Math.max(
   loginMaxAttempts,
@@ -177,7 +287,7 @@ export const env = {
   app: {
     name: process.env.APP_NAME || 'trading-apis',
     schema: process.env.APP_SCHEMA || 'http',
-    host: process.env.APP_HOST || 'localhost',
+    host: resolveStringWithLocalFallback(process.env.APP_HOST, 'localhost', localAppEnvironment),
     banner: getBool('APP_BANNER', true),
     shutdownDrainTimeoutMs: Math.max(
       5_000,
@@ -219,8 +329,11 @@ export const env = {
     requestTimeoutMs: getNumber('HTTP_REQUEST_TIMEOUT_MS', 10000),
   },
   discovery: {
-    apiBaseUrl:
-      process.env.DISCOVERY_API_BASE_URL || 'http://localhost:8000/api/v1/discovery',
+    apiBaseUrl: resolveStringWithLocalFallback(
+      process.env.DISCOVERY_API_BASE_URL,
+      'http://localhost:8000/api/v1/discovery',
+      localAppEnvironment
+    ),
   },
   observability: {
     autoCaptureEnabled: getBool('OPS_AUTO_CAPTURE_ENABLED', true),
@@ -257,9 +370,15 @@ export const env = {
       getNumber('ACTIVITY_EXPORT_PROCESSOR_BATCH_SIZE', 10)
     ),
     exportChunkSize: Math.max(100, getNumber('ACTIVITY_EXPORT_CHUNK_SIZE', 1000)),
+    exportStorageMode: resolveActivityExportStorageMode(
+      process.env.ACTIVITY_EXPORT_STORAGE_MODE
+    ),
     exportStorageDir:
-      process.env.ACTIVITY_EXPORT_STORAGE_DIR ||
-      path.resolve(process.cwd(), 'storage', 'activity-exports'),
+      resolveStringWithLocalFallback(
+        process.env.ACTIVITY_EXPORT_STORAGE_DIR,
+        path.resolve(process.cwd(), 'storage', 'activity-exports'),
+        localAppEnvironment
+      ),
   },
   email: {
     enabled: getBool('EMAIL_DELIVERY_ENABLED', false),
@@ -278,8 +397,7 @@ export const env = {
     },
   },
   scheduler: {
-    executionMode:
-      process.env.SCHEDULER_EXECUTION_MODE === 'queue' ? 'queue' : 'direct',
+    executionMode: schedulerExecutionMode,
     systemUserId: process.env.SCHEDULER_SYSTEM_USER_ID || 'system',
     discovery: {
       schedulerSecret:
@@ -296,11 +414,25 @@ export const env = {
     },
     worker: {
       schema: process.env.SCHEDULER_WORKER_SCHEMA || 'http',
-      host: process.env.SCHEDULER_WORKER_HOST || 'localhost',
+      host: resolveStringWithLocalFallback(
+        process.env.SCHEDULER_WORKER_HOST,
+        'localhost',
+        localAppEnvironment
+      ),
       port: getNumber('SCHEDULER_WORKER_PORT', 3001),
       baseUrl:
-        process.env.SCHEDULER_WORKER_BASE_URL ||
-        `${process.env.SCHEDULER_WORKER_SCHEMA || 'http'}://${process.env.SCHEDULER_WORKER_HOST || 'localhost'}:${process.env.SCHEDULER_WORKER_PORT || '3001'}`,
+        normalizeEnvValue(process.env.SCHEDULER_WORKER_BASE_URL) ||
+        (resolveStringWithLocalFallback(
+          process.env.SCHEDULER_WORKER_HOST,
+          'localhost',
+          localAppEnvironment
+        )
+          ? `${process.env.SCHEDULER_WORKER_SCHEMA || 'http'}://${resolveStringWithLocalFallback(
+              process.env.SCHEDULER_WORKER_HOST,
+              'localhost',
+              localAppEnvironment
+            )}:${process.env.SCHEDULER_WORKER_PORT || '3001'}`
+          : ''),
     },
   },
   automationSignals: {
@@ -398,7 +530,7 @@ export const env = {
     readOrdersFromSnapshot: getBool('SYNC_READ_ORDERS_FROM_SNAPSHOT', false),
   },
   redis: {
-    host: process.env.REDIS_HOST || '127.0.0.1',
+    host: resolveStringWithLocalFallback(process.env.REDIS_HOST, '127.0.0.1', localAppEnvironment),
     port: getNumber('REDIS_PORT', 6379),
     username: process.env.REDIS_USERNAME || '',
     password: process.env.REDIS_PASSWORD || '',
@@ -407,7 +539,7 @@ export const env = {
     autoStart:
       process.env.REDIS_AUTO_START !== undefined
         ? getBool('REDIS_AUTO_START', false)
-        : process.env.NODE_ENV === 'development' && (process.env.APP_ENV || 'localhost') === 'localhost',
+        : process.env.NODE_ENV === 'development' && localAppEnvironment,
     workerHeartbeatKey: process.env.WORKER_HEARTBEAT_KEY || 'scheduler:worker:heartbeat',
     emailWorkerHeartbeatKey:
       process.env.EMAIL_WORKER_HEARTBEAT_KEY || 'email:worker:heartbeat',
@@ -418,21 +550,33 @@ export const env = {
       defaultLocalBrokerAccountSecretsKey,
   },
   db: {
-    host: process.env.DB_HOST || '127.0.0.1',
+    host: resolveStringWithLocalFallback(process.env.DB_HOST, '127.0.0.1', localAppEnvironment),
     port: getNumber('DB_PORT', 3306),
-    username: process.env.DB_USERNAME || 'root',
-    password: process.env.DB_PASSWORD || 'root',
-    database: process.env.DB_NAME || 'auralpha',
-    synchronize: getBool('DB_SYNCHRONIZE', true),
+    username: resolveStringWithLocalFallback(process.env.DB_USERNAME, 'root', localAppEnvironment),
+    password: resolveStringWithLocalFallback(process.env.DB_PASSWORD, 'root', localAppEnvironment),
+    database: resolveStringWithLocalFallback(process.env.DB_NAME, 'auralpha', localAppEnvironment),
+    synchronize: getBool('DB_SYNCHRONIZE', localAppEnvironment),
     logging: getBool('DB_LOGGING', false),
   },
   pg: {
     enabled: getBool('PG_DB_ENABLED', false),
-    host: process.env.PG_DB_HOST || '127.0.0.1',
+    host: resolveStringWithLocalFallback(
+      process.env.PG_DB_HOST,
+      '127.0.0.1',
+      localAppEnvironment
+    ),
     port: getNumber('PG_DB_PORT', 5432),
-    username: process.env.PG_DB_USERNAME || 'postgres',
-    password: process.env.PG_DB_PASSWORD || '',
-    database: process.env.PG_DB_NAME || 'auralpha',
+    username: resolveStringWithLocalFallback(
+      process.env.PG_DB_USERNAME,
+      'postgres',
+      localAppEnvironment
+    ),
+    password: resolveStringWithLocalFallback(process.env.PG_DB_PASSWORD, '', localAppEnvironment),
+    database: resolveStringWithLocalFallback(
+      process.env.PG_DB_NAME,
+      'auralpha',
+      localAppEnvironment
+    ),
     ssl: getBool('PG_DB_SSL', false),
     logging: getBool('PG_DB_LOGGING', false),
   },
@@ -449,5 +593,21 @@ assertSecureEnvironmentConfig({
   authSeedEnabled: env.auth.seedEnabled,
   authSeedEmail: env.auth.seedEmail,
   authSeedPassword: env.auth.seedPassword,
-  authSeedFullName: env.auth.seedFullName
+  authSeedFullName: env.auth.seedFullName,
+  schedulerExecutionMode: env.scheduler.executionMode,
+  schedulerWorkerBaseUrl: env.scheduler.worker.baseUrl,
+  redisHost: env.redis.host,
+  redisAutoStart: env.redis.autoStart,
+  dbHost: env.db.host,
+  dbUsername: env.db.username,
+  dbPassword: env.db.password,
+  dbDatabase: env.db.database,
+  dbSynchronize: env.db.synchronize,
+  pgEnabled: env.pg.enabled,
+  pgHost: env.pg.host,
+  pgUsername: env.pg.username,
+  pgPassword: env.pg.password,
+  pgDatabase: env.pg.database,
+  activityExportStorageMode: env.activity.exportStorageMode,
+  activityExportStorageDir: env.activity.exportStorageDir
 });

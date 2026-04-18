@@ -34,6 +34,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       'ActivityService.ts',
       'ActivityMaintenanceService.ts',
       'ActivityExportProcessorService.ts',
+      'ActivityExportStorageService.ts',
     ],
     tests: [script('test:activity', 'scripts/test-activity.ts')],
     checks: [
@@ -624,12 +625,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     lane: 'baseline',
     controllers: ['LeverageController.ts', 'WalletController.ts'],
     services: ['BrokerWalletFacadeService.ts', 'BrokerWalletLiveFetchService.ts'],
-    tests: [
-      script('test:wallets', 'scripts/test-wallets.ts'),
-      fileOnly('scripts/test-delta-comprehensive.ts'),
-      fileOnly('scripts/test-delta-real-account.ts'),
-      fileOnly('scripts/test-delta-wallet-adapter.ts'),
-    ],
+    tests: [script('test:wallets', 'scripts/test-wallets.ts')],
     checks: [script('check:wallets-health', 'scripts/checks/check-wallets-health.ts')],
   },
   {

@@ -112,7 +112,21 @@ export class BrokerReferenceDataService {
       throw new BadRequestAppError(`Leverage lookup is not configured for broker: ${definition.brokerKey}`);
     }
 
-    return this.leverageService.getLeverageBySymbol(symbol);
+    try {
+      return await this.leverageService.getLeverageBySymbol(symbol);
+    } catch (error) {
+      if (!(error instanceof NotFoundAppError) && (error as { httpCode?: number })?.httpCode !== 404) {
+        throw error;
+      }
+
+      const assetDetail = await this.mudrexService.getRemoteFuturesAssetBySymbol(symbol);
+      const assetId = String(assetDetail.data?.id || '').trim();
+      if (!assetId) {
+        throw error;
+      }
+
+      return this.leverageService.getLeverageByAssetId(assetId);
+    }
   }
 
   async getReferenceCatalog(userId: string): Promise<ApiSuccessResponse<ReferenceCatalogResponse>> {

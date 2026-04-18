@@ -1,0 +1,55 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: auralpha-backend:prod
+    env_file:
+      - ./environments/production/.env
+    environment:
+      APP_ENV: production
+      NODE_ENV: production
+      PORT: 3000
+      DB_SYNCHRONIZE: "false"
+      REDIS_AUTO_START: "false"
+      ACTIVITY_EXPORT_STORAGE_DIR: /app/storage/activity-exports
+    command: ["node", "dist/app.js"]
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      - activity-exports:/app/storage/activity-exports
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const port=process.env.PORT||'3000'; const prefix=process.env.APP_ROUTE_PREFIX||'/api/v1'; fetch('http://127.0.0.1:'+port+prefix+'/health').then((res)=>process.exit(res.ok?0:1)).catch(()=>process.exit(1));"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  email-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: auralpha-backend:prod
+    profiles: ["email"]
+    env_file:
+      - ./environments/production/.env
+    environment:
+      APP_ENV: production
+      NODE_ENV: production
+      DB_SYNCHRONIZE: "false"
+      REDIS_AUTO_START: "false"
+      ACTIVITY_EXPORT_STORAGE_DIR: /app/storage/activity-exports
+    command: ["node", "dist/app.email-worker.js"]
+    volumes:
+      - activity-exports:/app/storage/activity-exports
+    restart: unless-stopped
+
+volumes:
+  activity-exports:

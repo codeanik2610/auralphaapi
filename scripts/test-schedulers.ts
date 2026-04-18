@@ -803,7 +803,7 @@ async function schedulersGuard05(): Promise<void> {
   const { OrdersSchedulerService } = await import("../src/api/services/OrdersSchedulerService");
   const { SchedulerRuntimeSchemaService } = await import("../src/api/services/SchedulerRuntimeSchemaService");
   const { coreDataSource } = await import("../src/database/data-source");
-  const { CreateOrdersSchedulerRuntimeTables1770706000000 } = await import("../src/database/migrations/1770706000000-CreateOrdersSchedulerRuntimeTables");
+  const { CreateOrdersSchedulerRuntimeTables1770706000000 } = await import("./_fixtures/migrations/1770706000000-CreateOrdersSchedulerRuntimeTables");
 
 function createOrdersConfig(overrides: Record<string, unknown> = {}) {
   return {

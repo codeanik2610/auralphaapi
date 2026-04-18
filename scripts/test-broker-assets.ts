@@ -8,7 +8,7 @@ import path from 'node:path';
 import { ConnectionsService } from '../src/api/services/ConnectionsService';
 import { ExchangeAssetsService } from '../src/api/services/ExchangeAssetsService';
 import { DeltaExchangeOrdersAdapter } from '../src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter';
-import { DropBrokerAssetLegacyUserOwnership1770709000000 } from '../src/database/migrations/1770709000000-DropBrokerAssetLegacyUserOwnership';
+import { DropBrokerAssetLegacyUserOwnership1770709000000 } from './_fixtures/migrations/1770709000000-DropBrokerAssetLegacyUserOwnership';
 import {
   assertBrokerAssetsHealthSnapshot,
   buildBrokerAssetsHealthSnapshot,
@@ -516,7 +516,7 @@ async function runPhase4Assertions(): Promise<void> {
   }
 
   const migrationSource = read(
-    'src/database/migrations/1770709000000-DropBrokerAssetLegacyUserOwnership.ts'
+    'scripts/_fixtures/migrations/1770709000000-DropBrokerAssetLegacyUserOwnership.ts'
   );
   ensureMarkers(
     migrationSource,
@@ -658,7 +658,7 @@ function runPhase5ContractAssertions(): void {
   );
 
   const migrationSource = read(
-    'src/database/migrations/1770709000000-DropBrokerAssetLegacyUserOwnership.ts'
+    'scripts/_fixtures/migrations/1770709000000-DropBrokerAssetLegacyUserOwnership.ts'
   );
   ensureMarkers(
     migrationSource,
