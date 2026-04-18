@@ -98,7 +98,11 @@ fi
 if [[ "${SKIP_POST_BOOTSTRAP}" == "true" ]]; then
   launch_args+=(--skip-post-bootstrap)
 fi
-bash "${SCRIPT_DIR}/platform-launch.sh" "${launch_args[@]}"
+if (( ${#launch_args[@]} > 0 )); then
+  bash "${SCRIPT_DIR}/platform-launch.sh" "${launch_args[@]}"
+else
+  bash "${SCRIPT_DIR}/platform-launch.sh"
+fi
 
 echo "[5/6] Current platform status..."
 bash "${SCRIPT_DIR}/platform-status.sh"

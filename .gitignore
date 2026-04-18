@@ -2,6 +2,9 @@ node_modules
 dist
 .env
 environments/*/.env
+environments/*/.env.bak.*
+deploy/.env.platform
+deploy/.env.platform.bak.*
 .claude/
 .idea/
 .DS_Store
