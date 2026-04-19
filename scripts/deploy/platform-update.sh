@@ -57,7 +57,7 @@ if [[ "${SKIP_BUILD}" != "true" ]]; then
 fi
 
 if [[ "${SKIP_MIGRATE}" != "true" ]]; then
-  compose run --rm --no-deps auralpha-api npm run db:migrate
+  compose run --rm --no-deps auralpha-api node dist/scripts/db/db-run-migrations.js
 fi
 
 compose "${profile_args[@]}" up -d

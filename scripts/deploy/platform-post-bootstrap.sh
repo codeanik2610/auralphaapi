@@ -7,8 +7,8 @@ source "${SCRIPT_DIR}/platform-common.sh"
 
 validate_platform_inputs
 
-compose exec auralpha-api npm run rebuild:positions-read-model
-compose exec auralpha-api npm run rebuild:risk-normalized-storage
+compose exec auralpha-api node dist/scripts/rebuild/rebuild-positions-read-model.js
+compose exec auralpha-api node dist/scripts/rebuild/rebuild-risk-normalized-storage.js
 
 echo "Post-bootstrap rebuilds completed successfully."
 echo "Next step: run the scheduler syncs in application order."
