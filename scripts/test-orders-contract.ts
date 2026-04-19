@@ -11,6 +11,7 @@ import {
 } from '../src/api/utils/apiTimeContract';
 import {
   validateCreateOrderBody,
+  validateOrderSubmissionAttemptsQuery,
   validateOrdersRefreshBody,
   validateOrdersQuery,
   validateOrdersSyncStatusQuery,
@@ -158,6 +159,34 @@ async function runValidatorAssertions(): Promise<void> {
       brokerKey: 'mudrex',
       accountId: 'acct-2',
     }
+  );
+
+  assert.deepEqual(
+    validateOrderSubmissionAttemptsQuery({
+      limit: '25',
+      offset: '5',
+      suggestedTradeId: ' suggested-1 ',
+      status: ' Completed ',
+      placementState: ' Placed ',
+      reconciliationState: ' Pending ',
+      brokerKey: ' Mudrex ',
+      accountId: ' acct-2 ',
+    }),
+    {
+      limit: 25,
+      offset: 5,
+      suggestedTradeId: 'suggested-1',
+      status: 'completed',
+      placementState: 'placed',
+      reconciliationState: 'pending',
+      brokerKey: 'mudrex',
+      accountId: 'acct-2',
+    }
+  );
+
+  expectBadRequestSync(
+    () => validateOrderSubmissionAttemptsQuery({ placementState: 'lost' }),
+    'placementState must be one of registered, submitting, placed, rejected, replayed'
   );
 }
 
@@ -1187,6 +1216,8 @@ async function runOrdersControllerAssertions(): Promise<void> {
   let getPaperOrdersArgs: unknown[] = [];
   let refreshArgs: unknown[] = [];
   let syncStatusArgs: unknown[] = [];
+  let submissionListArgs: unknown[] = [];
+  let submissionDetailArgs: unknown[] = [];
 
   controller.ordersService = {
     async createFuturesOrder(...args: unknown[]) {
@@ -1204,6 +1235,14 @@ async function runOrdersControllerAssertions(): Promise<void> {
     async getOrdersSyncStatus(...args: unknown[]) {
       syncStatusArgs = args;
       return createSuccess({ message: 'ok' });
+    },
+    async getOrderSubmissionAttempts(...args: unknown[]) {
+      submissionListArgs = args;
+      return { items: [], total: 0, limit: 50, offset: 0, filters: {} };
+    },
+    async getOrderSubmissionAttempt(...args: unknown[]) {
+      submissionDetailArgs = args;
+      return { id: 'submission-1' };
     },
   };
 
@@ -1280,6 +1319,39 @@ async function runOrdersControllerAssertions(): Promise<void> {
       accountId: 'acct-2',
     },
   ]);
+
+  await controller.getOrderSubmissionAttempts(
+    { authUser: { sub: 'user-1' } },
+    '25',
+    '5',
+    'suggested-1',
+    'completed',
+    'placed',
+    'pending',
+    'mudrex',
+    'acct-2'
+  );
+
+  assert.deepEqual(submissionListArgs, [
+    'user-1',
+    {
+      limit: '25',
+      offset: '5',
+      suggestedTradeId: 'suggested-1',
+      status: 'completed',
+      placementState: 'placed',
+      reconciliationState: 'pending',
+      brokerKey: 'mudrex',
+      accountId: 'acct-2',
+    },
+  ]);
+
+  await controller.getOrderSubmissionAttempt(
+    { authUser: { sub: 'user-1' } },
+    'submission-1'
+  );
+
+  assert.deepEqual(submissionDetailArgs, ['user-1', 'submission-1']);
 }
 
 async function main(): Promise<void> {

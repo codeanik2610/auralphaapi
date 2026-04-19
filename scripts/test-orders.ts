@@ -349,6 +349,47 @@ function createServiceHarness() {
     async findByUserAndKey(userId: string, idempotencyKey: string) {
       return submissions.get(`${userId}:${idempotencyKey}`) || null;
     },
+    async findByUserAndId(userId: string, submissionId: string) {
+      return (
+        Array.from(submissions.values()).find(
+          (record) => record.userId === userId && record.id === submissionId
+        ) || null
+      );
+    },
+    async listSubmissionAttempts(query: Record<string, unknown>) {
+      let items = Array.from(submissions.values()).filter(
+        (record) => record.userId === query.userId
+      );
+      if (query.suggestedTradeId) {
+        items = items.filter((record) => record.suggestedTradeId === query.suggestedTradeId);
+      }
+      if (query.status) {
+        items = items.filter((record) => record.status === query.status);
+      }
+      if (query.placementState) {
+        items = items.filter((record) => record.placementState === query.placementState);
+      }
+      if (query.reconciliationState) {
+        items = items.filter(
+          (record) => record.reconciliationState === query.reconciliationState
+        );
+      }
+      if (query.brokerKey) {
+        items = items.filter(
+          (record) => String(record.brokerKey || '').toLowerCase() === query.brokerKey
+        );
+      }
+      if (query.accountId) {
+        items = items.filter((record) => record.accountId === query.accountId);
+      }
+      return {
+        items: items.slice(
+          Number(query.offset || 0),
+          Number(query.offset || 0) + Number(query.limit || 50)
+        ),
+        total: items.length,
+      };
+    },
     async createInProgress(payload: Record<string, unknown>) {
       const key = `${payload.userId}:${payload.idempotencyKey}`;
       if (submissions.has(key)) {
@@ -519,6 +560,12 @@ function createServiceHarness() {
     },
   };
 
+  service.userTimeZoneService = {
+    async resolveUserTimeZone() {
+      return 'UTC';
+    },
+  };
+
   return {
     service,
     submissions,
@@ -574,6 +621,29 @@ async function runReplayAssertion(): Promise<void> {
     (stored?.lifecyclePayload ?? []).map((event: Record<string, unknown>) => event.type),
     ['submission_registered', 'broker_call_started', 'broker_order_accepted']
   );
+
+  const listResponse = await harness.service.getOrderSubmissionAttempts('user-1', {
+    suggestedTradeId: 'st-auto-1',
+    placementState: 'placed',
+    reconciliationState: 'pending',
+  });
+  assert.equal(listResponse.total, 1);
+  assert.equal(listResponse.items[0]?.id, stored?.id);
+  assert.equal(listResponse.items[0]?.operatorState.label, 'Pending reconciliation');
+  assert.equal(
+    listResponse.items[0]?.operatorState.recommendedAction,
+    'reconcile_execution'
+  );
+
+  const detailResponse = await harness.service.getOrderSubmissionAttempt('user-1', stored.id);
+  assert.equal(detailResponse.id, stored.id);
+  assert.equal(detailResponse.requestPayload?.order?.suggestedTradeId, 'st-auto-1');
+  assert.equal(
+    ((detailResponse.responsePayload?.data as Record<string, unknown> | undefined)
+      ?.order_id as string | undefined) ?? null,
+    'live-1'
+  );
+  assert.equal(detailResponse.lifecycle.length, 3);
 }
 
 async function runConflictAssertion(): Promise<void> {

@@ -90,3 +90,76 @@ export interface OrdersRefreshRequestResponse {
   failures: string[];
   time?: ApiTimeContract;
 }
+
+export type OrderSubmissionStatus = 'in_progress' | 'completed' | 'failed';
+export type OrderSubmissionPlacementState =
+  | 'registered'
+  | 'submitting'
+  | 'placed'
+  | 'rejected'
+  | 'replayed';
+export type OrderSubmissionReconciliationState =
+  | 'not_required'
+  | 'pending'
+  | 'matched'
+  | 'missing';
+
+export interface OrderSubmissionLifecycleEvent {
+  at?: string;
+  type?: string;
+  message?: string;
+  details?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface OrderSubmissionOperatorState {
+  label: string;
+  tone: 'neutral' | 'info' | 'success' | 'warning' | 'danger';
+  summary: string;
+  recommendedAction?: 'wait' | 'reconcile_execution' | 'review_error' | null;
+}
+
+export interface OrderSubmissionAttempt {
+  id: string;
+  userId: string;
+  idempotencyKey: string;
+  requestHash: string;
+  executionMode: string;
+  assetId: string;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  suggestedTradeId?: string | null;
+  status: OrderSubmissionStatus;
+  placementState: OrderSubmissionPlacementState;
+  brokerOrderId?: string | null;
+  brokerOrderStatus?: string | null;
+  reconciliationState: OrderSubmissionReconciliationState;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
+  failedAt?: string | null;
+  lifecycle: OrderSubmissionLifecycleEvent[];
+  operatorState: OrderSubmissionOperatorState;
+}
+
+export interface OrderSubmissionAttemptDetail extends OrderSubmissionAttempt {
+  requestPayload?: Record<string, unknown> | null;
+  responsePayload?: Record<string, unknown> | null;
+  errorPayload?: Record<string, unknown> | null;
+}
+
+export interface OrderSubmissionAttemptsResponse {
+  items: OrderSubmissionAttempt[];
+  total: number;
+  limit: number;
+  offset: number;
+  filters: {
+    suggestedTradeId?: string;
+    status?: OrderSubmissionStatus;
+    placementState?: OrderSubmissionPlacementState;
+    reconciliationState?: OrderSubmissionReconciliationState;
+    brokerKey?: string;
+    accountId?: string;
+  };
+  time?: ApiTimeContract;
+}

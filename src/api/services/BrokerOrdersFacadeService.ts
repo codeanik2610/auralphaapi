@@ -14,18 +14,26 @@ import {
   OrdersAccountFreshness,
   OrdersFreshnessIndicator,
   OrdersGroupedFreshnessSummary,
+  OrderSubmissionAttempt,
+  OrderSubmissionAttemptDetail,
+  OrderSubmissionAttemptsResponse,
+  OrderSubmissionLifecycleEvent,
+  OrderSubmissionOperatorState,
   OrdersRefreshRequestResponse,
   OrdersSyncStatusItem,
   OrdersSyncStatusResponse,
 } from '../contracts/Orders';
 import {
   CreateOrderBody,
+  OrderSubmissionAttemptsQuery,
   OrdersRefreshBody,
   OrdersQuery,
   OrdersSyncStatusQuery,
   ValidatedCreateOrderBody,
+  ValidatedOrderSubmissionAttemptsQuery,
   validateCreateOrderBody,
   validateOrderId,
+  validateOrderSubmissionAttemptsQuery,
   validateOrdersQuery,
   validateOrdersRefreshBody,
   validateOrdersSyncStatusQuery,
@@ -141,6 +149,179 @@ export class BrokerOrdersFacadeService {
 
   private formatRawIso(value: Date | string | null | undefined): string | null {
     return formatApiRawIso(value) || null;
+  }
+
+  private normalizeLifecycleEvents(value: unknown): OrderSubmissionLifecycleEvent[] {
+    if (Array.isArray(value)) {
+      return value
+        .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+        .map((item) => ({ ...(item as Record<string, unknown>) }));
+    }
+
+    if (typeof value === 'string') {
+      try {
+        return this.normalizeLifecycleEvents(JSON.parse(value) as unknown);
+      } catch {
+        return [];
+      }
+    }
+
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return [{ ...(value as Record<string, unknown>) }];
+    }
+
+    return [];
+  }
+
+  private buildOrderSubmissionOperatorState(
+    submission: OrderSubmissionRequest
+  ): OrderSubmissionOperatorState {
+    if (submission.status === 'failed' || submission.placementState === 'rejected') {
+      return {
+        label: 'Rejected',
+        tone: 'danger',
+        summary:
+          typeof submission.errorPayload?.message === 'string'
+            ? submission.errorPayload.message
+            : 'Broker placement was rejected or failed before completion.',
+        recommendedAction: 'review_error',
+      };
+    }
+
+    if (submission.placementState === 'submitting') {
+      return {
+        label: 'Submitting',
+        tone: 'info',
+        summary: 'Broker placement call is in progress.',
+        recommendedAction: 'wait',
+      };
+    }
+
+    if (submission.placementState === 'registered') {
+      return {
+        label: 'Registered',
+        tone: 'neutral',
+        summary: 'Order submission is registered and waiting for the broker call to start.',
+        recommendedAction: 'wait',
+      };
+    }
+
+    if (submission.reconciliationState === 'pending') {
+      return {
+        label: 'Pending reconciliation',
+        tone: 'warning',
+        summary:
+          'Broker accepted the order, but the scheduler snapshot has not confirmed it yet.',
+        recommendedAction: 'reconcile_execution',
+      };
+    }
+
+    if (submission.reconciliationState === 'missing') {
+      return {
+        label: 'Missing snapshot',
+        tone: 'danger',
+        summary:
+          'Broker placement completed, but no broker order id or matching snapshot is available.',
+        recommendedAction: 'reconcile_execution',
+      };
+    }
+
+    if (submission.reconciliationState === 'matched') {
+      return {
+        label: 'Reconciled',
+        tone: 'success',
+        summary: 'Broker placement is matched to broker snapshot data.',
+        recommendedAction: null,
+      };
+    }
+
+    if (submission.placementState === 'placed') {
+      return {
+        label: 'Placed',
+        tone: 'success',
+        summary: 'Order placement completed.',
+        recommendedAction: null,
+      };
+    }
+
+    return {
+      label: 'Recorded',
+      tone: 'neutral',
+      summary: 'Order submission attempt is recorded.',
+      recommendedAction: null,
+    };
+  }
+
+  private mapOrderSubmissionAttempt(
+    submission: OrderSubmissionRequest
+  ): OrderSubmissionAttempt {
+    return {
+      id: submission.id,
+      userId: submission.userId,
+      idempotencyKey: submission.idempotencyKey,
+      requestHash: submission.requestHash,
+      executionMode: submission.executionMode,
+      assetId: submission.assetId,
+      brokerKey: submission.brokerKey,
+      accountId: submission.accountId,
+      suggestedTradeId: submission.suggestedTradeId,
+      status: submission.status,
+      placementState: submission.placementState,
+      brokerOrderId: submission.brokerOrderId,
+      brokerOrderStatus: submission.brokerOrderStatus,
+      reconciliationState: submission.reconciliationState,
+      createdAt: submission.createdAt.toISOString(),
+      updatedAt: submission.updatedAt.toISOString(),
+      completedAt: this.toOptionalIsoString(submission.completedAt),
+      failedAt: this.toOptionalIsoString(submission.failedAt),
+      lifecycle: this.normalizeLifecycleEvents(submission.lifecyclePayload),
+      operatorState: this.buildOrderSubmissionOperatorState(submission),
+    };
+  }
+
+  private mapOrderSubmissionAttemptDetail(
+    submission: OrderSubmissionRequest
+  ): OrderSubmissionAttemptDetail {
+    return {
+      ...this.mapOrderSubmissionAttempt(submission),
+      requestPayload: this.normalizeNullableJsonRecord(submission.requestPayload),
+      responsePayload: this.normalizeNullableJsonRecord(submission.responsePayload),
+      errorPayload: this.normalizeNullableJsonRecord(submission.errorPayload),
+    };
+  }
+
+  private buildOrderSubmissionFilterEcho(
+    filters: ValidatedOrderSubmissionAttemptsQuery
+  ): OrderSubmissionAttemptsResponse['filters'] {
+    return {
+      ...(filters.suggestedTradeId ? { suggestedTradeId: filters.suggestedTradeId } : {}),
+      ...(filters.status ? { status: filters.status } : {}),
+      ...(filters.placementState ? { placementState: filters.placementState } : {}),
+      ...(filters.reconciliationState
+        ? { reconciliationState: filters.reconciliationState }
+        : {}),
+      ...(filters.brokerKey ? { brokerKey: filters.brokerKey } : {}),
+      ...(filters.accountId ? { accountId: filters.accountId } : {}),
+    };
+  }
+
+  private normalizeNullableJsonRecord(value: unknown): Record<string, unknown> | null {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    const record = this.normalizeJsonRecord(value);
+    return Object.keys(record).length ? record : null;
+  }
+
+  private toOptionalIsoString(value: Date | string | null | undefined): string | null {
+    if (!value) {
+      return null;
+    }
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value.toISOString();
+    }
+    const parsed = new Date(String(value));
+    return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
   }
 
   private readString(value: unknown): string {
@@ -1539,6 +1720,55 @@ export class BrokerOrdersFacadeService {
       nextRetryAtIso: nextRetryAt,
       time: buildApiTimeContract(timeZone),
     };
+  }
+
+  async getOrderSubmissionAttempts(
+    userId: string,
+    query: OrderSubmissionAttemptsQuery = {}
+  ): Promise<OrderSubmissionAttemptsResponse> {
+    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+    const filters = validateOrderSubmissionAttemptsQuery(query);
+    const { items, total } =
+      await this.orderSubmissionRequestRepository.listSubmissionAttempts({
+        userId,
+        limit: filters.limit,
+        offset: filters.offset,
+        suggestedTradeId: filters.suggestedTradeId,
+        status: filters.status,
+        placementState: filters.placementState,
+        reconciliationState: filters.reconciliationState,
+        brokerKey: filters.brokerKey,
+        accountId: filters.accountId,
+      });
+
+    return {
+      items: items.map((item) => this.mapOrderSubmissionAttempt(item)),
+      total,
+      limit: filters.limit,
+      offset: filters.offset,
+      filters: this.buildOrderSubmissionFilterEcho(filters),
+      time: buildApiTimeContract(timeZone),
+    };
+  }
+
+  async getOrderSubmissionAttempt(
+    userId: string,
+    submissionId: string
+  ): Promise<OrderSubmissionAttemptDetail> {
+    const normalizedSubmissionId = String(submissionId || '').trim();
+    if (!normalizedSubmissionId) {
+      throw new BadRequestAppError('submissionId is required');
+    }
+
+    const submission = await this.orderSubmissionRequestRepository.findByUserAndId(
+      userId,
+      normalizedSubmissionId
+    );
+    if (!submission) {
+      throw new NotFoundAppError('Order submission attempt not found');
+    }
+
+    return this.mapOrderSubmissionAttemptDetail(submission);
   }
 
   async createFuturesOrder(

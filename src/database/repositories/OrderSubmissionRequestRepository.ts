@@ -36,6 +36,18 @@ export interface OrderSubmissionFailureOptions {
   lifecycleEvent?: OrderSubmissionLifecycleEvent;
 }
 
+export interface OrderSubmissionAttemptsListQuery {
+  userId: string;
+  limit: number;
+  offset: number;
+  suggestedTradeId?: string;
+  status?: OrderSubmissionRequest['status'];
+  placementState?: OrderSubmissionRequest['placementState'];
+  reconciliationState?: OrderSubmissionRequest['reconciliationState'];
+  brokerKey?: string;
+  accountId?: string;
+}
+
 @Service()
 export class OrderSubmissionRequestRepository {
   private get repository(): Repository<OrderSubmissionRequest> {
@@ -52,6 +64,69 @@ export class OrderSubmissionRequestRepository {
         idempotencyKey,
       },
     });
+  }
+
+  async findByUserAndId(
+    userId: string,
+    submissionId: string
+  ): Promise<OrderSubmissionRequest | null> {
+    return this.repository.findOne({
+      where: {
+        userId,
+        id: submissionId,
+      },
+    });
+  }
+
+  async listSubmissionAttempts(
+    query: OrderSubmissionAttemptsListQuery
+  ): Promise<{ items: OrderSubmissionRequest[]; total: number }> {
+    const builder = this.repository
+      .createQueryBuilder('submission')
+      .where('submission.userId = :userId', { userId: query.userId });
+
+    if (query.suggestedTradeId) {
+      builder.andWhere('submission.suggestedTradeId = :suggestedTradeId', {
+        suggestedTradeId: query.suggestedTradeId,
+      });
+    }
+
+    if (query.status) {
+      builder.andWhere('submission.status = :status', { status: query.status });
+    }
+
+    if (query.placementState) {
+      builder.andWhere('submission.placementState = :placementState', {
+        placementState: query.placementState,
+      });
+    }
+
+    if (query.reconciliationState) {
+      builder.andWhere('submission.reconciliationState = :reconciliationState', {
+        reconciliationState: query.reconciliationState,
+      });
+    }
+
+    if (query.brokerKey) {
+      builder.andWhere('LOWER(COALESCE(submission.brokerKey, \'\')) = :brokerKey', {
+        brokerKey: query.brokerKey.toLowerCase(),
+      });
+    }
+
+    if (query.accountId) {
+      builder.andWhere('submission.accountId = :accountId', {
+        accountId: query.accountId,
+      });
+    }
+
+    const [items, total] = await builder
+      .orderBy('submission.createdAt', 'DESC')
+      .addOrderBy('submission.id', 'DESC')
+      .skip(query.offset)
+      .take(query.limit)
+      .getManyAndCount();
+
+    return { items, total };
   }
 
   async createInProgress(

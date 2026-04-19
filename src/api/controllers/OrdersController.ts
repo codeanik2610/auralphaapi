@@ -4,6 +4,8 @@ import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import { MudrexCancelOrderResult, MudrexCreateOrderResult, MudrexOrder } from '../contracts/Mudrex';
 import {
+  OrderSubmissionAttemptDetail,
+  OrderSubmissionAttemptsResponse,
   OrdersRefreshRequestResponse,
   OrdersSyncStatusResponse,
 } from '../contracts/Orders';
@@ -16,6 +18,50 @@ import { requireAuthUserId } from '../utils/auth';
 export class OrdersController {
   @Inject(() => BrokerOrdersFacadeService)
   private ordersService!: BrokerOrdersFacadeService;
+
+  @Get('/submissions')
+  async getOrderSubmissionAttempts(
+    @Req() request: Request,
+    @QueryParam('limit') limit?: string,
+    @QueryParam('offset') offset?: string,
+    @QueryParam('suggestedTradeId') suggestedTradeId?: string,
+    @QueryParam('status') status?: string,
+    @QueryParam('placementState') placementState?: string,
+    @QueryParam('reconciliationState') reconciliationState?: string,
+    @QueryParam('brokerKey') brokerKey?: string,
+    @QueryParam('accountId') accountId?: string
+  ): Promise<ApiSuccessResponse<OrderSubmissionAttemptsResponse>> {
+    return {
+      success: true,
+      data: await this.ordersService.getOrderSubmissionAttempts(
+        requireAuthUserId(request),
+        {
+          limit,
+          offset,
+          suggestedTradeId,
+          status,
+          placementState,
+          reconciliationState,
+          brokerKey,
+          accountId,
+        }
+      ),
+    };
+  }
+
+  @Get('/submissions/:submissionId')
+  async getOrderSubmissionAttempt(
+    @Req() request: Request,
+    @Param('submissionId') submissionId: string
+  ): Promise<ApiSuccessResponse<OrderSubmissionAttemptDetail>> {
+    return {
+      success: true,
+      data: await this.ordersService.getOrderSubmissionAttempt(
+        requireAuthUserId(request),
+        submissionId
+      ),
+    };
+  }
 
   @Get('/futures')
   async getFuturesOrders(@Req() request: Request, @QueryParam('limit') limit?: string, @QueryParam('brokerKey') brokerKey?: string, @QueryParam('accountId') accountId?: string, @QueryParam('startDate') startDate?: string, @QueryParam('endDate') endDate?: string): Promise<ApiSuccessResponse<MudrexOrder[]>> {

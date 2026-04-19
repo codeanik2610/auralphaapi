@@ -18,6 +18,28 @@ export interface OrdersSyncStatusQuery {
   accountId?: string;
 }
 
+export interface OrderSubmissionAttemptsQuery {
+  limit?: string;
+  offset?: string;
+  suggestedTradeId?: string;
+  status?: string;
+  placementState?: string;
+  reconciliationState?: string;
+  brokerKey?: string;
+  accountId?: string;
+}
+
+export interface ValidatedOrderSubmissionAttemptsQuery {
+  limit: number;
+  offset: number;
+  suggestedTradeId?: string;
+  status?: 'in_progress' | 'completed' | 'failed';
+  placementState?: 'registered' | 'submitting' | 'placed' | 'rejected' | 'replayed';
+  reconciliationState?: 'not_required' | 'pending' | 'matched' | 'missing';
+  brokerKey?: string;
+  accountId?: string;
+}
+
 export interface CreateOrderBody {
   brokerKey?: string;
   accountId?: string;
@@ -121,6 +143,62 @@ export const validateOrdersSyncStatusQuery = (
   brokerKey: normalizeOptional(query.brokerKey),
   accountId: normalizeOptional(query.accountId),
 });
+
+const validateEnum = <T extends string>(
+  value: string | undefined,
+  fieldName: string,
+  allowed: readonly T[]
+): T | undefined => {
+  const normalized = normalizeOptional(value)?.toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (!allowed.includes(normalized as T)) {
+    throw new BadRequestAppError(`${fieldName} must be one of ${allowed.join(', ')}`);
+  }
+  return normalized as T;
+};
+
+export const validateOrderSubmissionAttemptsQuery = (
+  query: OrderSubmissionAttemptsQuery = {}
+): ValidatedOrderSubmissionAttemptsQuery => {
+  const limit = query.limit !== undefined ? Number(query.limit) : 50;
+  const offset = query.offset !== undefined ? Number(query.offset) : 0;
+
+  if (!Number.isInteger(limit) || limit <= 0 || limit > 200) {
+    throw new BadRequestAppError('limit must be an integer between 1 and 200');
+  }
+
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new BadRequestAppError('offset must be a non-negative integer');
+  }
+
+  return {
+    limit,
+    offset,
+    suggestedTradeId: normalizeOptional(query.suggestedTradeId),
+    status: validateEnum(query.status, 'status', [
+      'in_progress',
+      'completed',
+      'failed',
+    ] as const),
+    placementState: validateEnum(query.placementState, 'placementState', [
+      'registered',
+      'submitting',
+      'placed',
+      'rejected',
+      'replayed',
+    ] as const),
+    reconciliationState: validateEnum(query.reconciliationState, 'reconciliationState', [
+      'not_required',
+      'pending',
+      'matched',
+      'missing',
+    ] as const),
+    brokerKey: normalizeOptional(query.brokerKey)?.toLowerCase(),
+    accountId: normalizeOptional(query.accountId),
+  };
+};
 
 export const validateCreateOrderBody = (body: CreateOrderBody): ValidatedCreateOrderBody => {
   const idempotencyKey = normalizeOptional(body.idempotency_key);
