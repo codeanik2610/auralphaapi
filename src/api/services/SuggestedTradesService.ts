@@ -1606,6 +1606,15 @@ export class SuggestedTradesService {
         this.readStringValue(createdOrder.status) ??
         this.readStringValue(createdOrder.order_status) ??
         null;
+      const protectionStatus = this.readStringValue(createdOrder.protection_status);
+      const stopLossOrderId = this.readStringValue(createdOrder.stop_loss_order_id);
+      const takeProfitOrderId = this.readStringValue(createdOrder.take_profit_order_id);
+      const protectionAttached = protectionStatus === 'attached';
+      const protectionNote = protectionAttached
+        ? ` Native SL/TP protection attached${stopLossOrderId || takeProfitOrderId
+            ? ` (SL ${stopLossOrderId ?? 'unknown'}, TP ${takeProfitOrderId ?? 'unknown'})`
+            : ''}.`
+        : '';
 
       if (!createdOrderId) {
         throw new BadRequestAppError('Live auto execution did not return a broker order id');
@@ -1617,7 +1626,7 @@ export class SuggestedTradesService {
         orderStatus: createdOrderStatus,
         executionState: 'linked',
         linkedAt: new Date().toISOString(),
-        note: 'Live order created automatically from automation suggestion',
+        note: `Live order created automatically from automation suggestion.${protectionNote}`,
       };
       await this.persistExecutionState(updatedTrade, linkedExecution);
 
@@ -1630,12 +1639,16 @@ export class SuggestedTradesService {
         related: `${brokerKey} · ${accountId}`,
         referenceId: updatedTrade.id,
         symbol: updatedTrade.symbol,
-        description: `Live order ${createdOrderId} created automatically after pre-trade clearance`,
+        description: protectionAttached
+          ? `Live order ${createdOrderId} created automatically after pre-trade clearance with native SL/TP protection`
+          : `Live order ${createdOrderId} created automatically after pre-trade clearance`,
       });
 
       return {
         outcome: 'placed',
-        message: 'Live order created automatically after pre-trade clearance',
+        message: protectionAttached
+          ? 'Live order created automatically after pre-trade clearance with native SL/TP protection'
+          : 'Live order created automatically after pre-trade clearance',
         suggestedTradeId: updatedTrade.id,
         brokerKey,
         accountId,

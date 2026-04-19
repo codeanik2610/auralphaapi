@@ -14,12 +14,14 @@ interface DeltaOrderPayload {
   id?: number | string;
   product_id?: number | string;
   product_symbol?: string;
+  client_order_id?: string | null;
   created_at?: string;
   updated_at?: string;
   side?: string | null;
   limit_price?: string | number | null;
   average_fill_price?: string | number | null;
   stop_price?: string | number | null;
+  stop_order_type?: string | null;
   size?: string | number | null;
   unfilled_size?: string | number | null;
   leverage?: string | number | null;
@@ -37,6 +39,16 @@ interface DeltaProductPayload {
   notional_type?: string | null;
   state?: string | null;
   trading_status?: string | null;
+}
+
+interface DeltaProtectiveOrderResult {
+  kind: 'stop_loss' | 'take_profit';
+  order_id: string;
+  status: string;
+  side: 'buy' | 'sell';
+  stop_price: string;
+  stop_order_type: 'stop_loss_order' | 'take_profit_order';
+  reduce_only: true;
 }
 
 @Service()
@@ -107,12 +119,41 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       requestPayload.limit_price = String(body.order_price);
     }
 
+    const shouldAttachProtection = this.shouldAttachLiveAutoProtection(body);
+    if (shouldAttachProtection) {
+      this.assertLiveAutoProtectivePrices(side, body);
+    }
+
     const payload = await this.deltaHttpClient.signedPost<DeltaOrderPayload>(
       context?.accountId,
       '/v2/orders',
       requestPayload,
       context?.userId
     );
+    const primaryOrderId = String(payload.id ?? '').trim();
+    if (shouldAttachProtection && !primaryOrderId) {
+      throw new BadRequestAppError(
+        'Delta Exchange live-auto entry order did not return an order id before protection placement'
+      );
+    }
+    let protectiveOrders: DeltaProtectiveOrderResult[] = [];
+    if (shouldAttachProtection) {
+      try {
+        protectiveOrders = await this.createLiveAutoProtectiveOrders(
+          productId,
+          size,
+          side,
+          body,
+          context
+        );
+      } catch (error) {
+        throw new BadRequestAppError(
+          `Delta Exchange entry order ${primaryOrderId} was accepted, but native SL/TP protection failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    }
     const amount = this.resolveEstimatedOrderValue(size, body.order_price, product);
     const contractValue = this.toNumber(product?.contract_value);
 
@@ -128,9 +169,134 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
           }
         : {}),
       price: String(body.order_price),
-      order_id: String(payload.id ?? ''),
+      order_id: primaryOrderId,
       status: payload.state ?? 'open',
+      protection_status: protectiveOrders.length ? 'attached' : 'not_requested',
+      ...(protectiveOrders.length
+        ? {
+            protective_orders: protectiveOrders,
+            stop_loss_order_id:
+              protectiveOrders.find((order) => order.kind === 'stop_loss')?.order_id ?? null,
+            take_profit_order_id:
+              protectiveOrders.find((order) => order.kind === 'take_profit')?.order_id ?? null,
+          }
+        : {}),
       message: 'Order submitted',
+    };
+  }
+
+  private shouldAttachLiveAutoProtection(body: ValidatedCreateOrderRouteBody): boolean {
+    return (
+      this.isLiveAutoSubmission(body) &&
+      body.execution_mode === 'live' &&
+      body.reduce_only !== true &&
+      body.is_stoploss !== true &&
+      body.is_takeprofit !== true
+    );
+  }
+
+  private assertLiveAutoProtectivePrices(
+    entrySide: 'buy' | 'sell',
+    body: ValidatedCreateOrderRouteBody
+  ): void {
+    const entryPrice = this.toNumber(body.order_price);
+    const stopLossPrice = this.toNumber(body.stoploss_price);
+    const takeProfitPrice = this.toNumber(body.takeprofit_price);
+    if (!(entryPrice > 0 && stopLossPrice > 0 && takeProfitPrice > 0)) {
+      throw new BadRequestAppError(
+        'Delta Exchange live-auto requires native stop-loss and take-profit prices'
+      );
+    }
+
+    if (entrySide === 'buy' && !(stopLossPrice < entryPrice && takeProfitPrice > entryPrice)) {
+      throw new BadRequestAppError(
+        'Delta Exchange long protection requires stop-loss below entry and take-profit above entry'
+      );
+    }
+
+    if (entrySide === 'sell' && !(stopLossPrice > entryPrice && takeProfitPrice < entryPrice)) {
+      throw new BadRequestAppError(
+        'Delta Exchange short protection requires stop-loss above entry and take-profit below entry'
+      );
+    }
+  }
+
+  private async createLiveAutoProtectiveOrders(
+    productId: number,
+    size: number,
+    entrySide: 'buy' | 'sell',
+    body: ValidatedCreateOrderRouteBody,
+    context?: BrokerOrderContext
+  ): Promise<DeltaProtectiveOrderResult[]> {
+    const exitSide = entrySide === 'buy' ? 'sell' : 'buy';
+    const stopLoss = await this.createLiveAutoProtectiveOrder(
+      productId,
+      size,
+      exitSide,
+      body,
+      'stop_loss',
+      'stop_loss_order',
+      body.stoploss_price,
+      context
+    );
+    const takeProfit = await this.createLiveAutoProtectiveOrder(
+      productId,
+      size,
+      exitSide,
+      body,
+      'take_profit',
+      'take_profit_order',
+      body.takeprofit_price,
+      context
+    );
+
+    return [stopLoss, takeProfit];
+  }
+
+  private async createLiveAutoProtectiveOrder(
+    productId: number,
+    size: number,
+    side: 'buy' | 'sell',
+    body: ValidatedCreateOrderRouteBody,
+    kind: 'stop_loss' | 'take_profit',
+    stopOrderType: 'stop_loss_order' | 'take_profit_order',
+    stopPrice: number,
+    context?: BrokerOrderContext
+  ): Promise<DeltaProtectiveOrderResult> {
+    const payload = await this.deltaHttpClient.signedPost<DeltaOrderPayload>(
+      context?.accountId,
+      '/v2/orders',
+      {
+        product_id: productId,
+        size,
+        side,
+        order_type: 'market_order',
+        time_in_force: 'gtc',
+        stop_order_type: stopOrderType,
+        stop_price: String(stopPrice),
+        stop_trigger_method: 'mark_price',
+        reduce_only: true,
+        ...(body.idempotency_key
+          ? { client_order_id: this.buildClientOrderId(`${body.idempotency_key}:${kind}`) }
+          : {}),
+      },
+      context?.userId
+    );
+    const orderId = String(payload.id ?? '').trim();
+    if (!orderId) {
+      throw new BadRequestAppError(
+        `Delta Exchange ${kind.replace('_', '-')} protection order did not return an order id`
+      );
+    }
+
+    return {
+      kind,
+      order_id: orderId,
+      status: payload.state ?? 'open',
+      side,
+      stop_price: String(stopPrice),
+      stop_order_type: stopOrderType,
+      reduce_only: true,
     };
   }
 

@@ -1871,6 +1871,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'Live auto rollout guard passed. Broker placement remains disabled until live auto execution is explicitly enabled.',
     'Accepted automatically by live automation execution policy',
     'Live auto execution currently supports only mudrex and delta_exchange routes',
+    'Native SL/TP protection attached',
     'pre_trade_check',
   ]) {
     assert.equal(

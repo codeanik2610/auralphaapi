@@ -1083,6 +1083,11 @@ async function runDeltaLookupAssertions(): Promise<void> {
       order_price: 101.5,
       leverage: 3,
       trigger_type: 'gtc',
+      execution_mode: 'live',
+      is_stoploss: false,
+      is_takeprofit: false,
+      stoploss_price: 95,
+      takeprofit_price: 110,
     },
     {
       userId: 'user-1',
@@ -1109,8 +1114,45 @@ async function runDeltaLookupAssertions(): Promise<void> {
     },
     userId: 'user-1',
   });
+  assert.deepEqual(submittedPayloads[1], {
+    accountId: 'acct-1',
+    routePath: '/v2/orders',
+    payload: {
+      product_id: 45678,
+      size: 2,
+      side: 'sell',
+      order_type: 'market_order',
+      time_in_force: 'gtc',
+      stop_order_type: 'stop_loss_order',
+      stop_price: '95',
+      stop_trigger_method: 'mark_price',
+      reduce_only: true,
+      client_order_id: expectedClientOrderId('live-auto:delta-limit-long:stop_loss'),
+    },
+    userId: 'user-1',
+  });
+  assert.deepEqual(submittedPayloads[2], {
+    accountId: 'acct-1',
+    routePath: '/v2/orders',
+    payload: {
+      product_id: 45678,
+      size: 2,
+      side: 'sell',
+      order_type: 'market_order',
+      time_in_force: 'gtc',
+      stop_order_type: 'take_profit_order',
+      stop_price: '110',
+      stop_trigger_method: 'mark_price',
+      reduce_only: true,
+      client_order_id: expectedClientOrderId('live-auto:delta-limit-long:take_profit'),
+    },
+    userId: 'user-1',
+  });
   assert.equal(response.order_id, 'delta-order-1');
   assert.equal(response.status, 'open');
+  assert.equal(response.protection_status, 'attached');
+  assert.equal(response.stop_loss_order_id, 'delta-order-2');
+  assert.equal(response.take_profit_order_id, 'delta-order-3');
   assert.deepEqual(publicProductRequests, ['/v2/products']);
 
   const marketResponse = await adapter.createOrder(
@@ -1124,13 +1166,18 @@ async function runDeltaLookupAssertions(): Promise<void> {
       order_price: 100,
       leverage: 15,
       trigger_type: 'immediate',
+      execution_mode: 'live',
+      is_stoploss: false,
+      is_takeprofit: false,
+      stoploss_price: 105,
+      takeprofit_price: 90,
     },
     {
       userId: 'user-1',
       accountId: 'acct-1',
     }
   );
-  assert.deepEqual(submittedPayloads[1], {
+  assert.deepEqual(submittedPayloads[3], {
     accountId: 'acct-1',
     routePath: '/v2/orders',
     payload: {
@@ -1143,7 +1190,43 @@ async function runDeltaLookupAssertions(): Promise<void> {
     },
     userId: 'user-1',
   });
-  assert.equal(marketResponse.order_id, 'delta-order-2');
+  assert.deepEqual(submittedPayloads[4], {
+    accountId: 'acct-1',
+    routePath: '/v2/orders',
+    payload: {
+      product_id: 45678,
+      size: 3,
+      side: 'buy',
+      order_type: 'market_order',
+      time_in_force: 'gtc',
+      stop_order_type: 'stop_loss_order',
+      stop_price: '105',
+      stop_trigger_method: 'mark_price',
+      reduce_only: true,
+      client_order_id: expectedClientOrderId('live-auto:delta-market-short:stop_loss'),
+    },
+    userId: 'user-1',
+  });
+  assert.deepEqual(submittedPayloads[5], {
+    accountId: 'acct-1',
+    routePath: '/v2/orders',
+    payload: {
+      product_id: 45678,
+      size: 3,
+      side: 'buy',
+      order_type: 'market_order',
+      time_in_force: 'gtc',
+      stop_order_type: 'take_profit_order',
+      stop_price: '90',
+      stop_trigger_method: 'mark_price',
+      reduce_only: true,
+      client_order_id: expectedClientOrderId('live-auto:delta-market-short:take_profit'),
+    },
+    userId: 'user-1',
+  });
+  assert.equal(marketResponse.order_id, 'delta-order-4');
+  assert.equal(marketResponse.stop_loss_order_id, 'delta-order-5');
+  assert.equal(marketResponse.take_profit_order_id, 'delta-order-6');
 
   await adapter.createOrder(
     'BTCUSDT',
@@ -1156,13 +1239,18 @@ async function runDeltaLookupAssertions(): Promise<void> {
       order_price: 99,
       leverage: 15,
       trigger_type: 'gtc',
+      execution_mode: 'live',
+      is_stoploss: false,
+      is_takeprofit: false,
+      stoploss_price: 95,
+      takeprofit_price: 105,
     },
     {
       userId: 'user-1',
       accountId: 'acct-1',
     }
   );
-  assert.deepEqual(submittedPayloads[2], {
+  assert.deepEqual(submittedPayloads[6], {
     accountId: 'acct-1',
     routePath: '/v2/orders',
     payload: {
@@ -1189,6 +1277,11 @@ async function runDeltaLookupAssertions(): Promise<void> {
       order_price: 74739.2,
       leverage: 15,
       trigger_type: 'immediate',
+      execution_mode: 'live',
+      is_stoploss: false,
+      is_takeprofit: false,
+      stoploss_price: 73991.808,
+      takeprofit_price: 76233.984,
     },
     {
       userId: 'user-1',
@@ -1196,7 +1289,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
     }
   );
   assert.deepEqual(publicProductRequests, ['/v2/products']);
-  assert.deepEqual(submittedPayloads[3], {
+  assert.deepEqual(submittedPayloads[7], {
     accountId: 'acct-1',
     routePath: '/v2/orders',
     payload: {
@@ -1209,7 +1302,43 @@ async function runDeltaLookupAssertions(): Promise<void> {
     },
     userId: 'user-1',
   });
-  assert.equal(convertedResponse.order_id, 'delta-order-4');
+  assert.deepEqual(submittedPayloads[8], {
+    accountId: 'acct-1',
+    routePath: '/v2/orders',
+    payload: {
+      product_id: 45678,
+      size: 1,
+      side: 'sell',
+      order_type: 'market_order',
+      time_in_force: 'gtc',
+      stop_order_type: 'stop_loss_order',
+      stop_price: '73991.808',
+      stop_trigger_method: 'mark_price',
+      reduce_only: true,
+      client_order_id: expectedClientOrderId('live-auto:delta-notional-contract-conversion:stop_loss'),
+    },
+    userId: 'user-1',
+  });
+  assert.deepEqual(submittedPayloads[9], {
+    accountId: 'acct-1',
+    routePath: '/v2/orders',
+    payload: {
+      product_id: 45678,
+      size: 1,
+      side: 'sell',
+      order_type: 'market_order',
+      time_in_force: 'gtc',
+      stop_order_type: 'take_profit_order',
+      stop_price: '76233.984',
+      stop_trigger_method: 'mark_price',
+      reduce_only: true,
+      client_order_id: expectedClientOrderId('live-auto:delta-notional-contract-conversion:take_profit'),
+    },
+    userId: 'user-1',
+  });
+  assert.equal(convertedResponse.order_id, 'delta-order-8');
+  assert.equal(convertedResponse.stop_loss_order_id, 'delta-order-9');
+  assert.equal(convertedResponse.take_profit_order_id, 'delta-order-10');
   assert.equal(convertedResponse.quantity, '1');
   assert.equal(convertedResponse.base_quantity, '0.001');
   assert.equal(convertedResponse.contract_value, '0.001');

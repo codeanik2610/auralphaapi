@@ -2309,6 +2309,14 @@ export class BrokerOrdersFacadeService {
           : typeof createdOrder.order_status === 'string'
             ? String(createdOrder.order_status)
             : undefined;
+      const protectionStatus =
+        typeof createdOrder.protection_status === 'string'
+          ? String(createdOrder.protection_status)
+          : undefined;
+      const protectiveOrders = Array.isArray(createdOrder.protective_orders)
+        ? createdOrder.protective_orders
+        : [];
+      const protectionAttached = protectionStatus === 'attached';
 
       if (activeSubmissionRequest) {
         await this.orderSubmissionRequestRepository.markCompleted(
@@ -2329,6 +2337,8 @@ export class BrokerOrdersFacadeService {
                 accountId: resolvedAccountId,
                 brokerOrderId: createdOrderId ?? null,
                 brokerOrderStatus: createdOrderStatus ?? null,
+                protectionStatus: protectionStatus ?? null,
+                protectiveOrders,
                 suggestedTradeId: placementSuggestedTradeId,
               },
             },
@@ -2354,7 +2364,9 @@ export class BrokerOrdersFacadeService {
               entryPrice: validatedBody.order_price,
               stopLossPrice: validatedBody.stoploss_price,
               takeProfitPrice: validatedBody.takeprofit_price,
-              note: `Order created from accepted suggestion ${validatedBody.symbol || assetId}`.trim(),
+              note: protectionAttached
+                ? `Order created from accepted suggestion ${validatedBody.symbol || assetId} with native SL/TP protection`.trim()
+                : `Order created from accepted suggestion ${validatedBody.symbol || assetId}`.trim(),
             }
           );
         }
@@ -2368,7 +2380,9 @@ export class BrokerOrdersFacadeService {
           related: activityRouteTarget || route.brokerKey,
           referenceId: createdOrderId || route.accountId,
           correlationId: createdOrderId || route.accountId,
-          description: `Order placed via ${route.brokerKey}`,
+          description: protectionAttached
+            ? `Order placed via ${route.brokerKey} with native SL/TP protection`
+            : `Order placed via ${route.brokerKey}`,
         });
       } catch (sideEffectError) {
         log.warn(

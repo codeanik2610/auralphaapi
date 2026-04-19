@@ -318,10 +318,26 @@ function createServiceHarness() {
   const snapshots = new Map<string, any>();
   const activities: Array<Record<string, unknown>> = [];
   const alerts: Array<Record<string, unknown>> = [];
+  const linkedSuggestedOrders: Array<Record<string, unknown>> = [];
   let adapterCalls = 0;
   let nextAdapterResult: unknown = createSuccess({
     order_id: 'live-1',
     status: 'OPEN',
+    protection_status: 'attached',
+    stop_loss_order_id: 'sl-1',
+    take_profit_order_id: 'tp-1',
+    protective_orders: [
+      {
+        kind: 'stop_loss',
+        order_id: 'sl-1',
+        status: 'open',
+      },
+      {
+        kind: 'take_profit',
+        order_id: 'tp-1',
+        status: 'open',
+      },
+    ],
     message: 'Order submitted',
   });
 
@@ -617,7 +633,8 @@ function createServiceHarness() {
   };
 
   service.suggestedTradesService = {
-    async linkSuggestedTradeOrder() {
+    async linkSuggestedTradeOrder(_userId: string, _suggestedTradeId: string, payload: Record<string, unknown>) {
+      linkedSuggestedOrders.push(payload);
       return null;
     },
     async syncExecutionForPaperOrderUpdates() {
@@ -646,6 +663,7 @@ function createServiceHarness() {
     snapshots,
     activities,
     alerts,
+    linkedSuggestedOrders,
     getAdapterCalls: () => adapterCalls,
     setAdapterResult: (value: unknown) => {
       nextAdapterResult = value;
@@ -692,6 +710,21 @@ async function runReplayAssertion(): Promise<void> {
   assert.equal(stored?.brokerOrderStatus, 'OPEN');
   assert.equal(stored?.reconciliationState, 'pending');
   assert.equal(stored?.requestPayload?.order?.suggestedTradeId, 'st-auto-1');
+  assert.equal(stored?.responsePayload?.data?.protection_status, 'attached');
+  assert.equal(stored?.responsePayload?.data?.stop_loss_order_id, 'sl-1');
+  assert.equal(stored?.responsePayload?.data?.take_profit_order_id, 'tp-1');
+  assert.equal(
+    stored?.lifecyclePayload?.find(
+      (event: Record<string, unknown>) => event.type === 'broker_order_accepted'
+    )?.details?.protectionStatus,
+    'attached'
+  );
+  assert.equal(harness.linkedSuggestedOrders.length, 1);
+  assert.equal(
+    String(harness.linkedSuggestedOrders[0]?.note || '').includes('native SL/TP protection'),
+    true,
+    'live suggested-trade link should mention native protection when the broker attached it'
+  );
   assert.deepEqual(
     (stored?.lifecyclePayload ?? []).map((event: Record<string, unknown>) => event.type),
     ['submission_registered', 'broker_call_started', 'broker_order_accepted']
