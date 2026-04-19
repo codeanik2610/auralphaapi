@@ -333,6 +333,37 @@ function runExecutionPolicyNormalizationTests(): void {
   );
   console.log('  ✓ Supplies safe defaults for legacy automations');
 
+  const paperAutoPolicy = normalizeTradeSuggestionExecutionPolicy({
+    executionMode: 'paper_trade_auto',
+    approvalMode: 'auto_if_safe',
+    orderTemplate: {
+      leverage: null,
+    },
+  });
+  assert.equal(
+    ((paperAutoPolicy.orderTemplate as Record<string, unknown>) || {}).leverage,
+    null,
+    'Paper auto should not receive a live leverage default'
+  );
+  console.log('  ✓ Leaves paper-auto leverage unset by default');
+
+  const liveAutoPolicy = normalizeTradeSuggestionExecutionPolicy({
+    executionMode: 'live_trade_auto',
+    approvalMode: 'auto_if_safe',
+    liveConsent: {
+      enabled: true,
+    },
+    orderTemplate: {
+      leverage: null,
+    },
+  });
+  assert.equal(
+    ((liveAutoPolicy.orderTemplate as Record<string, unknown>) || {}).leverage,
+    1,
+    'Live auto should default to 1x leverage when no safe leverage is supplied'
+  );
+  console.log('  ✓ Defaults live-auto leverage to 1x');
+
   const liveConfig = normalizeAutomationConfig('trade-suggestion', {
     kind: 'trade-suggestion',
     symbol: 'BTCUSDT',
