@@ -12,6 +12,7 @@ Usage:
 Optional environment variables:
   LLM_API_KEY=<key>                 Discovery LLM API key. Defaults to replace_with_real_llm_key.
   PLATFORM_ENV_FORCE=true           Overwrite existing env files without creating a backup.
+  PRODUCTION_BOOTSTRAP_*            Optional one-time seed values; preserved from the current backend env if present.
 
 This writes the four production env files for the IP-only, self-hosted DB deployment:
   - deploy/.env.platform
@@ -73,6 +74,40 @@ function backup_if_needed() {
   fi
 }
 
+function read_existing_env_value() {
+  local file="$1"
+  local key="$2"
+  local line
+  if [[ ! -f "${file}" ]]; then
+    return 0
+  fi
+
+  line="$(grep -E "^${key}=" "${file}" | tail -n 1 || true)"
+  if [[ -n "${line}" ]]; then
+    printf '%s\n' "${line#*=}"
+  fi
+}
+
+function preserve_env_value() {
+  local key="$1"
+  local fallback="${2:-}"
+  local shell_value="${!key-}"
+  local existing_value
+
+  if [[ -n "${shell_value}" ]]; then
+    printf '%s\n' "${shell_value}"
+    return
+  fi
+
+  existing_value="$(read_existing_env_value "${BACKEND_ENV_FILE}" "${key}")"
+  if [[ -n "${existing_value}" ]]; then
+    printf '%s\n' "${existing_value}"
+    return
+  fi
+
+  printf '%s\n' "${fallback}"
+}
+
 require_dir "${ROOT_DIR}/environments/production"
 require_dir "${ROOT_DIR}/../aurAlphaSchedulerWorker/environments/production"
 require_dir "${ROOT_DIR}/../discovery-engine/environments/production"
@@ -88,6 +123,20 @@ MYSQL_ROOT_PASSWORD="mysql_root_$(random_hex)"
 POSTGRES_PASSWORD="postgres_$(random_hex)"
 REDIS_PASSWORD="redis_$(random_hex)"
 LLM_KEY="${LLM_API_KEY:-llm_disabled_$(random_hex)}"
+PRODUCTION_BOOTSTRAP_SEED_ENABLED="$(preserve_env_value PRODUCTION_BOOTSTRAP_SEED_ENABLED false)"
+PRODUCTION_BOOTSTRAP_ADMIN_EMAIL="$(preserve_env_value PRODUCTION_BOOTSTRAP_ADMIN_EMAIL admin@auralpha.com)"
+PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD="$(preserve_env_value PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD)"
+PRODUCTION_BOOTSTRAP_ADMIN_FULL_NAME="$(preserve_env_value PRODUCTION_BOOTSTRAP_ADMIN_FULL_NAME "AurAlpha Admin")"
+PRODUCTION_BOOTSTRAP_ADMIN_RESET_PASSWORD="$(preserve_env_value PRODUCTION_BOOTSTRAP_ADMIN_RESET_PASSWORD false)"
+PRODUCTION_BOOTSTRAP_TIMEZONE="$(preserve_env_value PRODUCTION_BOOTSTRAP_TIMEZONE Asia/Kolkata)"
+PRODUCTION_BOOTSTRAP_BROKER_KEYS="$(preserve_env_value PRODUCTION_BOOTSTRAP_BROKER_KEYS mudrex,delta_exchange)"
+PRODUCTION_BOOTSTRAP_BROKER_KEY="$(preserve_env_value PRODUCTION_BOOTSTRAP_BROKER_KEY)"
+PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_SCOPES="$(preserve_env_value PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_SCOPES system,admin)"
+PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_STATUS="$(preserve_env_value PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_STATUS Idle)"
+PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_MODE="$(preserve_env_value PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_MODE live)"
+PRODUCTION_BOOTSTRAP_MUDREX_BASE_URL="$(preserve_env_value PRODUCTION_BOOTSTRAP_MUDREX_BASE_URL https://trade.mudrex.com)"
+PRODUCTION_BOOTSTRAP_DELTA_BASE_URL="$(preserve_env_value PRODUCTION_BOOTSTRAP_DELTA_BASE_URL https://api.india.delta.exchange)"
+PRODUCTION_BOOTSTRAP_STRATEGY_TEMPLATE_NAME="$(preserve_env_value PRODUCTION_BOOTSTRAP_STRATEGY_TEMPLATE_NAME "Bootstrap Momentum Guard")"
 
 backup_if_needed "${PLATFORM_ENV_FILE}"
 cat > "${PLATFORM_ENV_FILE}" <<EOF
@@ -151,6 +200,21 @@ AUTH_SEED_ENABLED=false
 AUTH_SEED_EMAIL=
 AUTH_SEED_PASSWORD=
 AUTH_SEED_FULL_NAME=
+
+PRODUCTION_BOOTSTRAP_SEED_ENABLED=${PRODUCTION_BOOTSTRAP_SEED_ENABLED}
+PRODUCTION_BOOTSTRAP_ADMIN_EMAIL=${PRODUCTION_BOOTSTRAP_ADMIN_EMAIL}
+PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD=${PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD}
+PRODUCTION_BOOTSTRAP_ADMIN_FULL_NAME=${PRODUCTION_BOOTSTRAP_ADMIN_FULL_NAME}
+PRODUCTION_BOOTSTRAP_ADMIN_RESET_PASSWORD=${PRODUCTION_BOOTSTRAP_ADMIN_RESET_PASSWORD}
+PRODUCTION_BOOTSTRAP_TIMEZONE=${PRODUCTION_BOOTSTRAP_TIMEZONE}
+PRODUCTION_BOOTSTRAP_BROKER_KEYS=${PRODUCTION_BOOTSTRAP_BROKER_KEYS}
+PRODUCTION_BOOTSTRAP_BROKER_KEY=${PRODUCTION_BOOTSTRAP_BROKER_KEY}
+PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_SCOPES=${PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_SCOPES}
+PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_STATUS=${PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_STATUS}
+PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_MODE=${PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_MODE}
+PRODUCTION_BOOTSTRAP_MUDREX_BASE_URL=${PRODUCTION_BOOTSTRAP_MUDREX_BASE_URL}
+PRODUCTION_BOOTSTRAP_DELTA_BASE_URL=${PRODUCTION_BOOTSTRAP_DELTA_BASE_URL}
+PRODUCTION_BOOTSTRAP_STRATEGY_TEMPLATE_NAME=${PRODUCTION_BOOTSTRAP_STRATEGY_TEMPLATE_NAME}
 
 DISCOVERY_API_BASE_URL=http://discovery-engine:8000/api/v1/discovery
 

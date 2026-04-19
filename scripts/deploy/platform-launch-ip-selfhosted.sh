@@ -7,6 +7,7 @@ WITH_EMAIL=false
 SKIP_SMOKE=false
 SKIP_POST_BOOTSTRAP=false
 FORCE_ENV=false
+RUN_SEED=false
 DROPLET_IP=""
 
 function usage() {
@@ -19,9 +20,11 @@ Options:
   --skip-smoke             Skip public smoke checks.
   --skip-post-bootstrap    Skip post-bootstrap rebuilds.
   --force-env              Overwrite existing env files instead of backing them up.
+  --seed                   Run the production bootstrap seed after migrations.
 
 Optional environment variables:
   LLM_API_KEY=<key>        Real discovery LLM API key. If omitted, discovery starts with a generated disabled placeholder.
+  PRODUCTION_BOOTSTRAP_*   Optional seed values preserved into the backend production env.
 
 This is the one-command path for a no-domain, self-hosted DB Droplet deployment.
 It writes all production env files, generates internal secrets, validates the stack,
@@ -53,6 +56,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --force-env)
       FORCE_ENV=true
+      shift
+      ;;
+    --seed)
+      RUN_SEED=true
       shift
       ;;
     -h|--help)
@@ -97,6 +104,9 @@ if [[ "${SKIP_SMOKE}" == "true" ]]; then
 fi
 if [[ "${SKIP_POST_BOOTSTRAP}" == "true" ]]; then
   launch_args+=(--skip-post-bootstrap)
+fi
+if [[ "${RUN_SEED}" == "true" ]]; then
+  launch_args+=(--seed)
 fi
 if (( ${#launch_args[@]} > 0 )); then
   bash "${SCRIPT_DIR}/platform-launch.sh" "${launch_args[@]}"

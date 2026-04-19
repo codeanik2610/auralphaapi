@@ -8,6 +8,7 @@ SKIP_BUILD=false
 SKIP_MIGRATE=false
 SKIP_SMOKE=false
 SKIP_POST_BOOTSTRAP=false
+RUN_SEED=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,9 +32,13 @@ while [[ $# -gt 0 ]]; do
       SKIP_POST_BOOTSTRAP=true
       shift
       ;;
+    --seed)
+      RUN_SEED=true
+      shift
+      ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Supported arguments: --with-email --skip-build --skip-migrate --skip-smoke --skip-post-bootstrap" >&2
+      echo "Supported arguments: --with-email --skip-build --skip-migrate --skip-smoke --skip-post-bootstrap --seed" >&2
       exit 1
       ;;
   esac
@@ -55,6 +60,9 @@ if [[ "${SKIP_BUILD}" == "true" ]]; then
 fi
 if [[ "${SKIP_MIGRATE}" == "true" ]]; then
   first_run_args+=(--skip-migrate)
+fi
+if [[ "${RUN_SEED}" == "true" ]]; then
+  first_run_args+=(--seed)
 fi
 bash "${SCRIPT_DIR}/platform-first-run.sh" "${first_run_args[@]}"
 

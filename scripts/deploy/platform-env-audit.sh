@@ -125,6 +125,39 @@ if [[ "$(read_env_value "${BACKEND_ENV_FILE}" "AUTH_SEED_ENABLED")" != "false" ]
   add_error "AUTH_SEED_ENABLED must stay false in production"
 fi
 
+if [[ "$(read_env_value "${BACKEND_ENV_FILE}" "PRODUCTION_BOOTSTRAP_SEED_ENABLED")" == "true" ]]; then
+  require_nonempty "${BACKEND_ENV_FILE}" "PRODUCTION_BOOTSTRAP_ADMIN_EMAIL" "Bootstrap admin email"
+  require_nonempty "${BACKEND_ENV_FILE}" "PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD" "Bootstrap admin password"
+  require_nonempty "${BACKEND_ENV_FILE}" "PRODUCTION_BOOTSTRAP_ADMIN_FULL_NAME" "Bootstrap admin full name"
+
+  if [[ "$(read_env_value "${BACKEND_ENV_FILE}" "PRODUCTION_BOOTSTRAP_ADMIN_EMAIL")" != "admin@auralpha.com" ]]; then
+    add_error "Bootstrap admin email must be admin@auralpha.com"
+  fi
+
+  bootstrap_broker_keys="$(read_env_value "${BACKEND_ENV_FILE}" "PRODUCTION_BOOTSTRAP_BROKER_KEYS")"
+  if [[ -z "${bootstrap_broker_keys}" ]]; then
+    bootstrap_broker_keys="$(read_env_value "${BACKEND_ENV_FILE}" "PRODUCTION_BOOTSTRAP_BROKER_KEY")"
+  fi
+  if [[ -z "${bootstrap_broker_keys}" ]]; then
+    bootstrap_broker_keys="mudrex,delta_exchange"
+  fi
+
+  IFS=',' read -r -a bootstrap_broker_key_items <<< "${bootstrap_broker_keys}"
+  for raw_bootstrap_broker_key in "${bootstrap_broker_key_items[@]}"; do
+    bootstrap_broker_key="${raw_bootstrap_broker_key//[[:space:]]/}"
+    bootstrap_broker_key="${bootstrap_broker_key,,}"
+    case "${bootstrap_broker_key}" in
+      mudrex|delta_exchange)
+        ;;
+      "")
+        ;;
+      *)
+        add_error "Unsupported production bootstrap broker (${bootstrap_broker_key}); expected mudrex or delta_exchange"
+        ;;
+    esac
+  done
+fi
+
 if [[ "$(read_env_value "${BACKEND_ENV_FILE}" "DB_SYNCHRONIZE")" != "false" ]]; then
   add_error "DB_SYNCHRONIZE must stay false in production"
 fi
