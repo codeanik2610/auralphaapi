@@ -7,6 +7,7 @@ import type { RiskBrokerOverviewItem } from '../src/api/contracts/RiskOverview';
 
 async function risk_centerGuard01(): Promise<void> {
   const { RiskService } = await import("../src/api/services/RiskService");
+  const { RiskPreTradeService } = await import("../src/api/services/RiskPreTradeService");
   const { RiskPolicyRepository } = await import("../src/database/repositories/RiskPolicyRepository");
 
 function createPolicy(overrides: Record<string, unknown> = {}) {
@@ -356,6 +357,7 @@ async function runPreTradeAssertions(): Promise<void> {
         id: 'broker-effective',
         scope: 'broker',
         brokerKey: 'mudrex',
+        minNotionalPerTrade: null,
         maxLeverage: 3,
         enforceHardBlock: true,
       });
@@ -378,6 +380,8 @@ async function runPreTradeAssertions(): Promise<void> {
         id: 'user-fallback',
         scope: 'user',
         brokerKey: null,
+        minLeverage: null,
+        minNotionalPerTrade: null,
         maxLeverage: 8,
         enforceHardBlock: false,
       });
@@ -391,6 +395,129 @@ async function runPreTradeAssertions(): Promise<void> {
   assert.equal(allowedResult.policyId, 'user-fallback');
   assert.equal(allowedResult.blocked, false);
   assert.deepEqual(allowedResult.breaches, []);
+
+  const belowMinimumsResult = await createRiskService({
+    async getEffectivePolicy() {
+      return createPolicy({
+        id: 'broker-minimums',
+        scope: 'broker',
+        brokerKey: 'mudrex',
+        minLeverage: 2,
+        maxLeverage: 10,
+        minNotionalPerTrade: 250,
+        maxOrderAllocation: null,
+        enforceHardBlock: true,
+      });
+    },
+  }).evaluatePreTradeOrder(
+    'user-1',
+    { brokerKey: 'mudrex', accountId: 'account-1' },
+    { assetId: 'asset-1', quantity: 1, orderPrice: 100, leverage: 1 }
+  );
+
+  assert.equal(belowMinimumsResult.policyId, 'broker-minimums');
+  assert.equal(belowMinimumsResult.blocked, true);
+  assert.deepEqual(belowMinimumsResult.breaches, [
+    'Leverage below min (2)',
+    'Order notional below min (100 vs 250)',
+  ]);
+}
+
+async function runSnapshotPreTradeThresholdAssertions(): Promise<void> {
+  const service = new RiskPreTradeService() as any;
+  const thresholds = {
+    marginUsageWarnPct: 70,
+    marginUsageCriticalPct: 85,
+    concentrationWarnPct: 30,
+    concentrationCriticalPct: 45,
+    dailyLossLimitPct: 5,
+    weeklyLossLimitPct: 12,
+    monthlyLossLimitPct: 20,
+    minLeverage: 2,
+    maxLeverage: 5,
+    minNotionalPerTrade: 250,
+    maxOrderAllocation: null,
+    maxTotalAllocation: 70,
+    maxAvgLeverage: 3,
+  };
+  const ruleDrafts = service.buildRuleEvaluationDrafts({
+    snapshot: {
+      portfolioEquity: 10000,
+      grossExposure: 0,
+    },
+    route: {
+      routeMode: 'fixed',
+      brokerKey: 'mudrex',
+      accountId: 'account-1',
+      accountName: 'Mudrex Main',
+    },
+    order: {
+      symbol: 'BTCUSDT',
+      timeframe: '1h',
+      side: 'BUY',
+      orderType: 'market',
+      timeInForce: null,
+      quantityMode: 'notional',
+      quantity: null,
+      notional: 100,
+      riskPercent: null,
+      entryPrice: 100,
+      stopLossPrice: 95,
+      takeProfitTargets: [110],
+      leverage: 1,
+      reduceOnly: false,
+    },
+    coverage: {
+      accountId: 'account-1',
+    },
+    freshness: {
+      freshnessState: 'fresh',
+      snapshotLagMinutes: 1,
+      blocking: false,
+      message: 'Risk snapshot freshness is within the expected decision window.',
+    },
+    globalThresholds: thresholds,
+    routePolicyContext: {
+      id: 'policy-context-1',
+      enforceHardBlock: true,
+    },
+    routeThresholds: thresholds,
+    accountSnapshot: {
+      accountId: 'account-1',
+      trackedBalance: 10000,
+      grossExposure: 0,
+    },
+    brokerSnapshot: null,
+    assetSnapshot: null,
+    brokerAssetSnapshot: null,
+    grossExposureDelta: 100,
+    netExposureDelta: 100,
+    openOrderExposureDelta: 100,
+    reservedOrderMarginDelta: 100,
+    notional: 100,
+  });
+
+  const minNotionalRule = ruleDrafts.find(
+    (item: Record<string, unknown>) => item.ruleCode === 'order_min_notional'
+  );
+  assert.equal(minNotionalRule?.status, 'critical');
+  assert.equal(minNotionalRule?.blocking, true);
+  assert.equal(minNotionalRule?.actualValue, 100);
+  assert.equal(minNotionalRule?.criticalThresholdValue, 250);
+
+  const minLeverageRule = ruleDrafts.find(
+    (item: Record<string, unknown>) => item.ruleCode === 'order_min_leverage'
+  );
+  assert.equal(minLeverageRule?.status, 'critical');
+  assert.equal(minLeverageRule?.blocking, true);
+  assert.equal(minLeverageRule?.actualValue, 1);
+  assert.equal(minLeverageRule?.criticalThresholdValue, 2);
+
+  const maxLeverageRule = ruleDrafts.find(
+    (item: Record<string, unknown>) => item.ruleCode === 'order_leverage'
+  );
+  assert.equal(maxLeverageRule?.status, 'ok');
+  assert.equal(maxLeverageRule?.blocking, false);
 }
 
 async function main(): Promise<void> {
@@ -398,6 +525,7 @@ async function main(): Promise<void> {
   await runCreatePolicyAssertions();
   await runDuplicateProtectionAssertions();
   await runPreTradeAssertions();
+  await runSnapshotPreTradeThresholdAssertions();
   console.log('Risk Center Phase 1 assertions passed.');
 }
 

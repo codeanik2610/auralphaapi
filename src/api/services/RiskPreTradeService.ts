@@ -1332,6 +1332,44 @@ export class RiskPreTradeService {
       }
     }
 
+    if (input.routeThresholds.minNotionalPerTrade !== null) {
+      const status =
+        input.notional < input.routeThresholds.minNotionalPerTrade ? 'critical' : 'ok';
+      pushRule({
+        scopeType: input.route.accountId
+          ? 'account'
+          : input.route.brokerKey
+            ? 'broker_asset'
+            : 'asset',
+        scopeKey:
+          input.route.accountId ||
+          (input.route.brokerKey
+            ? `${input.route.brokerKey}|${input.order.symbol}`
+            : input.order.symbol),
+        scopeLabel:
+          input.route.accountName ||
+          (input.route.brokerKey
+            ? `${input.route.brokerKey} / ${input.order.symbol}`
+            : input.order.symbol),
+        brokerKey: input.route.brokerKey,
+        accountId: input.route.accountId,
+        symbol: input.order.symbol,
+        policyContextId: input.routePolicyContext?.id ?? null,
+        ruleCode: 'order_min_notional',
+        metricName: 'notional',
+        actualValue: input.notional,
+        basisValue: null,
+        warnThresholdValue: null,
+        criticalThresholdValue: input.routeThresholds.minNotionalPerTrade,
+        status,
+        blocking: status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
+        message:
+          status === 'critical'
+            ? 'Requested order notional is below the configured minimum per trade.'
+            : 'Requested order notional meets the configured minimum per trade.',
+      });
+    }
+
     const afterAssetAllocation = this.toRatioPct(
       (this.toFiniteNumber(input.assetSnapshot?.grossExposure, 0) ?? 0) + input.grossExposureDelta,
       input.snapshot?.portfolioEquity
@@ -1406,8 +1444,38 @@ export class RiskPreTradeService {
     }
 
     if (input.order.leverage !== null) {
-      const status =
-        input.order.leverage >= input.routeThresholds.maxLeverage ? 'critical' : 'ok';
+      if (input.routeThresholds.minLeverage !== null) {
+        const minStatus =
+          input.order.leverage < input.routeThresholds.minLeverage ? 'critical' : 'ok';
+        pushRule({
+          scopeType: input.route.brokerKey ? 'broker_asset' : 'asset',
+          scopeKey: input.route.brokerKey
+            ? `${input.route.brokerKey}|${input.order.symbol}`
+            : input.order.symbol,
+          scopeLabel: input.route.brokerKey
+            ? `${input.route.brokerKey} / ${input.order.symbol}`
+            : input.order.symbol,
+          brokerKey: input.route.brokerKey,
+          accountId: input.route.accountId,
+          symbol: input.order.symbol,
+          policyContextId: input.routePolicyContext?.id ?? null,
+          ruleCode: 'order_min_leverage',
+          metricName: 'leverage',
+          actualValue: input.order.leverage,
+          basisValue: null,
+          warnThresholdValue: null,
+          criticalThresholdValue: input.routeThresholds.minLeverage,
+          status: minStatus,
+          blocking:
+            minStatus === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
+          message:
+            minStatus === 'critical'
+              ? 'Requested leverage is below the configured minimum.'
+              : 'Requested leverage meets the configured minimum.',
+        });
+      }
+
+      const status = input.order.leverage > input.routeThresholds.maxLeverage ? 'critical' : 'ok';
       pushRule({
         scopeType: input.route.brokerKey ? 'broker_asset' : 'asset',
         scopeKey: input.route.brokerKey

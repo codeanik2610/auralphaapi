@@ -2382,11 +2382,30 @@ export class RiskService {
     }
 
     const breaches: string[] = [];
-    if (activePolicy.maxLeverage && input.leverage && input.leverage > activePolicy.maxLeverage) {
+    const leverage = this.toFiniteNumber(input.leverage, null);
+    const orderNotional =
+      input.orderPrice && input.quantity
+        ? this.roundNumber(Math.abs(input.orderPrice * input.quantity), 2)
+        : null;
+
+    if (activePolicy.minLeverage && leverage !== null && leverage < activePolicy.minLeverage) {
+      breaches.push(`Leverage below min (${activePolicy.minLeverage})`);
+    }
+    if (activePolicy.maxLeverage && leverage !== null && leverage > activePolicy.maxLeverage) {
       breaches.push(`Leverage exceeds max (${activePolicy.maxLeverage})`);
     }
-    if (activePolicy.maxOrderAllocation && input.orderPrice && input.quantity) {
-      const notional = input.orderPrice * input.quantity;
+    if (
+      activePolicy.minNotionalPerTrade &&
+      orderNotional !== null &&
+      orderNotional < activePolicy.minNotionalPerTrade
+    ) {
+      breaches.push(
+        `Order notional below min (${this.formatCurrency(orderNotional)} vs ${this.formatCurrency(
+          activePolicy.minNotionalPerTrade
+        )})`
+      );
+    }
+    if (activePolicy.maxOrderAllocation && orderNotional !== null) {
       const fundsSnapshot =
         route.brokerKey && route.accountId
           ? await this.fundsSnapshotRepository.getLatestSnapshot(
@@ -2397,7 +2416,7 @@ export class RiskService {
           : null;
       const balance = this.extractFundsBalanceValue(fundsSnapshot);
       const allocationPct =
-        balance && balance > 0 ? (Math.abs(notional) / balance) * 100 : null;
+        balance && balance > 0 ? (Math.abs(orderNotional) / balance) * 100 : null;
       if (allocationPct !== null && allocationPct > activePolicy.maxOrderAllocation) {
         breaches.push(
           `Order allocation exceeds max (${this.formatPercent(allocationPct)} vs ${this.formatPercent(
