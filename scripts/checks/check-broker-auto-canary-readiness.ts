@@ -425,8 +425,18 @@ async function run(): Promise<void> {
           [targetUserId, ...REQUIRED_USER_SCHEDULERS]
         )
       : [];
+    const schedulerRowsByKey = new Map(
+      schedulerRows.map((row) => [readString(row.scheduler_key), row] as const)
+    );
+    const readSuccessfulSchedulerFinishedAt = (schedulerKey: string): unknown => {
+      const row = schedulerRowsByKey.get(schedulerKey);
+      if (!row || readString(row.last_status).toLowerCase() !== 'success') {
+        return null;
+      }
+      return row.last_finished_at;
+    };
     for (const schedulerKey of REQUIRED_USER_SCHEDULERS) {
-      const row = schedulerRows.find((item) => readString(item.scheduler_key) === schedulerKey);
+      const row = schedulerRowsByKey.get(schedulerKey);
       const enabled = readBoolean(row?.enabled);
       const status = readString(row?.last_status);
       addGate(gates, {
@@ -483,14 +493,20 @@ async function run(): Promise<void> {
         gates,
         'positions_snapshot_fresh',
         'Positions snapshot',
-        positionsSnapshot?.latestSeenAt,
+        positionsSnapshot?.latestSeenAt ||
+          (readNumber(positionsSnapshot?.total) === 0
+            ? readSuccessfulSchedulerFinishedAt('positions-sync')
+            : null),
         maxSnapshotAgeMinutes
       );
       summarizeFreshness(
         gates,
         'orders_snapshot_fresh',
         'Orders snapshot',
-        ordersSnapshot?.latestSeenAt,
+        ordersSnapshot?.latestSeenAt ||
+          (readNumber(ordersSnapshot?.total) === 0
+            ? readSuccessfulSchedulerFinishedAt('orders-sync')
+            : null),
         maxSnapshotAgeMinutes
       );
       summarizeFreshness(
