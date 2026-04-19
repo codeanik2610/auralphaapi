@@ -1045,6 +1045,10 @@ async function runDeltaLookupAssertions(): Promise<void> {
             symbol: 'BTCUSD',
             contract_value: '0.001',
             contract_unit_currency: 'BTC',
+            contract_type: 'perpetual_futures',
+            notional_type: 'vanilla',
+            state: 'live',
+            trading_status: 'operational',
           },
         ];
       },
@@ -1107,7 +1111,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
   });
   assert.equal(response.order_id, 'delta-order-1');
   assert.equal(response.status, 'open');
-  assert.deepEqual(publicProductRequests, []);
+  assert.deepEqual(publicProductRequests, ['/v2/products']);
 
   const marketResponse = await adapter.createOrder(
     'BTCUSDT',
@@ -1251,6 +1255,66 @@ async function runDeltaLookupAssertions(): Promise<void> {
         }
       ),
     /smaller than one whole contract/
+  );
+
+  const staleAdapter = new DeltaExchangeOrdersAdapter() as any;
+  Object.defineProperty(staleAdapter, 'exchangeAssetRepository', {
+    get: () => ({
+      async getSystemAssetBySourceAndExternalId() {
+        return null;
+      },
+      async getSystemAssetBySourceAndAssetId() {
+        return null;
+      },
+      async getSystemAssetBySourceAndSymbol() {
+        return {
+          externalId: '27',
+          symbol: 'BTCUSDT',
+        };
+      },
+    }),
+  });
+  Object.defineProperty(staleAdapter, 'deltaHttpClient', {
+    get: () => ({
+      async publicGet() {
+        return [
+          {
+            id: 27,
+            symbol: 'BTCUSD',
+            contract_value: '1',
+            contract_unit_currency: 'USD',
+            contract_type: 'perpetual_futures',
+            notional_type: 'inverse',
+            state: 'expired',
+            trading_status: 'operational',
+          },
+        ];
+      },
+      async signedPost() {
+        throw new Error('stale Delta products must be blocked before broker placement');
+      },
+    }),
+  });
+  await assert.rejects(
+    () =>
+      staleAdapter.createOrder(
+        'BTCUSDT',
+        {
+          idempotency_key: 'live-auto:delta-stale-product',
+          side: 'long',
+          quantity: 1,
+          reduce_only: false,
+          order_type: 'market',
+          order_price: 74739.2,
+          leverage: 15,
+          trigger_type: 'immediate',
+        },
+        {
+          userId: 'user-1',
+          accountId: 'acct-1',
+        }
+      ),
+    /not live and operational/
   );
   await assert.rejects(
     () =>

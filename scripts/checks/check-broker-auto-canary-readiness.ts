@@ -198,10 +198,37 @@ function buildNextActions(gates: Gate[]): string[] {
   if (blockedKeys.has('risk_policy_hard_block')) {
     actions.push('Enable an enforcing risk policy for the target broker route.');
   }
+  if (blockedKeys.has('target_broker_asset_mapping')) {
+    actions.push('Refresh exchange-assets-sync so the canary symbol maps to the current live broker product.');
+  }
+  if (blockedKeys.has('target_delta_product_live')) {
+    actions.push('Refresh the Delta broker_assets mapping before enabling live execution; stale or expired products are blocked.');
+  }
 
   return actions.length
     ? actions
     : ['All blocking gates passed; run the canary with max-1 limits and watch order submission reconciliation.'];
+}
+
+async function fetchDeltaProduct(productId: string): Promise<{ product: Row | null; error?: string }> {
+  try {
+    const response = await fetch(
+      `https://api.delta.exchange/v2/products/${encodeURIComponent(productId)}`
+    );
+    if (!response.ok) {
+      return { product: null, error: `HTTP ${response.status}` };
+    }
+    const payload = (await response.json()) as Row;
+    const product = payload.result && typeof payload.result === 'object'
+      ? (payload.result as Row)
+      : null;
+    return { product };
+  } catch (error) {
+    return {
+      product: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function run(): Promise<void> {
@@ -209,6 +236,7 @@ async function run(): Promise<void> {
   const targetBroker = (
     readString(process.env.BROKER_AUTO_CANARY_BROKER) || DEFAULT_CANARY_BROKER
   ).toLowerCase();
+  const requestedCanarySymbol = readString(process.env.BROKER_AUTO_CANARY_SYMBOL).toUpperCase();
   const auditedBrokers = readList(process.env.BROKER_AUTO_CANARY_BROKERS, [targetBroker]).map(
     (broker) => broker.toLowerCase()
   );
@@ -614,6 +642,64 @@ async function run(): Promise<void> {
       detail: `${automationRows.length} trade-suggestion automation(s) inspected.`,
     });
 
+    const targetCanarySymbol =
+      requestedCanarySymbol ||
+      readString(liveAutomationCandidates[0]?.scopeSymbol).toUpperCase() ||
+      'BTCUSDT';
+    const [targetBrokerAsset] = await queryRows<Row>(
+      `SELECT id, source, symbol, name, externalId, assetId, updatedAt
+       FROM broker_assets
+       WHERE source = ?
+         AND UPPER(symbol) = UPPER(?)
+       LIMIT 1`,
+      [targetBroker, targetCanarySymbol]
+    );
+    if (targetBroker === 'delta_exchange') {
+      addGate(gates, {
+        key: 'target_broker_asset_mapping',
+        status: targetBrokerAsset ? 'pass' : 'block',
+        summary: targetBrokerAsset
+          ? `Delta mapping exists for ${targetCanarySymbol}`
+          : `Delta mapping is missing for ${targetCanarySymbol}`,
+        detail: targetBrokerAsset
+          ? `externalId/product_id=${readString(targetBrokerAsset.externalId)}, updated=${readDateIso(
+              targetBrokerAsset.updatedAt
+            ) ?? 'unknown'}.`
+          : undefined,
+      });
+
+      if (targetBrokerAsset) {
+        const productId = readString(targetBrokerAsset.externalId);
+        const deltaProduct = productId
+          ? await fetchDeltaProduct(productId)
+          : { product: null, error: 'missing product id' };
+        const product = deltaProduct.product;
+        const state = readString(product?.state).toLowerCase();
+        const tradingStatus = readString(product?.trading_status).toLowerCase();
+        const contractType = readString(product?.contract_type).toLowerCase();
+        const productSymbol = readString(product?.symbol).toUpperCase();
+        const isLive =
+          productSymbol === targetCanarySymbol &&
+          state === 'live' &&
+          tradingStatus === 'operational' &&
+          contractType === 'perpetual_futures';
+        addGate(gates, {
+          key: 'target_delta_product_live',
+          status: isLive ? 'pass' : 'block',
+          summary: isLive
+            ? `Delta product ${productId} is live for ${targetCanarySymbol}`
+            : `Delta product ${productId || 'unknown'} is not live for ${targetCanarySymbol}`,
+          detail: product
+            ? `symbol=${productSymbol || 'unknown'}, state=${state || 'unknown'}, trading_status=${
+                tradingStatus || 'unknown'
+              }, contract_type=${contractType || 'unknown'}.`
+            : deltaProduct.error
+              ? `Product lookup failed: ${deltaProduct.error}.`
+              : undefined,
+        });
+      }
+    }
+
     const [suggestedTradeSnapshot] = targetUserId
       ? await queryRows<Row>(
           `SELECT COUNT(*) AS total,
@@ -674,6 +760,9 @@ async function run(): Promise<void> {
       'risk_snapshot_fresh',
       'risk_policy_hard_block',
       'order_submission_reconciliation_clean',
+      ...(targetBroker === 'delta_exchange'
+        ? ['target_broker_asset_mapping', 'target_delta_product_live']
+        : []),
     ];
     const foundationReady = foundationGateKeys.every(
       (key) => gates.find((gate) => gate.key === key)?.status === 'pass'
@@ -701,6 +790,15 @@ async function run(): Promise<void> {
         total: readNumber(row.total),
         latestUpdatedAt: readDateIso(row.latestUpdatedAt),
       })),
+      targetBrokerAsset: targetBrokerAsset
+        ? {
+            source: readString(targetBrokerAsset.source),
+            symbol: readString(targetBrokerAsset.symbol),
+            externalId: readString(targetBrokerAsset.externalId),
+            assetId: readString(targetBrokerAsset.assetId),
+            updatedAt: readDateIso(targetBrokerAsset.updatedAt),
+          }
+        : null,
       automationSummary: {
         tradeSuggestionAutomations: automationRows.length,
         liveAutoCanaryCandidates: liveAutomationCandidates.length,

@@ -33,6 +33,10 @@ interface DeltaProductPayload {
   symbol?: string;
   contract_value?: string | number | null;
   contract_unit_currency?: string | null;
+  contract_type?: string | null;
+  notional_type?: string | null;
+  state?: string | null;
+  trading_status?: string | null;
 }
 
 @Service()
@@ -83,7 +87,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     context?: BrokerOrderContext
   ): Promise<unknown> {
     const productId = await this.resolveProductId(assetId);
-    const product = await this.resolveProductForLiveAutoQuantity(productId, body);
+    const product = await this.resolveProductForOrder(productId, body);
     const size = this.resolveOrderSize(body.quantity, product, body);
     const side = this.resolveOrderSide(body);
     const orderType = this.resolveOrderType(body.order_type);
@@ -145,6 +149,12 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       if (!(contractValue > 0)) {
         throw new BadRequestAppError(
           'Delta Exchange live-auto quantity conversion requires product contract_value'
+        );
+      }
+      const notionalType = String(product?.notional_type || '').trim().toLowerCase();
+      if (notionalType && notionalType !== 'vanilla') {
+        throw new BadRequestAppError(
+          'Delta Exchange live-auto quantity conversion requires a vanilla contract'
         );
       }
       const contractSize = Math.floor(size / contractValue);
@@ -213,19 +223,44 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     return String(body.idempotency_key || '').trim().startsWith('live-auto:');
   }
 
-  private async resolveProductForLiveAutoQuantity(
+  private async resolveProductForOrder(
     productId: number,
     body: ValidatedCreateOrderRouteBody
   ): Promise<DeltaProductPayload | null> {
-    const size = Number(body.quantity);
-    if (Number.isInteger(size) && size > 0) {
-      return null;
-    }
     if (!this.isLiveAutoSubmission(body)) {
       return null;
     }
 
-    return this.getProductById(productId);
+    const product = await this.getProductById(productId);
+    this.assertLiveAutoProduct(product, productId);
+    return product;
+  }
+
+  private assertLiveAutoProduct(product: DeltaProductPayload | null, productId: number): void {
+    if (!product) {
+      throw new BadRequestAppError(
+        `Delta Exchange product ${productId} was not found in the live product catalog`
+      );
+    }
+
+    const state = String(product.state || '').trim().toLowerCase();
+    const tradingStatus = String(product.trading_status || '').trim().toLowerCase();
+    const contractType = String(product.contract_type || '').trim().toLowerCase();
+    if (
+      state !== 'live' ||
+      tradingStatus !== 'operational' ||
+      contractType !== 'perpetual_futures'
+    ) {
+      throw new BadRequestAppError(
+        `Delta Exchange product ${productId} is not live and operational for live-auto placement`
+      );
+    }
+
+    if (!(this.toNumber(product.contract_value) > 0)) {
+      throw new BadRequestAppError(
+        `Delta Exchange product ${productId} is missing contract_value for live-auto placement`
+      );
+    }
   }
 
   private async getProductById(productId: number): Promise<DeltaProductPayload | null> {

@@ -8,6 +8,7 @@ interface DeltaProduct {
   description?: string;
   contract_type?: string;
   state?: string;
+  trading_status?: string;
 }
 
 @Service()
@@ -24,6 +25,7 @@ export class DeltaExchangeAssetSyncExecutor implements ExchangeAssetSyncExecutor
         item?.id !== undefined &&
         item?.symbol &&
         item.state === 'live' &&
+        item.trading_status === 'operational' &&
         item.contract_type === 'perpetual_futures'
     );
 
