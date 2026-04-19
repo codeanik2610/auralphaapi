@@ -48,6 +48,20 @@ export interface OrderSubmissionAttemptsListQuery {
   accountId?: string;
 }
 
+export interface OrderSubmissionReconciliationCandidatesQuery {
+  userId: string;
+  limit: number;
+  brokerKey?: string;
+  accountId?: string;
+}
+
+export interface OrderSubmissionOrderIdCandidatesQuery {
+  userId: string;
+  brokerKey: string;
+  accountId: string;
+  brokerOrderIds: string[];
+}
+
 @Service()
 export class OrderSubmissionRequestRepository {
   private get repository(): Repository<OrderSubmissionRequest> {
@@ -127,6 +141,69 @@ export class OrderSubmissionRequestRepository {
       .getManyAndCount();
 
     return { items, total };
+  }
+
+  async listReconciliationCandidates(
+    query: OrderSubmissionReconciliationCandidatesQuery
+  ): Promise<OrderSubmissionRequest[]> {
+    const builder = this.repository
+      .createQueryBuilder('submission')
+      .where('submission.userId = :userId', { userId: query.userId })
+      .andWhere('submission.status = :status', { status: 'completed' })
+      .andWhere('submission.placementState = :placementState', {
+        placementState: 'placed',
+      })
+      .andWhere('submission.reconciliationState IN (:...states)', {
+        states: ['pending', 'missing'],
+      })
+      .orderBy('submission.updatedAt', 'ASC')
+      .addOrderBy('submission.createdAt', 'ASC')
+      .take(query.limit);
+
+    if (query.brokerKey) {
+      builder.andWhere('LOWER(COALESCE(submission.brokerKey, \'\')) = :brokerKey', {
+        brokerKey: query.brokerKey.toLowerCase(),
+      });
+    }
+
+    if (query.accountId) {
+      builder.andWhere('submission.accountId = :accountId', {
+        accountId: query.accountId,
+      });
+    }
+
+    return builder.getMany();
+  }
+
+  async listReconciliationCandidatesByBrokerOrderIds(
+    query: OrderSubmissionOrderIdCandidatesQuery
+  ): Promise<OrderSubmissionRequest[]> {
+    const brokerOrderIds = Array.from(
+      new Set(query.brokerOrderIds.map((item) => String(item || '').trim()).filter(Boolean))
+    );
+    if (!brokerOrderIds.length) {
+      return [];
+    }
+
+    return this.repository
+      .createQueryBuilder('submission')
+      .where('submission.userId = :userId', { userId: query.userId })
+      .andWhere('LOWER(COALESCE(submission.brokerKey, \'\')) = :brokerKey', {
+        brokerKey: query.brokerKey.toLowerCase(),
+      })
+      .andWhere('submission.accountId = :accountId', { accountId: query.accountId })
+      .andWhere('submission.status = :status', { status: 'completed' })
+      .andWhere('submission.placementState = :placementState', {
+        placementState: 'placed',
+      })
+      .andWhere('submission.reconciliationState IN (:...states)', {
+        states: ['pending', 'missing'],
+      })
+      .andWhere('submission.brokerOrderId IN (:...brokerOrderIds)', {
+        brokerOrderIds,
+      })
+      .orderBy('submission.updatedAt', 'ASC')
+      .getMany();
   }
 
   async createInProgress(
@@ -242,6 +319,37 @@ export class OrderSubmissionRequestRepository {
     });
     request.completedAt = null;
     request.failedAt = new Date();
+    return this.repository.save(request);
+  }
+
+  async markReconciliationMatched(
+    request: OrderSubmissionRequest,
+    options: {
+      brokerOrderStatus?: string | null;
+      lifecycleEvent?: OrderSubmissionLifecycleEvent;
+    } = {}
+  ): Promise<OrderSubmissionRequest> {
+    request.reconciliationState = 'matched';
+    request.brokerOrderStatus =
+      this.normalizeOptionalString(options.brokerOrderStatus) || request.brokerOrderStatus;
+    request.lifecyclePayload = this.appendLifecycleEvent(request.lifecyclePayload, {
+      type: 'broker_order_snapshot_matched',
+      message: 'Broker order was confirmed in the scheduler snapshot.',
+      ...(options.lifecycleEvent || {}),
+    });
+    return this.repository.save(request);
+  }
+
+  async markReconciliationMissing(
+    request: OrderSubmissionRequest,
+    options: { lifecycleEvent?: OrderSubmissionLifecycleEvent } = {}
+  ): Promise<OrderSubmissionRequest> {
+    request.reconciliationState = 'missing';
+    request.lifecyclePayload = this.appendLifecycleEvent(request.lifecyclePayload, {
+      type: 'broker_order_snapshot_missing',
+      message: 'Broker order was not found after the safe reconciliation threshold.',
+      ...(options.lifecycleEvent || {}),
+    });
     return this.repository.save(request);
   }
 

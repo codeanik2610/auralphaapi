@@ -6,6 +6,8 @@ import { MudrexCancelOrderResult, MudrexCreateOrderResult, MudrexOrder } from '.
 import {
   OrderSubmissionAttemptDetail,
   OrderSubmissionAttemptsResponse,
+  OrderSubmissionReconciliationResult,
+  OrderSubmissionReconciliationSweepResponse,
   OrdersRefreshRequestResponse,
   OrdersSyncStatusResponse,
 } from '../contracts/Orders';
@@ -57,6 +59,36 @@ export class OrdersController {
     return {
       success: true,
       data: await this.ordersService.getOrderSubmissionAttempt(
+        requireAuthUserId(request),
+        submissionId
+      ),
+    };
+  }
+
+  @Post('/submissions/reconcile')
+  async reconcileOrderSubmissionAttempts(
+    @Req() request: Request,
+    @QueryParam('limit') limit?: string,
+    @QueryParam('brokerKey') brokerKey?: string,
+    @QueryParam('accountId') accountId?: string
+  ): Promise<ApiSuccessResponse<OrderSubmissionReconciliationSweepResponse>> {
+    return {
+      success: true,
+      data: await this.ordersService.reconcileOrderSubmissionAttempts(
+        requireAuthUserId(request),
+        { limit, brokerKey, accountId }
+      ),
+    };
+  }
+
+  @Post('/submissions/:submissionId/reconcile')
+  async reconcileOrderSubmissionAttempt(
+    @Req() request: Request,
+    @Param('submissionId') submissionId: string
+  ): Promise<ApiSuccessResponse<OrderSubmissionReconciliationResult>> {
+    return {
+      success: true,
+      data: await this.ordersService.reconcileOrderSubmissionAttempt(
         requireAuthUserId(request),
         submissionId
       ),

@@ -4110,6 +4110,10 @@ async function runSourceMarkerAssertions(): Promise<void> {
     path.join(process.cwd(), 'scripts', 'test-operational-audit.ts'),
     'utf8'
   );
+  const internalOrdersSyncServiceSource = await readFile(
+    path.join(process.cwd(), 'src', 'api', 'services', 'InternalOrdersSyncService.ts'),
+    'utf8'
+  );
 
   assert.equal(
     packageSource.includes('"test:positions-orders-sync"'),
@@ -4208,6 +4212,26 @@ async function runSourceMarkerAssertions(): Promise<void> {
     ordersSignoffSource.includes('runtimeFoundationVerified'),
     true,
     'signoff-orders-scheduler.ts must preserve runtime foundation verification'
+  );
+  assert.equal(
+    internalOrdersSyncServiceSource.includes('reconcileOrderSubmissionMatchesForOrderUpdates'),
+    true,
+    'InternalOrdersSyncService.ts must reconcile order submissions after broker order snapshots update'
+  );
+  assert.equal(
+    internalOrdersSyncServiceSource.includes('listReconciliationCandidatesByBrokerOrderIds'),
+    true,
+    'InternalOrdersSyncService.ts must query submission reconciliation candidates by broker order id'
+  );
+  assert.equal(
+    internalOrdersSyncServiceSource.includes('markReconciliationMatched'),
+    true,
+    'InternalOrdersSyncService.ts must mark matched order submissions during orders-sync reconciliation'
+  );
+  assert.equal(
+    internalOrdersSyncServiceSource.includes('order submission reconciliation failed'),
+    true,
+    'InternalOrdersSyncService.ts must surface order submission reconciliation failures in sync results'
   );
 }
 

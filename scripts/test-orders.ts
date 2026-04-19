@@ -306,6 +306,8 @@ async function main(): Promise<void> {
 async function ordersGuard08(): Promise<void> {
   const { BadRequestAppError } = await import("../src/api/errors/AppError");
   const { BrokerOrdersFacadeService } = await import("../src/api/services/BrokerOrdersFacadeService");
+  const { InternalOrdersSyncService } = await import("../src/api/services/InternalOrdersSyncService");
+  const { coreDataSource } = await import("../src/database/data-source");
 
 function createSuccess<T>(data: T) {
   return { success: true as const, data };
@@ -313,6 +315,7 @@ function createSuccess<T>(data: T) {
 
 function createServiceHarness() {
   const submissions = new Map<string, any>();
+  const snapshots = new Map<string, any>();
   const activities: Array<Record<string, unknown>> = [];
   const alerts: Array<Record<string, unknown>> = [];
   let adapterCalls = 0;
@@ -323,6 +326,7 @@ function createServiceHarness() {
   });
 
   const service = new BrokerOrdersFacadeService() as any;
+  service.orderSubmissionReconciliationMissingAfterMs = 1000;
 
   service.brokerAccountRoutingService = {
     async resolve(userId: string, brokerKey?: string, accountId?: string) {
@@ -389,6 +393,24 @@ function createServiceHarness() {
         ),
         total: items.length,
       };
+    },
+    async listReconciliationCandidates(query: Record<string, unknown>) {
+      let items = Array.from(submissions.values()).filter(
+        (record) =>
+          record.userId === query.userId &&
+          record.status === 'completed' &&
+          record.placementState === 'placed' &&
+          ['pending', 'missing'].includes(record.reconciliationState)
+      );
+      if (query.brokerKey) {
+        items = items.filter(
+          (record) => String(record.brokerKey || '').toLowerCase() === query.brokerKey
+        );
+      }
+      if (query.accountId) {
+        items = items.filter((record) => record.accountId === query.accountId);
+      }
+      return items.slice(0, Number(query.limit || 50));
     },
     async createInProgress(payload: Record<string, unknown>) {
       const key = `${payload.userId}:${payload.idempotencyKey}`;
@@ -509,8 +531,60 @@ function createServiceHarness() {
       submissions.set(`${record.userId}:${record.idempotencyKey}`, updated);
       return updated;
     },
+    async markReconciliationMatched(
+      record: Record<string, unknown>,
+      options: Record<string, unknown> = {}
+    ) {
+      const updated = {
+        ...record,
+        reconciliationState: 'matched',
+        brokerOrderStatus: options.brokerOrderStatus ?? record.brokerOrderStatus,
+        lifecyclePayload: [
+          ...((record.lifecyclePayload as Array<Record<string, unknown>> | undefined) ?? []),
+          (options.lifecycleEvent as Record<string, unknown> | undefined) ?? {
+            type: 'broker_order_snapshot_matched',
+          },
+        ],
+        updatedAt: new Date(),
+      };
+      submissions.set(`${record.userId}:${record.idempotencyKey}`, updated);
+      return updated;
+    },
+    async markReconciliationMissing(
+      record: Record<string, unknown>,
+      options: Record<string, unknown> = {}
+    ) {
+      const updated = {
+        ...record,
+        reconciliationState: 'missing',
+        lifecyclePayload: [
+          ...((record.lifecyclePayload as Array<Record<string, unknown>> | undefined) ?? []),
+          (options.lifecycleEvent as Record<string, unknown> | undefined) ?? {
+            type: 'broker_order_snapshot_missing',
+          },
+        ],
+        updatedAt: new Date(),
+      };
+      submissions.set(`${record.userId}:${record.idempotencyKey}`, updated);
+      return updated;
+    },
     isDuplicateIdempotencyKeyError(error: unknown) {
       return (error as { code?: string })?.code === 'ER_DUP_ENTRY';
+    },
+  };
+
+  service.ordersSnapshotSourceRepository = {
+    async findOrderByExternalId(
+      userId: string,
+      brokerKey: string,
+      accountId: string,
+      externalId: string
+    ) {
+      return (
+        snapshots.get(
+          `${userId}:${String(brokerKey || '').toLowerCase()}:${accountId}:${externalId}`
+        ) || null
+      );
     },
   };
 
@@ -569,6 +643,7 @@ function createServiceHarness() {
   return {
     service,
     submissions,
+    snapshots,
     activities,
     alerts,
     getAdapterCalls: () => adapterCalls,
@@ -644,6 +719,78 @@ async function runReplayAssertion(): Promise<void> {
     'live-1'
   );
   assert.equal(detailResponse.lifecycle.length, 3);
+
+  stored.completedAt = new Date();
+  stored.updatedAt = new Date();
+  const pendingReconcile = await harness.service.reconcileOrderSubmissionAttempt(
+    'user-1',
+    stored.id
+  );
+  assert.equal(pendingReconcile.decision, 'pending');
+  assert.equal(
+    harness.submissions.get('user-1:order-submit-8-replay')?.reconciliationState,
+    'pending'
+  );
+
+  harness.snapshots.set('user-1:mudrex:acct-1:live-1', {
+    accountId: 'acct-1',
+    brokerKey: 'mudrex',
+    externalId: 'live-1',
+    orderStatus: 'OPEN',
+    statusRank: 1,
+    payloadJson: { order_id: 'live-1', status: 'OPEN' },
+    firstSeenAt: new Date('2026-04-09T12:00:20.000Z'),
+    lastSeenAt: new Date('2026-04-09T12:00:30.000Z'),
+  });
+  const matchedReconcile = await harness.service.reconcileOrderSubmissionAttempt(
+    'user-1',
+    stored.id
+  );
+  assert.equal(matchedReconcile.decision, 'matched');
+  assert.equal(matchedReconcile.matchedSnapshot?.externalId, 'live-1');
+  assert.equal(
+    harness.submissions.get('user-1:order-submit-8-replay')?.reconciliationState,
+    'matched'
+  );
+  assert.equal(
+    harness
+      .submissions
+      .get('user-1:order-submit-8-replay')
+      ?.lifecyclePayload.some(
+        (event: Record<string, unknown>) => event.type === 'broker_order_snapshot_matched'
+      ),
+    true
+  );
+
+  const staleRecord = {
+    ...stored,
+    id: 'order-submit-8-missing-record',
+    idempotencyKey: 'order-submit-8-missing',
+    brokerOrderId: 'live-missing',
+    brokerOrderStatus: 'OPEN',
+    reconciliationState: 'pending',
+    lifecyclePayload: [],
+    completedAt: new Date(Date.now() - 2000),
+    updatedAt: new Date(Date.now() - 2000),
+  };
+  harness.submissions.set('user-1:order-submit-8-missing', staleRecord);
+  const missingReconcile = await harness.service.reconcileOrderSubmissionAttempt(
+    'user-1',
+    staleRecord.id
+  );
+  assert.equal(missingReconcile.decision, 'missing');
+  assert.equal(
+    harness.submissions.get('user-1:order-submit-8-missing')?.reconciliationState,
+    'missing'
+  );
+
+  const sweep = await harness.service.reconcileOrderSubmissionAttempts('user-1', {
+    limit: '10',
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+  });
+  assert.equal(sweep.total, 1);
+  assert.equal(sweep.missing, 1);
 }
 
 async function runConflictAssertion(): Promise<void> {
@@ -746,10 +893,90 @@ async function runNormalizationAssertion(): Promise<void> {
   );
 }
 
+async function runAutomaticSyncReconciliationAssertion(): Promise<void> {
+  const syncService = new InternalOrdersSyncService() as any;
+  const marked: Array<Record<string, unknown>> = [];
+  const candidate = {
+    id: 'submission-sync-1',
+    userId: 'user-1',
+    idempotencyKey: 'order-submit-sync-1',
+    requestHash: 'hash',
+    executionMode: 'live',
+    assetId: 'asset-1',
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+    suggestedTradeId: null,
+    status: 'completed',
+    placementState: 'placed',
+    brokerOrderId: 'live-sync-1',
+    brokerOrderStatus: 'OPEN',
+    reconciliationState: 'pending',
+    requestPayload: null,
+    responsePayload: null,
+    errorPayload: null,
+    lifecyclePayload: [],
+    completedAt: new Date(),
+    failedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+  syncService.orderSubmissionRequestRepository = {
+    async listReconciliationCandidatesByBrokerOrderIds(query: Record<string, unknown>) {
+      assert.deepEqual(query, {
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        accountId: 'acct-1',
+        brokerOrderIds: ['live-sync-1'],
+      });
+      return [candidate];
+    },
+    async markReconciliationMatched(record: Record<string, unknown>, options: Record<string, unknown>) {
+      marked.push({ record, options });
+      return {
+        ...record,
+        reconciliationState: 'matched',
+      };
+    },
+  };
+
+  const originalQuery = coreDataSource.query;
+  try {
+    coreDataSource.query = (async (_sql: string, params: unknown[]) => {
+      assert.deepEqual(params, ['user-1', 'acct-1', 'mudrex', 'live-sync-1']);
+      return [
+        {
+          externalId: 'live-sync-1',
+          orderStatus: 'OPEN',
+          statusRank: 1,
+          firstSeenAt: new Date('2026-04-09T12:00:20.000Z'),
+          lastSeenAt: new Date('2026-04-09T12:00:30.000Z'),
+        },
+      ];
+    }) as typeof coreDataSource.query;
+
+    const matched = await syncService.reconcileOrderSubmissionMatchesForOrderUpdates(
+      'user-1',
+      'mudrex',
+      'acct-1',
+      ['live-sync-1']
+    );
+
+    assert.equal(matched, 1);
+    assert.equal(marked.length, 1);
+    assert.equal(
+      (marked[0]?.options as { brokerOrderStatus?: string } | undefined)?.brokerOrderStatus,
+      'OPEN'
+    );
+  } finally {
+    coreDataSource.query = originalQuery;
+  }
+}
+
 async function main(): Promise<void> {
   await runReplayAssertion();
   await runConflictAssertion();
   await runNormalizationAssertion();
+  await runAutomaticSyncReconciliationAssertion();
   console.log('Orders phase 8 checks passed');
 }
 

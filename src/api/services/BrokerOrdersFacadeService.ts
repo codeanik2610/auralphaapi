@@ -6,6 +6,8 @@ import {
   BrokerAccountRepository,
   OrderSubmissionRequest,
   OrderSubmissionRequestRepository,
+  OrderSnapshotSourceRow,
+  OrdersSnapshotSourceRepository,
   PaperOrderRepository,
 } from '../../database';
 import { coreDataSource } from '../../database/data-source';
@@ -19,6 +21,9 @@ import {
   OrderSubmissionAttemptsResponse,
   OrderSubmissionLifecycleEvent,
   OrderSubmissionOperatorState,
+  OrderSubmissionMatchedSnapshot,
+  OrderSubmissionReconciliationResult,
+  OrderSubmissionReconciliationSweepResponse,
   OrdersRefreshRequestResponse,
   OrdersSyncStatusItem,
   OrdersSyncStatusResponse,
@@ -26,14 +31,17 @@ import {
 import {
   CreateOrderBody,
   OrderSubmissionAttemptsQuery,
+  OrderSubmissionReconcileQuery,
   OrdersRefreshBody,
   OrdersQuery,
   OrdersSyncStatusQuery,
   ValidatedCreateOrderBody,
   ValidatedOrderSubmissionAttemptsQuery,
+  ValidatedOrderSubmissionReconcileQuery,
   validateCreateOrderBody,
   validateOrderId,
   validateOrderSubmissionAttemptsQuery,
+  validateOrderSubmissionReconcileQuery,
   validateOrdersQuery,
   validateOrdersRefreshBody,
   validateOrdersSyncStatusQuery,
@@ -73,6 +81,10 @@ interface CreateFuturesOrderOptions {
 @Service()
 export class BrokerOrdersFacadeService {
   private readonly orderSubmissionStaleMs = 60 * 1000;
+  private readonly orderSubmissionReconciliationMissingAfterMs = Math.max(
+    10 * 60 * 1000,
+    env.orders.syncCheckpointStaleAfterMs
+  );
 
   @Inject(() => BrokerRuntimeRegistry)
   private brokerRuntimeRegistry!: BrokerRuntimeRegistry;
@@ -103,6 +115,9 @@ export class BrokerOrdersFacadeService {
 
   @Inject(() => OrderSubmissionRequestRepository)
   private orderSubmissionRequestRepository!: OrderSubmissionRequestRepository;
+
+  @Inject(() => OrdersSnapshotSourceRepository)
+  private ordersSnapshotSourceRepository!: OrdersSnapshotSourceRepository;
 
   @Inject(() => InternalOrdersSyncService)
   private internalOrdersSyncService!: InternalOrdersSyncService;
@@ -322,6 +337,63 @@ export class BrokerOrdersFacadeService {
     }
     const parsed = new Date(String(value));
     return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
+  }
+
+  private mapOrderSubmissionMatchedSnapshot(
+    snapshot: OrderSnapshotSourceRow | null
+  ): OrderSubmissionMatchedSnapshot | null {
+    if (!snapshot) {
+      return null;
+    }
+
+    return {
+      externalId: snapshot.externalId,
+      orderStatus: snapshot.orderStatus,
+      statusRank: snapshot.statusRank,
+      firstSeenAt: this.toOptionalIsoString(snapshot.firstSeenAt),
+      lastSeenAt: this.toOptionalIsoString(snapshot.lastSeenAt),
+      payload: snapshot.payloadJson,
+    };
+  }
+
+  private getOrderSubmissionReconciliationReferenceAt(
+    submission: OrderSubmissionRequest
+  ): Date {
+    const candidates = [submission.completedAt, submission.updatedAt, submission.createdAt];
+    for (const candidate of candidates) {
+      if (candidate instanceof Date && !Number.isNaN(candidate.getTime())) {
+        return candidate;
+      }
+      if (candidate) {
+        const parsed = new Date(String(candidate));
+        if (!Number.isNaN(parsed.getTime())) {
+          return parsed;
+        }
+      }
+    }
+    return new Date();
+  }
+
+  private getOrderSubmissionMissingEligibleAt(
+    submission: OrderSubmissionRequest
+  ): Date {
+    return new Date(
+      this.getOrderSubmissionReconciliationReferenceAt(submission).getTime() +
+        this.orderSubmissionReconciliationMissingAfterMs
+    );
+  }
+
+  private isOrderSubmissionMissingEligible(submission: OrderSubmissionRequest): boolean {
+    return Date.now() >= this.getOrderSubmissionMissingEligibleAt(submission).getTime();
+  }
+
+  private buildOrderSubmissionReconciliationFilterEcho(
+    filters: ValidatedOrderSubmissionReconcileQuery
+  ): OrderSubmissionReconciliationSweepResponse['filters'] {
+    return {
+      ...(filters.brokerKey ? { brokerKey: filters.brokerKey } : {}),
+      ...(filters.accountId ? { accountId: filters.accountId } : {}),
+    };
   }
 
   private readString(value: unknown): string {
@@ -1771,6 +1843,221 @@ export class BrokerOrdersFacadeService {
     return this.mapOrderSubmissionAttemptDetail(submission);
   }
 
+  private async reconcileOrderSubmissionSnapshotState(
+    submission: OrderSubmissionRequest,
+    timeZone: string
+  ): Promise<OrderSubmissionReconciliationResult> {
+    const baseResult = (
+      decision: OrderSubmissionReconciliationResult['decision'],
+      message: string,
+      nextSubmission: OrderSubmissionRequest = submission,
+      matchedSnapshot: OrderSnapshotSourceRow | null = null
+    ): OrderSubmissionReconciliationResult => ({
+      decision,
+      message,
+      submission: this.mapOrderSubmissionAttempt(nextSubmission),
+      matchedSnapshot: this.mapOrderSubmissionMatchedSnapshot(matchedSnapshot),
+      missingEligibleAt: this.toOptionalIsoString(
+        this.getOrderSubmissionMissingEligibleAt(nextSubmission)
+      ),
+      staleAfterMs: this.orderSubmissionReconciliationMissingAfterMs,
+      time: buildApiTimeContract(timeZone),
+    });
+
+    if (submission.status !== 'completed' || submission.placementState !== 'placed') {
+      return baseResult(
+        'skipped',
+        'Only completed placed submissions require broker snapshot reconciliation.'
+      );
+    }
+
+    if (!['pending', 'missing'].includes(submission.reconciliationState)) {
+      return baseResult(
+        'skipped',
+        `Submission reconciliation state is ${submission.reconciliationState}.`
+      );
+    }
+
+    const brokerKey = String(submission.brokerKey || '').trim();
+    const accountId = String(submission.accountId || '').trim();
+    const brokerOrderId = String(submission.brokerOrderId || '').trim();
+
+    if (!brokerKey || !accountId) {
+      return baseResult(
+        'skipped',
+        'Submission does not have enough broker route data to reconcile.'
+      );
+    }
+
+    if (!brokerOrderId) {
+      if (!this.isOrderSubmissionMissingEligible(submission)) {
+        return baseResult(
+          'pending',
+          'Broker response did not include an order id yet; waiting for the safe reconciliation threshold before marking missing.'
+        );
+      }
+
+      if (submission.reconciliationState === 'missing') {
+        return baseResult(
+          'missing',
+          'Submission is already marked missing because no broker order id was available after the safe threshold.'
+        );
+      }
+
+      const updated = await this.orderSubmissionRequestRepository.markReconciliationMissing(
+        submission,
+        {
+          lifecycleEvent: {
+            type: 'broker_order_snapshot_missing',
+            message:
+              'Broker response did not include an order id after the safe reconciliation threshold.',
+            details: {
+              brokerKey,
+              accountId,
+              reason: 'missing_broker_order_id',
+              staleAfterMs: this.orderSubmissionReconciliationMissingAfterMs,
+            },
+          },
+        }
+      );
+
+      return baseResult(
+        'missing',
+        'No broker order id was available after the safe reconciliation threshold.',
+        updated
+      );
+    }
+
+    const snapshot = await this.ordersSnapshotSourceRepository.findOrderByExternalId(
+      submission.userId,
+      brokerKey,
+      accountId,
+      brokerOrderId
+    );
+
+    if (snapshot) {
+      const updated =
+        submission.reconciliationState === 'matched'
+          ? submission
+          : await this.orderSubmissionRequestRepository.markReconciliationMatched(
+              submission,
+              {
+                brokerOrderStatus: snapshot.orderStatus,
+                lifecycleEvent: {
+                  type: 'broker_order_snapshot_matched',
+                  message: 'Broker order was found in scheduler order snapshots.',
+                  details: {
+                    brokerKey,
+                    accountId,
+                    brokerOrderId,
+                    orderStatus: snapshot.orderStatus,
+                    statusRank: snapshot.statusRank,
+                    firstSeenAt: this.toOptionalIsoString(snapshot.firstSeenAt),
+                    lastSeenAt: this.toOptionalIsoString(snapshot.lastSeenAt),
+                  },
+                },
+              }
+            );
+
+      return baseResult(
+        'matched',
+        'Broker order was confirmed in scheduler order snapshots.',
+        updated,
+        snapshot
+      );
+    }
+
+    if (!this.isOrderSubmissionMissingEligible(submission)) {
+      return baseResult(
+        'pending',
+        'Broker order is not visible in snapshots yet; waiting for the safe reconciliation threshold before marking missing.'
+      );
+    }
+
+    if (submission.reconciliationState === 'missing') {
+      return baseResult(
+        'missing',
+        'Broker order is still missing from scheduler snapshots after the safe threshold.'
+      );
+    }
+
+    const updated = await this.orderSubmissionRequestRepository.markReconciliationMissing(
+      submission,
+      {
+        lifecycleEvent: {
+          type: 'broker_order_snapshot_missing',
+          message: 'Broker order was not found in scheduler snapshots after the safe threshold.',
+          details: {
+            brokerKey,
+            accountId,
+            brokerOrderId,
+            staleAfterMs: this.orderSubmissionReconciliationMissingAfterMs,
+          },
+        },
+      }
+    );
+
+    return baseResult(
+      'missing',
+      'Broker order was not found in scheduler snapshots after the safe threshold.',
+      updated
+    );
+  }
+
+  async reconcileOrderSubmissionAttempt(
+    userId: string,
+    submissionId: string
+  ): Promise<OrderSubmissionReconciliationResult> {
+    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+    const normalizedSubmissionId = String(submissionId || '').trim();
+    if (!normalizedSubmissionId) {
+      throw new BadRequestAppError('submissionId is required');
+    }
+
+    const submission = await this.orderSubmissionRequestRepository.findByUserAndId(
+      userId,
+      normalizedSubmissionId
+    );
+    if (!submission) {
+      throw new NotFoundAppError('Order submission attempt not found');
+    }
+
+    return this.reconcileOrderSubmissionSnapshotState(submission, timeZone);
+  }
+
+  async reconcileOrderSubmissionAttempts(
+    userId: string,
+    query: OrderSubmissionReconcileQuery = {}
+  ): Promise<OrderSubmissionReconciliationSweepResponse> {
+    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+    const filters = validateOrderSubmissionReconcileQuery(query);
+    const candidates =
+      await this.orderSubmissionRequestRepository.listReconciliationCandidates({
+        userId,
+        limit: filters.limit,
+        brokerKey: filters.brokerKey,
+        accountId: filters.accountId,
+      });
+    const items: OrderSubmissionReconciliationResult[] = [];
+
+    for (const candidate of candidates) {
+      items.push(await this.reconcileOrderSubmissionSnapshotState(candidate, timeZone));
+    }
+
+    return {
+      items,
+      total: items.length,
+      matched: items.filter((item) => item.decision === 'matched').length,
+      missing: items.filter((item) => item.decision === 'missing').length,
+      pending: items.filter((item) => item.decision === 'pending').length,
+      skipped: items.filter((item) => item.decision === 'skipped').length,
+      limit: filters.limit,
+      staleAfterMs: this.orderSubmissionReconciliationMissingAfterMs,
+      filters: this.buildOrderSubmissionReconciliationFilterEcho(filters),
+      time: buildApiTimeContract(timeZone),
+    };
+  }
+
   async createFuturesOrder(
     userId: string,
     assetId: string,
@@ -2031,12 +2318,12 @@ export class BrokerOrdersFacadeService {
             placementState: 'placed',
             brokerOrderId: createdOrderId ?? null,
             brokerOrderStatus: createdOrderStatus ?? null,
-            reconciliationState: createdOrderId ? 'pending' : 'missing',
+            reconciliationState: 'pending',
             lifecycleEvent: {
               type: createdOrderId ? 'broker_order_accepted' : 'broker_order_without_id',
               message: createdOrderId
                 ? 'Broker accepted the order; snapshot reconciliation is pending.'
-                : 'Broker response did not include an order id; reconciliation needs review.',
+                : 'Broker response did not include an order id; snapshot reconciliation will wait for the safe missing threshold.',
               details: {
                 brokerKey: resolvedBrokerKey,
                 accountId: resolvedAccountId,

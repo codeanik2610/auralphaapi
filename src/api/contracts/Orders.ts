@@ -163,3 +163,44 @@ export interface OrderSubmissionAttemptsResponse {
   };
   time?: ApiTimeContract;
 }
+
+export type OrderSubmissionReconciliationDecision =
+  | 'matched'
+  | 'missing'
+  | 'pending'
+  | 'skipped';
+
+export interface OrderSubmissionMatchedSnapshot {
+  externalId: string;
+  orderStatus?: string | null;
+  statusRank?: number | null;
+  firstSeenAt?: string | null;
+  lastSeenAt?: string | null;
+  payload?: Record<string, unknown> | null;
+}
+
+export interface OrderSubmissionReconciliationResult {
+  decision: OrderSubmissionReconciliationDecision;
+  message: string;
+  submission: OrderSubmissionAttempt;
+  matchedSnapshot?: OrderSubmissionMatchedSnapshot | null;
+  missingEligibleAt?: string | null;
+  staleAfterMs: number;
+  time?: ApiTimeContract;
+}
+
+export interface OrderSubmissionReconciliationSweepResponse {
+  items: OrderSubmissionReconciliationResult[];
+  total: number;
+  matched: number;
+  missing: number;
+  pending: number;
+  skipped: number;
+  limit: number;
+  staleAfterMs: number;
+  filters: {
+    brokerKey?: string;
+    accountId?: string;
+  };
+  time?: ApiTimeContract;
+}

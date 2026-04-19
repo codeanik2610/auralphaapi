@@ -29,6 +29,12 @@ export interface OrderSubmissionAttemptsQuery {
   accountId?: string;
 }
 
+export interface OrderSubmissionReconcileQuery {
+  limit?: string;
+  brokerKey?: string;
+  accountId?: string;
+}
+
 export interface ValidatedOrderSubmissionAttemptsQuery {
   limit: number;
   offset: number;
@@ -36,6 +42,12 @@ export interface ValidatedOrderSubmissionAttemptsQuery {
   status?: 'in_progress' | 'completed' | 'failed';
   placementState?: 'registered' | 'submitting' | 'placed' | 'rejected' | 'replayed';
   reconciliationState?: 'not_required' | 'pending' | 'matched' | 'missing';
+  brokerKey?: string;
+  accountId?: string;
+}
+
+export interface ValidatedOrderSubmissionReconcileQuery {
+  limit: number;
   brokerKey?: string;
   accountId?: string;
 }
@@ -195,6 +207,22 @@ export const validateOrderSubmissionAttemptsQuery = (
       'matched',
       'missing',
     ] as const),
+    brokerKey: normalizeOptional(query.brokerKey)?.toLowerCase(),
+    accountId: normalizeOptional(query.accountId),
+  };
+};
+
+export const validateOrderSubmissionReconcileQuery = (
+  query: OrderSubmissionReconcileQuery = {}
+): ValidatedOrderSubmissionReconcileQuery => {
+  const limit = query.limit !== undefined ? Number(query.limit) : 50;
+
+  if (!Number.isInteger(limit) || limit <= 0 || limit > 100) {
+    throw new BadRequestAppError('limit must be an integer between 1 and 100');
+  }
+
+  return {
+    limit,
     brokerKey: normalizeOptional(query.brokerKey)?.toLowerCase(),
     accountId: normalizeOptional(query.accountId),
   };

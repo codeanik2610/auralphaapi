@@ -4,6 +4,7 @@ import {
   BrokerAccount,
   BrokerAccountRepository,
   ExchangeAssetUpdateLogRepository,
+  OrderSubmissionRequestRepository,
 } from '../../database';
 import { coreDataSource } from '../../database/data-source';
 import { ExchangeAssetUpdateLog } from '../../database/entities/ExchangeAssetUpdateLog';
@@ -45,6 +46,9 @@ export class InternalOrdersSyncService {
 
   @Inject(() => SuggestedTradesService)
   private suggestedTradesService!: SuggestedTradesService;
+
+  @Inject(() => OrderSubmissionRequestRepository)
+  private orderSubmissionRequestRepository!: OrderSubmissionRequestRepository;
 
   @Inject(() => SchedulerRuntimeSchemaService)
   private schedulerRuntimeSchemaService!: SchedulerRuntimeSchemaService;
@@ -108,6 +112,102 @@ export class InternalOrdersSyncService {
         : (result as { affectedRows?: number });
     const value = Number(header?.affectedRows || 0);
     return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  }
+
+  private toOptionalIsoString(value: Date | string | null | undefined): string | null {
+    if (!value) {
+      return null;
+    }
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value.toISOString();
+    }
+    const parsed = new Date(String(value));
+    return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
+  }
+
+  private async reconcileOrderSubmissionMatchesForOrderUpdates(
+    userId: string,
+    brokerKey: string,
+    accountId: string,
+    orderIds: string[]
+  ): Promise<number> {
+    const normalizedOrderIds = Array.from(
+      new Set(orderIds.map((item) => String(item || '').trim()).filter(Boolean))
+    );
+    if (!normalizedOrderIds.length) {
+      return 0;
+    }
+
+    const candidates =
+      await this.orderSubmissionRequestRepository.listReconciliationCandidatesByBrokerOrderIds({
+        userId,
+        brokerKey,
+        accountId,
+        brokerOrderIds: normalizedOrderIds,
+      });
+    if (!candidates.length) {
+      return 0;
+    }
+
+    const rows = (await coreDataSource.query(
+      `SELECT external_id AS externalId,
+              order_status AS orderStatus,
+              status_rank AS statusRank,
+              first_seen_at AS firstSeenAt,
+              last_seen_at AS lastSeenAt
+         FROM scheduler_orders_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND external_id IN (${normalizedOrderIds.map(() => '?').join(', ')})`,
+      [userId, accountId, brokerKey.toLowerCase(), ...normalizedOrderIds]
+    )) as Array<{
+      externalId?: string | null;
+      orderStatus?: string | null;
+      statusRank?: number | string | null;
+      firstSeenAt?: Date | string | null;
+      lastSeenAt?: Date | string | null;
+    }>;
+
+    const snapshotsByOrderId = new Map<string, (typeof rows)[number]>();
+    rows.forEach((row) => {
+      const externalId = String(row.externalId || '').trim();
+      if (externalId) {
+        snapshotsByOrderId.set(externalId, row);
+      }
+    });
+
+    let matched = 0;
+    for (const candidate of candidates) {
+      const brokerOrderId = String(candidate.brokerOrderId || '').trim();
+      const snapshot = snapshotsByOrderId.get(brokerOrderId);
+      if (!snapshot) {
+        continue;
+      }
+
+      await this.orderSubmissionRequestRepository.markReconciliationMatched(candidate, {
+        brokerOrderStatus: snapshot.orderStatus ?? null,
+        lifecycleEvent: {
+          type: 'broker_order_snapshot_matched',
+          message: 'Broker order was confirmed automatically after orders sync.',
+          details: {
+            brokerKey: brokerKey.toLowerCase(),
+            accountId,
+            brokerOrderId,
+            orderStatus: snapshot.orderStatus ?? null,
+            statusRank:
+              snapshot.statusRank === undefined || snapshot.statusRank === null
+                ? null
+                : Number(snapshot.statusRank),
+            firstSeenAt: this.toOptionalIsoString(snapshot.firstSeenAt),
+            lastSeenAt: this.toOptionalIsoString(snapshot.lastSeenAt),
+          },
+        },
+      });
+      matched += 1;
+    }
+
+    return matched;
   }
 
   // ── Status helpers ───────────────────────────────────────────
@@ -1006,6 +1106,22 @@ export class InternalOrdersSyncService {
                 failures.push({
                   userId,
                   error: `suggested trade order sync failed for account ${resolvedAccountId} (${resolvedBrokerKey}): ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                });
+              }
+
+              try {
+                await this.reconcileOrderSubmissionMatchesForOrderUpdates(
+                  userId,
+                  resolvedBrokerKey.toLowerCase(),
+                  resolvedAccountId,
+                  Array.from(affectedOrderIds)
+                );
+              } catch (error) {
+                failures.push({
+                  userId,
+                  error: `order submission reconciliation failed for account ${resolvedAccountId} (${resolvedBrokerKey}): ${
                     error instanceof Error ? error.message : String(error)
                   }`,
                 });

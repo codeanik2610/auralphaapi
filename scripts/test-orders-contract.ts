@@ -12,6 +12,7 @@ import {
 import {
   validateCreateOrderBody,
   validateOrderSubmissionAttemptsQuery,
+  validateOrderSubmissionReconcileQuery,
   validateOrdersRefreshBody,
   validateOrdersQuery,
   validateOrdersSyncStatusQuery,
@@ -187,6 +188,24 @@ async function runValidatorAssertions(): Promise<void> {
   expectBadRequestSync(
     () => validateOrderSubmissionAttemptsQuery({ placementState: 'lost' }),
     'placementState must be one of registered, submitting, placed, rejected, replayed'
+  );
+
+  assert.deepEqual(
+    validateOrderSubmissionReconcileQuery({
+      limit: '30',
+      brokerKey: ' Mudrex ',
+      accountId: ' acct-2 ',
+    }),
+    {
+      limit: 30,
+      brokerKey: 'mudrex',
+      accountId: 'acct-2',
+    }
+  );
+
+  expectBadRequestSync(
+    () => validateOrderSubmissionReconcileQuery({ limit: '101' }),
+    'limit must be an integer between 1 and 100'
   );
 }
 
@@ -1218,6 +1237,8 @@ async function runOrdersControllerAssertions(): Promise<void> {
   let syncStatusArgs: unknown[] = [];
   let submissionListArgs: unknown[] = [];
   let submissionDetailArgs: unknown[] = [];
+  let submissionReconcileArgs: unknown[] = [];
+  let submissionReconcileSweepArgs: unknown[] = [];
 
   controller.ordersService = {
     async createFuturesOrder(...args: unknown[]) {
@@ -1243,6 +1264,14 @@ async function runOrdersControllerAssertions(): Promise<void> {
     async getOrderSubmissionAttempt(...args: unknown[]) {
       submissionDetailArgs = args;
       return { id: 'submission-1' };
+    },
+    async reconcileOrderSubmissionAttempt(...args: unknown[]) {
+      submissionReconcileArgs = args;
+      return { decision: 'matched' };
+    },
+    async reconcileOrderSubmissionAttempts(...args: unknown[]) {
+      submissionReconcileSweepArgs = args;
+      return { items: [], total: 0 };
     },
   };
 
@@ -1352,6 +1381,29 @@ async function runOrdersControllerAssertions(): Promise<void> {
   );
 
   assert.deepEqual(submissionDetailArgs, ['user-1', 'submission-1']);
+
+  await controller.reconcileOrderSubmissionAttempt(
+    { authUser: { sub: 'user-1' } },
+    'submission-1'
+  );
+
+  assert.deepEqual(submissionReconcileArgs, ['user-1', 'submission-1']);
+
+  await controller.reconcileOrderSubmissionAttempts(
+    { authUser: { sub: 'user-1' } },
+    '30',
+    'mudrex',
+    'acct-2'
+  );
+
+  assert.deepEqual(submissionReconcileSweepArgs, [
+    'user-1',
+    {
+      limit: '30',
+      brokerKey: 'mudrex',
+      accountId: 'acct-2',
+    },
+  ]);
 }
 
 async function main(): Promise<void> {

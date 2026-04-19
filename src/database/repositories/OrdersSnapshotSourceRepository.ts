@@ -10,8 +10,80 @@ export interface OpenOrderSnapshotSourceRow {
   lastSeenAt: Date | null;
 }
 
+export interface OrderSnapshotSourceRow {
+  accountId: string;
+  brokerKey: string;
+  externalId: string;
+  orderStatus: string | null;
+  statusRank: number | null;
+  payloadJson: Record<string, unknown> | null;
+  firstSeenAt: Date | null;
+  lastSeenAt: Date | null;
+}
+
 @Service()
 export class OrdersSnapshotSourceRepository {
+  async findOrderByExternalId(
+    userId: string,
+    brokerKey: string,
+    accountId: string,
+    externalId: string
+  ): Promise<OrderSnapshotSourceRow | null> {
+    const normalizedBrokerKey = String(brokerKey || '').trim().toLowerCase();
+    const normalizedAccountId = String(accountId || '').trim();
+    const normalizedExternalId = String(externalId || '').trim();
+
+    if (!normalizedBrokerKey || !normalizedAccountId || !normalizedExternalId) {
+      return null;
+    }
+
+    const rows = (await coreDataSource.query(
+      `SELECT account_id AS accountId,
+              broker_key AS brokerKey,
+              external_id AS externalId,
+              order_status AS orderStatus,
+              status_rank AS statusRank,
+              payload_json AS payloadJson,
+              first_seen_at AS firstSeenAt,
+              last_seen_at AS lastSeenAt
+         FROM scheduler_orders_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND external_id = ?
+        LIMIT 1`,
+      [userId, normalizedAccountId, normalizedBrokerKey, normalizedExternalId]
+    )) as Array<{
+      accountId?: string;
+      brokerKey?: string;
+      externalId?: string;
+      orderStatus?: string | null;
+      statusRank?: number | string | null;
+      payloadJson?: unknown;
+      firstSeenAt?: Date | string | null;
+      lastSeenAt?: Date | string | null;
+    }>;
+
+    const row = rows[0];
+    if (!row) {
+      return null;
+    }
+
+    return {
+      accountId: String(row.accountId || '').trim(),
+      brokerKey: String(row.brokerKey || '').trim(),
+      externalId: String(row.externalId || '').trim(),
+      orderStatus: row.orderStatus ?? null,
+      statusRank:
+        row.statusRank === undefined || row.statusRank === null
+          ? null
+          : Number(row.statusRank),
+      payloadJson: this.parsePayloadRecord(row.payloadJson),
+      firstSeenAt: this.toDate(row.firstSeenAt),
+      lastSeenAt: this.toDate(row.lastSeenAt),
+    };
+  }
+
   async listOpenOrdersForAccounts(
     userId: string,
     accountIds: string[]
@@ -66,6 +138,23 @@ export class OrdersSnapshotSourceRepository {
     });
 
     return grouped;
+  }
+
+  private parsePayloadRecord(value: unknown): Record<string, unknown> | null {
+    if (!value) {
+      return null;
+    }
+    if (typeof value === 'string') {
+      try {
+        return this.parsePayloadRecord(JSON.parse(value) as unknown);
+      } catch {
+        return null;
+      }
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    return null;
   }
 
   private toDate(value: Date | string | null | undefined): Date | null {
