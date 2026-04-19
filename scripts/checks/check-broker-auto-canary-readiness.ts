@@ -29,6 +29,7 @@ interface BrokerRouteSnapshot {
 
 const DEFAULT_CANARY_USER_EMAIL = 'admin@auralpha.com';
 const DEFAULT_CANARY_BROKER = 'mudrex';
+const SUPPORTED_DRY_RUN_CANARY_BROKERS = new Set(['mudrex', 'delta_exchange']);
 const SUPPORTED_LIVE_AUTO_BROKERS = new Set(['mudrex']);
 const REQUIRED_USER_SCHEDULERS = [
   'funds-sync',
@@ -186,7 +187,7 @@ function buildNextActions(gates: Gate[]): string[] {
     actions.push('Run or wait for the canary automation to produce one open suggested trade before attempting broker-auto.');
   }
   if (blockedKeys.has('target_broker_supported')) {
-    actions.push('Use mudrex for the first live-auto canary; delta_exchange is not enabled in the live-auto placement path yet.');
+    actions.push('Use mudrex for live placement; delta_exchange is allowed only for dry-run proof until its live-auto order adapter is certified.');
   }
   if (blockedKeys.has('admin_broker_route') || blockedKeys.has('admin_broker_credentials')) {
     actions.push('Fix the admin broker connection/account before canary execution.');
@@ -293,12 +294,25 @@ async function run(): Promise<void> {
         ? `Broker ${targetBroker} is allowlisted`
         : `Broker ${targetBroker} is not allowlisted`,
     });
+    const brokerLiveSupported = SUPPORTED_LIVE_AUTO_BROKERS.has(targetBroker);
+    const brokerDryRunSupported = SUPPORTED_DRY_RUN_CANARY_BROKERS.has(targetBroker);
+    const brokerSupportedForCurrentStage = runtime.liveAutoExecutionEnabled
+      ? brokerLiveSupported
+      : brokerDryRunSupported;
     addGate(gates, {
       key: 'target_broker_supported',
-      status: SUPPORTED_LIVE_AUTO_BROKERS.has(targetBroker) ? 'pass' : 'block',
-      summary: SUPPORTED_LIVE_AUTO_BROKERS.has(targetBroker)
-        ? `Broker ${targetBroker} is supported by the live-auto placement path`
-        : `Broker ${targetBroker} is not supported by the live-auto placement path`,
+      status: brokerSupportedForCurrentStage ? 'pass' : 'block',
+      summary: runtime.liveAutoExecutionEnabled
+        ? brokerLiveSupported
+          ? `Broker ${targetBroker} is supported by the live-auto placement path`
+          : `Broker ${targetBroker} is not supported by the live-auto placement path`
+        : brokerDryRunSupported
+          ? `Broker ${targetBroker} is supported for dry-run canary proof`
+          : `Broker ${targetBroker} is not supported for dry-run canary proof`,
+      detail:
+        !runtime.liveAutoExecutionEnabled && brokerDryRunSupported && !brokerLiveSupported
+          ? 'Dry-run proof can evaluate routing and risk gates; live broker placement remains blocked until this broker is certified.'
+          : undefined,
     });
 
     const brokerParams = auditedBrokers.length ? auditedBrokers : [targetBroker];

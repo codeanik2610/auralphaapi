@@ -1841,6 +1841,8 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'BROKER_AUTO_CANARY_USER_EMAIL',
     'BROKER_AUTO_CANARY_BROKER',
     'BROKER_AUTO_CANARY_READINESS_STRICT',
+    'SUPPORTED_DRY_RUN_CANARY_BROKERS',
+    'delta_exchange',
     'live_auto_execution_enabled',
     'canary_live_automation',
     'order_submission_reconciliation_clean',
