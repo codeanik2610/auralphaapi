@@ -26,7 +26,9 @@ function createPolicy(overrides: Record<string, unknown> = {}) {
     dailyLossLimitPct: 5,
     weeklyLossLimitPct: 12,
     monthlyLossLimitPct: 20,
+    minLeverage: 1,
     maxLeverage: 5,
+    minNotionalPerTrade: 100,
     maxOrderAllocation: 25,
     maxTotalAllocation: 70,
     maxAvgLeverage: 3,
@@ -48,7 +50,9 @@ function createPolicyBody(overrides: Partial<UpsertRiskPolicyBody> = {}): Upsert
     dailyLossLimitPct: 5,
     weeklyLossLimitPct: 12,
     monthlyLossLimitPct: 20,
+    minLeverage: 1,
     maxLeverage: 5,
+    minNotionalPerTrade: 100,
     maxOrderAllocation: 25,
     maxTotalAllocation: 70,
     maxAvgLeverage: 3,
@@ -184,7 +188,9 @@ async function runCreatePolicyAssertions(): Promise<void> {
           dailyLossLimitPct: payload.dailyLossLimitPct,
           weeklyLossLimitPct: payload.weeklyLossLimitPct,
           monthlyLossLimitPct: payload.monthlyLossLimitPct,
+          minLeverage: payload.minLeverage,
           maxLeverage: payload.maxLeverage,
+          minNotionalPerTrade: payload.minNotionalPerTrade,
           maxOrderAllocation: payload.maxOrderAllocation,
           maxTotalAllocation: payload.maxTotalAllocation,
           maxAvgLeverage: payload.maxAvgLeverage,
@@ -226,7 +232,9 @@ async function runCreatePolicyAssertions(): Promise<void> {
     dailyLossLimitPct: 5,
     weeklyLossLimitPct: 12,
     monthlyLossLimitPct: 20,
+    minLeverage: 1,
     maxLeverage: 5,
+    minNotionalPerTrade: 100,
     maxOrderAllocation: 25,
     maxTotalAllocation: 70,
     maxAvgLeverage: 3,
@@ -241,6 +249,26 @@ async function runCreatePolicyAssertions(): Promise<void> {
   assert.equal(versionPayload.lifecycle.approvalMode, 'auto_approved');
   assert.equal(versionPayload.lifecycle.approvalState, 'approved');
   assert.equal(versionPayload.lifecycle.approvedByUserId, 'actor-1');
+
+  await assert.rejects(
+    () =>
+      createRiskService().createRiskPolicy(
+        'user-1',
+        'actor-1',
+        createPolicyBody({ minLeverage: 6, maxLeverage: 5 })
+      ),
+    /maxLeverage must be greater than or equal to minLeverage/
+  );
+
+  await assert.rejects(
+    () =>
+      createRiskService().createRiskPolicy(
+        'user-1',
+        'actor-1',
+        createPolicyBody({ minNotionalPerTrade: 0 })
+      ),
+    /minNotionalPerTrade must be greater than 0 when provided/
+  );
 }
 
 async function runDuplicateProtectionAssertions(): Promise<void> {
@@ -685,7 +713,9 @@ function createPolicy(overrides: Record<string, unknown> = {}) {
     dailyLossLimitPct: 5,
     weeklyLossLimitPct: 12,
     monthlyLossLimitPct: 20,
+    minLeverage: 1,
     maxLeverage: 5,
+    minNotionalPerTrade: 100,
     maxOrderAllocation: 25,
     maxTotalAllocation: 70,
     maxAvgLeverage: 3,
@@ -713,7 +743,9 @@ function createVersionPayload(
       dailyLossLimitPct: 5,
       weeklyLossLimitPct: 12,
       monthlyLossLimitPct: 20,
+      minLeverage: 1,
       maxLeverage: 5,
+      minNotionalPerTrade: 100,
       maxOrderAllocation: 25,
       maxTotalAllocation: 70,
       maxAvgLeverage: 3,
@@ -1514,7 +1546,9 @@ function createPolicy(overrides: Record<string, unknown> = {}) {
     dailyLossLimitPct: 5,
     weeklyLossLimitPct: 12,
     monthlyLossLimitPct: 20,
+    minLeverage: 1,
     maxLeverage: 5,
+    minNotionalPerTrade: 100,
     maxOrderAllocation: 25,
     maxTotalAllocation: 60,
     maxAvgLeverage: 3,
@@ -1546,7 +1580,9 @@ function createVersionRecord(
         dailyLossLimitPct: 5,
         weeklyLossLimitPct: 12,
         monthlyLossLimitPct: 20,
+        minLeverage: 1,
         maxLeverage: 2,
+        minNotionalPerTrade: 100,
         maxOrderAllocation: 20,
         maxTotalAllocation: 55,
         maxAvgLeverage: 2,

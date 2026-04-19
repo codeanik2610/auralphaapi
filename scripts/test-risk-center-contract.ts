@@ -46,7 +46,9 @@ async function runValidatorAssertions(): Promise<void> {
       dailyLossLimitPct: '5',
       weeklyLossLimitPct: '12',
       monthlyLossLimitPct: '20',
+      minLeverage: '1',
       maxLeverage: '5',
+      minNotionalPerTrade: '100',
       maxOrderAllocation: '25',
       maxTotalAllocation: '70',
       maxAvgLeverage: '3',
@@ -64,7 +66,9 @@ async function runValidatorAssertions(): Promise<void> {
       dailyLossLimitPct: 5,
       weeklyLossLimitPct: 12,
       monthlyLossLimitPct: 20,
+      minLeverage: 1,
       maxLeverage: 5,
+      minNotionalPerTrade: 100,
       maxOrderAllocation: 25,
       maxTotalAllocation: 70,
       maxAvgLeverage: 3,
@@ -195,6 +199,39 @@ async function runValidatorAssertions(): Promise<void> {
         monthlyLossLimitPct: 12,
       }),
     'weeklyLossLimitPct must be less than or equal to monthlyLossLimitPct'
+  );
+
+  expectBadRequestSync(
+    () =>
+      validateUpsertRiskPolicyBody({
+        scope: 'user',
+        enabled: true,
+        monitorOnly: false,
+        enforceHardBlock: true,
+        marginUsageWarnPct: 70,
+        marginUsageCriticalPct: 85,
+        concentrationWarnPct: 30,
+        concentrationCriticalPct: 45,
+        minLeverage: 6,
+        maxLeverage: 5,
+      }),
+    'maxLeverage must be greater than or equal to minLeverage'
+  );
+
+  expectBadRequestSync(
+    () =>
+      validateUpsertRiskPolicyBody({
+        scope: 'user',
+        enabled: true,
+        monitorOnly: false,
+        enforceHardBlock: true,
+        marginUsageWarnPct: 70,
+        marginUsageCriticalPct: 85,
+        concentrationWarnPct: 30,
+        concentrationCriticalPct: 45,
+        minNotionalPerTrade: 0,
+      }),
+    'minNotionalPerTrade must be greater than 0 when provided'
   );
 }
 

@@ -447,6 +447,35 @@ export const validateUpsertRiskPolicyBody = (
     );
   }
 
+  const minLeverage = coerceNumber(body.minLeverage, 'minLeverage', {
+    min: 0,
+    allowNull: true,
+  });
+  const maxLeverage = coerceNumber(body.maxLeverage, 'maxLeverage', {
+    min: 0,
+    allowNull: true,
+  });
+  const minNotionalPerTrade = coerceNumber(
+    body.minNotionalPerTrade,
+    'minNotionalPerTrade',
+    {
+      min: 0,
+      allowNull: true,
+    }
+  );
+
+  if (minLeverage !== undefined && minLeverage <= 0) {
+    throw new BadRequestAppError('minLeverage must be greater than 0 when provided');
+  }
+
+  if (minNotionalPerTrade !== undefined && minNotionalPerTrade <= 0) {
+    throw new BadRequestAppError('minNotionalPerTrade must be greater than 0 when provided');
+  }
+
+  if (minLeverage !== undefined && maxLeverage !== undefined && maxLeverage < minLeverage) {
+    throw new BadRequestAppError('maxLeverage must be greater than or equal to minLeverage');
+  }
+
   return {
     scope,
     brokerKey,
@@ -460,7 +489,9 @@ export const validateUpsertRiskPolicyBody = (
     dailyLossLimitPct,
     weeklyLossLimitPct,
     monthlyLossLimitPct,
-    maxLeverage: coerceNumber(body.maxLeverage, 'maxLeverage', { min: 0, allowNull: true }),
+    minLeverage,
+    maxLeverage,
+    minNotionalPerTrade,
     maxOrderAllocation: coerceNumber(body.maxOrderAllocation, 'maxOrderAllocation', {
       min: 0,
       max: 100,

@@ -364,7 +364,9 @@ export interface RiskPolicyContextItem {
   dailyLossLimitPct: number;
   weeklyLossLimitPct: number;
   monthlyLossLimitPct: number;
+  minLeverage?: number | null;
   maxLeverage?: number | null;
+  minNotionalPerTrade?: number | null;
   maxOrderAllocation?: number | null;
   maxTotalAllocation?: number | null;
   maxAvgLeverage?: number | null;
@@ -804,7 +806,9 @@ export interface RiskPolicy {
   dailyLossLimitPct?: number;
   weeklyLossLimitPct?: number;
   monthlyLossLimitPct?: number;
+  minLeverage?: number;
   maxLeverage?: number;
+  minNotionalPerTrade?: number;
   maxOrderAllocation?: number;
   maxTotalAllocation?: number;
   maxAvgLeverage?: number;
@@ -878,7 +882,9 @@ export interface UpsertRiskPolicyBody {
   dailyLossLimitPct?: number;
   weeklyLossLimitPct?: number;
   monthlyLossLimitPct?: number;
+  minLeverage?: number;
   maxLeverage?: number;
+  minNotionalPerTrade?: number;
   maxOrderAllocation?: number;
   maxTotalAllocation?: number;
   maxAvgLeverage?: number;

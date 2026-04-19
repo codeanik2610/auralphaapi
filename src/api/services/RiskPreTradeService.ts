@@ -51,7 +51,9 @@ interface ThresholdProfile {
   dailyLossLimitPct: number;
   weeklyLossLimitPct: number;
   monthlyLossLimitPct: number;
+  minLeverage: number | null;
   maxLeverage: number;
+  minNotionalPerTrade: number | null;
   maxOrderAllocation: number | null;
   maxTotalAllocation: number;
   maxAvgLeverage: number;
@@ -589,7 +591,9 @@ export class RiskPreTradeService {
           dailyLossLimitPct?: number | null;
           weeklyLossLimitPct?: number | null;
           monthlyLossLimitPct?: number | null;
+          minLeverage?: number | null;
           maxLeverage?: number | null;
+          minNotionalPerTrade?: number | null;
           maxOrderAllocation?: number | null;
           maxTotalAllocation?: number | null;
           maxAvgLeverage?: number | null;
@@ -605,7 +609,9 @@ export class RiskPreTradeService {
       dailyLossLimitPct: this.toFiniteNumber(value?.dailyLossLimitPct, 5) ?? 5,
       weeklyLossLimitPct: this.toFiniteNumber(value?.weeklyLossLimitPct, 12) ?? 12,
       monthlyLossLimitPct: this.toFiniteNumber(value?.monthlyLossLimitPct, 20) ?? 20,
+      minLeverage: this.toFiniteNumber(value?.minLeverage, null),
       maxLeverage: this.toFiniteNumber(value?.maxLeverage, 5) ?? 5,
+      minNotionalPerTrade: this.toFiniteNumber(value?.minNotionalPerTrade, null),
       maxOrderAllocation: this.toFiniteNumber(value?.maxOrderAllocation, null),
       maxTotalAllocation: this.toFiniteNumber(value?.maxTotalAllocation, 80) ?? 80,
       maxAvgLeverage: this.toFiniteNumber(value?.maxAvgLeverage, 4) ?? 4,
@@ -643,7 +649,19 @@ export class RiskPreTradeService {
             accumulator.monthlyLossLimitPct,
             next.monthlyLossLimitPct
           ),
+          minLeverage:
+            accumulator.minLeverage === null
+              ? next.minLeverage
+              : next.minLeverage === null
+                ? accumulator.minLeverage
+                : Math.max(accumulator.minLeverage, next.minLeverage),
           maxLeverage: Math.min(accumulator.maxLeverage, next.maxLeverage),
+          minNotionalPerTrade:
+            accumulator.minNotionalPerTrade === null
+              ? next.minNotionalPerTrade
+              : next.minNotionalPerTrade === null
+                ? accumulator.minNotionalPerTrade
+                : Math.max(accumulator.minNotionalPerTrade, next.minNotionalPerTrade),
           maxOrderAllocation:
             accumulator.maxOrderAllocation === null
               ? next.maxOrderAllocation

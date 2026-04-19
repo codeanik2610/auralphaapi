@@ -17,7 +17,9 @@ export interface UpsertRiskPolicyPayload {
   dailyLossLimitPct?: number;
   weeklyLossLimitPct?: number;
   monthlyLossLimitPct?: number;
+  minLeverage?: number;
   maxLeverage?: number;
+  minNotionalPerTrade?: number;
   maxOrderAllocation?: number;
   maxTotalAllocation?: number;
   maxAvgLeverage?: number;
@@ -65,7 +67,9 @@ export class RiskPolicyRepository {
       dailyLossLimitPct: payload.dailyLossLimitPct ?? undefined,
       weeklyLossLimitPct: payload.weeklyLossLimitPct ?? undefined,
       monthlyLossLimitPct: payload.monthlyLossLimitPct ?? undefined,
+      minLeverage: payload.minLeverage ?? null,
       maxLeverage: payload.maxLeverage ?? null,
+      minNotionalPerTrade: payload.minNotionalPerTrade ?? null,
       maxOrderAllocation: payload.maxOrderAllocation ?? null,
       maxTotalAllocation: payload.maxTotalAllocation ?? null,
       maxAvgLeverage: payload.maxAvgLeverage ?? null,
@@ -99,7 +103,9 @@ export class RiskPolicyRepository {
         dailyLossLimitPct: payload.dailyLossLimitPct ?? undefined,
         weeklyLossLimitPct: payload.weeklyLossLimitPct ?? undefined,
         monthlyLossLimitPct: payload.monthlyLossLimitPct ?? undefined,
+        minLeverage: payload.minLeverage ?? null,
         maxLeverage: payload.maxLeverage ?? null,
+        minNotionalPerTrade: payload.minNotionalPerTrade ?? null,
         maxOrderAllocation: payload.maxOrderAllocation ?? null,
         maxTotalAllocation: payload.maxTotalAllocation ?? null,
         maxAvgLeverage: payload.maxAvgLeverage ?? null,

@@ -60,8 +60,14 @@ export class RiskPolicy {
   @Column({ name: 'monthly_loss_limit_pct', type: 'double', default: 20 })
   monthlyLossLimitPct!: number;
 
+  @Column({ name: 'min_leverage', type: 'double', nullable: true })
+  minLeverage!: number | null;
+
   @Column({ name: 'max_leverage', type: 'double', nullable: true })
   maxLeverage!: number | null;
+
+  @Column({ name: 'min_notional_per_trade', type: 'double', nullable: true })
+  minNotionalPerTrade!: number | null;
 
   @Column({ name: 'max_order_allocation', type: 'double', nullable: true })
   maxOrderAllocation!: number | null;

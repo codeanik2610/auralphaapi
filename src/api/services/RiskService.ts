@@ -202,7 +202,9 @@ interface RiskThresholdProfile {
   dailyLossLimitPct: number;
   weeklyLossLimitPct: number;
   monthlyLossLimitPct: number;
+  minLeverage: number | null;
   maxLeverage: number;
+  minNotionalPerTrade: number | null;
   maxOrderAllocation: number | null;
   maxTotalAllocation: number;
   maxAvgLeverage: number;
@@ -216,7 +218,9 @@ interface RiskThresholdProfileInput {
   dailyLossLimitPct?: number | null;
   weeklyLossLimitPct?: number | null;
   monthlyLossLimitPct?: number | null;
+  minLeverage?: number | null;
   maxLeverage?: number | null;
+  minNotionalPerTrade?: number | null;
   maxOrderAllocation?: number | null;
   maxTotalAllocation?: number | null;
   maxAvgLeverage?: number | null;
@@ -282,7 +286,9 @@ interface EffectiveRiskPolicyContext {
   dailyLossLimitPct: number;
   weeklyLossLimitPct: number;
   monthlyLossLimitPct: number;
+  minLeverage: number | null;
   maxLeverage: number | null;
+  minNotionalPerTrade: number | null;
   maxOrderAllocation: number | null;
   maxTotalAllocation: number | null;
   maxAvgLeverage: number | null;
@@ -1246,7 +1252,9 @@ export class RiskService {
         dailyLossLimitPct: item.dailyLossLimitPct,
         weeklyLossLimitPct: item.weeklyLossLimitPct,
         monthlyLossLimitPct: item.monthlyLossLimitPct,
+        minLeverage: item.minLeverage,
         maxLeverage: item.maxLeverage,
+        minNotionalPerTrade: item.minNotionalPerTrade,
         maxOrderAllocation: item.maxOrderAllocation,
         maxTotalAllocation: item.maxTotalAllocation,
         maxAvgLeverage: item.maxAvgLeverage,
@@ -3036,7 +3044,9 @@ export class RiskService {
         dailyLossLimitPct: thresholds.dailyLossLimitPct,
         weeklyLossLimitPct: thresholds.weeklyLossLimitPct,
         monthlyLossLimitPct: thresholds.monthlyLossLimitPct,
+        minLeverage: thresholds.minLeverage,
         maxLeverage: thresholds.maxLeverage,
+        minNotionalPerTrade: thresholds.minNotionalPerTrade,
         maxOrderAllocation: thresholds.maxOrderAllocation,
         maxTotalAllocation: thresholds.maxTotalAllocation,
         maxAvgLeverage: thresholds.maxAvgLeverage,
@@ -3059,7 +3069,9 @@ export class RiskService {
         dailyLossLimitPct: thresholds.dailyLossLimitPct,
         weeklyLossLimitPct: thresholds.weeklyLossLimitPct,
         monthlyLossLimitPct: thresholds.monthlyLossLimitPct,
+        minLeverage: thresholds.minLeverage,
         maxLeverage: thresholds.maxLeverage,
+        minNotionalPerTrade: thresholds.minNotionalPerTrade,
         maxOrderAllocation: thresholds.maxOrderAllocation,
         maxTotalAllocation: thresholds.maxTotalAllocation,
         maxAvgLeverage: thresholds.maxAvgLeverage,
@@ -3081,7 +3093,9 @@ export class RiskService {
       dailyLossLimitPct: thresholds.dailyLossLimitPct,
       weeklyLossLimitPct: thresholds.weeklyLossLimitPct,
       monthlyLossLimitPct: thresholds.monthlyLossLimitPct,
+      minLeverage: thresholds.minLeverage,
       maxLeverage: thresholds.maxLeverage,
+      minNotionalPerTrade: thresholds.minNotionalPerTrade,
       maxOrderAllocation: thresholds.maxOrderAllocation,
       maxTotalAllocation: thresholds.maxTotalAllocation,
       maxAvgLeverage: thresholds.maxAvgLeverage,
@@ -3114,7 +3128,9 @@ export class RiskService {
         dailyLossLimitPct: context.dailyLossLimitPct,
         weeklyLossLimitPct: context.weeklyLossLimitPct,
         monthlyLossLimitPct: context.monthlyLossLimitPct,
+        minLeverage: context.minLeverage,
         maxLeverage: context.maxLeverage,
+        minNotionalPerTrade: context.minNotionalPerTrade,
         maxOrderAllocation: context.maxOrderAllocation,
         maxTotalAllocation: context.maxTotalAllocation,
         maxAvgLeverage: context.maxAvgLeverage,
@@ -3756,7 +3772,9 @@ export class RiskService {
       dailyLossLimitPct: this.toFiniteNumber(policy?.dailyLossLimitPct, 5),
       weeklyLossLimitPct: this.toFiniteNumber(policy?.weeklyLossLimitPct, 12),
       monthlyLossLimitPct: this.toFiniteNumber(policy?.monthlyLossLimitPct, 20),
+      minLeverage: this.toFiniteNumber(policy?.minLeverage, null),
       maxLeverage: this.toFiniteNumber(policy?.maxLeverage, 5),
+      minNotionalPerTrade: this.toFiniteNumber(policy?.minNotionalPerTrade, null),
       maxOrderAllocation: this.toFiniteNumber(policy?.maxOrderAllocation, null),
       maxTotalAllocation: this.toFiniteNumber(policy?.maxTotalAllocation, 80),
       maxAvgLeverage: this.toFiniteNumber(policy?.maxAvgLeverage, 4),
@@ -4431,7 +4449,19 @@ export class RiskService {
         dailyLossLimitPct: Math.min(accumulator.dailyLossLimitPct, account.thresholds.dailyLossLimitPct),
         weeklyLossLimitPct: Math.min(accumulator.weeklyLossLimitPct, account.thresholds.weeklyLossLimitPct),
         monthlyLossLimitPct: Math.min(accumulator.monthlyLossLimitPct, account.thresholds.monthlyLossLimitPct),
+        minLeverage:
+          accumulator.minLeverage === null
+            ? account.thresholds.minLeverage
+            : account.thresholds.minLeverage === null
+              ? accumulator.minLeverage
+              : Math.max(accumulator.minLeverage, account.thresholds.minLeverage),
         maxLeverage: Math.min(accumulator.maxLeverage, account.thresholds.maxLeverage),
+        minNotionalPerTrade:
+          accumulator.minNotionalPerTrade === null
+            ? account.thresholds.minNotionalPerTrade
+            : account.thresholds.minNotionalPerTrade === null
+              ? accumulator.minNotionalPerTrade
+              : Math.max(accumulator.minNotionalPerTrade, account.thresholds.minNotionalPerTrade),
         maxOrderAllocation:
           accumulator.maxOrderAllocation === null
             ? account.thresholds.maxOrderAllocation
@@ -4985,7 +5015,9 @@ export class RiskService {
       dailyLossLimitPct: policy.dailyLossLimitPct ?? undefined,
       weeklyLossLimitPct: policy.weeklyLossLimitPct ?? undefined,
       monthlyLossLimitPct: policy.monthlyLossLimitPct ?? undefined,
+      minLeverage: policy.minLeverage ?? undefined,
       maxLeverage: policy.maxLeverage ?? undefined,
+      minNotionalPerTrade: policy.minNotionalPerTrade ?? undefined,
       maxOrderAllocation: policy.maxOrderAllocation ?? undefined,
       maxTotalAllocation: policy.maxTotalAllocation ?? undefined,
       maxAvgLeverage: policy.maxAvgLeverage ?? undefined,
@@ -5017,7 +5049,9 @@ export class RiskService {
       dailyLossLimitPct: policy.dailyLossLimitPct,
       weeklyLossLimitPct: policy.weeklyLossLimitPct,
       monthlyLossLimitPct: policy.monthlyLossLimitPct,
+      minLeverage: policy.minLeverage,
       maxLeverage: policy.maxLeverage,
+      minNotionalPerTrade: policy.minNotionalPerTrade,
       maxOrderAllocation: policy.maxOrderAllocation,
       maxTotalAllocation: policy.maxTotalAllocation,
       maxAvgLeverage: policy.maxAvgLeverage,
@@ -5221,7 +5255,9 @@ export class RiskService {
       dailyLossLimitPct: this.readNumber(rawSnapshot.dailyLossLimitPct, 5),
       weeklyLossLimitPct: this.readNumber(rawSnapshot.weeklyLossLimitPct, 12),
       monthlyLossLimitPct: this.readNumber(rawSnapshot.monthlyLossLimitPct, 20),
+      minLeverage: this.readNullableNumber(rawSnapshot.minLeverage),
       maxLeverage: this.readNullableNumber(rawSnapshot.maxLeverage),
+      minNotionalPerTrade: this.readNullableNumber(rawSnapshot.minNotionalPerTrade),
       maxOrderAllocation: this.readNullableNumber(rawSnapshot.maxOrderAllocation),
       maxTotalAllocation: this.readNullableNumber(rawSnapshot.maxTotalAllocation),
       maxAvgLeverage: this.readNullableNumber(rawSnapshot.maxAvgLeverage),
@@ -5271,7 +5307,9 @@ export class RiskService {
         dailyLossLimitPct: validatedSnapshot.dailyLossLimitPct,
         weeklyLossLimitPct: validatedSnapshot.weeklyLossLimitPct,
         monthlyLossLimitPct: validatedSnapshot.monthlyLossLimitPct,
+        minLeverage: validatedSnapshot.minLeverage,
         maxLeverage: validatedSnapshot.maxLeverage,
+        minNotionalPerTrade: validatedSnapshot.minNotionalPerTrade,
         maxOrderAllocation: validatedSnapshot.maxOrderAllocation,
         maxTotalAllocation: validatedSnapshot.maxTotalAllocation,
         maxAvgLeverage: validatedSnapshot.maxAvgLeverage,
@@ -5378,7 +5416,9 @@ export class RiskService {
       ['Daily loss limit', current.dailyLossLimitPct, previous.dailyLossLimitPct],
       ['Weekly loss limit', current.weeklyLossLimitPct, previous.weeklyLossLimitPct],
       ['Monthly loss limit', current.monthlyLossLimitPct, previous.monthlyLossLimitPct],
+      ['Min leverage', current.minLeverage ?? null, previous.minLeverage ?? null],
       ['Max leverage', current.maxLeverage ?? null, previous.maxLeverage ?? null],
+      ['Min notional per trade', current.minNotionalPerTrade ?? null, previous.minNotionalPerTrade ?? null],
       ['Per-trade max allocation', current.maxOrderAllocation ?? null, previous.maxOrderAllocation ?? null],
       ['Max total allocation', current.maxTotalAllocation ?? null, previous.maxTotalAllocation ?? null],
       ['Max avg leverage', current.maxAvgLeverage ?? null, previous.maxAvgLeverage ?? null],
@@ -5434,7 +5474,9 @@ export class RiskService {
       this.hasTighterConstraint(current.concentrationWarnPct, next.concentrationWarnPct),
       this.hasTighterConstraint(current.concentrationCriticalPct, next.concentrationCriticalPct),
       this.hasTighterConstraint(current.dailyLossLimitPct, next.dailyLossLimitPct),
+      this.hasHigherTighterConstraint(current.minLeverage, next.minLeverage),
       this.hasTighterConstraint(current.maxLeverage, next.maxLeverage),
+      this.hasHigherTighterConstraint(current.minNotionalPerTrade, next.minNotionalPerTrade),
       this.hasTighterConstraint(current.maxOrderAllocation, next.maxOrderAllocation),
       this.hasTighterConstraint(current.maxTotalAllocation, next.maxTotalAllocation),
       this.hasTighterConstraint(current.maxAvgLeverage, next.maxAvgLeverage),
@@ -5454,6 +5496,21 @@ export class RiskService {
     }
 
     return nextValue < currentValue;
+  }
+
+  private hasHigherTighterConstraint(
+    currentValue: number | undefined,
+    nextValue: number | undefined
+  ): boolean {
+    if (nextValue === undefined || nextValue === null) {
+      return false;
+    }
+
+    if (currentValue === undefined || currentValue === null) {
+      return true;
+    }
+
+    return nextValue > currentValue;
   }
 
   private buildPolicyActivityPath(policyId: string): string {
