@@ -431,6 +431,7 @@ export interface PromoteBacktestBody {
 }
 
 export interface PromoteBacktestBatchItemBody {
+  backtestId?: string;
   symbol: string;
   timeframe: string;
   name?: string;
@@ -457,8 +458,10 @@ export interface PromoteBacktestResult {
 }
 
 export interface PromoteBacktestBatchResultItem {
-  symbol: string;
+  symbol?: string;
+  symbols?: string[];
   timeframe: string;
+  itemCount?: number;
   status: 'created' | 'reused' | 'failed';
   message: string;
   automation?: {

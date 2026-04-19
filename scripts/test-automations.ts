@@ -1007,6 +1007,22 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
     return { service, events };
   };
 
+  {
+    const { service } = createService();
+    const symbols = service.resolveTradeSuggestionSymbols({
+      symbol: 'BTCUSDT',
+      symbols: ['BTCUSDT', 'ETHUSDT'],
+      tradeSuggestion: {
+        symbol: 'SOLUSDT',
+      },
+      config: {
+        assets: [{ symbol: 'ADAUSDT' }],
+      },
+    });
+
+    assert.deepEqual(symbols, ['BTCUSDT', 'ETHUSDT']);
+  }
+
   try {
     {
       const { service, events } = createService();

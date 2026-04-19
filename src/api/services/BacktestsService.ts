@@ -411,10 +411,27 @@ export class BacktestsService {
     const payload = validatePromoteBacktestBatchBody(body);
 
     try {
-      const { backtest, rankedTopSetups } = await this.buildPromotionContext(userId, validatedId);
       const results: PromoteBacktestBatchResult['results'] = [];
+      const contextCache = new Map<
+        string,
+        Promise<{ backtest: Backtest; rankedTopSetups: BacktestTopSetupItem[] }>
+      >();
+      contextCache.set(validatedId, this.buildPromotionContext(userId, validatedId));
+      const getPromotionContext = (id: string) => {
+        const scopedId = validateBacktestId(id);
+        if (!contextCache.has(scopedId)) {
+          contextCache.set(scopedId, this.buildPromotionContext(userId, scopedId));
+        }
+        return contextCache.get(scopedId)!;
+      };
+      const resolvedEntries: Array<{
+        item: (typeof payload.items)[number];
+        backtest: Backtest;
+        selectedTopSetup: BacktestTopSetupItem;
+      }> = [];
 
       for (const item of payload.items) {
+        const itemBacktestId = item.backtestId || validatedId;
         const scopedPayload: PromoteBacktestBody = {
           name: item.name ?? payload.name,
           broker: payload.broker,
@@ -428,25 +445,98 @@ export class BacktestsService {
         };
 
         try {
+          const { backtest, rankedTopSetups } = await getPromotionContext(itemBacktestId);
           const selectedTopSetup = this.resolvePromotionTarget(rankedTopSetups, scopedPayload);
-          const response = await this.backtestPromotionService.promoteResolvedTopSetup({
-            userId,
+          resolvedEntries.push({
+            item,
             backtest,
-            payload: scopedPayload,
             selectedTopSetup,
           });
-          const message = String(response.data?.message || 'Automation created from top setup');
+        } catch (error) {
           results.push({
             symbol: item.symbol,
+            symbols: [item.symbol],
             timeframe: item.timeframe,
+            itemCount: 1,
+            status: 'failed',
+            message: error instanceof Error ? error.message : String(error),
+            automation: null,
+          });
+        }
+      }
+
+      const timeframeGroups = resolvedEntries.reduce(
+        (accumulator, entry) => {
+          const key = String(entry.selectedTopSetup.timeframe || entry.item.timeframe || '').trim();
+          if (!key) {
+            return accumulator;
+          }
+          if (!accumulator[key]) {
+            accumulator[key] = [];
+          }
+          accumulator[key].push(entry);
+          return accumulator;
+        },
+        {} as Record<string, typeof resolvedEntries>
+      );
+
+      for (const [timeframe, entries] of Object.entries(timeframeGroups)) {
+        const primaryEntry = entries[0];
+        const symbols = Array.from(
+          new Set(
+            entries
+              .map((entry) => String(entry.selectedTopSetup.symbol || entry.item.symbol || '').trim().toUpperCase())
+              .filter(Boolean)
+          )
+        );
+        const groupName = primaryEntry.item.name ?? payload.name;
+        const groupPayload: PromoteBacktestBody = {
+          name: groupName,
+          broker: payload.broker,
+          trigger: payload.trigger,
+          riskMode: payload.riskMode,
+          status: payload.status,
+          timeZone: payload.timeZone,
+          schedule: payload.schedule,
+          symbol: symbols[0],
+          timeframe,
+        };
+
+        try {
+          const response =
+            entries.length === 1
+              ? await this.backtestPromotionService.promoteResolvedTopSetup({
+                  userId,
+                  backtest: primaryEntry.backtest,
+                  payload: groupPayload,
+                  selectedTopSetup: primaryEntry.selectedTopSetup,
+                })
+              : await this.backtestPromotionService.promoteResolvedTopSetupGroup({
+                  userId,
+                  payload: groupPayload,
+                  entries: entries.map((entry) => ({
+                    backtest: entry.backtest,
+                    selectedTopSetup: entry.selectedTopSetup,
+                  })),
+                });
+          const message = String(
+            response.data?.message || 'Automation created from timeframe group'
+          );
+          results.push({
+            symbol: symbols[0],
+            symbols,
+            timeframe,
+            itemCount: entries.length,
             status: /already exists/i.test(message) ? 'reused' : 'created',
             message,
             automation: response.data?.automation ?? null,
           });
         } catch (error) {
           results.push({
-            symbol: item.symbol,
-            timeframe: item.timeframe,
+            symbol: symbols[0],
+            symbols,
+            timeframe,
+            itemCount: entries.length,
             status: 'failed',
             message: error instanceof Error ? error.message : String(error),
             automation: null,
@@ -455,7 +545,7 @@ export class BacktestsService {
       }
 
       const summary = {
-        requested: payload.items.length,
+        requested: results.length,
         created: results.filter((item) => item.status === 'created').length,
         reused: results.filter((item) => item.status === 'reused').length,
         failed: results.filter((item) => item.status === 'failed').length,
@@ -479,7 +569,7 @@ export class BacktestsService {
         await this.operationalEventService.emitFailureAlert(userId, {
           channel: 'Backtests',
           source: 'backtests:promotion-batch',
-          message: `Backtest batch promotion failed for all ${summary.failed} selected setup(s).`,
+          message: `Backtest batch promotion failed for all ${summary.failed} timeframe group(s).`,
           route: 'Backtests',
         });
       }

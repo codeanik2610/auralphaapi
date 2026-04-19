@@ -569,6 +569,8 @@ export const validatePromoteBacktestBatchBody = (
     const symbol = String(item.symbol || '').trim().toUpperCase();
     const timeframe = String(item.timeframe || '').trim();
     const name = item.name !== undefined ? String(item.name).trim() : undefined;
+    const itemBacktestId =
+      item.backtestId !== undefined ? validateBacktestId(String(item.backtestId || '')) : undefined;
 
     if (!symbol) {
       throw new BadRequestAppError(`items[${index}].symbol must be a non-empty string`);
@@ -586,6 +588,7 @@ export const validatePromoteBacktestBatchBody = (
     }
 
     return {
+      ...(itemBacktestId ? { backtestId: itemBacktestId } : {}),
       symbol,
       timeframe,
       name: name || undefined,
@@ -594,7 +597,7 @@ export const validatePromoteBacktestBatchBody = (
 
   const deduped = new Set<string>();
   items.forEach((item) => {
-    const key = `${item.symbol}::${item.timeframe}`;
+    const key = `${item.backtestId || ''}::${item.symbol}::${item.timeframe}`;
     if (deduped.has(key)) {
       throw new BadRequestAppError(
         `Duplicate setup selection is not allowed: ${item.symbol} ${item.timeframe}`

@@ -26,6 +26,17 @@ export interface BacktestPromotionInput {
   selectedTopSetup: BacktestTopSetupItem;
 }
 
+export interface BacktestPromotionGroupEntry {
+  backtest: Backtest;
+  selectedTopSetup: BacktestTopSetupItem;
+}
+
+export interface BacktestPromotionGroupInput {
+  userId: string;
+  payload: PromoteBacktestBody;
+  entries: BacktestPromotionGroupEntry[];
+}
+
 @Service()
 export class BacktestPromotionService {
   @Inject(() => AutomationRepository)
@@ -288,6 +299,317 @@ export class BacktestPromotionService {
     }
   }
 
+  async promoteResolvedTopSetupGroup({
+    userId,
+    payload,
+    entries,
+  }: BacktestPromotionGroupInput): Promise<ApiSuccessResponse<PromoteBacktestResult>> {
+    const normalizedEntries = Array.isArray(entries) ? entries.filter(Boolean) : [];
+    if (!normalizedEntries.length) {
+      throw new BadRequestAppError('No selected top setups were provided for timeframe deployment');
+    }
+
+    const primaryEntry = normalizedEntries[0];
+    const primaryBacktest = primaryEntry.backtest;
+    const primaryTopSetup = primaryEntry.selectedTopSetup;
+    const timeframe = String(primaryTopSetup.timeframe || '').trim();
+
+    if (!timeframe) {
+      throw new BadRequestAppError('Selected top setup timeframe is required');
+    }
+
+    const mismatchedTimeframe = normalizedEntries.find(
+      (entry) => String(entry.selectedTopSetup.timeframe || '').trim() !== timeframe
+    );
+    if (mismatchedTimeframe) {
+      throw new BadRequestAppError('Batch deployment groups must contain one timeframe only');
+    }
+
+    const symbols = Array.from(
+      new Set(
+        normalizedEntries
+          .map((entry) => this.normalizeAssetSymbol(entry.selectedTopSetup.symbol))
+          .filter(Boolean)
+      )
+    );
+    const primarySymbol = symbols[0];
+
+    if (!primarySymbol) {
+      throw new BadRequestAppError('Selected top setup symbol is required');
+    }
+
+    const relatedLabel = `${symbols.length} asset${symbols.length === 1 ? '' : 's'} · ${timeframe}`;
+
+    try {
+      const config = this.parseConfig(primaryBacktest.result?.config) ?? {};
+      const inputSnapshot = this.parseConfig(config.inputSnapshot) ?? {};
+      const templateDiffSummary = this.parseTemplateDiffSummary(
+        inputSnapshot.templateDiffSummary ?? config.templateDiffSummary
+      );
+
+      const existingAutomation =
+        await this.automationRepository.findTradeSuggestionAutomationByScope({
+          userId,
+          backtestId: primaryBacktest.id,
+          symbol: primarySymbol,
+          timeframe,
+        });
+
+      if (existingAutomation) {
+        await this.operationalEventService.logActivity(userId, {
+          type: 'Automation',
+          title: `Automation already exists for timeframe group: ${existingAutomation.name}`,
+          status: 'Success',
+          route: 'Automations',
+          stream: 'Deployments',
+          related: relatedLabel,
+          referenceId: existingAutomation.id,
+          description: `Reused existing automation for backtest ${primaryBacktest.id} timeframe ${timeframe} covering ${symbols.join(', ')}`,
+        });
+
+        return successResponse({
+          message: 'Automation already exists for timeframe group',
+          automation: {
+            id: existingAutomation.id,
+            status: existingAutomation.status as PromoteBacktestResult['automation']['status'],
+            createdAt: existingAutomation.createdAt.toISOString(),
+          },
+        });
+      }
+
+      const assets = this.dedupeAssetsBySymbol(
+        normalizedEntries.flatMap((entry) => {
+          const entryConfig = this.parseConfig(entry.backtest.result?.config) ?? {};
+          const entryInputSnapshot = this.parseConfig(entryConfig.inputSnapshot) ?? {};
+          const baseAssets = Array.isArray(entryInputSnapshot.assets)
+            ? entryInputSnapshot.assets
+            : Array.isArray(entryConfig.assets)
+              ? entryConfig.assets
+              : [];
+          return this.filterAssetsForSymbol(baseAssets, entry.selectedTopSetup.symbol);
+        })
+      );
+      const assetSymbols = new Set(
+        assets.map((asset) => this.readAssetSymbol(asset)).filter(Boolean)
+      );
+      const missingSymbols = symbols.filter((symbol) => !assetSymbols.has(symbol));
+      const timeframes = [timeframe];
+
+      if (missingSymbols.length) {
+        throw new BadRequestAppError(
+          `Unable to scope automation assets to symbol(s) ${missingSymbols.join(', ')}`
+        );
+      }
+
+      const template =
+        this.parseConfig(inputSnapshot.template) ??
+        this.parseConfig(config.template) ??
+        {};
+      const templateConfig =
+        template.config && typeof template.config === 'object'
+          ? (template.config as Record<string, unknown>)
+          : {};
+      const primaryAsset =
+        assets && Array.isArray(assets)
+          ? (assets[0] as Record<string, unknown> | undefined)
+          : undefined;
+      const broker =
+        payload.broker ||
+        (primaryAsset
+          ? String(primaryAsset.brokerKey || primaryAsset.broker || '').trim()
+          : '') ||
+        'paper';
+      const market =
+        String(inputSnapshot.market || config.market || templateConfig.market || '').trim() ||
+        'crypto-futures';
+      const status = payload.status || 'Draft';
+      const setupScopes = normalizedEntries.map((entry) => this.buildSetupScope(entry));
+      const sourceBacktestIds = Array.from(
+        new Set(normalizedEntries.map((entry) => entry.backtest.id).filter(Boolean))
+      );
+      const scopedInputSnapshot =
+        Object.keys(inputSnapshot).length > 0
+          ? {
+              ...inputSnapshot,
+              assets,
+              symbol: primarySymbol,
+              symbols,
+              timeframe,
+              timeframes,
+              setupScopes,
+              sourceBacktestIds,
+            }
+          : {};
+
+      const restConfig = { ...config };
+      delete restConfig.performanceSurface;
+      const normalizedConfig = {
+        ...restConfig,
+        assets,
+        symbol: primarySymbol,
+        symbols,
+        timeframe,
+        timeframes,
+        market,
+        setupScopes,
+        sourceBacktestIds,
+        ...(typeof inputSnapshot.sourceType === 'string' ? { sourceType: inputSnapshot.sourceType } : {}),
+        ...(typeof inputSnapshot.sourceId === 'string' ? { sourceId: inputSnapshot.sourceId } : {}),
+        ...(typeof inputSnapshot.libraryId === 'string'
+          ? { libraryId: inputSnapshot.libraryId }
+          : {}),
+        ...(typeof inputSnapshot.libraryName === 'string'
+          ? { libraryName: inputSnapshot.libraryName }
+          : {}),
+        ...(typeof inputSnapshot.projectId === 'string'
+          ? { projectId: inputSnapshot.projectId }
+          : {}),
+        ...(typeof inputSnapshot.templateId === 'string'
+          ? { templateId: inputSnapshot.templateId }
+          : {}),
+        ...(typeof inputSnapshot.templateVersion === 'number'
+          ? { templateVersion: inputSnapshot.templateVersion }
+          : {}),
+        ...(typeof inputSnapshot.projectVersion === 'number'
+          ? { projectVersion: inputSnapshot.projectVersion }
+          : {}),
+        ...(typeof inputSnapshot.sourceTemplateId === 'string'
+          ? { sourceTemplateId: inputSnapshot.sourceTemplateId }
+          : {}),
+        ...(typeof inputSnapshot.sourceTemplateVersion === 'number'
+          ? { sourceTemplateVersion: inputSnapshot.sourceTemplateVersion }
+          : {}),
+        ...(typeof inputSnapshot.sourceTemplateName === 'string'
+          ? { sourceTemplateName: inputSnapshot.sourceTemplateName }
+          : {}),
+        ...(templateDiffSummary ? { templateDiffSummary } : {}),
+        ...(Object.keys(template).length ? { template } : {}),
+        ...(Object.keys(scopedInputSnapshot).length ? { inputSnapshot: scopedInputSnapshot } : {}),
+      };
+
+      const schedule = payload.schedule ?? null;
+      const resolvedSchedule = resolveAutomationSchedule(schedule, payload.trigger);
+      if (payload.schedule !== undefined && !resolvedSchedule) {
+        throw new BadRequestAppError('schedule is missing or invalid');
+      }
+      if (status === 'Running' && !resolvedSchedule) {
+        throw new BadRequestAppError('schedule is required to create a running automation');
+      }
+
+      const automationTimeZone = await this.resolveAutomationTimeZone(userId, payload.timeZone);
+      const nextRun =
+        status === 'Running' && resolvedSchedule
+          ? computeNextRun(resolvedSchedule, automationTimeZone, new Date())
+          : null;
+      if (status === 'Running' && !nextRun) {
+        throw new BadRequestAppError('Unable to compute next run from schedule');
+      }
+
+      const trigger =
+        payload.trigger ||
+        (resolvedSchedule
+          ? this.describeAutomationSchedule(resolvedSchedule)
+          : `timeframe:${timeframe}`);
+      const name =
+        payload.name ||
+        this.buildPromotedAutomationGroupName(primaryBacktest, symbols, timeframe);
+      const automationConfig = normalizeAutomationConfig('trade-suggestion', {
+        source: 'backtest',
+        backtestId: primaryBacktest.id,
+        sourceBacktestIds,
+        strategy: primaryBacktest.strategy,
+        symbol: primarySymbol,
+        symbols,
+        timeframe,
+        parameter: this.buildPromotedAutomationGroupParameter(
+          primaryBacktest,
+          symbols,
+          timeframe
+        ),
+        setupScope: {
+          symbol: primarySymbol,
+          symbols,
+          timeframe,
+          itemCount: normalizedEntries.length,
+          setups: setupScopes,
+        },
+        config: normalizedConfig,
+      });
+
+      const automation = await this.automationRepository.createAutomation({
+        userId,
+        name,
+        strategy: primaryBacktest.strategy,
+        broker,
+        market,
+        trigger,
+        status,
+        automationType: 'trade-suggestion',
+        timeZone: payload.timeZone === undefined ? automationTimeZone : payload.timeZone,
+        schedule,
+        riskMode: payload.riskMode ?? null,
+        config: automationConfig,
+      });
+
+      if (nextRun) {
+        automation.nextRun = nextRun;
+        await this.automationRepository.saveAutomation(automation);
+      }
+
+      await this.automationRepository.createAutomationEvent({
+        automationId: automation.id,
+        type: 'Created',
+        entity: 'Top setup group',
+        outcome: 'Promoted',
+        meta: {
+          symbols,
+          timeframe,
+          itemCount: normalizedEntries.length,
+          schedule,
+        },
+      });
+
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Automation',
+        title: `Automation created from timeframe group: ${automation.name}`,
+        status: 'Success',
+        route: 'Automations',
+        stream: 'Deployments',
+        related: relatedLabel,
+        referenceId: automation.id,
+        description: `Backtest timeframe group ${timeframe} promoted to automation for ${symbols.join(', ')}`,
+      });
+
+      return successResponse({
+        message: 'Automation created from timeframe group',
+        automation: {
+          id: automation.id,
+          status: automation.status as PromoteBacktestResult['automation']['status'],
+          createdAt: automation.createdAt.toISOString(),
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Automation',
+        title: 'Backtest timeframe-group promotion failed',
+        status: 'Failed',
+        route: 'Automations',
+        stream: 'Deployments',
+        related: relatedLabel,
+        referenceId: primaryBacktest.id,
+        description: message,
+      });
+      await this.operationalEventService.emitFailureAlert(userId, {
+        channel: 'Automations',
+        source: 'backtests:promotion-service',
+        message: `Backtest timeframe-group promotion failed (${primaryBacktest.id}): ${message}`,
+        route: 'Automations',
+      });
+      throw error;
+    }
+  }
+
   private async resolveAutomationTimeZone(
     userId: string,
     requestedTimeZone?: string | null
@@ -352,6 +674,63 @@ export class BacktestPromotionService {
     return base ? `${base} | ${scoped}` : scoped;
   }
 
+  private buildPromotedAutomationGroupName(
+    backtest: Backtest,
+    symbols: string[],
+    timeframe: string
+  ): string {
+    const base =
+      String(backtest.name || '').trim() ||
+      String(backtest.strategy || '').trim() ||
+      `Automation ${backtest.id}`;
+    const scope = `${symbols.length} asset${symbols.length === 1 ? '' : 's'} · ${timeframe}`;
+    return `${base} · ${scope}`;
+  }
+
+  private buildPromotedAutomationGroupParameter(
+    backtest: Backtest,
+    symbols: string[],
+    timeframe: string
+  ): string {
+    const base = String(backtest.name || backtest.parameter || backtest.strategy || '').trim();
+    const scoped = `${symbols.join(', ')} · ${timeframe}`;
+    return base ? `${base} | ${scoped}` : scoped;
+  }
+
+  private buildSetupScope(entry: BacktestPromotionGroupEntry): Record<string, unknown> {
+    const { backtest, selectedTopSetup } = entry;
+    return {
+      backtestId: backtest.id,
+      symbol: selectedTopSetup.symbol,
+      timeframe: selectedTopSetup.timeframe,
+      score: selectedTopSetup.score,
+      trades: selectedTopSetup.trades,
+      winRate: selectedTopSetup.winRate,
+      profitFactor: selectedTopSetup.profitFactor,
+      returnPct: selectedTopSetup.returnPct,
+      maxDrawdownPct: selectedTopSetup.maxDrawdownPct,
+      dedupeKey: selectedTopSetup.dedupeKey,
+      dateRangeStart: selectedTopSetup.dateRangeStart ?? null,
+      dateRangeEnd: selectedTopSetup.dateRangeEnd ?? null,
+    };
+  }
+
+  private dedupeAssetsBySymbol(assets: unknown[]): unknown[] {
+    const seen = new Set<string>();
+    const deduped: unknown[] = [];
+
+    (Array.isArray(assets) ? assets : []).forEach((asset) => {
+      const symbol = this.readAssetSymbol(asset);
+      if (!symbol || seen.has(symbol)) {
+        return;
+      }
+      seen.add(symbol);
+      deduped.push(asset);
+    });
+
+    return deduped;
+  }
+
   private filterAssetsForSymbol(assets: unknown[], symbol: string): unknown[] {
     const target = this.normalizeAssetSymbol(symbol);
     if (!target) {
@@ -377,6 +756,31 @@ export class BacktestPromotionService {
       ];
       return candidates.some((candidate) => this.normalizeAssetSymbol(candidate) === target);
     });
+  }
+
+  private readAssetSymbol(value: unknown): string {
+    if (typeof value === 'string') {
+      return this.normalizeAssetSymbol(value);
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return '';
+    }
+
+    const record = value as Record<string, unknown>;
+    const candidates = [
+      record.symbol,
+      record.assetSymbol,
+      record.displaySymbol,
+      record.label,
+      record.id,
+      record.asset,
+      record.name,
+    ];
+    const match = candidates
+      .map((candidate) => this.normalizeAssetSymbol(candidate))
+      .find(Boolean);
+
+    return match || '';
   }
 
   private normalizeAssetSymbol(value: unknown): string {

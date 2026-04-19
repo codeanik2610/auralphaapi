@@ -2345,6 +2345,195 @@ async function runBacktestBatchPromotionAllFailedAlertAssertions(): Promise<void
   assert.equal(alerts[0].source, 'backtests:promotion-batch');
 }
 
+async function runBacktestBatchPromotionTimeframeMergeAssertions(): Promise<void> {
+  const service = createBacktestsService();
+  const groupCalls: Array<Record<string, unknown>> = [];
+  const singleCalls: Array<Record<string, unknown>> = [];
+  const backtest = {
+    id: 'backtest-batch-promotion-merge-1',
+    name: 'Batch Promotion Merge Candidate',
+    strategy: 'Momentum Template',
+    parameter: 'Baseline',
+    symbol: 'BTCUSDT',
+    interval: '1h',
+    status: 'Completed',
+    stability: 'Stable',
+    trades: 42,
+    createdAt: new Date('2026-04-05T00:00:00.000Z'),
+    result: {
+      config: {
+        performanceSurface: {
+          generatedAt: '2026-04-05T00:15:00.000Z',
+          results: [],
+        },
+      },
+    },
+  };
+  const topSetups = [
+    {
+      id: 'setup-merge-1',
+      dedupeKey: 'setup-merge-1',
+      backtestId: backtest.id,
+      backtestName: backtest.name,
+      strategy: backtest.strategy,
+      parameter: backtest.parameter,
+      symbol: 'BTCUSDT',
+      timeframe: '1h',
+      score: 0.93,
+      trades: 18,
+      winRate: 59,
+      profitFactor: 1.84,
+      returnPct: 14.6,
+      maxDrawdownPct: 5.7,
+      hasIncompleteTradeHistory: false,
+      eligibleForAutomation: true,
+      automationEligibilityReasons: [],
+      templateAutomationReady: true,
+      templateAutomationReasons: [],
+      createdAt: '2026-04-05T00:00:00.000Z',
+    },
+    {
+      id: 'setup-merge-2',
+      dedupeKey: 'setup-merge-2',
+      backtestId: backtest.id,
+      backtestName: backtest.name,
+      strategy: backtest.strategy,
+      parameter: backtest.parameter,
+      symbol: 'ETHUSDT',
+      timeframe: '1h',
+      score: 0.88,
+      trades: 12,
+      winRate: 57,
+      profitFactor: 1.54,
+      returnPct: 9.3,
+      maxDrawdownPct: 7.1,
+      hasIncompleteTradeHistory: false,
+      eligibleForAutomation: true,
+      automationEligibilityReasons: [],
+      templateAutomationReady: true,
+      templateAutomationReasons: [],
+      createdAt: '2026-04-05T00:00:00.000Z',
+    },
+    {
+      id: 'setup-merge-3',
+      dedupeKey: 'setup-merge-3',
+      backtestId: backtest.id,
+      backtestName: backtest.name,
+      strategy: backtest.strategy,
+      parameter: backtest.parameter,
+      symbol: 'SOLUSDT',
+      timeframe: '15m',
+      score: 0.84,
+      trades: 10,
+      winRate: 55,
+      profitFactor: 1.42,
+      returnPct: 7.2,
+      maxDrawdownPct: 8.4,
+      hasIncompleteTradeHistory: false,
+      eligibleForAutomation: true,
+      automationEligibilityReasons: [],
+      templateAutomationReady: true,
+      templateAutomationReasons: [],
+      createdAt: '2026-04-05T00:00:00.000Z',
+    },
+  ];
+
+  service.backtestRepository = {
+    getBacktestById: async () => backtest,
+  };
+  service.backtestTradeRepository = {
+    getTradeCountsByBacktest: async () => new Map([[backtest.id, 42]]),
+  };
+  service.mapBacktest = () => ({
+    id: backtest.id,
+    runStatus: 'Completed',
+    performanceSurface: {
+      generatedAt: '2026-04-05T00:15:00.000Z',
+      results: [],
+    },
+    hasIncompleteTradeHistory: false,
+  });
+  service.backtestTopSetupsService = {
+    rankBacktestTopSetups: () => topSetups,
+  };
+  service.backtestPromotionService = {
+    promoteResolvedTopSetup: async (payload: Record<string, unknown>) => {
+      singleCalls.push(payload);
+      return {
+        success: true,
+        data: {
+          message: 'Automation created from top setup',
+          automation: {
+            id: 'automation-single-15m',
+            status: 'Running',
+            createdAt: '2026-04-05T00:20:00.000Z',
+          },
+        },
+      };
+    },
+    promoteResolvedTopSetupGroup: async (payload: Record<string, unknown>) => {
+      groupCalls.push(payload);
+      return {
+        success: true,
+        data: {
+          message: 'Automation created from timeframe group',
+          automation: {
+            id: 'automation-group-1h',
+            status: 'Running',
+            createdAt: '2026-04-05T00:20:00.000Z',
+          },
+        },
+      };
+    },
+  };
+  service.operationalEventService = {
+    logActivity: async () => undefined,
+    emitFailureAlert: async () => undefined,
+  };
+
+  const response = await service.promoteBacktestBatchToAutomation('user-1', backtest.id, {
+    name: 'Merged Timeframe Automation',
+    status: 'Running',
+    items: [
+      { backtestId: backtest.id, symbol: 'BTCUSDT', timeframe: '1h' },
+      { backtestId: backtest.id, symbol: 'ETHUSDT', timeframe: '1h' },
+      { backtestId: backtest.id, symbol: 'SOLUSDT', timeframe: '15m' },
+    ],
+  });
+
+  assert.deepEqual(response.data.summary, {
+    requested: 2,
+    created: 2,
+    reused: 0,
+    failed: 0,
+  });
+  assert.equal(groupCalls.length, 1);
+  assert.equal(((groupCalls[0].entries as unknown[]) || []).length, 2);
+  assert.equal(singleCalls.length, 1);
+  assert.deepEqual(
+    response.data.results.map((item: any) => ({
+      symbols: item.symbols,
+      timeframe: item.timeframe,
+      itemCount: item.itemCount,
+      status: item.status,
+    })),
+    [
+      {
+        symbols: ['BTCUSDT', 'ETHUSDT'],
+        timeframe: '1h',
+        itemCount: 2,
+        status: 'created',
+      },
+      {
+        symbols: ['SOLUSDT'],
+        timeframe: '15m',
+        itemCount: 1,
+        status: 'created',
+      },
+    ]
+  );
+}
+
 function runBacktestsScriptWiringAssertions(): void {
   const packageSource = read('package.json');
   const packageJson = JSON.parse(packageSource) as { scripts?: Record<string, string> };
@@ -2448,6 +2637,7 @@ async function main(): Promise<void> {
   await runBacktestPromotionFailureAlertAssertions();
   await runBacktestBatchPromotionAssertions();
   await runBacktestBatchPromotionAllFailedAlertAssertions();
+  await runBacktestBatchPromotionTimeframeMergeAssertions();
   runBacktestsScriptWiringAssertions();
   console.log('Backtests module assertions passed.');
 }

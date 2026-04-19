@@ -1640,6 +1640,17 @@ export class AutomationExecutionService {
     const inputSnapshot = this.parseRecord(config.inputSnapshot) ?? {};
     const setupScope = this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(config.setupScope);
 
+    const scopedSymbols = [
+      tradeSuggestion.symbols,
+      setupScope?.symbols,
+      config.symbols,
+      nestedConfig.symbols,
+      inputSnapshot.symbols,
+    ].flatMap((value) => this.extractStringArray(value));
+    if (scopedSymbols.length) {
+      return Array.from(new Set(scopedSymbols.map((item) => item.trim().toUpperCase())));
+    }
+
     const direct = [
       this.readString(tradeSuggestion.symbol),
       this.readString(setupScope?.symbol),
@@ -1659,6 +1670,16 @@ export class AutomationExecutionService {
     ];
     const symbols = assetsCandidates.flatMap((value) => this.extractSymbolsFromAssets(value));
     return Array.from(new Set(symbols.map((item) => item.trim().toUpperCase())));
+  }
+
+  private extractStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => this.readString(item))
+      .filter((item): item is string => Boolean(item));
   }
 
   private resolveTradeSuggestionTimeframe(config: Record<string, unknown>): string | null {
