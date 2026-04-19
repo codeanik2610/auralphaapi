@@ -482,7 +482,7 @@ export const env = {
       requireFixedRouting:
         process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING !== undefined
           ? getBool('SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING', true)
-          : true,
+          : false,
       userAllowlist: getArray('SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST'),
       brokerAllowlist: getArray('SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST').map((item) =>
         item.trim().toLowerCase()
