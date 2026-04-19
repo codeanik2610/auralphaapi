@@ -1080,12 +1080,17 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
       'user-1',
       'st-live-auto',
       {
-        async createOrder(assetId: string, body: Record<string, unknown>) {
+        async createOrder(
+          assetId: string,
+          body: Record<string, unknown>,
+          context?: { suggestedTradeId?: string | null }
+        ) {
           assert.equal(assetId, 'mudrex-asset-1');
           assert.equal(body.execution_mode, 'live');
           assert.equal(body.symbol, 'BTCUSDT');
           assert.equal(body.accountId, 'acc-1');
           assert.equal(body.brokerKey, 'mudrex');
+          assert.equal(context?.suggestedTradeId, 'st-live-auto');
           return {
             success: true,
             data: {

@@ -1536,6 +1536,7 @@ function runAutomationsScriptWiringAssertions(): void {
   const releaseGateSource = read('scripts/release-gates/release-gate-automations.ts');
   const signoffSource = read('scripts/signoffs/signoff-automations.ts');
   const evaluatorSource = read('src/api/services/AutomationSignalEvaluatorService.ts');
+  const executionSource = read('src/api/services/AutomationExecutionService.ts');
 
   assert.equal(
     packageScripts['test:automations'],
@@ -1583,6 +1584,11 @@ function runAutomationsScriptWiringAssertions(): void {
     evaluatorSource.includes("path.resolve(process.cwd(), 'scripts', '_runtime', 'automation_signal_eval.py')"),
     true,
     'automation signal evaluator must use scripts/_runtime automation runner'
+  );
+  assert.equal(
+    executionSource.includes('suggestedTradeId: context?.suggestedTradeId ?? null'),
+    true,
+    'live auto order placement must forward suggested-trade context into the order ledger'
   );
 }
 

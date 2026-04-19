@@ -12,6 +12,28 @@ export interface CreateOrderSubmissionRequestPayload {
   assetId: string;
   brokerKey?: string | null;
   accountId?: string | null;
+  suggestedTradeId?: string | null;
+  requestPayload?: Record<string, unknown> | null;
+}
+
+export interface OrderSubmissionLifecycleEvent {
+  type: string;
+  message?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface OrderSubmissionCompletionOptions {
+  placementState?: OrderSubmissionRequest['placementState'];
+  brokerOrderId?: string | null;
+  brokerOrderStatus?: string | null;
+  reconciliationState?: OrderSubmissionRequest['reconciliationState'];
+  lifecycleEvent?: OrderSubmissionLifecycleEvent;
+}
+
+export interface OrderSubmissionFailureOptions {
+  placementState?: OrderSubmissionRequest['placementState'];
+  reconciliationState?: OrderSubmissionRequest['reconciliationState'];
+  lifecycleEvent?: OrderSubmissionLifecycleEvent;
 }
 
 @Service()
@@ -44,9 +66,24 @@ export class OrderSubmissionRequestRepository {
       assetId: payload.assetId,
       brokerKey: payload.brokerKey || null,
       accountId: payload.accountId || null,
+      suggestedTradeId: payload.suggestedTradeId || null,
+      requestPayload: payload.requestPayload || null,
       status: 'in_progress',
+      placementState: 'registered',
+      brokerOrderId: null,
+      brokerOrderStatus: null,
+      reconciliationState: 'not_required',
       responsePayload: null,
       errorPayload: null,
+      lifecyclePayload: this.appendLifecycleEvent(null, {
+        type: 'submission_registered',
+        details: {
+          executionMode: payload.executionMode,
+          brokerKey: payload.brokerKey || null,
+          accountId: payload.accountId || null,
+          suggestedTradeId: payload.suggestedTradeId || null,
+        },
+      }),
       completedAt: null,
       failedAt: null,
     });
@@ -60,20 +97,51 @@ export class OrderSubmissionRequestRepository {
   ): Promise<OrderSubmissionRequest> {
     request.requestHash = requestHash;
     request.status = 'in_progress';
+    request.placementState = 'registered';
+    request.brokerOrderId = null;
+    request.brokerOrderStatus = null;
+    request.reconciliationState = 'not_required';
     request.responsePayload = null;
     request.errorPayload = null;
+    request.lifecyclePayload = this.appendLifecycleEvent(request.lifecyclePayload, {
+      type: 'submission_restarted',
+      message: 'Stale order submission was restarted with the same idempotency key.',
+    });
     request.completedAt = null;
     request.failedAt = null;
     return this.repository.save(request);
   }
 
+  async markBrokerSubmitting(
+    request: OrderSubmissionRequest,
+    event: OrderSubmissionLifecycleEvent = {
+      type: 'broker_call_started',
+      message: 'Broker placement call started.',
+    }
+  ): Promise<OrderSubmissionRequest> {
+    request.status = 'in_progress';
+    request.placementState = 'submitting';
+    request.lifecyclePayload = this.appendLifecycleEvent(request.lifecyclePayload, event);
+    return this.repository.save(request);
+  }
+
   async markCompleted(
     request: OrderSubmissionRequest,
-    responsePayload: Record<string, unknown>
+    responsePayload: Record<string, unknown>,
+    options: OrderSubmissionCompletionOptions = {}
   ): Promise<OrderSubmissionRequest> {
     request.status = 'completed';
+    request.placementState = options.placementState || 'placed';
+    request.brokerOrderId = this.normalizeOptionalString(options.brokerOrderId);
+    request.brokerOrderStatus = this.normalizeOptionalString(options.brokerOrderStatus);
+    request.reconciliationState = options.reconciliationState || 'not_required';
     request.responsePayload = responsePayload;
     request.errorPayload = null;
+    request.lifecyclePayload = this.appendLifecycleEvent(request.lifecyclePayload, {
+      type: 'submission_completed',
+      message: 'Order submission completed.',
+      ...(options.lifecycleEvent || {}),
+    });
     request.completedAt = new Date();
     request.failedAt = null;
     return this.repository.save(request);
@@ -81,11 +149,22 @@ export class OrderSubmissionRequestRepository {
 
   async markFailed(
     request: OrderSubmissionRequest,
-    errorPayload: Record<string, unknown>
+    errorPayload: Record<string, unknown>,
+    options: OrderSubmissionFailureOptions = {}
   ): Promise<OrderSubmissionRequest> {
     request.status = 'failed';
+    request.placementState = options.placementState || 'rejected';
+    request.reconciliationState = options.reconciliationState || 'not_required';
     request.errorPayload = errorPayload;
     request.responsePayload = null;
+    request.lifecyclePayload = this.appendLifecycleEvent(request.lifecyclePayload, {
+      type: 'submission_failed',
+      message:
+        typeof errorPayload.message === 'string'
+          ? errorPayload.message
+          : 'Order submission failed.',
+      ...(options.lifecycleEvent || {}),
+    });
     request.completedAt = null;
     request.failedAt = new Date();
     return this.repository.save(request);
@@ -98,5 +177,52 @@ export class OrderSubmissionRequestRepository {
 
     const value = error as { code?: string; errno?: number };
     return value.code === 'ER_DUP_ENTRY' || value.errno === 1062;
+  }
+
+  private appendLifecycleEvent(
+    current: Array<Record<string, unknown>> | Record<string, unknown> | string | null | undefined,
+    event: OrderSubmissionLifecycleEvent
+  ): Array<Record<string, unknown>> {
+    const existing = this.normalizeLifecyclePayload(current);
+    return [
+      ...existing,
+      {
+        at: new Date().toISOString(),
+        ...event,
+      },
+    ];
+  }
+
+  private normalizeLifecyclePayload(
+    current: Array<Record<string, unknown>> | Record<string, unknown> | string | null | undefined
+  ): Array<Record<string, unknown>> {
+    if (Array.isArray(current)) {
+      return current.filter((item) => item && typeof item === 'object' && !Array.isArray(item));
+    }
+
+    if (typeof current === 'string') {
+      try {
+        const parsed = JSON.parse(current) as unknown;
+        return this.normalizeLifecyclePayload(
+          parsed as Array<Record<string, unknown>> | Record<string, unknown>
+        );
+      } catch {
+        return [];
+      }
+    }
+
+    if (current && typeof current === 'object') {
+      return [current as Record<string, unknown>];
+    }
+
+    return [];
+  }
+
+  private normalizeOptionalString(value: unknown): string | null {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    const normalized = String(value).trim();
+    return normalized ? normalized : null;
   }
 }

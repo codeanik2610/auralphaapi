@@ -107,7 +107,11 @@ interface LiveAutoRolloutGuardDecision {
 }
 
 interface LiveAutoOrderPlacementHandler {
-  createOrder: (assetId: string, body: CreateOrderBody) => Promise<unknown>;
+  createOrder: (
+    assetId: string,
+    body: CreateOrderBody,
+    context?: { suggestedTradeId?: string | null }
+  ) => Promise<unknown>;
 }
 
 interface ExecutionRefreshOptions {
@@ -1590,7 +1594,9 @@ export class SuggestedTradesService {
         (await this.suggestedTradeRepository.getSuggestedTradeById(userId, updatedTrade.id)) ??
         updatedTrade;
 
-      const result = await handler.createOrder(assetId, createOrderBody);
+      const result = await handler.createOrder(assetId, createOrderBody, {
+        suggestedTradeId: updatedTrade.id,
+      });
       const createdOrder = this.unwrapOrderPlacementResponse(result);
       const createdOrderId =
         this.readStringValue(createdOrder.order_id) ??

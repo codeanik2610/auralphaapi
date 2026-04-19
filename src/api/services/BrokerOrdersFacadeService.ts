@@ -58,6 +58,10 @@ import { OrdersSyncDiagnosticsService } from './OrdersSyncDiagnosticsService';
 
 const log = new Logger(__filename);
 
+interface CreateFuturesOrderOptions {
+  suggestedTradeId?: string | null;
+}
+
 @Service()
 export class BrokerOrdersFacadeService {
   private readonly orderSubmissionStaleMs = 60 * 1000;
@@ -465,8 +469,11 @@ export class BrokerOrdersFacadeService {
     assetId: string,
     brokerKey: string,
     accountId: string,
-    body: ValidatedCreateOrderBody
+    body: ValidatedCreateOrderBody,
+    suggestedTradeId?: string | null
   ): string {
+    const normalizedSuggestedTradeId =
+      String(suggestedTradeId || body.suggested_trade_id || '').trim() || null;
     const payload = {
       assetId: String(assetId || '').trim(),
       route: {
@@ -477,7 +484,7 @@ export class BrokerOrdersFacadeService {
         symbol: body.symbol ?? null,
         side: body.side,
         executionMode: body.execution_mode,
-        suggestedTradeId: body.suggested_trade_id ?? null,
+        suggestedTradeId: normalizedSuggestedTradeId,
         leverage: body.leverage,
         quantity: body.quantity,
         orderPrice: body.order_price,
@@ -494,6 +501,40 @@ export class BrokerOrdersFacadeService {
     return createHash('sha256')
       .update(JSON.stringify(this.sortForStableHash(payload)))
       .digest('hex');
+  }
+
+  private buildCreateOrderRequestPayload(
+    assetId: string,
+    brokerKey: string,
+    accountId: string,
+    body: ValidatedCreateOrderBody,
+    suggestedTradeId?: string | null
+  ): Record<string, unknown> {
+    const normalizedSuggestedTradeId =
+      String(suggestedTradeId || body.suggested_trade_id || '').trim() || null;
+    return {
+      assetId: String(assetId || '').trim(),
+      route: {
+        brokerKey: String(brokerKey || '').trim(),
+        accountId: String(accountId || '').trim(),
+      },
+      order: {
+        symbol: body.symbol ?? null,
+        side: body.side,
+        executionMode: body.execution_mode,
+        suggestedTradeId: normalizedSuggestedTradeId,
+        leverage: body.leverage,
+        quantity: body.quantity,
+        orderPrice: body.order_price,
+        orderType: body.order_type,
+        triggerType: body.trigger_type,
+        isTakeProfit: body.is_takeprofit,
+        isStopLoss: body.is_stoploss,
+        stopLossPrice: body.stoploss_price,
+        takeProfitPrice: body.takeprofit_price,
+        reduceOnly: body.reduce_only,
+      },
+    };
   }
 
   private unwrapSuccessData(value: unknown): Record<string, unknown> {
@@ -561,7 +602,8 @@ export class BrokerOrdersFacadeService {
     assetId: string,
     brokerKey: string,
     accountId: string,
-    body: ValidatedCreateOrderBody
+    body: ValidatedCreateOrderBody,
+    suggestedTradeId?: string | null
   ): Promise<{
     request: OrderSubmissionRequest | null;
     requestHash: string | null;
@@ -579,7 +621,8 @@ export class BrokerOrdersFacadeService {
       assetId,
       brokerKey,
       accountId,
-      body
+      body,
+      suggestedTradeId
     );
     const existing = await this.orderSubmissionRequestRepository.findByUserAndKey(
       userId,
@@ -608,6 +651,14 @@ export class BrokerOrdersFacadeService {
           assetId,
           brokerKey,
           accountId,
+          suggestedTradeId: suggestedTradeId ?? body.suggested_trade_id ?? null,
+          requestPayload: this.buildCreateOrderRequestPayload(
+            assetId,
+            brokerKey,
+            accountId,
+            body,
+            suggestedTradeId
+          ),
         }),
       };
     } catch (error) {
@@ -1490,7 +1541,12 @@ export class BrokerOrdersFacadeService {
     };
   }
 
-  async createFuturesOrder(userId: string, assetId: string, body: CreateOrderBody): Promise<unknown> {
+  async createFuturesOrder(
+    userId: string,
+    assetId: string,
+    body: CreateOrderBody,
+    options: CreateFuturesOrderOptions = {}
+  ): Promise<unknown> {
     let requestedRouteTarget = this.buildActivityRouteTarget(
       (body as { brokerKey?: string | null })?.brokerKey,
       (body as { accountId?: string | null })?.accountId
@@ -1500,6 +1556,9 @@ export class BrokerOrdersFacadeService {
     let normalizeCreateMutationError = false;
     try {
       const validatedBody = validateCreateOrderBody(body);
+      const placementSuggestedTradeId =
+        String(options.suggestedTradeId || validatedBody.suggested_trade_id || '').trim() ||
+        null;
       const route = await this.brokerAccountRoutingService.resolve(userId, validatedBody.brokerKey, validatedBody.accountId, 'mudrex');
       const resolvedBrokerKey = String(route.brokerKey || '').trim();
       const resolvedAccountId = String(route.accountId || '').trim();
@@ -1512,6 +1571,21 @@ export class BrokerOrdersFacadeService {
       if (!resolvedBrokerKey || !resolvedAccountId) {
         throw new BadRequestAppError('A broker route is required to create an order');
       }
+
+      const submission = await this.beginCreateOrderSubmission(
+        userId,
+        assetId,
+        resolvedBrokerKey,
+        resolvedAccountId,
+        validatedBody,
+        placementSuggestedTradeId
+      );
+
+      if (Object.prototype.hasOwnProperty.call(submission, 'replayResponse')) {
+        return submission.replayResponse;
+      }
+      activeSubmissionRequest = submission.request;
+
       const riskCheck = await this.riskService.evaluatePreTradeOrder(userId, route, {
         assetId,
         quantity: validatedBody.quantity,
@@ -1555,18 +1629,27 @@ export class BrokerOrdersFacadeService {
         });
       }
 
-      const submission = await this.beginCreateOrderSubmission(
-        userId,
-        assetId,
-        resolvedBrokerKey,
-        resolvedAccountId,
-        validatedBody
-      );
-
-      if (Object.prototype.hasOwnProperty.call(submission, 'replayResponse')) {
-        return submission.replayResponse;
+      if (activeSubmissionRequest) {
+        activeSubmissionRequest = await this.orderSubmissionRequestRepository.markBrokerSubmitting(
+          activeSubmissionRequest,
+          {
+            type:
+              validatedBody.execution_mode === 'paper'
+                ? 'paper_order_create_started'
+                : 'broker_call_started',
+            message:
+              validatedBody.execution_mode === 'paper'
+                ? 'Paper order creation started after risk clearance.'
+                : 'Broker placement call started after risk clearance.',
+            details: {
+              brokerKey: resolvedBrokerKey,
+              accountId: resolvedAccountId,
+              suggestedTradeId: placementSuggestedTradeId,
+              riskWarningCount: riskCheck.breaches.length,
+            },
+          }
+        );
       }
-      activeSubmissionRequest = submission.request;
       normalizeCreateMutationError = true;
 
       if (validatedBody.execution_mode === 'paper') {
@@ -1625,7 +1708,20 @@ export class BrokerOrdersFacadeService {
         if (activeSubmissionRequest) {
           await this.orderSubmissionRequestRepository.markCompleted(
             activeSubmissionRequest,
-            this.normalizeJsonRecord(response)
+            this.normalizeJsonRecord(response),
+            {
+              placementState: 'placed',
+              brokerOrderStatus: refreshedPaperOrder.status,
+              reconciliationState: 'not_required',
+              lifecycleEvent: {
+                type: 'paper_order_created',
+                message: 'Paper order was created and stored locally.',
+                details: {
+                  paperOrderId: paperOrder.id,
+                  suggestedTradeId: placementSuggestedTradeId,
+                },
+              },
+            }
           );
         }
 
@@ -1687,16 +1783,41 @@ export class BrokerOrdersFacadeService {
         .getOrdersAdapter(route.brokerKey)
         .createOrder(assetId, { ...validatedBody, brokerKey: route.brokerKey, accountId: route.accountId }, route);
 
-      if (activeSubmissionRequest) {
-        await this.orderSubmissionRequestRepository.markCompleted(
-          activeSubmissionRequest,
-          this.normalizeJsonRecord(result)
-        );
-      }
-
       const createdOrder = this.unwrapSuccessData(result);
       const createdOrderId =
         String(createdOrder.order_id || createdOrder.orderId || '').trim() || undefined;
+      const createdOrderStatus =
+        typeof createdOrder.status === 'string'
+          ? createdOrder.status
+          : typeof createdOrder.order_status === 'string'
+            ? String(createdOrder.order_status)
+            : undefined;
+
+      if (activeSubmissionRequest) {
+        await this.orderSubmissionRequestRepository.markCompleted(
+          activeSubmissionRequest,
+          this.normalizeJsonRecord(result),
+          {
+            placementState: 'placed',
+            brokerOrderId: createdOrderId ?? null,
+            brokerOrderStatus: createdOrderStatus ?? null,
+            reconciliationState: createdOrderId ? 'pending' : 'missing',
+            lifecycleEvent: {
+              type: createdOrderId ? 'broker_order_accepted' : 'broker_order_without_id',
+              message: createdOrderId
+                ? 'Broker accepted the order; snapshot reconciliation is pending.'
+                : 'Broker response did not include an order id; reconciliation needs review.',
+              details: {
+                brokerKey: resolvedBrokerKey,
+                accountId: resolvedAccountId,
+                brokerOrderId: createdOrderId ?? null,
+                brokerOrderStatus: createdOrderStatus ?? null,
+                suggestedTradeId: placementSuggestedTradeId,
+              },
+            },
+          }
+        );
+      }
 
       try {
         if (validatedBody.suggested_trade_id) {
@@ -1708,12 +1829,7 @@ export class BrokerOrdersFacadeService {
               orderId: createdOrderId,
               brokerKey: resolvedBrokerKey,
               accountId: resolvedAccountId,
-              orderStatus:
-                typeof createdOrder.status === 'string'
-                  ? createdOrder.status
-                  : typeof createdOrder.order_status === 'string'
-                    ? String(createdOrder.order_status)
-                    : undefined,
+              orderStatus: createdOrderStatus,
               orderType: validatedBody.order_type,
               triggerType: validatedBody.trigger_type,
               leverage: validatedBody.leverage,
@@ -1764,7 +1880,20 @@ export class BrokerOrdersFacadeService {
         try {
           await this.orderSubmissionRequestRepository.markFailed(
             activeSubmissionRequest,
-            this.buildCreateOrderFailurePayload(normalizedError)
+            this.buildCreateOrderFailurePayload(normalizedError),
+            {
+              placementState: 'rejected',
+              reconciliationState: 'not_required',
+              lifecycleEvent: {
+                type: normalizeCreateMutationError
+                  ? 'broker_order_rejected'
+                  : 'order_submission_blocked',
+                message:
+                  normalizedError instanceof Error
+                    ? normalizedError.message
+                    : String(normalizedError),
+              },
+            }
           );
         } catch (submissionError) {
           log.warn(

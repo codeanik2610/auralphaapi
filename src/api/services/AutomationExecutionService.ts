@@ -1070,8 +1070,10 @@ export class AutomationExecutionService {
             automation.userId,
             created.item.id,
             {
-              createOrder: async (assetId, body) =>
-                this.ordersService.createFuturesOrder(automation.userId, assetId, body),
+              createOrder: async (assetId, body, context) =>
+                this.ordersService.createFuturesOrder(automation.userId, assetId, body, {
+                  suggestedTradeId: context?.suggestedTradeId ?? null,
+                }),
             },
             {
               placedInRun: autoLivePlaced,

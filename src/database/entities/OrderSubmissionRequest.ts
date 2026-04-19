@@ -11,6 +11,11 @@ import {
 @Entity({ name: 'order_submission_requests' })
 @Unique('uq_order_submission_requests_user_key', ['userId', 'idempotencyKey'])
 @Index('idx_order_submission_requests_user_status_updated_at', ['userId', 'status', 'updatedAt'])
+@Index('idx_order_submission_requests_suggested_trade', [
+  'userId',
+  'suggestedTradeId',
+  'createdAt',
+])
 export class OrderSubmissionRequest {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -36,14 +41,35 @@ export class OrderSubmissionRequest {
   @Column({ name: 'account_id', type: 'char', length: 36, nullable: true })
   accountId!: string | null;
 
+  @Column({ name: 'suggested_trade_id', type: 'char', length: 36, nullable: true })
+  suggestedTradeId!: string | null;
+
+  @Column({ name: 'request_json', type: 'json', nullable: true })
+  requestPayload!: Record<string, unknown> | null;
+
   @Column({ type: 'varchar', length: 32, default: 'in_progress' })
   status!: 'in_progress' | 'completed' | 'failed';
+
+  @Column({ name: 'placement_state', type: 'varchar', length: 32, default: 'registered' })
+  placementState!: 'registered' | 'submitting' | 'placed' | 'rejected' | 'replayed';
+
+  @Column({ name: 'broker_order_id', type: 'varchar', length: 191, nullable: true })
+  brokerOrderId!: string | null;
+
+  @Column({ name: 'broker_order_status', type: 'varchar', length: 64, nullable: true })
+  brokerOrderStatus!: string | null;
+
+  @Column({ name: 'reconciliation_state', type: 'varchar', length: 32, default: 'not_required' })
+  reconciliationState!: 'not_required' | 'pending' | 'matched' | 'missing';
 
   @Column({ name: 'response_json', type: 'json', nullable: true })
   responsePayload!: Record<string, unknown> | null;
 
   @Column({ name: 'error_json', type: 'json', nullable: true })
   errorPayload!: Record<string, unknown> | null;
+
+  @Column({ name: 'lifecycle_json', type: 'json', nullable: true })
+  lifecyclePayload!: Array<Record<string, unknown>> | null;
 
   @Column({ name: 'completed_at', type: 'timestamp', nullable: true })
   completedAt!: Date | null;

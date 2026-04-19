@@ -361,8 +361,17 @@ function createServiceHarness() {
         id: `${payload.idempotencyKey}-record`,
         ...payload,
         status: 'in_progress',
+        placementState: 'registered',
+        brokerOrderId: null,
+        brokerOrderStatus: null,
+        reconciliationState: 'not_required',
         responsePayload: null,
         errorPayload: null,
+        lifecyclePayload: [
+          {
+            type: 'submission_registered',
+          },
+        ],
         completedAt: null,
         failedAt: null,
         createdAt: new Date('2026-04-09T11:55:00.000Z'),
@@ -376,8 +385,16 @@ function createServiceHarness() {
         ...record,
         requestHash,
         status: 'in_progress',
+        placementState: 'registered',
+        brokerOrderId: null,
+        brokerOrderStatus: null,
+        reconciliationState: 'not_required',
         responsePayload: null,
         errorPayload: null,
+        lifecyclePayload: [
+          ...((record.lifecyclePayload as Array<Record<string, unknown>> | undefined) ?? []),
+          { type: 'submission_restarted' },
+        ],
         completedAt: null,
         failedAt: null,
         updatedAt: new Date('2026-04-09T12:00:00.000Z'),
@@ -385,12 +402,40 @@ function createServiceHarness() {
       submissions.set(`${record.userId}:${record.idempotencyKey}`, updated);
       return updated;
     },
-    async markCompleted(record: Record<string, unknown>, responsePayload: Record<string, unknown>) {
+    async markBrokerSubmitting(record: Record<string, unknown>, event: Record<string, unknown>) {
+      const updated = {
+        ...record,
+        status: 'in_progress',
+        placementState: 'submitting',
+        lifecyclePayload: [
+          ...((record.lifecyclePayload as Array<Record<string, unknown>> | undefined) ?? []),
+          event,
+        ],
+        updatedAt: new Date('2026-04-09T12:00:00.000Z'),
+      };
+      submissions.set(`${record.userId}:${record.idempotencyKey}`, updated);
+      return updated;
+    },
+    async markCompleted(
+      record: Record<string, unknown>,
+      responsePayload: Record<string, unknown>,
+      options: Record<string, unknown> = {}
+    ) {
       const updated = {
         ...record,
         status: 'completed',
+        placementState: options.placementState ?? 'placed',
+        brokerOrderId: options.brokerOrderId ?? null,
+        brokerOrderStatus: options.brokerOrderStatus ?? null,
+        reconciliationState: options.reconciliationState ?? 'not_required',
         responsePayload,
         errorPayload: null,
+        lifecyclePayload: [
+          ...((record.lifecyclePayload as Array<Record<string, unknown>> | undefined) ?? []),
+          (options.lifecycleEvent as Record<string, unknown> | undefined) ?? {
+            type: 'submission_completed',
+          },
+        ],
         completedAt: new Date('2026-04-09T12:00:00.000Z'),
         failedAt: null,
         updatedAt: new Date('2026-04-09T12:00:00.000Z'),
@@ -398,12 +443,24 @@ function createServiceHarness() {
       submissions.set(`${record.userId}:${record.idempotencyKey}`, updated);
       return updated;
     },
-    async markFailed(record: Record<string, unknown>, errorPayload: Record<string, unknown>) {
+    async markFailed(
+      record: Record<string, unknown>,
+      errorPayload: Record<string, unknown>,
+      options: Record<string, unknown> = {}
+    ) {
       const updated = {
         ...record,
         status: 'failed',
+        placementState: options.placementState ?? 'rejected',
+        reconciliationState: options.reconciliationState ?? 'not_required',
         responsePayload: null,
         errorPayload,
+        lifecyclePayload: [
+          ...((record.lifecyclePayload as Array<Record<string, unknown>> | undefined) ?? []),
+          (options.lifecycleEvent as Record<string, unknown> | undefined) ?? {
+            type: 'submission_failed',
+          },
+        ],
         completedAt: null,
         failedAt: new Date('2026-04-09T12:00:00.000Z'),
         updatedAt: new Date('2026-04-09T12:00:00.000Z'),
@@ -496,14 +553,26 @@ async function runReplayAssertion(): Promise<void> {
     reduce_only: false,
   };
 
-  const first = await harness.service.createFuturesOrder('user-1', 'asset-1', body);
-  const second = await harness.service.createFuturesOrder('user-1', 'asset-1', body);
+  const first = await harness.service.createFuturesOrder('user-1', 'asset-1', body, {
+    suggestedTradeId: 'st-auto-1',
+  });
+  const second = await harness.service.createFuturesOrder('user-1', 'asset-1', body, {
+    suggestedTradeId: 'st-auto-1',
+  });
 
   assert.deepEqual(second, first);
   assert.equal(harness.getAdapterCalls(), 1);
-  assert.equal(
-    harness.submissions.get('user-1:order-submit-8-replay')?.status,
-    'completed'
+  const stored = harness.submissions.get('user-1:order-submit-8-replay');
+  assert.equal(stored?.status, 'completed');
+  assert.equal(stored?.suggestedTradeId, 'st-auto-1');
+  assert.equal(stored?.placementState, 'placed');
+  assert.equal(stored?.brokerOrderId, 'live-1');
+  assert.equal(stored?.brokerOrderStatus, 'OPEN');
+  assert.equal(stored?.reconciliationState, 'pending');
+  assert.equal(stored?.requestPayload?.order?.suggestedTradeId, 'st-auto-1');
+  assert.deepEqual(
+    (stored?.lifecyclePayload ?? []).map((event: Record<string, unknown>) => event.type),
+    ['submission_registered', 'broker_call_started', 'broker_order_accepted']
   );
 }
 
@@ -593,7 +662,13 @@ async function runNormalizationAssertion(): Promise<void> {
 
   const stored = harness.submissions.get('user-1:order-submit-8-error');
   assert.equal(stored?.status, 'failed');
+  assert.equal(stored?.placementState, 'rejected');
+  assert.equal(stored?.reconciliationState, 'not_required');
   assert.equal(stored?.errorPayload?.code, 'ORDER_REJECTED_INSUFFICIENT_MARGIN');
+  assert.deepEqual(
+    (stored?.lifecyclePayload ?? []).map((event: Record<string, unknown>) => event.type),
+    ['submission_registered', 'broker_call_started', 'broker_order_rejected']
+  );
   assert.equal(harness.alerts.length, 1);
   assert.equal(
     harness.alerts[0]?.message,
