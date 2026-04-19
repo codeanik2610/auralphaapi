@@ -13,11 +13,15 @@ import {
   computeNextRun,
   resolveAutomationSchedule,
 } from '../utils/automationSchedule';
-import { normalizeAutomationConfig } from '../utils/automationType';
+import {
+  normalizeAutomationConfig,
+  normalizeTradeSuggestionExecutionPolicy,
+} from '../utils/automationType';
 import { normalizeTimeZone } from '../utils/timezone';
 import { AutomationRepository, Backtest } from '../../database';
 import { OperationalEventService } from './OperationalEventService';
-import { UserTimeZoneService } from './UserTimeZoneService';
+
+const BACKTEST_PROMOTION_TIME_ZONE = 'UTC';
 
 export interface BacktestPromotionInput {
   userId: string;
@@ -44,9 +48,6 @@ export class BacktestPromotionService {
 
   @Inject(() => OperationalEventService)
   private operationalEventService!: OperationalEventService;
-
-  @Inject(() => UserTimeZoneService)
-  private userTimeZoneService!: UserTimeZoneService;
 
   async promoteResolvedTopSetup({
     userId,
@@ -186,7 +187,7 @@ export class BacktestPromotionService {
         throw new BadRequestAppError('schedule is required to create a running automation');
       }
 
-      const automationTimeZone = await this.resolveAutomationTimeZone(userId, payload.timeZone);
+      const automationTimeZone = this.resolveAutomationTimeZone();
       const nextRun =
         status === 'Running' && resolvedSchedule
           ? computeNextRun(resolvedSchedule, automationTimeZone, new Date())
@@ -203,6 +204,10 @@ export class BacktestPromotionService {
             ? `timeframe:${timeframes.join(',')}`
             : 'manual');
       const name = payload.name || this.buildPromotedAutomationName(backtest, selectedTopSetup);
+      const executionPolicy = this.finalizeTradeSuggestionExecutionPolicy(
+        userId,
+        payload.executionPolicy
+      );
       const automationConfig = normalizeAutomationConfig('trade-suggestion', {
         source: 'backtest',
         backtestId: backtest.id,
@@ -224,6 +229,9 @@ export class BacktestPromotionService {
           dateRangeEnd: selectedTopSetup.dateRangeEnd ?? null,
         },
         config: normalizedConfig,
+        tradeSuggestion: {
+          execution: executionPolicy,
+        },
       });
 
       const automation = await this.automationRepository.createAutomation({
@@ -235,7 +243,7 @@ export class BacktestPromotionService {
         trigger,
         status,
         automationType: 'trade-suggestion',
-        timeZone: payload.timeZone === undefined ? automationTimeZone : payload.timeZone,
+        timeZone: automationTimeZone,
         schedule,
         riskMode: payload.riskMode ?? null,
         config: automationConfig,
@@ -496,7 +504,7 @@ export class BacktestPromotionService {
         throw new BadRequestAppError('schedule is required to create a running automation');
       }
 
-      const automationTimeZone = await this.resolveAutomationTimeZone(userId, payload.timeZone);
+      const automationTimeZone = this.resolveAutomationTimeZone();
       const nextRun =
         status === 'Running' && resolvedSchedule
           ? computeNextRun(resolvedSchedule, automationTimeZone, new Date())
@@ -513,6 +521,10 @@ export class BacktestPromotionService {
       const name =
         payload.name ||
         this.buildPromotedAutomationGroupName(primaryBacktest, symbols, timeframe);
+      const executionPolicy = this.finalizeTradeSuggestionExecutionPolicy(
+        userId,
+        payload.executionPolicy
+      );
       const automationConfig = normalizeAutomationConfig('trade-suggestion', {
         source: 'backtest',
         backtestId: primaryBacktest.id,
@@ -534,6 +546,9 @@ export class BacktestPromotionService {
           setups: setupScopes,
         },
         config: normalizedConfig,
+        tradeSuggestion: {
+          execution: executionPolicy,
+        },
       });
 
       const automation = await this.automationRepository.createAutomation({
@@ -545,7 +560,7 @@ export class BacktestPromotionService {
         trigger,
         status,
         automationType: 'trade-suggestion',
-        timeZone: payload.timeZone === undefined ? automationTimeZone : payload.timeZone,
+        timeZone: automationTimeZone,
         schedule,
         riskMode: payload.riskMode ?? null,
         config: automationConfig,
@@ -610,12 +625,31 @@ export class BacktestPromotionService {
     }
   }
 
-  private async resolveAutomationTimeZone(
+  private resolveAutomationTimeZone(): string {
+    return normalizeTimeZone(BACKTEST_PROMOTION_TIME_ZONE, BACKTEST_PROMOTION_TIME_ZONE);
+  }
+
+  private finalizeTradeSuggestionExecutionPolicy(
     userId: string,
-    requestedTimeZone?: string | null
-  ): Promise<string> {
-    const userTimeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
-    return normalizeTimeZone(requestedTimeZone ?? userTimeZone, userTimeZone);
+    value: unknown
+  ): Record<string, unknown> {
+    const normalized = normalizeTradeSuggestionExecutionPolicy(value);
+    const liveConsent = this.parseConfig(normalized.liveConsent) ?? {};
+    const executionMode = String(normalized.executionMode || 'suggestion_only').trim().toLowerCase();
+    const liveEnabled = executionMode === 'live_trade_auto' && liveConsent.enabled === true;
+
+    return {
+      ...normalized,
+      liveConsent: {
+        enabled: liveEnabled,
+        confirmedByUserId: liveEnabled
+          ? String(liveConsent.confirmedByUserId || userId).trim()
+          : null,
+        confirmedAt: liveEnabled
+          ? String(liveConsent.confirmedAt || new Date().toISOString()).trim()
+          : null,
+      },
+    };
   }
 
   private describeAutomationSchedule(schedule: AutomationSchedule): string {

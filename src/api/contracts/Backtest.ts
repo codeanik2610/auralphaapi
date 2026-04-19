@@ -427,6 +427,7 @@ export interface PromoteBacktestBody {
   symbol?: string;
   timeframe?: string;
   timeZone?: string | null;
+  executionPolicy?: Record<string, unknown> | null;
   schedule?: Record<string, unknown> | null;
 }
 
@@ -444,6 +445,7 @@ export interface PromoteBacktestBatchBody {
   riskMode?: string;
   status?: AutomationStatus;
   timeZone?: string | null;
+  executionPolicy?: Record<string, unknown> | null;
   schedule?: Record<string, unknown> | null;
   items: PromoteBacktestBatchItemBody[];
 }

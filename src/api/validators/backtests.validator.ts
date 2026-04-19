@@ -7,6 +7,11 @@ import {
 } from '../contracts/Backtest';
 import type { AutomationStatus } from '../contracts/Automation';
 import { BadRequestAppError } from '../errors/AppError';
+import {
+  normalizeTradeSuggestionExecutionPolicy,
+  TRADE_SUGGESTION_EXECUTION_MODES,
+  TRADE_SUGGESTION_ROUTE_MODES,
+} from '../utils/automationType';
 
 const VALID_STATUSES: Array<BacktestRunStatus | 'Stable' | 'Review'> = [
   'Stable',
@@ -37,6 +42,77 @@ const VALID_INTERVALS = new Set([
   '1d',
   '1w',
 ]);
+
+const parseRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+};
+
+const readString = (...values: unknown[]): string | null => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+};
+
+const validatePromoteExecutionPolicy = (
+  value: unknown
+): Record<string, unknown> | null | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestAppError('executionPolicy must be an object or null');
+  }
+
+  const executionPolicy = normalizeTradeSuggestionExecutionPolicy(value);
+  const routing = parseRecord(executionPolicy.routing) ?? {};
+  const liveConsent = parseRecord(executionPolicy.liveConsent) ?? {};
+  const executionMode = readString(executionPolicy.executionMode) ?? 'suggestion_only';
+  const routeMode = readString(routing.routeMode) ?? 'strategy_default';
+  const brokerKey = readString(routing.brokerKey);
+
+  if (
+    !TRADE_SUGGESTION_EXECUTION_MODES.includes(
+      executionMode as (typeof TRADE_SUGGESTION_EXECUTION_MODES)[number]
+    )
+  ) {
+    throw new BadRequestAppError(
+      `executionPolicy.executionMode must be one of: ${TRADE_SUGGESTION_EXECUTION_MODES.join(', ')}`
+    );
+  }
+
+  if (
+    !TRADE_SUGGESTION_ROUTE_MODES.includes(
+      routeMode as (typeof TRADE_SUGGESTION_ROUTE_MODES)[number]
+    )
+  ) {
+    throw new BadRequestAppError(
+      `executionPolicy.routing.routeMode must be one of: ${TRADE_SUGGESTION_ROUTE_MODES.join(', ')}`
+    );
+  }
+
+  if (routeMode === 'fixed' && !brokerKey) {
+    throw new BadRequestAppError(
+      'executionPolicy.routing.brokerKey is required when routeMode is fixed'
+    );
+  }
+
+  if (executionMode === 'live_trade_auto' && liveConsent.enabled !== true) {
+    throw new BadRequestAppError(
+      'executionPolicy.liveConsent.enabled must be true for live_trade_auto automations'
+    );
+  }
+
+  return executionPolicy;
+};
 
 export interface BacktestsQuery {
   limit?: string;
@@ -490,6 +566,7 @@ export const validatePromoteBacktestBody = (
   const timeframe = body.timeframe !== undefined ? String(body.timeframe).trim() : undefined;
   const timeZone =
     body.timeZone === undefined ? undefined : body.timeZone === null ? null : String(body.timeZone).trim();
+  const executionPolicy = validatePromoteExecutionPolicy(body.executionPolicy);
 
   let schedule: Record<string, unknown> | null | undefined = undefined;
   if (body.schedule !== undefined) {
@@ -543,6 +620,7 @@ export const validatePromoteBacktestBody = (
     symbol: symbol || undefined,
     timeframe: timeframe || undefined,
     timeZone: timeZone === undefined ? undefined : timeZone || null,
+    executionPolicy,
     schedule: schedule === undefined ? undefined : schedule,
   };
 };

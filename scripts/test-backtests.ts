@@ -1571,13 +1571,33 @@ async function runBacktestPromotionSnapshotAssertions(): Promise<void> {
     backtest,
     payload: {
       status: 'Draft',
+      timeZone: 'Asia/Kolkata',
+      executionPolicy: {
+        executionMode: 'paper_trade_auto',
+        approvalMode: 'auto_if_safe',
+        routing: {
+          routeMode: 'fixed',
+          brokerKey: 'mudrex',
+          accountId: 'account-1',
+        },
+      },
     },
     selectedTopSetup,
   });
 
   assert.equal(response.data.automation.id, 'automation-1');
+  assert.equal(createdAutomations[0]?.timeZone, 'UTC');
   assert.equal(createdAutomations[0]?.trigger, 'timeframe:15m');
-  const config = (createdAutomations[0]?.config as Record<string, unknown>)?.config as Record<
+  const automationConfig = createdAutomations[0]?.config as Record<string, unknown>;
+  const execution = (automationConfig?.tradeSuggestion as Record<string, unknown>)
+    ?.execution as Record<string, unknown>;
+  const routing = execution?.routing as Record<string, unknown>;
+  assert.equal(execution?.executionMode, 'paper_trade_auto');
+  assert.equal(execution?.approvalMode, 'auto_if_safe');
+  assert.equal(routing?.routeMode, 'fixed');
+  assert.equal(routing?.brokerKey, 'mudrex');
+  assert.equal(routing?.accountId, 'account-1');
+  const config = automationConfig?.config as Record<
     string,
     unknown
   >;
@@ -2162,6 +2182,13 @@ async function runBacktestBatchPromotionAssertions(): Promise<void> {
     trigger: 'Top setups',
     status: 'Running',
     timeZone: 'Asia/Kolkata',
+    executionPolicy: {
+      executionMode: 'paper_trade_auto',
+      approvalMode: 'auto_if_safe',
+      routing: {
+        routeMode: 'user_default',
+      },
+    },
     schedule: {
       interval: 'daily',
     },
@@ -2212,6 +2239,11 @@ async function runBacktestBatchPromotionAssertions(): Promise<void> {
   assert.equal(
     (capturedCalls[1].payload as Record<string, unknown>).name,
     'Shared Automation Name'
+  );
+  assert.equal(
+    ((capturedCalls[0].payload as Record<string, unknown>).executionPolicy as Record<string, unknown>)
+      ?.executionMode,
+    'paper_trade_auto'
   );
   assert.equal(activities[0].title, 'Backtest batch promotion completed');
   assert.equal(activities[0].status, 'Success');
