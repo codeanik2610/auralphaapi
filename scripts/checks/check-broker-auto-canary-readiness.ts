@@ -30,7 +30,7 @@ interface BrokerRouteSnapshot {
 const DEFAULT_CANARY_USER_EMAIL = 'admin@auralpha.com';
 const DEFAULT_CANARY_BROKER = 'mudrex';
 const SUPPORTED_DRY_RUN_CANARY_BROKERS = new Set(['mudrex', 'delta_exchange']);
-const SUPPORTED_LIVE_AUTO_BROKERS = new Set(['mudrex']);
+const SUPPORTED_LIVE_AUTO_BROKERS = new Set(['mudrex', 'delta_exchange']);
 const REQUIRED_USER_SCHEDULERS = [
   'funds-sync',
   'orders-sync',
@@ -187,7 +187,7 @@ function buildNextActions(gates: Gate[]): string[] {
     actions.push('Run or wait for the canary automation to produce one open suggested trade before attempting broker-auto.');
   }
   if (blockedKeys.has('target_broker_supported')) {
-    actions.push('Use mudrex for live placement; delta_exchange is allowed only for dry-run proof until its live-auto order adapter is certified.');
+    actions.push('Use a broker with a certified live-auto placement path: mudrex or delta_exchange.');
   }
   if (blockedKeys.has('admin_broker_route') || blockedKeys.has('admin_broker_credentials')) {
     actions.push('Fix the admin broker connection/account before canary execution.');

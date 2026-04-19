@@ -1835,9 +1835,10 @@ export class SuggestedTradesService {
     const normalizedBrokerKey = String(brokerKey || '').trim().toLowerCase();
     const normalizedSymbol = String(symbol || '').trim().toUpperCase();
 
-    if (normalizedBrokerKey !== 'mudrex') {
+    const supportedLiveAutoBrokers = new Set(['mudrex', 'delta_exchange']);
+    if (!supportedLiveAutoBrokers.has(normalizedBrokerKey)) {
       throw new BadRequestAppError(
-        `Live auto execution currently supports only mudrex routes; received ${normalizedBrokerKey || 'unknown'}`
+        `Live auto execution currently supports only mudrex and delta_exchange routes; received ${normalizedBrokerKey || 'unknown'}`
       );
     }
     if (!normalizedSymbol) {
@@ -1851,6 +1852,12 @@ export class SuggestedTradesService {
     const externalId = this.readStringValue(catalogAsset?.externalId);
     if (externalId) {
       return externalId;
+    }
+
+    if (normalizedBrokerKey === 'delta_exchange') {
+      throw new BadRequestAppError(
+        `Could not resolve a broker asset id for ${normalizedSymbol} on ${normalizedBrokerKey}; run exchange-assets-sync before live auto placement`
+      );
     }
 
     const remoteAsset = (

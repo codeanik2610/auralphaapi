@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { Inject, Service } from 'typedi';
 import {
   BrokerOrderContext,
@@ -73,23 +74,29 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     context?: BrokerOrderContext
   ): Promise<unknown> {
     const productId = await this.resolveProductId(assetId);
-    const size = Number(body.quantity);
-    const side = body.reduce_only ? 'sell' : 'buy';
-    const orderType =
-      body.order_type.toLowerCase() === 'market' ? 'market_order' : 'limit_order';
+    const size = this.resolveOrderSize(body.quantity);
+    const side = this.resolveOrderSide(body);
+    const orderType = this.resolveOrderType(body.order_type);
+    const timeInForce = this.resolveTimeInForce(body.trigger_type, orderType);
+    const clientOrderId = this.buildClientOrderId(body.idempotency_key);
+    const requestPayload: Record<string, unknown> = {
+      product_id: productId,
+      size,
+      side,
+      order_type: orderType,
+      time_in_force: timeInForce,
+      ...(body.reduce_only ? { reduce_only: true } : {}),
+      ...(clientOrderId ? { client_order_id: clientOrderId } : {}),
+    };
+
+    if (orderType === 'limit_order') {
+      requestPayload.limit_price = String(body.order_price);
+    }
 
     const payload = await this.deltaHttpClient.signedPost<DeltaOrderPayload>(
       context?.accountId,
       '/v2/orders',
-      {
-        product_id: productId,
-        size,
-        side,
-        order_type: orderType,
-        ...(orderType === 'limit_order' ? { limit_price: Number(body.order_price) } : {}),
-        time_in_force: body.trigger_type || 'gtc',
-        ...(body.reduce_only ? { reduce_only: true } : {}),
-      },
+      requestPayload,
       context?.userId
     );
 
@@ -102,6 +109,58 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       status: payload.state ?? 'open',
       message: 'Order submitted',
     };
+  }
+
+  private resolveOrderSize(quantity: unknown): number {
+    const size = Number(quantity);
+    if (!Number.isInteger(size) || size <= 0) {
+      throw new BadRequestAppError(
+        'Delta Exchange order size must be a positive integer contract quantity'
+      );
+    }
+
+    return size;
+  }
+
+  private resolveOrderSide(body: ValidatedCreateOrderRouteBody): 'buy' | 'sell' {
+    return body.side === 'short' ? 'sell' : 'buy';
+  }
+
+  private resolveOrderType(orderType: string): 'market_order' | 'limit_order' {
+    const normalized = orderType.trim().toLowerCase();
+    if (normalized === 'market' || normalized === 'market_order') {
+      return 'market_order';
+    }
+    if (normalized === 'limit' || normalized === 'limit_order') {
+      return 'limit_order';
+    }
+
+    throw new BadRequestAppError('Delta Exchange order_type must be market or limit');
+  }
+
+  private resolveTimeInForce(
+    triggerType: string | undefined,
+    orderType: 'market_order' | 'limit_order'
+  ): 'gtc' | 'ioc' {
+    const normalized = String(triggerType || '').trim().toLowerCase();
+    if (normalized === 'gtc' || normalized === 'ioc') {
+      return normalized;
+    }
+    if (normalized === 'immediate' || normalized === 'market') {
+      return 'ioc';
+    }
+
+    return orderType === 'market_order' ? 'ioc' : 'gtc';
+  }
+
+  private buildClientOrderId(idempotencyKey?: string): string | undefined {
+    const normalized = String(idempotencyKey || '').trim();
+    if (!normalized) {
+      return undefined;
+    }
+
+    const digest = createHash('sha256').update(normalized).digest('hex').slice(0, 32);
+    return `auralpha_${digest}`;
   }
 
   async getOrder(orderId: string, context?: BrokerOrderContext): Promise<unknown> {
@@ -207,7 +266,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       assetId
     );
     if (mappedByExternalId) {
-      return Number(mappedByExternalId.externalId);
+      return this.toProductId(mappedByExternalId.externalId, assetId);
     }
 
     const mappedByAssetId = await this.exchangeAssetRepository.getSystemAssetBySourceAndAssetId(
@@ -215,7 +274,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       assetId
     );
     if (mappedByAssetId) {
-      return Number(mappedByAssetId.externalId);
+      return this.toProductId(mappedByAssetId.externalId, assetId);
     }
 
     const mappedBySymbol = await this.exchangeAssetRepository.getSystemAssetBySourceAndSymbol(
@@ -223,12 +282,23 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       assetId.toUpperCase()
     );
     if (mappedBySymbol) {
-      return Number(mappedBySymbol.externalId);
+      return this.toProductId(mappedBySymbol.externalId, assetId);
     }
 
     throw new BadRequestAppError(
       'Delta Exchange product mapping not found for the selected asset'
     );
+  }
+
+  private toProductId(value: unknown, assetId: string): number {
+    const productId = Number(value);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      throw new BadRequestAppError(
+        `Delta Exchange product mapping for ${assetId} does not contain a numeric product_id`
+      );
+    }
+
+    return productId;
   }
 
   private mapOrder(item: DeltaOrderPayload) {

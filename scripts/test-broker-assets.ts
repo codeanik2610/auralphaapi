@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -1009,7 +1010,9 @@ async function runProductMapVisibilityAssertions(): Promise<void> {
 async function runDeltaLookupAssertions(): Promise<void> {
   const adapter = new DeltaExchangeOrdersAdapter() as any;
   const lookupCalls: string[] = [];
-  let submittedPayload: Record<string, unknown> | null = null;
+  const submittedPayloads: Record<string, unknown>[] = [];
+  const expectedClientOrderId = (key: string) =>
+    `auralpha_${createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
 
   Object.defineProperty(adapter, 'exchangeAssetRepository', {
     get: () => ({
@@ -1039,14 +1042,14 @@ async function runDeltaLookupAssertions(): Promise<void> {
         payload: Record<string, unknown>,
         userId?: string
       ) {
-        submittedPayload = {
+        submittedPayloads.push({
           accountId,
           routePath,
           payload,
           userId,
-        };
+        });
         return {
-          id: 'delta-order-1',
+          id: `delta-order-${submittedPayloads.length}`,
           state: 'open',
         };
       },
@@ -1056,11 +1059,13 @@ async function runDeltaLookupAssertions(): Promise<void> {
   const response = await adapter.createOrder(
     'BTCUSDT',
     {
-      quantity: '2',
+      idempotency_key: 'live-auto:delta-limit-long',
+      side: 'long',
+      quantity: 2,
       reduce_only: false,
       order_type: 'limit',
-      order_price: '101.5',
-      leverage: '3',
+      order_price: 101.5,
+      leverage: 3,
       trigger_type: 'gtc',
     },
     {
@@ -1074,7 +1079,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
     'asset:delta_exchange:BTCUSDT',
     'symbol:delta_exchange:BTCUSDT',
   ]);
-  assert.deepEqual(submittedPayload, {
+  assert.deepEqual(submittedPayloads[0], {
     accountId: 'acct-1',
     routePath: '/v2/orders',
     payload: {
@@ -1082,13 +1087,120 @@ async function runDeltaLookupAssertions(): Promise<void> {
       size: 2,
       side: 'buy',
       order_type: 'limit_order',
-      limit_price: 101.5,
       time_in_force: 'gtc',
+      client_order_id: expectedClientOrderId('live-auto:delta-limit-long'),
+      limit_price: '101.5',
     },
     userId: 'user-1',
   });
   assert.equal(response.order_id, 'delta-order-1');
   assert.equal(response.status, 'open');
+
+  const marketResponse = await adapter.createOrder(
+    'BTCUSDT',
+    {
+      idempotency_key: 'live-auto:delta-market-short',
+      side: 'short',
+      quantity: 3,
+      reduce_only: false,
+      order_type: 'market',
+      order_price: 100,
+      leverage: 15,
+      trigger_type: 'immediate',
+    },
+    {
+      userId: 'user-1',
+      accountId: 'acct-1',
+    }
+  );
+  assert.deepEqual(submittedPayloads[1], {
+    accountId: 'acct-1',
+    routePath: '/v2/orders',
+    payload: {
+      product_id: 45678,
+      size: 3,
+      side: 'sell',
+      order_type: 'market_order',
+      time_in_force: 'ioc',
+      client_order_id: expectedClientOrderId('live-auto:delta-market-short'),
+    },
+    userId: 'user-1',
+  });
+  assert.equal(marketResponse.order_id, 'delta-order-2');
+
+  await adapter.createOrder(
+    'BTCUSDT',
+    {
+      idempotency_key: 'live-auto:delta-reduce-only-close-short',
+      side: 'long',
+      quantity: 1,
+      reduce_only: true,
+      order_type: 'limit',
+      order_price: 99,
+      leverage: 15,
+      trigger_type: 'gtc',
+    },
+    {
+      userId: 'user-1',
+      accountId: 'acct-1',
+    }
+  );
+  assert.deepEqual(submittedPayloads[2], {
+    accountId: 'acct-1',
+    routePath: '/v2/orders',
+    payload: {
+      product_id: 45678,
+      size: 1,
+      side: 'buy',
+      order_type: 'limit_order',
+      time_in_force: 'gtc',
+      reduce_only: true,
+      client_order_id: expectedClientOrderId('live-auto:delta-reduce-only-close-short'),
+      limit_price: '99',
+    },
+    userId: 'user-1',
+  });
+
+  await assert.rejects(
+    () =>
+      adapter.createOrder(
+        'BTCUSDT',
+        {
+          side: 'long',
+          quantity: 0.25,
+          reduce_only: false,
+          order_type: 'market',
+          order_price: 100,
+          leverage: 15,
+          trigger_type: 'immediate',
+        },
+        {
+          userId: 'user-1',
+          accountId: 'acct-1',
+        }
+      ),
+    /positive integer contract quantity/
+  );
+  await assert.rejects(
+    () =>
+      adapter.createOrder(
+        'BTCUSDT',
+        {
+          side: 'long',
+          quantity: 1,
+          reduce_only: false,
+          order_type: 'stop',
+          order_price: 100,
+          leverage: 15,
+          trigger_type: 'immediate',
+        },
+        {
+          userId: 'user-1',
+          accountId: 'acct-1',
+        }
+      ),
+    /order_type must be market or limit/
+  );
 }
 
 async function runFlowAssertions(): Promise<void> {

@@ -894,6 +894,10 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
   let preTradeGateCalls = 0;
   let persistedExecution: Record<string, unknown> | null = null;
   const loggedActivities: string[] = [];
+  let currentBrokerKey = 'mudrex';
+  let currentAccountId = 'acc-1';
+  let currentAssetExternalId = 'mudrex-asset-1';
+  let currentRemoteAssetId = 'mudrex-asset-remote';
 
   service.suggestedTradeRepository = {
     async getSuggestedTradeById() {
@@ -922,7 +926,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
   service.exchangeAssetRepository = {
     async getSystemAssetBySourceAndSymbol() {
       return {
-        externalId: 'mudrex-asset-1',
+        externalId: currentAssetExternalId,
       };
     },
   };
@@ -930,7 +934,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     async getFuturesAssetDetailBySymbol() {
       return {
         data: {
-          id: 'mudrex-asset-remote',
+          id: currentRemoteAssetId,
         },
       };
     },
@@ -939,8 +943,8 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     executionMode: 'live_trade_auto',
     approvalMode: 'auto_if_safe',
     routeMode: 'fixed',
-    brokerKey: 'mudrex',
-    accountId: 'acc-1',
+    brokerKey: currentBrokerKey,
+    accountId: currentAccountId,
     liveConsentEnabled: true,
     orderType: 'market',
     timeInForce: null,
@@ -966,8 +970,8 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
         },
         request: {
           routing: {
-            brokerKey: 'mudrex',
-            accountId: 'acc-1',
+            brokerKey: currentBrokerKey,
+            accountId: currentAccountId,
           },
           order: {
             entryPrice: 100,
@@ -982,8 +986,8 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
       execution: {
         executionMode: 'live',
         preTradeState: 'passed',
-        brokerKey: 'mudrex',
-        accountId: 'acc-1',
+        brokerKey: currentBrokerKey,
+        accountId: currentAccountId,
         leverage: 5,
         quantity: 1,
       },
@@ -1117,6 +1121,43 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.ok(loggedActivities.includes('Live auto rollout blocked: BTCUSDT'));
     assert.ok(loggedActivities.includes('Live auto rollout ready: BTCUSDT'));
     assert.ok(loggedActivities.includes('Live auto order created: BTCUSDT'));
+
+    currentBrokerKey = 'delta_exchange';
+    currentAccountId = 'delta-acc-1';
+    currentAssetExternalId = '45678';
+    currentRemoteAssetId = 'delta-remote-should-not-be-used';
+    env.suggestedTrades.liveAuto.brokerAllowlist = ['mudrex', 'delta_exchange'];
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = 'mudrex,delta_exchange';
+
+    const deltaPlaced = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto',
+      {
+        async createOrder(
+          assetId: string,
+          body: Record<string, unknown>,
+          context?: { suggestedTradeId?: string | null }
+        ) {
+          assert.equal(assetId, '45678');
+          assert.equal(body.execution_mode, 'live');
+          assert.equal(body.symbol, 'BTCUSDT');
+          assert.equal(body.accountId, 'delta-acc-1');
+          assert.equal(body.brokerKey, 'delta_exchange');
+          assert.equal(context?.suggestedTradeId, 'st-live-auto');
+          return {
+            success: true,
+            data: {
+              order_id: 'delta-live-order-1',
+              status: 'open',
+            },
+          };
+        },
+      }
+    );
+    assert.equal(deltaPlaced.outcome, 'placed');
+    assert.equal(deltaPlaced.orderId, 'delta-live-order-1');
+    assert.equal(deltaPlaced.brokerKey, 'delta_exchange');
+    assert.equal(deltaPlaced.accountId, 'delta-acc-1');
   } finally {
     env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
     env.suggestedTrades.liveAuto.enabled = originalLiveAuto.enabled;
@@ -1829,6 +1870,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   for (const marker of [
     'Live auto rollout guard passed. Broker placement remains disabled until live auto execution is explicitly enabled.',
     'Accepted automatically by live automation execution policy',
+    'Live auto execution currently supports only mudrex and delta_exchange routes',
     'pre_trade_check',
   ]) {
     assert.equal(
@@ -1842,6 +1884,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'BROKER_AUTO_CANARY_BROKER',
     'BROKER_AUTO_CANARY_READINESS_STRICT',
     'SUPPORTED_DRY_RUN_CANARY_BROKERS',
+    'SUPPORTED_LIVE_AUTO_BROKERS',
     'delta_exchange',
     'live_auto_execution_enabled',
     'canary_live_automation',
