@@ -680,6 +680,10 @@ export const SYSTEM_SCRIPT_SURFACE = {
     script('db:migrate', 'scripts/db/db-run-migrations.ts'),
     script('db:seed:backtests-chart-smoke', 'scripts/db/db-seed-backtests-chart-smoke.ts'),
     script('db:seed:production-bootstrap', 'scripts/db/db-seed-production-bootstrap.ts'),
+    script(
+      'db:copy-admin-broker-settings-to-system',
+      'scripts/db/db-copy-admin-broker-settings-to-system.ts'
+    ),
     script('db:bootstrap'),
     script('db:encrypt-broker-secrets', 'scripts/db/db-encrypt-broker-account-secrets.ts'),
   ],

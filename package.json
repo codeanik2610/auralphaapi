@@ -196,6 +196,7 @@
   "db:migrate": "node --import tsx scripts/db/db-run-migrations.ts",
   "db:seed:backtests-chart-smoke": "node --import tsx scripts/db/db-seed-backtests-chart-smoke.ts",
   "db:seed:production-bootstrap": "node --import tsx scripts/db/db-seed-production-bootstrap.ts",
+  "db:copy-admin-broker-settings-to-system": "node --import tsx scripts/db/db-copy-admin-broker-settings-to-system.ts",
   "db:bootstrap": "npm run db:baseline && npm run db:migrate",
   "db:encrypt-broker-secrets": "node --import tsx scripts/db/db-encrypt-broker-account-secrets.ts",
   "deploy:platform:validate": "bash scripts/deploy/platform-validate.sh",
