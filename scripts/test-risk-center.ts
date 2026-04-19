@@ -518,6 +518,148 @@ async function runSnapshotPreTradeThresholdAssertions(): Promise<void> {
   );
   assert.equal(maxLeverageRule?.status, 'ok');
   assert.equal(maxLeverageRule?.blocking, false);
+
+  const futuresRuleDrafts = service.buildRuleEvaluationDrafts({
+    snapshot: {
+      portfolioEquity: 10000,
+      grossExposure: 9000,
+      reservedOrderMargin: 200,
+    },
+    route: {
+      routeMode: 'fixed',
+      brokerKey: 'mudrex',
+      accountId: 'account-1',
+      accountName: 'Mudrex Main',
+    },
+    order: {
+      symbol: 'BTCUSDT',
+      timeframe: '1h',
+      side: 'BUY',
+      orderType: 'market',
+      timeInForce: null,
+      quantityMode: 'notional',
+      quantity: null,
+      notional: 100,
+      riskPercent: null,
+      entryPrice: 100,
+      stopLossPrice: 95,
+      takeProfitTargets: [110],
+      leverage: 10,
+      reduceOnly: false,
+    },
+    coverage: {
+      accountId: 'account-1',
+    },
+    freshness: {
+      freshnessState: 'fresh',
+      snapshotLagMinutes: 1,
+      blocking: false,
+      message: 'Risk snapshot freshness is within the expected decision window.',
+    },
+    globalThresholds: {
+      ...thresholds,
+      minLeverage: 1,
+      minNotionalPerTrade: 100,
+      maxOrderAllocation: 10,
+      maxTotalAllocation: 70,
+    },
+    routePolicyContext: {
+      id: 'policy-context-1',
+      enforceHardBlock: true,
+    },
+    routeThresholds: {
+      ...thresholds,
+      minLeverage: 1,
+      minNotionalPerTrade: 100,
+      maxOrderAllocation: 10,
+      maxTotalAllocation: 70,
+    },
+    accountSnapshot: {
+      accountId: 'account-1',
+      trackedBalance: 10000,
+      grossExposure: 9000,
+      reservedOrderMargin: 200,
+    },
+    brokerSnapshot: {
+      brokerKey: 'mudrex',
+      trackedBalance: 10000,
+      grossExposure: 9000,
+      reservedOrderMargin: 200,
+    },
+    assetSnapshot: null,
+    brokerAssetSnapshot: null,
+    grossExposureDelta: 100,
+    netExposureDelta: 100,
+    openOrderExposureDelta: 100,
+    reservedOrderMarginDelta: 10,
+    notional: 100,
+  });
+
+  const portfolioMarginRule = futuresRuleDrafts.find(
+    (item: Record<string, unknown>) => item.ruleCode === 'portfolio_margin_usage'
+  );
+  assert.equal(portfolioMarginRule?.status, 'ok');
+  assert.equal(portfolioMarginRule?.blocking, false);
+  assert.equal(portfolioMarginRule?.actualValue, 2.1);
+
+  const accountMarginRule = futuresRuleDrafts.find(
+    (item: Record<string, unknown>) => item.ruleCode === 'account_margin_usage'
+  );
+  assert.equal(accountMarginRule?.status, 'ok');
+  assert.equal(accountMarginRule?.blocking, false);
+  assert.equal(accountMarginRule?.actualValue, 2.1);
+
+  const orderAllocationRule = futuresRuleDrafts.find(
+    (item: Record<string, unknown>) => item.ruleCode === 'order_allocation'
+  );
+  assert.equal(orderAllocationRule?.status, 'ok');
+  assert.equal(orderAllocationRule?.blocking, false);
+  assert.equal(orderAllocationRule?.actualValue, 0.1);
+
+  const brokerAllocationRule = futuresRuleDrafts.find(
+    (item: Record<string, unknown>) => item.ruleCode === 'broker_total_allocation'
+  );
+  assert.equal(brokerAllocationRule?.status, 'critical');
+  assert.equal(brokerAllocationRule?.blocking, true);
+  assert.equal(brokerAllocationRule?.actualValue, 91);
+}
+
+async function runFundsBalanceExtractionAssertions(): Promise<void> {
+  const service = createRiskService();
+
+  assert.equal(
+    service.extractFundsBalanceFromPayload(
+      {
+        balance: '145.3509',
+        locked_amount: '201.5992',
+        first_time_user: false,
+      },
+      'mudrex'
+    ),
+    346.95
+  );
+  assert.equal(
+    service.extractFundsBalanceFromPayload(
+      {
+        balance: '145.3509',
+        locked_amount: '201.5992',
+        first_time_user: false,
+      },
+      'delta_exchange'
+    ),
+    145.3509
+  );
+  assert.equal(
+    service.extractFundsBalanceFromPayload(
+      {
+        total_balance: '346.9501',
+        balance: '145.3509',
+        locked_amount: '201.5992',
+      },
+      'mudrex'
+    ),
+    346.9501
+  );
 }
 
 async function main(): Promise<void> {
@@ -526,6 +668,7 @@ async function main(): Promise<void> {
   await runDuplicateProtectionAssertions();
   await runPreTradeAssertions();
   await runSnapshotPreTradeThresholdAssertions();
+  await runFundsBalanceExtractionAssertions();
   console.log('Risk Center Phase 1 assertions passed.');
 }
 

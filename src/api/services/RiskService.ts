@@ -257,6 +257,7 @@ interface PositionRiskEvaluation {
   policyContextKey: string | null;
   sideKey: string | null;
   exposure: number;
+  reservedMargin: number;
   leverage: number | null;
   unrealizedPnl: number | null;
   liquidationDistancePct: number | null;
@@ -1117,7 +1118,7 @@ export class RiskService {
         weightedAvgLeverage: item.weightedAvgLeverage,
         maxLeverage: item.maxLeverage,
         worstLiquidationDistancePct: item.worstLiquidationDistancePct,
-        marginUsagePct: this.toRatioPct(item.grossExposure, item.trackedBalance) ?? undefined,
+        marginUsagePct: this.toRatioPct(item.reservedOrderMargin, item.trackedBalance) ?? undefined,
         portfolioAllocationPct:
           this.toRatioPct(item.grossExposure, snapshot.portfolioEquity) ?? undefined,
         riskScore: item.riskScore,
@@ -1201,7 +1202,7 @@ export class RiskService {
         worstLiquidationDistancePct: item.worstLiquidationDistancePct,
         allocationPct: this.toRatioPct(item.grossExposure, snapshot.portfolioEquity) ?? undefined,
         marginUsagePct:
-          this.toRatioPct(item.grossExposure, brokerBalanceByKey.get(item.brokerKey) ?? null) ??
+          this.toRatioPct(item.reservedOrderMargin, brokerBalanceByKey.get(item.brokerKey) ?? null) ??
           undefined,
         riskScore: item.riskScore,
         riskState: item.riskState,
@@ -2415,11 +2416,12 @@ export class RiskService {
             )
           : null;
       const balance = this.extractFundsBalanceValue(fundsSnapshot);
+      const orderReservedMargin = this.resolveReservedMarginFromNotional(orderNotional, leverage);
       const allocationPct =
-        balance && balance > 0 ? (Math.abs(orderNotional) / balance) * 100 : null;
+        balance && balance > 0 ? (orderReservedMargin / balance) * 100 : null;
       if (allocationPct !== null && allocationPct > activePolicy.maxOrderAllocation) {
         breaches.push(
-          `Order allocation exceeds max (${this.formatPercent(allocationPct)} vs ${this.formatPercent(
+          `Order margin allocation exceeds max (${this.formatPercent(allocationPct)} vs ${this.formatPercent(
             activePolicy.maxOrderAllocation
           )} of account balance)`
         );
@@ -2546,6 +2548,46 @@ export class RiskService {
         this.evaluatePositionRisk(position, account, equity || account.balance || totalForAccount)
       );
     });
+    const {
+      orderSnapshots,
+      observedAtByAccount: ordersObservedAtByAccount,
+      summaryByAccount: orderSummaryByAccount,
+      latestObservedAt: ordersObservedAt,
+    } = this.buildComputedRiskOrderSnapshots(accountInputs, openOrdersByAccount);
+    const portfolioOpenOrders = Array.from(orderSummaryByAccount.values()).reduce(
+      (sum, item) => sum + item.openOrders,
+      0
+    );
+    const portfolioOpenOrderExposure = this.roundNumber(
+      Array.from(orderSummaryByAccount.values()).reduce(
+        (sum, item) => sum + item.openOrderExposure,
+        0
+      ),
+      2
+    );
+    const portfolioReservedPositionMargin = this.roundNumber(
+      positionEvaluations.reduce((sum, evaluation) => sum + evaluation.reservedMargin, 0),
+      2
+    );
+    const portfolioReservedOrderMargin = this.roundNumber(
+      portfolioReservedPositionMargin +
+        Array.from(orderSummaryByAccount.values()).reduce(
+          (sum, item) => sum + item.reservedOrderMargin,
+          0
+        ),
+      2
+    );
+    const accountPositionMarginTotals = new Map<string, number>();
+    positionEvaluations.forEach((evaluation) => {
+      accountPositionMarginTotals.set(
+        evaluation.accountId,
+        this.roundNumber(
+          (accountPositionMarginTotals.get(evaluation.accountId) || 0) +
+            evaluation.reservedMargin,
+          2
+        )
+      );
+    });
 
     const capitalAtRisk = this.roundNumber(
       positionEvaluations.reduce((sum, evaluation) => sum + evaluation.exposure, 0)
@@ -2559,7 +2601,7 @@ export class RiskService {
     const netExposure = this.roundNumber(
       Array.from(accountNetExposureTotals.values()).reduce((sum, value) => sum + value, 0)
     );
-    const marginUsagePct = equity > 0 ? (capitalAtRisk / equity) * 100 : 0;
+    const marginUsagePct = equity > 0 ? (portfolioReservedOrderMargin / equity) * 100 : 0;
     const unrealizedLoss = Math.abs(
       positionEvaluations.reduce((sum, evaluation) => {
         const pnl = evaluation.unrealizedPnl;
@@ -2586,6 +2628,7 @@ export class RiskService {
       averageLeverage,
       brokerExposureTotals,
       accountExposureTotals,
+      orderSummaryByAccount,
       positionEvaluations
     );
     const alerts = this.buildRiskAlerts(positionEvaluations, controls);
@@ -2626,38 +2669,24 @@ export class RiskService {
     const positionEvaluationsById = new Map(
       positionEvaluations.map((evaluation) => [evaluation.positionId, evaluation] as const)
     );
-    const {
-      orderSnapshots,
-      observedAtByAccount: ordersObservedAtByAccount,
-      summaryByAccount: orderSummaryByAccount,
-      latestObservedAt: ordersObservedAt,
-    } = this.buildComputedRiskOrderSnapshots(accountInputs, openOrdersByAccount);
-    const portfolioOpenOrders = Array.from(orderSummaryByAccount.values()).reduce(
-      (sum, item) => sum + item.openOrders,
-      0
-    );
-    const portfolioOpenOrderExposure = this.roundNumber(
-      Array.from(orderSummaryByAccount.values()).reduce(
-        (sum, item) => sum + item.openOrderExposure,
-        0
-      ),
-      2
-    );
-    const portfolioReservedOrderMargin = this.roundNumber(
-      Array.from(orderSummaryByAccount.values()).reduce(
-        (sum, item) => sum + item.reservedOrderMargin,
-        0
-      ),
-      2
-    );
     const accountSnapshots = accountInputs.map((account) => {
       const grossExposure = this.roundNumber(accountExposureTotals.get(account.accountId) || 0);
       const accountLongExposure = this.roundNumber(accountLongExposureTotals.get(account.accountId) || 0);
       const accountShortExposure = this.roundNumber(accountShortExposureTotals.get(account.accountId) || 0);
       const accountNetExposure = this.roundNumber(accountNetExposureTotals.get(account.accountId) || 0);
       const trackedBalance = account.balance;
+      const orderSummary = orderSummaryByAccount.get(account.accountId) || {
+        openOrders: 0,
+        openOrderExposure: 0,
+        reservedOrderMargin: 0,
+      };
+      const accountReservedOrderMargin = this.roundNumber(
+        (accountPositionMarginTotals.get(account.accountId) || 0) +
+          orderSummary.reservedOrderMargin,
+        2
+      );
       const marginUsagePctForAccount =
-        trackedBalance && trackedBalance > 0 ? (grossExposure / trackedBalance) * 100 : 0;
+        trackedBalance && trackedBalance > 0 ? (accountReservedOrderMargin / trackedBalance) * 100 : 0;
       const portfolioConcentrationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
       const unrealizedPnl = this.roundNumber(
         account.positions.reduce((sum, position) => {
@@ -2680,11 +2709,6 @@ export class RiskService {
       const fundsObservedAt = this.resolveFundsObservedAt(account.fundsSnapshot);
       const positionsObservedAt = account.positionsFreshness?.observedAt || null;
       const accountOrdersObservedAt = ordersObservedAtByAccount.get(account.accountId) || null;
-      const orderSummary = orderSummaryByAccount.get(account.accountId) || {
-        openOrders: 0,
-        openOrderExposure: 0,
-        reservedOrderMargin: 0,
-      };
 
       return {
         brokerKey: account.brokerKey,
@@ -2700,7 +2724,7 @@ export class RiskService {
         shortExposure: accountShortExposure,
         openOrders: orderSummary.openOrders,
         openOrderExposure: orderSummary.openOrderExposure,
-        reservedOrderMargin: orderSummary.reservedOrderMargin,
+        reservedOrderMargin: accountReservedOrderMargin,
         marginUsagePct: this.roundNumber(marginUsagePctForAccount, 2),
         portfolioConcentrationPct: this.roundNumber(portfolioConcentrationPct, 2),
         dailyLossUsagePct: this.roundNumber(dailyLossUsagePct, 2),
@@ -3278,7 +3302,8 @@ export class RiskService {
         2
       );
       const reservedOrderMargin = this.roundNumber(
-        scopedAccounts.reduce(
+        scopedEvaluations.reduce((sum, evaluation) => sum + evaluation.reservedMargin, 0) +
+          scopedAccounts.reduce(
           (sum, account) => sum + (orderSummaryByAccount.get(account.accountId)?.reservedOrderMargin || 0),
           0
         ),
@@ -3299,7 +3324,7 @@ export class RiskService {
         scopedEvaluations.map((evaluation) => evaluation.liquidationDistancePct)
       );
       const allocationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
-      const marginUsagePct = trackedBalance > 0 ? (grossExposure / trackedBalance) * 100 : 0;
+      const marginUsagePct = trackedBalance > 0 ? (reservedOrderMargin / trackedBalance) * 100 : 0;
       const assessment = this.buildScopedRiskAssessment({
         criticalSignals: [
           ...(marginUsagePct >= thresholds.marginUsageCriticalPct
@@ -3449,6 +3474,11 @@ export class RiskService {
         openOrderExposure: 0,
         reservedOrderMargin: 0,
       };
+      const reservedOrderMargin = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => sum + evaluation.reservedMargin, 0) +
+          orderSummary.reservedOrderMargin,
+        2
+      );
       const assessment = this.buildScopedRiskAssessment({
         criticalSignals: [
           ...(allocationPct >= thresholds.concentrationCriticalPct
@@ -3501,7 +3531,7 @@ export class RiskService {
         positionCount: scopedEvaluations.length,
         openOrders: orderSummary.openOrders,
         openOrderExposure: this.roundNumber(orderSummary.openOrderExposure, 2),
-        reservedOrderMargin: this.roundNumber(orderSummary.reservedOrderMargin, 2),
+        reservedOrderMargin,
         grossExposure,
         netExposure,
         longExposure,
@@ -3581,7 +3611,6 @@ export class RiskService {
       );
       const netExposure = this.roundNumber(longExposure - shortExposure, 2);
       const allocationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
-      const marginUsagePct = brokerTrackedBalance > 0 ? (grossExposure / brokerTrackedBalance) * 100 : 0;
       const weightedAvgLeverage = this.weightedAverage(
         scopedEvaluations.map((evaluation) => ({
           value: evaluation.leverage,
@@ -3601,6 +3630,12 @@ export class RiskService {
         openOrderExposure: 0,
         reservedOrderMargin: 0,
       };
+      const reservedOrderMargin = this.roundNumber(
+        scopedEvaluations.reduce((sum, evaluation) => sum + evaluation.reservedMargin, 0) +
+          orderSummary.reservedOrderMargin,
+        2
+      );
+      const marginUsagePct = brokerTrackedBalance > 0 ? (reservedOrderMargin / brokerTrackedBalance) * 100 : 0;
       const assessment = this.buildScopedRiskAssessment({
         criticalSignals: [
           ...(marginUsagePct >= thresholds.marginUsageCriticalPct
@@ -3662,7 +3697,7 @@ export class RiskService {
         positionCount: scopedEvaluations.length,
         openOrders: orderSummary.openOrders,
         openOrderExposure: this.roundNumber(orderSummary.openOrderExposure, 2),
-        reservedOrderMargin: this.roundNumber(orderSummary.reservedOrderMargin, 2),
+        reservedOrderMargin,
         grossExposure,
         netExposure,
         longExposure,
@@ -3808,6 +3843,7 @@ export class RiskService {
     averageLeverage: number | null,
     brokerExposureTotals: Map<string, number>,
     accountExposureTotals: Map<string, number>,
+    orderSummaryByAccount: Map<string, ComputedRiskOrderAccountSummary>,
     evaluations: PositionRiskEvaluation[]
   ): ComputedRiskControlPayload[] {
     const controls: ComputedRiskControlPayload[] = [];
@@ -3981,9 +4017,15 @@ export class RiskService {
     });
 
     accounts.forEach((account) => {
-      const accountExposure = accountExposureTotals.get(account.accountId) || 0;
+      const accountReservedMargin = this.roundNumber(
+        evaluations
+          .filter((evaluation) => evaluation.accountId === account.accountId)
+          .reduce((sum, evaluation) => sum + evaluation.reservedMargin, 0) +
+          (orderSummaryByAccount.get(account.accountId)?.reservedOrderMargin || 0),
+        2
+      );
       const accountBalance = account.balance || 0;
-      const accountMarginUsagePct = accountBalance > 0 ? (accountExposure / accountBalance) * 100 : 0;
+      const accountMarginUsagePct = accountBalance > 0 ? (accountReservedMargin / accountBalance) * 100 : 0;
       const accountStatus = this.resolveThresholdState(
         accountMarginUsagePct,
         account.thresholds.marginUsageWarnPct,
@@ -3996,7 +4038,7 @@ export class RiskService {
         status: accountStatus,
         action:
           accountMarginUsagePct >= account.thresholds.marginUsageCriticalPct
-            ? `Add funds or trim exposure on ${account.accountName}.`
+            ? `Add funds or reduce reserved margin on ${account.accountName}.`
             : accountMarginUsagePct >= account.thresholds.marginUsageWarnPct
               ? `Monitor ${account.accountName}; margin usage is rising.`
               : `${account.accountName} remains comfortably within margin tolerance.`,
@@ -4255,6 +4297,7 @@ export class RiskService {
     const summary = position.positionSummary;
     const exposure = this.resolvePositionExposure(position);
     const leverage = this.toFiniteNumber(summary?.leverage ?? position.leverage, null);
+    const reservedMargin = this.resolvePositionReservedMargin(position, exposure, leverage);
     const unrealizedPnl = this.toFiniteNumber(summary?.unrealizedPnl ?? position.unrealized_pnl, null);
     const concentrationPct = portfolioEquity > 0 ? (exposure / portfolioEquity) * 100 : null;
     const liquidationDistancePct = this.resolveLiquidationDistancePct(position);
@@ -4322,6 +4365,7 @@ export class RiskService {
       policyContextKey: account.policyContext.contextKey,
       sideKey: this.resolvePositionSideKey(position),
       exposure,
+      reservedMargin,
       leverage,
       unrealizedPnl,
       liquidationDistancePct,
@@ -4632,6 +4676,58 @@ export class RiskService {
     return 0;
   }
 
+  private resolvePositionReservedMargin(
+    position: PositionRecord,
+    exposure: number,
+    leverage: number | null
+  ): number {
+    const explicitMargin =
+      this.pickRecordNumber(position, [
+        'reserved_margin',
+        'reservedMargin',
+        'position_margin',
+        'positionMargin',
+        'initial_margin',
+        'initialMargin',
+        'used_margin',
+        'usedMargin',
+        'margin_used',
+        'marginUsed',
+        'margin',
+      ]) ??
+      this.pickRecordNumber(this.parseSnapshotJson(position.payload_json), [
+        'reserved_margin',
+        'reservedMargin',
+        'position_margin',
+        'positionMargin',
+        'initial_margin',
+        'initialMargin',
+        'used_margin',
+        'usedMargin',
+        'margin_used',
+        'marginUsed',
+        'margin',
+      ]);
+
+    if (explicitMargin !== null) {
+      return this.roundNumber(Math.abs(explicitMargin), 2);
+    }
+
+    return this.resolveReservedMarginFromNotional(exposure, leverage);
+  }
+
+  private resolveReservedMarginFromNotional(
+    notional: number,
+    leverage?: number | null
+  ): number {
+    const normalizedLeverage = this.toFiniteNumber(leverage, null);
+    if (normalizedLeverage && normalizedLeverage > 0) {
+      return this.roundNumber(Math.abs(notional) / normalizedLeverage, 2);
+    }
+
+    return this.roundNumber(Math.abs(notional), 2);
+  }
+
   private resolvePositionSideKey(position: PositionRecord): 'long' | 'short' | null {
     const rawValue = String(
       position.positionSummary?.sideKey ||
@@ -4690,8 +4786,9 @@ export class RiskService {
 
     const futuresFunds = this.parseSnapshotJson(snapshot.futures_funds_json);
     const walletFunds = this.parseSnapshotJson(snapshot.wallet_funds_json);
-    const walletBalance = this.extractFundsBalanceFromPayload(walletFunds);
-    const futuresBalance = this.extractFundsBalanceFromPayload(futuresFunds);
+    const brokerKey = String(snapshot.broker_key || '').trim().toLowerCase();
+    const walletBalance = this.extractFundsBalanceFromPayload(walletFunds, brokerKey);
+    const futuresBalance = this.extractFundsBalanceFromPayload(futuresFunds, brokerKey);
 
     return {
       walletBalance,
@@ -4708,18 +4805,53 @@ export class RiskService {
     return snapshot.observed_at || snapshot.computed_at || snapshot.created_at || null;
   }
 
-  private extractFundsBalanceFromPayload(payload: Record<string, unknown> | null): number | null {
+  private extractFundsBalanceFromPayload(
+    payload: Record<string, unknown> | null,
+    brokerKey?: string
+  ): number | null {
     if (!payload) {
       return null;
     }
 
+    const equityLikeBalance = this.toFiniteNumber(
+      payload.equity ??
+        payload.futures_equity ??
+        payload.futuresEquity ??
+        payload.margin_balance ??
+        payload.marginBalance ??
+        payload.total_balance ??
+        payload.totalBalance ??
+        payload.account_equity ??
+        payload.accountEquity,
+      null
+    );
+    if (equityLikeBalance !== null) {
+      return equityLikeBalance;
+    }
+
+    const totalBalance = this.toFiniteNumber(
+      payload.total ?? payload.wallet_balance ?? payload.walletBalance,
+      null
+    );
+    if (totalBalance !== null) {
+      return totalBalance;
+    }
+
+    const balance = this.toFiniteNumber(payload.balance, null);
+    const lockedAmount = this.toFiniteNumber(
+      payload.locked_amount ?? payload.lockedAmount,
+      null
+    );
+    if (String(brokerKey || '').trim().toLowerCase() === 'mudrex' && balance !== null) {
+      return this.roundNumber(balance + Math.max(0, lockedAmount ?? 0), 2);
+    }
+
     return this.toFiniteNumber(
       payload.balance ??
-        payload.total ??
-        payload.equity ??
-        payload.wallet_balance ??
-        payload.futures_equity ??
-        payload.margin_balance,
+        payload.available_balance ??
+        payload.availableBalance ??
+        payload.free_balance ??
+        payload.freeBalance,
       null
     );
   }

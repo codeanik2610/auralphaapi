@@ -688,8 +688,10 @@ export class RiskOverviewService {
     const futuresFunds = this.parseSnapshotJson(snapshot.futures_funds_json);
     const walletFunds = this.parseSnapshotJson(snapshot.wallet_funds_json);
 
+    const brokerKey = String(snapshot.broker_key || '').trim().toLowerCase();
     const value =
-      this.extractFundsBalanceValue(futuresFunds) ?? this.extractFundsBalanceValue(walletFunds);
+      this.extractFundsBalanceValue(futuresFunds, brokerKey) ??
+      this.extractFundsBalanceValue(walletFunds, brokerKey);
 
     return {
       value,
@@ -699,18 +701,48 @@ export class RiskOverviewService {
     };
   }
 
-  private extractFundsBalanceValue(funds: Record<string, unknown> | null): number | null {
+  private extractFundsBalanceValue(
+    funds: Record<string, unknown> | null,
+    brokerKey?: string
+  ): number | null {
     if (!funds) {
       return null;
     }
 
+    const equityLikeBalance = this.toNumber(
+      funds.equity ??
+        funds.futures_equity ??
+        funds.futuresEquity ??
+        funds.margin_balance ??
+        funds.marginBalance ??
+        funds.total_balance ??
+        funds.totalBalance ??
+        funds.account_equity ??
+        funds.accountEquity
+    );
+    if (equityLikeBalance !== null) {
+      return equityLikeBalance;
+    }
+
+    const totalBalance = this.toNumber(
+      funds.total ?? funds.wallet_balance ?? funds.walletBalance
+    );
+    if (totalBalance !== null) {
+      return totalBalance;
+    }
+
+    const balance = this.toNumber(funds.balance);
+    const lockedAmount = this.toNumber(funds.locked_amount ?? funds.lockedAmount);
+    if (String(brokerKey || '').trim().toLowerCase() === 'mudrex' && balance !== null) {
+      return Number((balance + Math.max(0, lockedAmount ?? 0)).toFixed(2));
+    }
+
     return this.toNumber(
       funds.balance ??
-        funds.total ??
-        funds.equity ??
-        funds.wallet_balance ??
-        funds.futures_equity ??
-        funds.margin_balance
+        funds.available_balance ??
+        funds.availableBalance ??
+        funds.free_balance ??
+        funds.freeBalance
     );
   }
 

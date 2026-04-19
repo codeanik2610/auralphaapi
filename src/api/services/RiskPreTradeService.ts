@@ -825,7 +825,7 @@ export class RiskPreTradeService {
       beforeOpenOrderExposure: this.toFiniteNumber(input.snapshot?.openOrderExposure, null),
       beforeReservedOrderMargin: this.toFiniteNumber(input.snapshot?.reservedOrderMargin, null),
       beforeMarginUsagePct: this.toRatioPct(
-        input.snapshot?.grossExposure,
+        input.snapshot?.reservedOrderMargin,
         input.snapshot?.portfolioEquity
       ),
       beforeAllocationPct: this.toRatioPct(
@@ -857,8 +857,8 @@ export class RiskPreTradeService {
       ),
       afterMarginUsagePct: portfolioEquity
         ? this.toRatioPct(
-            (this.toFiniteNumber(input.snapshot?.grossExposure, 0) ?? 0) +
-              input.grossExposureDelta,
+            (this.toFiniteNumber(input.snapshot?.reservedOrderMargin, 0) ?? 0) +
+              input.reservedOrderMarginDelta,
             portfolioEquity
           )
         : null,
@@ -891,7 +891,7 @@ export class RiskPreTradeService {
           input.brokerSnapshot?.reservedOrderMargin,
           0
         ),
-        beforeMarginUsagePct: this.toRatioPct(input.brokerSnapshot?.grossExposure, trackedBalance),
+        beforeMarginUsagePct: this.toRatioPct(input.brokerSnapshot?.reservedOrderMargin, trackedBalance),
         beforeAllocationPct: this.toRatioPct(
           input.brokerSnapshot?.grossExposure,
           portfolioEquity
@@ -923,8 +923,8 @@ export class RiskPreTradeService {
           2
         ),
         afterMarginUsagePct: this.toRatioPct(
-          (this.toFiniteNumber(input.brokerSnapshot?.grossExposure, 0) ?? 0) +
-            input.grossExposureDelta,
+          (this.toFiniteNumber(input.brokerSnapshot?.reservedOrderMargin, 0) ?? 0) +
+            input.reservedOrderMarginDelta,
           trackedBalance
         ),
         afterAllocationPct: this.toRatioPct(
@@ -953,7 +953,7 @@ export class RiskPreTradeService {
           input.accountSnapshot?.reservedOrderMargin,
           0
         ),
-        beforeMarginUsagePct: this.toRatioPct(input.accountSnapshot?.grossExposure, trackedBalance),
+        beforeMarginUsagePct: this.toRatioPct(input.accountSnapshot?.reservedOrderMargin, trackedBalance),
         beforeAllocationPct: this.toFiniteNumber(
           input.accountSnapshot?.portfolioConcentrationPct,
           null
@@ -985,8 +985,8 @@ export class RiskPreTradeService {
           2
         ),
         afterMarginUsagePct: this.toRatioPct(
-          (this.toFiniteNumber(input.accountSnapshot?.grossExposure, 0) ?? 0) +
-            input.grossExposureDelta,
+          (this.toFiniteNumber(input.accountSnapshot?.reservedOrderMargin, 0) ?? 0) +
+            input.reservedOrderMarginDelta,
           trackedBalance
         ),
         afterAllocationPct: portfolioEquity
@@ -1071,7 +1071,7 @@ export class RiskPreTradeService {
           0
         ),
         beforeMarginUsagePct: this.toRatioPct(
-          input.brokerAssetSnapshot?.grossExposure,
+          input.brokerAssetSnapshot?.reservedOrderMargin,
           trackedBalance
         ),
         beforeAllocationPct: this.toRatioPct(
@@ -1105,8 +1105,8 @@ export class RiskPreTradeService {
           2
         ),
         afterMarginUsagePct: this.toRatioPct(
-          (this.toFiniteNumber(input.brokerAssetSnapshot?.grossExposure, 0) ?? 0) +
-            input.grossExposureDelta,
+          (this.toFiniteNumber(input.brokerAssetSnapshot?.reservedOrderMargin, 0) ?? 0) +
+            input.reservedOrderMarginDelta,
           trackedBalance
         ),
         afterAllocationPct: this.toRatioPct(
@@ -1185,7 +1185,8 @@ export class RiskPreTradeService {
     }
 
     const afterPortfolioMarginUsage = this.toRatioPct(
-      (this.toFiniteNumber(input.snapshot?.grossExposure, 0) ?? 0) + input.grossExposureDelta,
+      (this.toFiniteNumber(input.snapshot?.reservedOrderMargin, 0) ?? 0) +
+        input.reservedOrderMarginDelta,
       input.snapshot?.portfolioEquity
     );
     if (afterPortfolioMarginUsage !== null) {
@@ -1258,8 +1259,8 @@ export class RiskPreTradeService {
     if (input.route.accountId) {
       const trackedBalance = this.toFiniteNumber(input.accountSnapshot?.trackedBalance, null);
       const afterAccountMarginUsage = this.toRatioPct(
-        (this.toFiniteNumber(input.accountSnapshot?.grossExposure, 0) ?? 0) +
-          input.grossExposureDelta,
+        (this.toFiniteNumber(input.accountSnapshot?.reservedOrderMargin, 0) ?? 0) +
+          input.reservedOrderMarginDelta,
         trackedBalance
       );
       if (afterAccountMarginUsage !== null) {
@@ -1294,7 +1295,7 @@ export class RiskPreTradeService {
       }
 
       if (trackedBalance && trackedBalance > 0 && input.routeThresholds.maxOrderAllocation !== null) {
-        const orderAllocationPct = this.toRatioPct(input.notional, trackedBalance);
+        const orderAllocationPct = this.toRatioPct(input.reservedOrderMarginDelta, trackedBalance);
         if (orderAllocationPct !== null) {
           const warnThresholdValue = this.roundNumber(
             input.routeThresholds.maxOrderAllocation * 0.8,
@@ -1323,10 +1324,10 @@ export class RiskPreTradeService {
               status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
             message:
               status === 'critical'
-                ? 'Requested order allocation exceeds the configured maximum for this account.'
+                ? 'Requested order margin allocation exceeds the configured maximum for this account.'
                 : status === 'warning'
-                  ? 'Requested order allocation is approaching the configured maximum for this account.'
-                  : 'Requested order allocation remains within tolerance.',
+                  ? 'Requested order margin allocation is approaching the configured maximum for this account.'
+                  : 'Requested order margin allocation remains within tolerance.',
           });
         }
       }
