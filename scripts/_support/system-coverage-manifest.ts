@@ -587,6 +587,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     ],
     checks: [
       script('check:suggested-trades-health', 'scripts/checks/check-suggested-trades-health.ts'),
+      script(
+        'check:broker-auto-canary-readiness',
+        'scripts/checks/check-broker-auto-canary-readiness.ts'
+      ),
     ],
     proofs: [
       script('proof:suggested-trades-live', 'scripts/proofs/proof-suggested-trades-live.ts'),

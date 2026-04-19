@@ -130,6 +130,7 @@
   "check:scheduler-account-scope-live": "node --import tsx scripts/checks/check-scheduler-account-scope-live.ts",
   "proof:scheduler-account-scope-live": "node --import tsx scripts/proofs/proof-scheduler-account-scope-live.ts",
   "check:suggested-trades-health": "node --import tsx scripts/checks/check-suggested-trades-health.ts",
+  "check:broker-auto-canary-readiness": "node --import tsx scripts/checks/check-broker-auto-canary-readiness.ts",
   "check:broker-assets-health": "node --import tsx scripts/checks/check-broker-assets-health.ts",
   "check:asset-price-sync-health": "node --import tsx scripts/checks/check-asset-price-sync-health.ts",
   "check:global-system-schedulers-health": "node --import tsx scripts/checks/check-global-system-schedulers-health.ts",

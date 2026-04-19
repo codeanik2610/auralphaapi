@@ -1738,6 +1738,8 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const checkSource = read('scripts/checks/check-suggested-trades-health.ts');
   const releaseGateSource = read('scripts/release-gates/release-gate-suggested-trades.ts');
   const signoffSource = read('scripts/signoffs/signoff-suggested-trades.ts');
+  const canaryReadinessSource = read('scripts/checks/check-broker-auto-canary-readiness.ts');
+  const coverageManifestSource = read('scripts/_support/system-coverage-manifest.ts');
   const envSource = read('src/env.ts');
   const serviceSource = read('src/api/services/SuggestedTradesService.ts');
 
@@ -1750,10 +1752,19 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/proofs/proof-suggested-trades-live.ts'
   );
   assert.equal(
+    packageScripts['check:broker-auto-canary-readiness'],
+    'node --import tsx scripts/checks/check-broker-auto-canary-readiness.ts'
+  );
+  assert.equal(
     runPackageSuiteSource.includes("'suggested-trades': ['test:suggested-trades']"),
     true
   );
   assert.equal(runPackageSuiteSource.includes("'test:suggested-trades'"), true);
+  assert.equal(
+    coverageManifestSource.includes('check:broker-auto-canary-readiness'),
+    true,
+    'system coverage manifest must include the broker-auto canary readiness check'
+  );
 
   assert.equal(
     proofSource.includes("scripts/smokes/smoke-suggested-trades-lifecycle.ts"),
@@ -1824,6 +1835,20 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       serviceSource.includes(marker),
       true,
       `SuggestedTradesService must retain ${marker} for live-auto auditability`
+    );
+  }
+  for (const marker of [
+    'BROKER_AUTO_CANARY_USER_EMAIL',
+    'BROKER_AUTO_CANARY_BROKER',
+    'BROKER_AUTO_CANARY_READINESS_STRICT',
+    'live_auto_execution_enabled',
+    'canary_live_automation',
+    'order_submission_reconciliation_clean',
+  ]) {
+    assert.equal(
+      canaryReadinessSource.includes(marker),
+      true,
+      `broker-auto canary readiness check must retain ${marker}`
     );
   }
 }
