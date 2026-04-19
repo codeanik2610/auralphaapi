@@ -28,6 +28,13 @@ interface DeltaOrderPayload {
   time_in_force?: string | null;
 }
 
+interface DeltaProductPayload {
+  id?: number | string;
+  symbol?: string;
+  contract_value?: string | number | null;
+  contract_unit_currency?: string | null;
+}
+
 @Service()
 export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
   @Inject(() => DeltaExchangeHttpClient)
@@ -35,6 +42,8 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
 
   @Inject(() => ExchangeAssetRepository)
   private exchangeAssetRepository!: ExchangeAssetRepository;
+
+  private productCache: { fetchedAt: number; byId: Map<string, DeltaProductPayload> } | null = null;
 
   async listOpenOrders(
     query: ValidatedOrdersRouteQuery,
@@ -74,7 +83,8 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     context?: BrokerOrderContext
   ): Promise<unknown> {
     const productId = await this.resolveProductId(assetId);
-    const size = this.resolveOrderSize(body.quantity);
+    const product = await this.resolveProductForLiveAutoQuantity(productId, body);
+    const size = this.resolveOrderSize(body.quantity, product, body);
     const side = this.resolveOrderSide(body);
     const orderType = this.resolveOrderType(body.order_type);
     const timeInForce = this.resolveTimeInForce(body.trigger_type, orderType);
@@ -99,11 +109,20 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       requestPayload,
       context?.userId
     );
+    const amount = this.resolveEstimatedOrderValue(size, body.order_price, product);
+    const contractValue = this.toNumber(product?.contract_value);
 
     return {
       leverage: String(body.leverage),
-      amount: String(Number(body.order_price) * size),
+      amount: String(amount),
       quantity: String(size),
+      ...(contractValue > 0
+        ? {
+            base_quantity: String(size * contractValue),
+            contract_value: String(contractValue),
+            contract_unit_currency: product?.contract_unit_currency ?? null,
+          }
+        : {}),
       price: String(body.order_price),
       order_id: String(payload.id ?? ''),
       status: payload.state ?? 'open',
@@ -111,15 +130,42 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     };
   }
 
-  private resolveOrderSize(quantity: unknown): number {
+  private resolveOrderSize(
+    quantity: unknown,
+    product: DeltaProductPayload | null,
+    body: ValidatedCreateOrderRouteBody
+  ): number {
     const size = Number(quantity);
-    if (!Number.isInteger(size) || size <= 0) {
+    if (Number.isInteger(size) && size > 0) {
+      return size;
+    }
+
+    if (this.isLiveAutoSubmission(body)) {
+      const contractValue = this.toNumber(product?.contract_value);
+      if (!(contractValue > 0)) {
+        throw new BadRequestAppError(
+          'Delta Exchange live-auto quantity conversion requires product contract_value'
+        );
+      }
+      const contractSize = Math.floor(size / contractValue);
+      if (!(contractSize > 0)) {
+        throw new BadRequestAppError(
+          'Delta Exchange live-auto notional is smaller than one whole contract'
+        );
+      }
+
+      return contractSize;
+    }
+
+    if (!(size > 0)) {
       throw new BadRequestAppError(
         'Delta Exchange order size must be a positive integer contract quantity'
       );
     }
 
-    return size;
+    throw new BadRequestAppError(
+      'Delta Exchange order size must be a whole-number contract quantity'
+    );
   }
 
   private resolveOrderSide(body: ValidatedCreateOrderRouteBody): 'buy' | 'sell' {
@@ -161,6 +207,55 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
 
     const digest = createHash('sha256').update(normalized).digest('hex').slice(0, 32);
     return `auralpha_${digest}`;
+  }
+
+  private isLiveAutoSubmission(body: ValidatedCreateOrderRouteBody): boolean {
+    return String(body.idempotency_key || '').trim().startsWith('live-auto:');
+  }
+
+  private async resolveProductForLiveAutoQuantity(
+    productId: number,
+    body: ValidatedCreateOrderRouteBody
+  ): Promise<DeltaProductPayload | null> {
+    const size = Number(body.quantity);
+    if (Number.isInteger(size) && size > 0) {
+      return null;
+    }
+    if (!this.isLiveAutoSubmission(body)) {
+      return null;
+    }
+
+    return this.getProductById(productId);
+  }
+
+  private async getProductById(productId: number): Promise<DeltaProductPayload | null> {
+    const now = Date.now();
+    if (!this.productCache || now - this.productCache.fetchedAt > 5 * 60 * 1000) {
+      const products = await this.deltaHttpClient.publicGet<DeltaProductPayload[]>('/v2/products');
+      const byId = new Map<string, DeltaProductPayload>();
+      for (const product of Array.isArray(products) ? products : []) {
+        const id = String(product.id ?? '').trim();
+        if (id) {
+          byId.set(id, product);
+        }
+      }
+      this.productCache = { fetchedAt: now, byId };
+    }
+
+    return this.productCache.byId.get(String(productId)) ?? null;
+  }
+
+  private resolveEstimatedOrderValue(
+    contracts: number,
+    orderPrice: unknown,
+    product: DeltaProductPayload | null
+  ): number {
+    const price = Number(orderPrice);
+    if (!(Number.isFinite(price) && price > 0)) {
+      return 0;
+    }
+    const contractValue = this.toNumber(product?.contract_value);
+    return Number((price * contracts * (contractValue > 0 ? contractValue : 1)).toFixed(8));
   }
 
   async getOrder(orderId: string, context?: BrokerOrderContext): Promise<unknown> {

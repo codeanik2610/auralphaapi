@@ -1011,6 +1011,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
   const adapter = new DeltaExchangeOrdersAdapter() as any;
   const lookupCalls: string[] = [];
   const submittedPayloads: Record<string, unknown>[] = [];
+  const publicProductRequests: string[] = [];
   const expectedClientOrderId = (key: string) =>
     `auralpha_${createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
 
@@ -1036,6 +1037,17 @@ async function runDeltaLookupAssertions(): Promise<void> {
 
   Object.defineProperty(adapter, 'deltaHttpClient', {
     get: () => ({
+      async publicGet(routePath: string) {
+        publicProductRequests.push(routePath);
+        return [
+          {
+            id: 45678,
+            symbol: 'BTCUSD',
+            contract_value: '0.001',
+            contract_unit_currency: 'BTC',
+          },
+        ];
+      },
       async signedPost(
         accountId: string,
         routePath: string,
@@ -1095,6 +1107,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
   });
   assert.equal(response.order_id, 'delta-order-1');
   assert.equal(response.status, 'open');
+  assert.deepEqual(publicProductRequests, []);
 
   const marketResponse = await adapter.createOrder(
     'BTCUSDT',
@@ -1161,6 +1174,43 @@ async function runDeltaLookupAssertions(): Promise<void> {
     userId: 'user-1',
   });
 
+  const convertedResponse = await adapter.createOrder(
+    'BTCUSDT',
+    {
+      idempotency_key: 'live-auto:delta-notional-contract-conversion',
+      side: 'long',
+      quantity: 100 / 74739.2,
+      reduce_only: false,
+      order_type: 'market',
+      order_price: 74739.2,
+      leverage: 15,
+      trigger_type: 'immediate',
+    },
+    {
+      userId: 'user-1',
+      accountId: 'acct-1',
+    }
+  );
+  assert.deepEqual(publicProductRequests, ['/v2/products']);
+  assert.deepEqual(submittedPayloads[3], {
+    accountId: 'acct-1',
+    routePath: '/v2/orders',
+    payload: {
+      product_id: 45678,
+      size: 1,
+      side: 'buy',
+      order_type: 'market_order',
+      time_in_force: 'ioc',
+      client_order_id: expectedClientOrderId('live-auto:delta-notional-contract-conversion'),
+    },
+    userId: 'user-1',
+  });
+  assert.equal(convertedResponse.order_id, 'delta-order-4');
+  assert.equal(convertedResponse.quantity, '1');
+  assert.equal(convertedResponse.base_quantity, '0.001');
+  assert.equal(convertedResponse.contract_value, '0.001');
+  assert.equal(convertedResponse.amount, '74.7392');
+
   await assert.rejects(
     () =>
       adapter.createOrder(
@@ -1179,7 +1229,28 @@ async function runDeltaLookupAssertions(): Promise<void> {
           accountId: 'acct-1',
         }
       ),
-    /positive integer contract quantity/
+    /whole-number contract quantity/
+  );
+  await assert.rejects(
+    () =>
+      adapter.createOrder(
+        'BTCUSDT',
+        {
+          idempotency_key: 'live-auto:delta-too-small',
+          side: 'long',
+          quantity: 0.0005,
+          reduce_only: false,
+          order_type: 'market',
+          order_price: 74739.2,
+          leverage: 15,
+          trigger_type: 'immediate',
+        },
+        {
+          userId: 'user-1',
+          accountId: 'acct-1',
+        }
+      ),
+    /smaller than one whole contract/
   );
   await assert.rejects(
     () =>
