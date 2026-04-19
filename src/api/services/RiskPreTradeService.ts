@@ -772,6 +772,14 @@ export class RiskPreTradeService {
       Boolean(coverage.positionsObservedAt) ||
       Boolean(coverage.latestPositionSnapshotSeenAt) ||
       Boolean(coverage.latestPositionReadModelSeenAt) ||
+      (Boolean(coverage.positionsCheckpointAt) &&
+        coverage.openPositions === 0 &&
+        coverage.positionTotalRows === 0 &&
+        coverage.positionSnapshotRows === 0 &&
+        coverage.positionReadModelRows === 0 &&
+        coverage.rowsMissingFromReadModel === 0 &&
+        coverage.rowsBehindSnapshot === 0 &&
+        coverage.orphanReadModelRows === 0) ||
       coverage.positionSnapshotRows > 0 ||
       coverage.positionReadModelRows > 0;
 

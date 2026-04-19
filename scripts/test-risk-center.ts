@@ -425,6 +425,48 @@ async function runPreTradeAssertions(): Promise<void> {
 
 async function runSnapshotPreTradeThresholdAssertions(): Promise<void> {
   const service = new RiskPreTradeService() as any;
+  const freshEmptyRoute = service.resolveFreshness(
+    { createdAt: new Date() },
+    {
+      latestSuccessWalletAvailable: false,
+      latestSuccessFuturesAvailable: true,
+      positionsObservedAt: null,
+      latestPositionSnapshotSeenAt: null,
+      latestPositionReadModelSeenAt: null,
+      positionsCheckpointAt: new Date(),
+      openPositions: 0,
+      positionTotalRows: 0,
+      positionSnapshotRows: 0,
+      positionReadModelRows: 0,
+      rowsMissingFromReadModel: 0,
+      rowsBehindSnapshot: 0,
+      orphanReadModelRows: 0,
+    }
+  );
+  assert.equal(freshEmptyRoute.freshnessState, 'fresh');
+  assert.equal(freshEmptyRoute.blocking, false);
+
+  const missingEmptyRouteCheckpoint = service.resolveFreshness(
+    { createdAt: new Date() },
+    {
+      latestSuccessWalletAvailable: false,
+      latestSuccessFuturesAvailable: true,
+      positionsObservedAt: null,
+      latestPositionSnapshotSeenAt: null,
+      latestPositionReadModelSeenAt: null,
+      positionsCheckpointAt: null,
+      openPositions: 0,
+      positionTotalRows: 0,
+      positionSnapshotRows: 0,
+      positionReadModelRows: 0,
+      rowsMissingFromReadModel: 0,
+      rowsBehindSnapshot: 0,
+      orphanReadModelRows: 0,
+    }
+  );
+  assert.equal(missingEmptyRouteCheckpoint.freshnessState, 'partial');
+  assert.equal(missingEmptyRouteCheckpoint.blocking, true);
+
   const thresholds = {
     marginUsageWarnPct: 70,
     marginUsageCriticalPct: 85,
