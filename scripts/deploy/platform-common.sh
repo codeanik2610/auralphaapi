@@ -11,7 +11,7 @@ BACKEND_ENV_FILE="${BACKEND_ENV_FILE:-${ROOT_DIR}/environments/production/.env}"
 WORKER_ENV_FILE="${WORKER_ENV_FILE:-${ROOT_DIR}/../aurAlphaSchedulerWorker/environments/production/.env}"
 DISCOVERY_ENV_FILE="${DISCOVERY_ENV_FILE:-${ROOT_DIR}/../discovery-engine/environments/production/.env}"
 RENDERED_CONFIG_PATH="${RENDERED_CONFIG_PATH:-/tmp/auralpha-platform.compose.rendered.yml}"
-PUBLIC_SCHEME="${PUBLIC_SCHEME:-https}"
+PUBLIC_SCHEME="${PUBLIC_SCHEME:-}"
 
 function require_file() {
   local path="$1"
