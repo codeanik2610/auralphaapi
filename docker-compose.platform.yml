@@ -46,12 +46,15 @@ services:
       REDIS_AUTO_START: "false"
       ACTIVITY_EXPORT_STORAGE_DIR: /app/storage/activity-exports
       DISCOVERY_API_BASE_URL: http://discovery-engine:8000/api/v1/discovery
+      AUTOMATION_SIGNAL_DISCOVERY_ENGINE_ROOT: /opt/discovery-engine
+      AUTOMATION_SIGNAL_PYTHON_BIN: python3
       SCHEDULER_WORKER_SCHEMA: http
       SCHEDULER_WORKER_HOST: auralpha-scheduler-worker
       SCHEDULER_WORKER_PORT: 3001
       SCHEDULER_WORKER_BASE_URL: http://auralpha-scheduler-worker:3001
     volumes:
       - activity-exports:/app/storage/activity-exports
+      - ../discovery-engine:/opt/discovery-engine:ro
     restart: unless-stopped
     depends_on:
       - auralpha-scheduler-worker
@@ -87,6 +90,8 @@ services:
       REDIS_AUTO_START: "false"
       ACTIVITY_EXPORT_STORAGE_DIR: /app/storage/activity-exports
       DISCOVERY_API_BASE_URL: http://discovery-engine:8000/api/v1/discovery
+      AUTOMATION_SIGNAL_DISCOVERY_ENGINE_ROOT: /opt/discovery-engine
+      AUTOMATION_SIGNAL_PYTHON_BIN: python3
       SCHEDULER_WORKER_SCHEMA: http
       SCHEDULER_WORKER_HOST: auralpha-scheduler-worker
       SCHEDULER_WORKER_PORT: 3001
@@ -94,6 +99,7 @@ services:
     command: ["node", "dist/app.email-worker.js"]
     volumes:
       - activity-exports:/app/storage/activity-exports
+      - ../discovery-engine:/opt/discovery-engine:ro
     restart: unless-stopped
     depends_on:
       - auralpha-api
