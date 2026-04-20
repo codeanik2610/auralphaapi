@@ -120,6 +120,7 @@ services:
       WORKER_HTTP_PORT: 3001
       TRADING_API_BASE_URL: http://auralpha-api:3000/api/v1
       TRADING_API_HEALTH_URL: http://auralpha-api:3000/api/v1/health
+      TRADING_API_BROKER_CANARY_HEALTH_URL: http://auralpha-api:3000/api/v1/health/broker-canary
       DISCOVERY_ENGINE_BASE_URL: http://discovery-engine:8000/api/v1/discovery
       DISCOVERY_ENGINE_HEALTH_URL: http://discovery-engine:8000/health/ready
     restart: unless-stopped

@@ -1,5 +1,5 @@
 import { Request } from 'express';
-import { Get, JsonController, Req } from 'routing-controllers';
+import { Get, JsonController, QueryParam, Req } from 'routing-controllers';
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import { DiscoveryDependencyHealthResponse } from '../contracts/Discovery';
@@ -11,6 +11,10 @@ import { AuthLoginProtectionService } from '../services/AuthLoginProtectionServi
 import { DiscoveryDependencyService } from '../services/DiscoveryDependencyService';
 import { RuntimeDiagnosticsService } from '../services/RuntimeDiagnosticsService';
 import { SuggestedTradesHealthService } from '../services/SuggestedTradesHealthService';
+import {
+  BrokerCanaryProtectionMonitorResponse,
+  BrokerCanaryProtectionMonitorService,
+} from '../services/BrokerCanaryProtectionMonitorService';
 import { AlertRepository } from '../../database/repositories/AlertRepository';
 import { BacktestRepository } from '../../database/repositories/BacktestRepository';
 import { EmailDeliveryRepository } from '../../database/repositories/EmailDeliveryRepository';
@@ -240,6 +244,9 @@ export class HealthController {
 
   @Inject(() => SuggestedTradesHealthService)
   private suggestedTradesHealthService!: SuggestedTradesHealthService;
+
+  @Inject(() => BrokerCanaryProtectionMonitorService)
+  private brokerCanaryProtectionMonitorService!: BrokerCanaryProtectionMonitorService;
 
   @Inject(() => RuntimeDiagnosticsService)
   private runtimeDiagnosticsService!: RuntimeDiagnosticsService;
@@ -867,6 +874,20 @@ export class HealthController {
             : `Suggested trades health query failed: ${String(error)}`,
       });
     }
+  }
+
+  @Get('/broker-canary')
+  async getBrokerCanaryProtectionHealth(
+    @Req() request: Request,
+    @QueryParam('emitAlerts') emitAlerts?: string
+  ): Promise<ApiSuccessResponse<BrokerCanaryProtectionMonitorResponse>> {
+    requireAdminAuthUserOrApiKey(request);
+    const normalizedEmitAlerts = String(emitAlerts || '').trim().toLowerCase();
+    return successResponse(
+      await this.brokerCanaryProtectionMonitorService.runMonitor({
+        emitAlerts: normalizedEmitAlerts === 'false' ? false : true,
+      })
+    );
   }
 
   @Get('/auth')

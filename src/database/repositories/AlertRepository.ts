@@ -102,7 +102,7 @@ export class AlertRepository {
         log.warn(
           `Alerts inbox indexes missing (${missingIndexes.join(
             ', '
-          )}). Run migration 1765602000000-AddAlertsInboxIndexes before production traffic.`
+          )}). Apply the baseline schema before production traffic.`
         );
       }
     } catch (error) {

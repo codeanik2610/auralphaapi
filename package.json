@@ -52,6 +52,7 @@
   "test:signals": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-signals.ts",
   "test:watchlists": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-watchlists.ts",
   "test:orders": "node --import tsx scripts/test-orders.ts",
+  "test:broker-canary-monitor": "node --import tsx scripts/test-broker-canary-monitor.ts",
   "test:scheduler-account-scope": "node --import tsx scripts/test-scheduler-account-scope.ts",
   "test:positions-orders-sync": "node --import tsx scripts/test-positions-orders-sync.ts",
   "test:positions-scheduler": "node --import tsx scripts/test-positions-scheduler.ts",

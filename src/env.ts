@@ -489,6 +489,15 @@ export const env = {
       ),
     },
   },
+  brokerCanaryMonitor: {
+    enabled: getBool('BROKER_CANARY_MONITOR_ENABLED', true),
+    lookbackHours: Math.max(1, getNumber('BROKER_CANARY_MONITOR_LOOKBACK_HOURS', 24 * 30)),
+    maxSubmissions: Math.max(1, getNumber('BROKER_CANARY_MONITOR_MAX_SUBMISSIONS', 100)),
+    snapshotStaleAfterMs: Math.max(
+      60_000,
+      getNumber('BROKER_CANARY_MONITOR_SNAPSHOT_STALE_AFTER_MS', 15 * 60 * 1000)
+    ),
+  },
   positions: {
     liveSnapshotStaleAfterMs: Math.max(
       60_000,

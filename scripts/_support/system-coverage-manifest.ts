@@ -581,9 +581,11 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       'SuggestedTradesOverviewService.ts',
       'SuggestedTradesHealthService.ts',
       'SuggestedTradeExecutionSyncService.ts',
+      'BrokerCanaryProtectionMonitorService.ts',
     ],
     tests: [
       script('test:suggested-trades', 'scripts/test-suggested-trades.ts'),
+      script('test:broker-canary-monitor', 'scripts/test-broker-canary-monitor.ts'),
     ],
     checks: [
       script('check:suggested-trades-health', 'scripts/checks/check-suggested-trades-health.ts'),

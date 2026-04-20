@@ -459,9 +459,14 @@ function runOperationalAudit(): void {
     path.join(controllersDir, 'HealthController.ts'),
     'utf8'
   );
-  for (const marker of ["@Get('/suggested-trades')", 'suggestedTradesHealthService']) {
+  for (const marker of [
+    "@Get('/suggested-trades')",
+    'suggestedTradesHealthService',
+    "@Get('/broker-canary')",
+    'brokerCanaryProtectionMonitorService',
+  ]) {
     if (!healthControllerSource.includes(marker)) {
-      findings.push(`HealthController.ts: missing suggested-trades health marker ${marker}`);
+      findings.push(`HealthController.ts: missing operational health marker ${marker}`);
     }
   }
 
@@ -477,14 +482,28 @@ function runOperationalAudit(): void {
     }
   }
 
-  const alertsIndexMigrationPath = path.join(
-    process.cwd(),
-    'src',
-    'database',
-    'migrations',
-    '1765602000000-AddAlertsInboxIndexes.ts'
-  );
-  const alertsIndexMigrationSource = fs.readFileSync(alertsIndexMigrationPath, 'utf8');
+  const alertsIndexSchemaPath = [
+    path.join(
+      process.cwd(),
+      'src',
+      'database',
+      'migrations',
+      '1765602000000-AddAlertsInboxIndexes.ts'
+    ),
+    path.join(
+      process.cwd(),
+      'src',
+      'database',
+      'migrations_baseline',
+      '1800000000000-BaselineCoreSchema.ts'
+    ),
+  ].find((candidatePath) => fs.existsSync(candidatePath));
+  if (!alertsIndexSchemaPath) {
+    findings.push('alerts schema: missing alerts inbox index migration or baseline schema file');
+  }
+  const alertsIndexMigrationSource = alertsIndexSchemaPath
+    ? fs.readFileSync(alertsIndexSchemaPath, 'utf8')
+    : '';
   for (const indexName of [
     'idx_alerts_user_created_at',
     'idx_alerts_user_status_created_at',
@@ -515,17 +534,30 @@ function runOperationalAudit(): void {
     findings.push('StrategyTemplate.ts: missing composite ownership index uidx_strategy_templates_user_id_id');
   }
 
-  const strategyLibraryIntegrityMigrationPath = path.join(
-    process.cwd(),
-    'src',
-    'database',
-    'pg-migrations',
-    '1767300007000-HardenStrategyLibraryIntegrityPg.ts'
-  );
-  const strategyLibraryIntegrityMigrationSource = fs.readFileSync(
-    strategyLibraryIntegrityMigrationPath,
-    'utf8'
-  );
+  const strategyLibraryIntegritySchemaPath = [
+    path.join(
+      process.cwd(),
+      'src',
+      'database',
+      'pg-migrations',
+      '1767300007000-HardenStrategyLibraryIntegrityPg.ts'
+    ),
+    path.join(
+      process.cwd(),
+      'src',
+      'database',
+      'pg-migrations_baseline',
+      '1800000000000-BaselineStrategySchema.ts'
+    ),
+  ].find((candidatePath) => fs.existsSync(candidatePath));
+  if (!strategyLibraryIntegritySchemaPath) {
+    findings.push(
+      'strategy library schema: missing hardening migration or baseline schema file'
+    );
+  }
+  const strategyLibraryIntegrityMigrationSource = strategyLibraryIntegritySchemaPath
+    ? fs.readFileSync(strategyLibraryIntegritySchemaPath, 'utf8')
+    : '';
   for (const marker of [
     'uidx_strategy_library_user_template_name_ci',
     'fk_strategy_library_user_template_owner',
@@ -537,7 +569,7 @@ function runOperationalAudit(): void {
   ]) {
     if (!strategyLibraryIntegrityMigrationSource.includes(marker)) {
       findings.push(
-        `1767300007000-HardenStrategyLibraryIntegrityPg.ts: missing strategy-library integrity marker ${marker}`
+        `strategy library schema: missing strategy-library integrity marker ${marker}`
       );
     }
   }
