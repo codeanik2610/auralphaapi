@@ -219,6 +219,62 @@ async function testClosedCanaryWithActiveProtectionAlertsAsOrphan(): Promise<voi
   assert.equal(alerts.length, 1);
 }
 
+async function testClosedPositionRankThreeIsNotTreatedAsOpen(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const service = createService(alerts);
+
+  const response = await withMockedQuery(async (sql) => {
+    if (sql.includes('FROM order_submission_requests')) {
+      return [createCandidate()];
+    }
+    if (sql.includes('FROM scheduler_orders_snapshots')) {
+      return [
+        createOrderSnapshot(),
+        createOrderSnapshot({
+          externalId: 'sl-1',
+          orderStatus: 'PENDING',
+          statusRank: 1,
+          side: 'sell',
+        }),
+        createOrderSnapshot({
+          externalId: 'tp-1',
+          orderStatus: 'CLOSED',
+          statusRank: 4,
+          side: 'sell',
+        }),
+      ];
+    }
+    if (sql.includes('FROM scheduler_positions_snapshots')) {
+      return [
+        createPositionSnapshot({
+          status: 'CLOSED',
+          statusRank: 3,
+          quantityContracts: '1',
+        }),
+      ];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  }, () =>
+    service.runMonitor({
+      emitAlerts: true,
+      now: new Date('2026-04-20T07:01:00.000Z'),
+    })
+  );
+
+  assert.equal(response.status, 'degraded');
+  assert.equal(response.items[0]?.positionOpen, false);
+  assert.equal(response.items[0]?.lifecycle, 'CLOSED_WITH_ACTIVE_PROTECTION');
+  assert.equal(
+    response.items[0]?.issues.some((issue) => issue.code === 'open_position_unprotected'),
+    false
+  );
+  assert.equal(
+    response.items[0]?.issues.some((issue) => issue.code === 'orphan_active_protection'),
+    true
+  );
+  assert.equal(alerts.length, 1);
+}
+
 async function testDisabledMonitorSkipsQueries(): Promise<void> {
   const originalEnabled = env.brokerCanaryMonitor.enabled;
   env.brokerCanaryMonitor.enabled = false;
@@ -239,6 +295,7 @@ async function main(): Promise<void> {
   await testHealthyProtectedCanaryDoesNotAlert();
   await testOpenCanaryMissingProtectionEmitsAlert();
   await testClosedCanaryWithActiveProtectionAlertsAsOrphan();
+  await testClosedPositionRankThreeIsNotTreatedAsOpen();
   await testDisabledMonitorSkipsQueries();
   console.log('Broker canary protection monitor assertions passed.');
 }

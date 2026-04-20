@@ -264,13 +264,15 @@ export class BrokerCanaryProtectionMonitorService {
     const takeProfitSnapshot = takeProfitOrderId ? orderById.get(takeProfitOrderId) ?? null : null;
     const symbol = this.resolveSymbol(candidate, entrySnapshot, stopLossSnapshot, takeProfitSnapshot);
     const assetIdentifiers = this.resolvePositionIdentifiers(entrySnapshot, orderSnapshots);
-    const positions = await this.listOpenPositionSnapshots({
-      userId,
-      accountId,
-      brokerKey,
-      symbol,
-      assetIdentifiers,
-    });
+    const positions = (
+      await this.listOpenPositionSnapshots({
+        userId,
+        accountId,
+        brokerKey,
+        symbol,
+        assetIdentifiers,
+      })
+    ).filter((position) => this.isOpenPositionSnapshot(position));
     const positionOpen = positions.length > 0;
     const stopLossActive = stopLossSnapshot ? this.isActiveOrderSnapshot(stopLossSnapshot) : false;
     const takeProfitActive = takeProfitSnapshot ? this.isActiveOrderSnapshot(takeProfitSnapshot) : false;
@@ -437,7 +439,8 @@ export class BrokerCanaryProtectionMonitorService {
         WHERE user_id = ?
           AND account_id = ?
           AND LOWER(broker_key) = ?
-          AND status_rank < 4
+          AND status_rank > 0
+          AND status_rank <= 2
           AND (${clauses.join(' OR ')})
         ORDER BY updated_at DESC
         LIMIT 5`,
@@ -554,6 +557,22 @@ export class BrokerCanaryProtectionMonitorService {
       return true;
     }
     return Number.isFinite(rank) && rank > 0 && rank < 4;
+  }
+
+  private isOpenPositionSnapshot(snapshot: PositionSnapshotRow): boolean {
+    const status = this.readString(snapshot.status).toUpperCase();
+    if (['OPEN', 'PARTIAL', 'PARTIALLY_CLOSED', 'PARTIALLY_CLOSED_POSITION'].includes(status)) {
+      return true;
+    }
+    if (
+      ['CLOSED', 'CLOSE', 'LIQUIDATED', 'SETTLED', 'EXPIRED', 'CANCELLED', 'CANCELED'].includes(
+        status
+      )
+    ) {
+      return false;
+    }
+    const rank = Number(snapshot.statusRank);
+    return Number.isFinite(rank) && rank > 0 && rank <= 2;
   }
 
   private isSnapshotStale(value: Date | string | null | undefined, now: Date): boolean {
