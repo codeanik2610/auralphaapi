@@ -396,6 +396,7 @@ function apply_mysql_exchange_log_retention() {
 
   while [[ "${batch_number}" -lt "${MAX_BATCHES}" ]]; do
     deleted="$(mysql_query "
+SET sql_log_bin = 0;
 DELETE l
 FROM exchange_asset_update_logs l
 INNER JOIN (
