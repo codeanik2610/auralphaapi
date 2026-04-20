@@ -7,6 +7,8 @@ services:
       MYSQL_USER: ${SELFHOSTED_MYSQL_USERNAME:-auralpha}
       MYSQL_PASSWORD: ${SELFHOSTED_MYSQL_PASSWORD:-change-me-mysql-password}
       MYSQL_ROOT_PASSWORD: ${SELFHOSTED_MYSQL_ROOT_PASSWORD:-change-me-root-password}
+    command:
+      - --binlog-expire-logs-seconds=${SELFHOSTED_MYSQL_BINLOG_EXPIRE_LOGS_SECONDS:-86400}
     volumes:
       - mysql-data:/var/lib/mysql
     expose:
