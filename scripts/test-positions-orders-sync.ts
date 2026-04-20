@@ -1497,6 +1497,190 @@ async function testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation
   }
 }
 
+async function testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById(): Promise<void> {
+  const service = new InternalOrdersSyncService() as any;
+  const originalQuery = (coreDataSource as any).query;
+  const getOrderCalls: string[] = [];
+  const syncedOrderIds: string[][] = [];
+  let capturedItems: Array<Record<string, unknown>> = [];
+  let protectedIdsFromReconciliation: string[] = [];
+  const staleCloseParams: unknown[][] = [];
+
+  service.schedulerRuntimeSchemaService = {
+    async assertOrdersRuntimeSchemaReady() {
+      return undefined;
+    },
+  };
+  service.brokerAccountRepository = {
+    async getActiveBrokerAccounts(userId: string) {
+      assert.equal(userId, 'user-1');
+      return [
+        {
+          id: 'acct-delta',
+          userId,
+          brokerKey: 'delta_exchange',
+          status: 'Connected',
+        },
+      ];
+    },
+  };
+  service.brokerAccountRoutingService = {
+    async resolve(userId: string, brokerKey: string, accountId: string) {
+      return { userId, brokerKey, accountId };
+    },
+  };
+  service.brokerRuntimeRegistry = {
+    getOrdersAdapter(brokerKey: string) {
+      assert.equal(brokerKey, 'delta_exchange');
+      return {
+        async listOpenOrders() {
+          return [];
+        },
+        async getOrderHistory() {
+          return [
+            {
+              id: 'entry-1',
+              order_id: 'entry-1',
+              symbol: 'BTCUSD',
+              status: 'CLOSED',
+              created_at: '2026-04-20T06:12:19.000Z',
+            },
+          ];
+        },
+        async getOrder(orderId: string) {
+          getOrderCalls.push(orderId);
+          return {
+            id: orderId,
+            order_id: orderId,
+            symbol: 'BTCUSD',
+            status: 'PENDING',
+            side: 'sell',
+            stop_order_type: orderId === 'sl-1' ? 'stop_loss_order' : 'take_profit_order',
+            reduce_only: true,
+            created_at: '2026-04-20T06:12:20.000Z',
+          };
+        },
+      };
+    },
+  };
+  service.exchangeAssetUpdateLogRepository = {
+    async createMany() {
+      return [];
+    },
+  };
+  service.suggestedTradesService = {
+    async syncExecutionForOrderUpdates(
+      _userId: string,
+      _brokerKey: string,
+      _accountId: string,
+      orderIds: string[]
+    ) {
+      syncedOrderIds.push([...orderIds].sort());
+    },
+  };
+  service.orderSubmissionRequestRepository = {
+    async listReconciliationCandidatesByBrokerOrderIds() {
+      return [];
+    },
+  };
+  service.operationalEventService = {
+    async logActivity() {
+      return undefined;
+    },
+    async emitFailureAlert() {
+      return undefined;
+    },
+  };
+  service.getCheckpoint = async () => new Date('2026-04-19T06:00:00.000Z');
+  service.saveCheckpoint = async () => undefined;
+  service.upsertOrderSnapshotsFromItems = async (
+    _userId: string,
+    _accountId: string,
+    _brokerKey: string,
+    items: Array<Record<string, unknown>>
+  ) => {
+    capturedItems = items;
+    return {
+      inserted: items.length,
+      updated: 0,
+      skipped: 0,
+      orderIds: items.map((item) => String(item.id || item.order_id || '')).filter(Boolean),
+    };
+  };
+  service.reconcileTerminalHistoryWindow = async (
+    _userId: string,
+    _accountId: string,
+    _brokerKey: string,
+    _historyStart: Date,
+    _historyEnd: Date,
+    _historyOrders: unknown[],
+    _runLogId?: string,
+    protectedExternalIds?: string[]
+  ) => {
+    protectedIdsFromReconciliation = [...(protectedExternalIds || [])].sort();
+    return {
+      deletedOutsideLookback: 0,
+      deletedMissingHistory: 0,
+      orderIds: [],
+    };
+  };
+
+  (coreDataSource as any).query = async (sql: string, params: unknown[]) => {
+    const statement = String(sql || '');
+    if (statement.includes('FROM order_submission_requests')) {
+      assert.deepEqual(params, ['user-1', 'acct-delta', 'delta_exchange', 90]);
+      return [
+        {
+          brokerOrderId: 'entry-1',
+          stopLossOrderId: 'sl-1',
+          takeProfitOrderId: 'tp-1',
+        },
+      ];
+    }
+    if (
+      statement.includes('SELECT external_id, symbol, order_status') &&
+      statement.includes('FROM scheduler_orders_snapshots')
+    ) {
+      staleCloseParams.push([...params]);
+      assert.ok(statement.includes('external_id NOT IN (?, ?, ?)'));
+      return [];
+    }
+    if (statement.includes('UPDATE scheduler_orders_snapshots')) {
+      staleCloseParams.push([...params]);
+      assert.ok(statement.includes('external_id NOT IN (?, ?, ?)'));
+      return [{ affectedRows: 0 }];
+    }
+    if (statement.includes('FROM scheduler_orders_snapshots')) {
+      return [];
+    }
+    throw new Error(`Unexpected SQL in Delta protective order backfill test: ${statement}`);
+  };
+
+  try {
+    const result = await service.runBatch({
+      executionScope: 'system_scheduler',
+      targetUserIds: ['user-1'],
+      brokerKeys: ['delta_exchange'],
+      accountIds: ['acct-delta'],
+    });
+
+    assert.deepEqual(getOrderCalls.sort(), ['sl-1', 'tp-1']);
+    assert.deepEqual(
+      capturedItems.map((item) => String(item.id || item.order_id || '')).sort(),
+      ['entry-1', 'sl-1', 'tp-1']
+    );
+    assert.deepEqual(protectedIdsFromReconciliation, ['entry-1', 'sl-1', 'tp-1']);
+    assert.deepEqual(syncedOrderIds[0], ['entry-1', 'sl-1', 'tp-1']);
+    assert.equal(staleCloseParams.length, 2);
+    assert.deepEqual(staleCloseParams[0].slice(-3), ['entry-1', 'sl-1', 'tp-1']);
+    assert.deepEqual(staleCloseParams[1].slice(-3), ['entry-1', 'sl-1', 'tp-1']);
+    assert.equal(result.insertedRecords, 3);
+    assert.equal(result.failedAccounts, 0);
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
 async function testOrdersHistoryReconciliationPrunesDriftedTerminalRows(): Promise<void> {
   const service = new InternalOrdersSyncService() as any;
   const deletedChunks: string[][] = [];
@@ -1575,12 +1759,63 @@ async function testOrdersHistoryReconciliationPrunesDriftedTerminalRows(): Promi
   );
 }
 
+async function testOrdersHistoryReconciliationKeepsProtectedTrackedRows(): Promise<void> {
+  const service = new InternalOrdersSyncService() as any;
+  const deletedChunks: string[][] = [];
+
+  service.exchangeAssetUpdateLogRepository = {
+    async createMany() {
+      return [];
+    },
+  };
+  service.listTerminalSnapshotRowsBeforeObservedAt = async () => [];
+  service.listTerminalSnapshotRowsWithinObservedRange = async () => [
+    {
+      externalId: 'drop-terminal-1',
+      symbol: 'SOLUSDT',
+      orderStatus: 'CANCELLED',
+    },
+    {
+      externalId: 'protected-sl-1',
+      symbol: 'BTCUSD',
+      orderStatus: 'CLOSED',
+    },
+  ];
+  service.deleteOrderSnapshotsByExternalIds = async (
+    _userId: string,
+    _accountId: string,
+    _brokerKey: string,
+    externalIds: string[]
+  ) => {
+    deletedChunks.push([...externalIds]);
+    return externalIds.length;
+  };
+
+  const result = await service.reconcileTerminalHistoryWindow(
+    'user-1',
+    'acct-1',
+    'delta_exchange',
+    new Date('2026-04-01T00:00:00.000Z'),
+    new Date('2026-04-14T00:00:00.000Z'),
+    [],
+    'run-1',
+    ['protected-sl-1']
+  );
+
+  assert.equal(result.deletedOutsideLookback, 0);
+  assert.equal(result.deletedMissingHistory, 1);
+  assert.deepEqual(deletedChunks, [[], ['drop-terminal-1']]);
+  assert.deepEqual(result.orderIds, ['drop-terminal-1']);
+}
+
 async function run(): Promise<void> {
   testPhase4Markers();
   await testOrdersSchedulerRuntimeMigratesToUserScope();
   await testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
+  await testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById();
   await testOrdersHistoryReconciliationPrunesDriftedTerminalRows();
+  await testOrdersHistoryReconciliationKeepsProtectedTrackedRows();
   console.log('Positions/orders sync Phase 4 assertions passed.');
 }
 

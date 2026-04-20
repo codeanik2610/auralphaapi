@@ -344,6 +344,83 @@ export class InternalOrdersSyncService {
     return Array.from(ids);
   }
 
+  private async listTrackedSubmissionOrderIds(
+    userId: string,
+    accountId: string,
+    brokerKey: string
+  ): Promise<string[]> {
+    const rows = (await coreDataSource.query(
+      `SELECT broker_order_id AS brokerOrderId,
+              JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.stop_loss_order_id')) AS stopLossOrderId,
+              JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.take_profit_order_id')) AS takeProfitOrderId
+         FROM order_submission_requests
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(COALESCE(broker_key, '')) = ?
+          AND status = 'completed'
+          AND placement_state = 'placed'
+          AND response_json IS NOT NULL
+          AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+        ORDER BY created_at DESC
+        LIMIT 500`,
+      [userId, accountId, brokerKey.toLowerCase(), MAX_LOOKBACK_DAYS]
+    )) as Array<{
+      brokerOrderId?: string | null;
+      stopLossOrderId?: string | null;
+      takeProfitOrderId?: string | null;
+    }>;
+
+    return Array.from(
+      new Set(
+        rows
+          .flatMap((row) => [row.brokerOrderId, row.stopLossOrderId, row.takeProfitOrderId])
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      )
+    );
+  }
+
+  private async fetchTrackedSubmissionOrdersById(
+    brokerKey: string,
+    route: { userId?: string; brokerKey?: string; accountId?: string },
+    trackedOrderIds: string[],
+    alreadyFetchedOrderIds: ReadonlySet<string>
+  ): Promise<{ items: unknown[]; failures: Array<{ orderId: string; error: string }> }> {
+    const normalizedBrokerKey = String(brokerKey || '').trim().toLowerCase();
+    if (normalizedBrokerKey !== 'delta_exchange') {
+      return { items: [], failures: [] };
+    }
+
+    const missingTrackedOrderIds = Array.from(
+      new Set(
+        trackedOrderIds
+          .map((item) => String(item || '').trim())
+          .filter((item) => item && !alreadyFetchedOrderIds.has(item))
+      )
+    );
+    if (!missingTrackedOrderIds.length) {
+      return { items: [], failures: [] };
+    }
+
+    const adapter = this.brokerRuntimeRegistry.getOrdersAdapter(normalizedBrokerKey);
+    const items: unknown[] = [];
+    const failures: Array<{ orderId: string; error: string }> = [];
+    for (const orderId of missingTrackedOrderIds) {
+      try {
+        const raw = await adapter.getOrder(orderId, route);
+        const list = this.extractList(raw);
+        items.push(...(list.length ? list : [raw]));
+      } catch (error) {
+        failures.push({
+          orderId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return { items, failures };
+  }
+
   private async listTerminalSnapshotRowsBeforeObservedAt(
     userId: string,
     accountId: string,
@@ -448,17 +525,25 @@ export class InternalOrdersSyncService {
     historyStart: Date,
     historyEnd: Date,
     historyOrders: unknown[],
-    runLogId?: string
+    runLogId?: string,
+    protectedExternalIds: string[] = []
   ): Promise<{ deletedOutsideLookback: number; deletedMissingHistory: number; orderIds: string[] }> {
     const historyStartIso = historyStart.toISOString();
     const historyEndIso = historyEnd.toISOString();
-
-    const rowsOutsideLookback = await this.listTerminalSnapshotRowsBeforeObservedAt(
-      userId,
-      accountId,
-      brokerKey,
-      historyStartIso
+    const protectedIds = new Set(
+      protectedExternalIds.map((item) => String(item || '').trim()).filter(Boolean)
     );
+    const canDelete = (row: { externalId?: string | null }): boolean =>
+      !protectedIds.has(String(row.externalId || '').trim());
+
+    const rowsOutsideLookback = (
+      await this.listTerminalSnapshotRowsBeforeObservedAt(
+        userId,
+        accountId,
+        brokerKey,
+        historyStartIso
+      )
+    ).filter(canDelete);
     const deletedOutsideLookback = await this.deleteOrderSnapshotsByExternalIds(
       userId,
       accountId,
@@ -473,13 +558,15 @@ export class InternalOrdersSyncService {
     );
 
     const historyExternalIds = new Set(this.extractOrderExternalIds(historyOrders));
-    const rowsWithinWindow = await this.listTerminalSnapshotRowsWithinObservedRange(
-      userId,
-      accountId,
-      brokerKey,
-      historyStartIso,
-      historyEndIso
-    );
+    const rowsWithinWindow = (
+      await this.listTerminalSnapshotRowsWithinObservedRange(
+        userId,
+        accountId,
+        brokerKey,
+        historyStartIso,
+        historyEndIso
+      )
+    ).filter(canDelete);
     const rowsMissingFromHistory = rowsWithinWindow.filter(
       (row) => !historyExternalIds.has(String(row.externalId || '').trim())
     );
@@ -926,6 +1013,8 @@ export class InternalOrdersSyncService {
             let openError: string | null = null;
             let historyOrders: unknown[] = [];
             let historyError: string | null = null;
+            let trackedSubmissionOrderIds: string[] = [];
+            let trackedSubmissionOrderFetchFailures: Array<{ orderId: string; error: string }> = [];
 
             // Step 1: Always fetch open orders (lightweight, catches status changes fast)
             try {
@@ -991,6 +1080,33 @@ export class InternalOrdersSyncService {
               );
             }
 
+            if (resolvedBrokerKey.toLowerCase() === 'delta_exchange') {
+              trackedSubmissionOrderIds = await this.listTrackedSubmissionOrderIds(
+                userId,
+                resolvedAccountId,
+                resolvedBrokerKey
+              );
+              const fetchedOrderIds = new Set(
+                this.extractOrderExternalIds([...openOrders, ...historyOrders])
+              );
+              const trackedOrderFetch = await this.fetchTrackedSubmissionOrdersById(
+                resolvedBrokerKey,
+                route,
+                trackedSubmissionOrderIds,
+                fetchedOrderIds
+              );
+              if (trackedOrderFetch.items.length) {
+                openOrders.push(...trackedOrderFetch.items);
+              }
+              trackedSubmissionOrderFetchFailures = trackedOrderFetch.failures;
+              for (const failure of trackedSubmissionOrderFetchFailures) {
+                failures.push({
+                  userId,
+                  error: `tracked Delta order fetch failed for account ${resolvedAccountId} (${resolvedBrokerKey}) order ${failure.orderId}: ${failure.error}`,
+                });
+              }
+            }
+
             // Step 4: Deduplicate open + history in memory, keeping highest status rank
             const combined = [...openOrders, ...historyOrders];
             const deduped = this.deduplicateByExternalId(combined);
@@ -1016,6 +1132,16 @@ export class InternalOrdersSyncService {
             // Step 6: Close stale open orders not seen in this run
             if (!openError) {
               const closeRank = this.computeOrderStatusRank('CLOSED');
+              const staleCloseProtectedOrderIds = Array.from(
+                new Set(
+                  trackedSubmissionOrderIds
+                    .map((item) => String(item || '').trim())
+                    .filter(Boolean)
+                )
+              );
+              const staleCloseProtectionSql = staleCloseProtectedOrderIds.length
+                ? ` AND external_id NOT IN (${staleCloseProtectedOrderIds.map(() => '?').join(',')})`
+                : '';
 
               // Query stale orders before closing (for logging and suggestion sync)
               const staleOrders = (await coreDataSource.query(
@@ -1025,13 +1151,15 @@ export class InternalOrdersSyncService {
                    AND account_id = ?
                    AND LOWER(broker_key) = ?
                    AND status_rank < ?
-                   AND last_seen_at < ?`,
+                   AND last_seen_at < ?
+                   ${staleCloseProtectionSql}`,
                 [
                   userId,
                   resolvedAccountId,
                   resolvedBrokerKey.toLowerCase(),
                   closeRank,
                   accountSyncStartedAt,
+                  ...staleCloseProtectedOrderIds,
                 ]
               )) as Array<{ external_id: string; symbol: string | null; order_status: string | null }>;
 
@@ -1044,7 +1172,8 @@ export class InternalOrdersSyncService {
                    AND account_id = ?
                    AND LOWER(broker_key) = ?
                    AND status_rank < ?
-                   AND last_seen_at < ?`,
+                   AND last_seen_at < ?
+                   ${staleCloseProtectionSql}`,
                 [
                   closeRank,
                   userId,
@@ -1052,6 +1181,7 @@ export class InternalOrdersSyncService {
                   resolvedBrokerKey.toLowerCase(),
                   closeRank,
                   accountSyncStartedAt,
+                  ...staleCloseProtectedOrderIds,
                 ]
               );
               const closedCount = this.readAffectedRows(closeResult);
@@ -1087,7 +1217,8 @@ export class InternalOrdersSyncService {
                 historyStart,
                 historyEnd,
                 historyOrders,
-                request.runLogId
+                request.runLogId,
+                trackedSubmissionOrderIds
               );
               for (const orderId of reconciliation.orderIds) {
                 affectedOrderIds.add(orderId);
