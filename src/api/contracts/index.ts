@@ -20,6 +20,7 @@ export * from './Mudrex';
 export * from './Orders';
 export * from './MarketOverview';
 export * from './Overview';
+export * from './OverviewCommandCenter';
 export * from './Portfolio';
 export * from './PortfolioOverview';
 export * from './Positions';

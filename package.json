@@ -28,6 +28,7 @@
   "test:changed": "node --import tsx scripts/_support/run-changed-tests.ts",
   "test:auth-contract": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-auth-contract.ts",
   "test:overview-contract": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-overview-contract.ts",
+  "test:overview-command-center": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-overview-command-center.ts",
   "test:orders-contract": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-orders-contract.ts",
   "test:core-contracts": "node --import tsx scripts/_support/run-package-suite.ts core-contracts",
   "test:aggregate-catchall": "node --import tsx scripts/_support/run-package-suite.ts aggregate-catchall",

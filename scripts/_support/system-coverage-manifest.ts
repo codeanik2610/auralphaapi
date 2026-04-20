@@ -395,9 +395,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     label: 'Overview',
     lane: 'baseline',
     controllers: ['OverviewController.ts'],
-    services: ['OverviewService.ts'],
+    services: ['OverviewService.ts', 'OverviewCommandCenterService.ts'],
     tests: [
       script('test:overview', 'scripts/test-overview.ts'),
+      script('test:overview-command-center', 'scripts/test-overview-command-center.ts'),
       script('test:overview-contract', 'scripts/test-overview-contract.ts'),
       script('test:overview-resilience', 'scripts/test-overview-resilience.ts'),
     ],
