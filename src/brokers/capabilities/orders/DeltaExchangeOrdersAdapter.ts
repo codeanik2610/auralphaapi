@@ -41,6 +41,17 @@ interface DeltaProductPayload {
   trading_status?: string | null;
 }
 
+interface DeltaProductCache {
+  fetchedAt: number;
+  products: DeltaProductPayload[];
+  byId: Map<string, DeltaProductPayload>;
+}
+
+interface DeltaResolvedOrderProduct {
+  productId: number;
+  product: DeltaProductPayload | null;
+}
+
 interface DeltaProtectiveOrderResult {
   kind: 'stop_loss' | 'take_profit';
   order_id: string;
@@ -59,7 +70,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
   @Inject(() => ExchangeAssetRepository)
   private exchangeAssetRepository!: ExchangeAssetRepository;
 
-  private productCache: { fetchedAt: number; byId: Map<string, DeltaProductPayload> } | null = null;
+  private productCache: DeltaProductCache | null = null;
 
   async listOpenOrders(
     query: ValidatedOrdersRouteQuery,
@@ -98,8 +109,10 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     body: ValidatedCreateOrderRouteBody,
     context?: BrokerOrderContext
   ): Promise<unknown> {
-    const productId = await this.resolveProductId(assetId);
-    const product = await this.resolveProductForOrder(productId, body);
+    const requestedProductId = await this.resolveProductId(assetId);
+    const resolvedProduct = await this.resolveProductForOrder(requestedProductId, body);
+    const productId = resolvedProduct.productId;
+    const product = resolvedProduct.product;
     const size = this.resolveOrderSize(body.quantity, product, body);
     const side = this.resolveOrderSide(body);
     const orderType = this.resolveOrderType(body.order_type);
@@ -392,14 +405,62 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
   private async resolveProductForOrder(
     productId: number,
     body: ValidatedCreateOrderRouteBody
-  ): Promise<DeltaProductPayload | null> {
+  ): Promise<DeltaResolvedOrderProduct> {
     if (!this.isLiveAutoSubmission(body)) {
-      return null;
+      return { productId, product: null };
     }
 
     const product = await this.getProductById(productId);
-    this.assertLiveAutoProduct(product, productId);
-    return product;
+    if (product) {
+      if (
+        String(body.symbol || '').trim() &&
+        !this.isDeltaSymbolCompatible(product.symbol, body.symbol)
+      ) {
+        const symbolResolvedProduct = await this.findLiveAutoProductBySymbol(body.symbol);
+        if (symbolResolvedProduct) {
+          const resolvedProductId = this.toProductId(
+            symbolResolvedProduct.id,
+            String(body.symbol || productId)
+          );
+          this.assertLiveAutoProduct(symbolResolvedProduct, resolvedProductId);
+          return {
+            productId: resolvedProductId,
+            product: symbolResolvedProduct,
+          };
+        }
+
+        throw new BadRequestAppError(
+          `Delta Exchange product mapping is stale for ${String(body.symbol).toUpperCase()}; requested product ${productId} maps to ${String(
+            product.symbol || 'unknown'
+          ).toUpperCase()}`
+        );
+      }
+      this.assertLiveAutoProduct(product, productId);
+      return {
+        productId: this.toProductId(product.id ?? productId, String(productId)),
+        product,
+      };
+    }
+
+    const symbolResolvedProduct = await this.findLiveAutoProductBySymbol(body.symbol);
+    if (symbolResolvedProduct) {
+      const resolvedProductId = this.toProductId(
+        symbolResolvedProduct.id,
+        String(body.symbol || productId)
+      );
+      this.assertLiveAutoProduct(symbolResolvedProduct, resolvedProductId);
+      return {
+        productId: resolvedProductId,
+        product: symbolResolvedProduct,
+      };
+    }
+
+    const symbolHint = String(body.symbol || '').trim().toUpperCase();
+    throw new BadRequestAppError(
+      `Delta Exchange product mapping is stale for ${
+        symbolHint || `product ${productId}`
+      }; requested product ${productId} was not found in the live product catalog`
+    );
   }
 
   private assertLiveAutoProduct(product: DeltaProductPayload | null, productId: number): void {
@@ -430,20 +491,111 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
   }
 
   private async getProductById(productId: number): Promise<DeltaProductPayload | null> {
+    const cache = await this.getProductCache();
+    return cache.byId.get(String(productId)) ?? null;
+  }
+
+  private async findLiveAutoProductBySymbol(
+    symbol: string | undefined
+  ): Promise<DeltaProductPayload | null> {
+    const normalizedSymbol = this.normalizeDeltaSymbol(symbol);
+    if (!normalizedSymbol) {
+      return null;
+    }
+
+    const normalizedRegionalSymbol = this.normalizeDeltaUsdQuoteSymbol(normalizedSymbol);
+    const baseSymbol = this.resolveDeltaBaseSymbol(normalizedSymbol);
+    const cache = await this.getProductCache();
+    const candidates = cache.products.filter((product) => {
+      return this.isDeltaLivePerpetualProduct(product);
+    });
+
+    const findBySymbol = (candidateSymbol: string): DeltaProductPayload | null =>
+      candidates.find(
+        (product) => this.normalizeDeltaSymbol(product.symbol) === candidateSymbol
+      ) ?? null;
+
+    return (
+      findBySymbol(normalizedSymbol) ??
+      findBySymbol(normalizedRegionalSymbol) ??
+      (baseSymbol
+        ? candidates.find(
+            (product) => this.resolveDeltaBaseSymbol(product.symbol) === baseSymbol
+          ) ?? null
+        : null)
+    );
+  }
+
+  private async getProductCache(): Promise<DeltaProductCache> {
     const now = Date.now();
     if (!this.productCache || now - this.productCache.fetchedAt > 5 * 60 * 1000) {
       const products = await this.deltaHttpClient.publicGet<DeltaProductPayload[]>('/v2/products');
+      const productList = Array.isArray(products) ? products : [];
       const byId = new Map<string, DeltaProductPayload>();
-      for (const product of Array.isArray(products) ? products : []) {
+      for (const product of productList) {
         const id = String(product.id ?? '').trim();
         if (id) {
           byId.set(id, product);
         }
       }
-      this.productCache = { fetchedAt: now, byId };
+      this.productCache = { fetchedAt: now, products: productList, byId };
     }
 
-    return this.productCache.byId.get(String(productId)) ?? null;
+    return this.productCache;
+  }
+
+  private normalizeDeltaSymbol(value: unknown): string {
+    return String(value || '')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+  }
+
+  private normalizeDeltaUsdQuoteSymbol(symbol: string): string {
+    const normalized = this.normalizeDeltaSymbol(symbol);
+    for (const quote of ['USDT', 'USDC', 'BUSD', 'FDUSD']) {
+      if (normalized.endsWith(quote) && normalized.length > quote.length) {
+        return `${normalized.slice(0, -quote.length)}USD`;
+      }
+    }
+
+    return normalized;
+  }
+
+  private isDeltaLivePerpetualProduct(product: DeltaProductPayload | null): boolean {
+    if (!product) {
+      return false;
+    }
+    const state = String(product.state || '').trim().toLowerCase();
+    const tradingStatus = String(product.trading_status || '').trim().toLowerCase();
+    const contractType = String(product.contract_type || '').trim().toLowerCase();
+    return (
+      state === 'live' &&
+      tradingStatus === 'operational' &&
+      contractType === 'perpetual_futures'
+    );
+  }
+
+  private isDeltaSymbolCompatible(productSymbol: unknown, requestedSymbol: unknown): boolean {
+    const normalizedProductSymbol = this.normalizeDeltaSymbol(productSymbol);
+    const normalizedRequestedSymbol = this.normalizeDeltaSymbol(requestedSymbol);
+    return (
+      normalizedProductSymbol === normalizedRequestedSymbol ||
+      normalizedProductSymbol === this.normalizeDeltaUsdQuoteSymbol(normalizedRequestedSymbol) ||
+      this.resolveDeltaBaseSymbol(normalizedProductSymbol) ===
+        this.resolveDeltaBaseSymbol(normalizedRequestedSymbol)
+    );
+  }
+
+  private resolveDeltaBaseSymbol(value: unknown): string {
+    const normalized = this.normalizeDeltaSymbol(value);
+    for (const quote of ['USDT', 'USDC', 'BUSD', 'FDUSD', 'USD']) {
+      if (normalized.endsWith(quote) && normalized.length > quote.length) {
+        return normalized.slice(0, -quote.length);
+      }
+    }
+
+    return normalized;
   }
 
   private resolveEstimatedOrderValue(

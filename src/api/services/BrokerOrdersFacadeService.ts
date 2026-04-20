@@ -965,6 +965,22 @@ export class BrokerOrdersFacadeService {
     const lowerMessage = message.toLowerCase();
 
     if (
+      lowerMessage.includes('product mapping') ||
+      lowerMessage.includes('live product catalog') ||
+      (lowerMessage.includes('product') &&
+        lowerMessage.includes('not found') &&
+        lowerMessage.includes('catalog')) ||
+      (lowerMessage.includes('product') &&
+        lowerMessage.includes('not live') &&
+        lowerMessage.includes('operational'))
+    ) {
+      return new BadRequestAppError(
+        'Order rejected: broker product mapping is stale or unavailable for this route.',
+        'ORDER_REJECTED_BROKER_MAPPING'
+      );
+    }
+
+    if (
       lowerMessage.includes('insufficient') &&
       ['margin', 'balance', 'fund', 'collateral'].some((token) =>
         lowerMessage.includes(token)

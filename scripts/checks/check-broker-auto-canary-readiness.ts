@@ -27,8 +27,16 @@ interface BrokerRouteSnapshot {
   updatedAt: string | null;
 }
 
+interface DeltaProductResolution {
+  product: Row | null;
+  mappedProduct: Row | null;
+  source: 'mapped_product_id' | 'symbol_alias' | 'missing';
+  error?: string;
+}
+
 const DEFAULT_CANARY_USER_EMAIL = 'admin@auralpha.com';
 const DEFAULT_CANARY_BROKER = 'mudrex';
+const DEFAULT_DELTA_BASE_URL = 'https://api.india.delta.exchange';
 const SUPPORTED_DRY_RUN_CANARY_BROKERS = new Set(['mudrex', 'delta_exchange']);
 const SUPPORTED_LIVE_AUTO_BROKERS = new Set(['mudrex', 'delta_exchange']);
 const REQUIRED_USER_SCHEDULERS = [
@@ -63,6 +71,11 @@ function readDateIso(value: unknown): string | null {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(String(value));
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeBaseUrl(value: unknown, fallback: string): string {
+  const normalized = readString(value).replace(/\/+$/, '');
+  return normalized || fallback;
 }
 
 function minutesSince(value: unknown): number | null {
@@ -210,22 +223,106 @@ function buildNextActions(gates: Gate[]): string[] {
     : ['All blocking gates passed; run the canary with max-1 limits and watch order submission reconciliation.'];
 }
 
-async function fetchDeltaProduct(productId: string): Promise<{ product: Row | null; error?: string }> {
+function normalizeDeltaSymbol(value: unknown): string {
+  return readString(value)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function normalizeDeltaUsdQuoteSymbol(value: unknown): string {
+  const normalized = normalizeDeltaSymbol(value);
+  for (const quote of ['USDT', 'USDC', 'BUSD', 'FDUSD']) {
+    if (normalized.endsWith(quote) && normalized.length > quote.length) {
+      return `${normalized.slice(0, -quote.length)}USD`;
+    }
+  }
+
+  return normalized;
+}
+
+function resolveDeltaBaseSymbol(value: unknown): string {
+  const normalized = normalizeDeltaSymbol(value);
+  for (const quote of ['USDT', 'USDC', 'BUSD', 'FDUSD', 'USD']) {
+    if (normalized.endsWith(quote) && normalized.length > quote.length) {
+      return normalized.slice(0, -quote.length);
+    }
+  }
+
+  return normalized;
+}
+
+function isDeltaProductLive(product: Row | null): boolean {
+  if (!product) return false;
+  return (
+    readString(product.state).toLowerCase() === 'live' &&
+    readString(product.trading_status).toLowerCase() === 'operational' &&
+    readString(product.contract_type).toLowerCase() === 'perpetual_futures'
+  );
+}
+
+function isDeltaSymbolCompatible(productSymbol: unknown, requestedSymbol: string): boolean {
+  const normalizedProductSymbol = normalizeDeltaSymbol(productSymbol);
+  const normalizedRequestedSymbol = normalizeDeltaSymbol(requestedSymbol);
+  return (
+    normalizedProductSymbol === normalizedRequestedSymbol ||
+    normalizedProductSymbol === normalizeDeltaUsdQuoteSymbol(normalizedRequestedSymbol) ||
+    resolveDeltaBaseSymbol(normalizedProductSymbol) === resolveDeltaBaseSymbol(normalizedRequestedSymbol)
+  );
+}
+
+function resolveDeltaProduct(
+  products: Row[],
+  productId: string,
+  requestedSymbol: string
+): DeltaProductResolution {
+  const mappedProduct = productId
+    ? products.find((product) => readString(product.id) === productId) ?? null
+    : null;
+  if (
+    mappedProduct &&
+    isDeltaProductLive(mappedProduct) &&
+    isDeltaSymbolCompatible(mappedProduct.symbol, requestedSymbol)
+  ) {
+    return {
+      product: mappedProduct,
+      mappedProduct,
+      source: 'mapped_product_id',
+    };
+  }
+
+  const normalizedRequestedSymbol = normalizeDeltaSymbol(requestedSymbol);
+  const normalizedRegionalSymbol = normalizeDeltaUsdQuoteSymbol(normalizedRequestedSymbol);
+  const requestedBaseSymbol = resolveDeltaBaseSymbol(normalizedRequestedSymbol);
+  const liveProducts = products.filter(isDeltaProductLive);
+  const findBySymbol = (symbol: string): Row | null =>
+    liveProducts.find((product) => normalizeDeltaSymbol(product.symbol) === symbol) ?? null;
+  const aliasProduct =
+    findBySymbol(normalizedRequestedSymbol) ??
+    findBySymbol(normalizedRegionalSymbol) ??
+    liveProducts.find(
+      (product) => resolveDeltaBaseSymbol(product.symbol) === requestedBaseSymbol
+    ) ??
+    null;
+
+  return {
+    product: aliasProduct,
+    mappedProduct,
+    source: aliasProduct ? 'symbol_alias' : 'missing',
+  };
+}
+
+async function fetchDeltaProducts(baseUrl: string): Promise<{ products: Row[]; error?: string }> {
   try {
-    const response = await fetch(
-      `https://api.delta.exchange/v2/products/${encodeURIComponent(productId)}`
-    );
+    const response = await fetch(`${baseUrl}/v2/products`);
     if (!response.ok) {
-      return { product: null, error: `HTTP ${response.status}` };
+      return { products: [], error: `HTTP ${response.status}` };
     }
     const payload = (await response.json()) as Row;
-    const product = payload.result && typeof payload.result === 'object'
-      ? (payload.result as Row)
-      : null;
-    return { product };
+    const products = Array.isArray(payload.result) ? (payload.result as Row[]) : [];
+    return { products };
   } catch (error) {
     return {
-      product: null,
+      products: [],
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -342,6 +439,15 @@ async function run(): Promise<void> {
           ? 'Dry-run proof can evaluate routing and risk gates; live broker placement remains blocked until this broker is certified.'
           : undefined,
     });
+
+    const [targetBrokerDefinition] = await queryRows<Row>(
+      'SELECT broker_key AS brokerKey, base_url AS baseUrl FROM brokers WHERE LOWER(broker_key) = LOWER(?) LIMIT 1',
+      [targetBroker]
+    );
+    const deltaBaseUrl = normalizeBaseUrl(
+      process.env.BROKER_AUTO_CANARY_DELTA_BASE_URL || targetBrokerDefinition?.baseUrl,
+      DEFAULT_DELTA_BASE_URL
+    );
 
     const brokerParams = auditedBrokers.length ? auditedBrokers : [targetBroker];
     const accountRows = targetUserId
@@ -651,9 +757,10 @@ async function run(): Promise<void> {
        FROM broker_assets
        WHERE source = ?
          AND UPPER(symbol) = UPPER(?)
-       LIMIT 1`,
+      LIMIT 1`,
       [targetBroker, targetCanarySymbol]
     );
+    let deltaProductResolutionReport: Record<string, unknown> | null = null;
     if (targetBroker === 'delta_exchange') {
       addGate(gates, {
         key: 'target_broker_asset_mapping',
@@ -670,31 +777,63 @@ async function run(): Promise<void> {
 
       if (targetBrokerAsset) {
         const productId = readString(targetBrokerAsset.externalId);
-        const deltaProduct = productId
-          ? await fetchDeltaProduct(productId)
-          : { product: null, error: 'missing product id' };
-        const product = deltaProduct.product;
+        const deltaProducts = await fetchDeltaProducts(deltaBaseUrl);
+        const resolution = deltaProducts.error
+          ? {
+              product: null,
+              mappedProduct: null,
+              source: 'missing' as const,
+              error: deltaProducts.error,
+            }
+          : resolveDeltaProduct(deltaProducts.products, productId, targetCanarySymbol);
+        const product = resolution.product;
+        const mappedProduct = resolution.mappedProduct;
         const state = readString(product?.state).toLowerCase();
         const tradingStatus = readString(product?.trading_status).toLowerCase();
         const contractType = readString(product?.contract_type).toLowerCase();
         const productSymbol = readString(product?.symbol).toUpperCase();
-        const isLive =
-          productSymbol === targetCanarySymbol &&
-          state === 'live' &&
-          tradingStatus === 'operational' &&
-          contractType === 'perpetual_futures';
+        const resolvedProductId = readString(product?.id);
+        const isLive = Boolean(product && isDeltaProductLive(product) && isDeltaSymbolCompatible(
+          productSymbol,
+          targetCanarySymbol
+        ));
+        deltaProductResolutionReport = {
+          lookupBaseUrl: deltaBaseUrl,
+          requestedSymbol: targetCanarySymbol,
+          requestedProductId: productId || null,
+          resolvedProductId: resolvedProductId || null,
+          resolvedSymbol: productSymbol || null,
+          source: resolution.source,
+          mappedProductFound: Boolean(mappedProduct),
+          error: resolution.error ?? null,
+        };
+        if (
+          isLive &&
+          productId &&
+          resolvedProductId &&
+          productId !== resolvedProductId
+        ) {
+          addGate(gates, {
+            key: 'target_delta_product_mapping_alias',
+            status: 'warn',
+            summary: `Delta stored mapping ${productId} is stale; regional product ${resolvedProductId} will be used`,
+            detail: `Requested ${targetCanarySymbol}; resolved ${productSymbol || 'unknown'} via ${deltaBaseUrl}.`,
+          });
+        }
         addGate(gates, {
           key: 'target_delta_product_live',
           status: isLive ? 'pass' : 'block',
           summary: isLive
-            ? `Delta product ${productId} is live for ${targetCanarySymbol}`
+            ? `Delta product ${resolvedProductId} is live for ${targetCanarySymbol}`
             : `Delta product ${productId || 'unknown'} is not live for ${targetCanarySymbol}`,
           detail: product
             ? `symbol=${productSymbol || 'unknown'}, state=${state || 'unknown'}, trading_status=${
                 tradingStatus || 'unknown'
-              }, contract_type=${contractType || 'unknown'}.`
-            : deltaProduct.error
-              ? `Product lookup failed: ${deltaProduct.error}.`
+              }, contract_type=${contractType || 'unknown'}, lookup_base_url=${deltaBaseUrl}, source=${
+                resolution.source
+              }.`
+            : resolution.error
+              ? `Product lookup failed from ${deltaBaseUrl}: ${resolution.error}.`
               : undefined,
         });
       }
@@ -778,6 +917,7 @@ async function run(): Promise<void> {
         brokerKey: targetBroker,
         auditedBrokers,
         maxSnapshotAgeMinutes,
+        deltaBaseUrl: targetBroker === 'delta_exchange' ? deltaBaseUrl : undefined,
       },
       runtime,
       foundationReady,
@@ -799,6 +939,7 @@ async function run(): Promise<void> {
             updatedAt: readDateIso(targetBrokerAsset.updatedAt),
           }
         : null,
+      deltaProductResolution: deltaProductResolutionReport,
       automationSummary: {
         tradeSuggestionAutomations: automationRows.length,
         liveAutoCanaryCandidates: liveAutomationCandidates.length,

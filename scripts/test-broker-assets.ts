@@ -1344,6 +1344,77 @@ async function runDeltaLookupAssertions(): Promise<void> {
   assert.equal(convertedResponse.contract_value, '0.001');
   assert.equal(convertedResponse.amount, '74.7392');
 
+  const indiaAdapter = new DeltaExchangeOrdersAdapter() as any;
+  const indiaSubmittedPayloads: Record<string, unknown>[] = [];
+  Object.defineProperty(indiaAdapter, 'deltaHttpClient', {
+    get: () => ({
+      async publicGet(routePath: string) {
+        assert.equal(routePath, '/v2/products');
+        return [
+          {
+            id: 27,
+            symbol: 'BTCUSD',
+            contract_value: '0.001',
+            contract_unit_currency: 'BTC',
+            contract_type: 'perpetual_futures',
+            notional_type: 'vanilla',
+            state: 'live',
+            trading_status: 'operational',
+          },
+        ];
+      },
+      async signedPost(
+        accountId: string,
+        routePath: string,
+        payload: Record<string, unknown>,
+        userId?: string
+      ) {
+        indiaSubmittedPayloads.push({
+          accountId,
+          routePath,
+          payload,
+          userId,
+        });
+        return {
+          id: `delta-india-order-${indiaSubmittedPayloads.length}`,
+          state: 'open',
+        };
+      },
+    }),
+  });
+  const indiaResponse = await indiaAdapter.createOrder(
+    '139',
+    {
+      idempotency_key: 'live-auto:delta-india-btcusdt-alias',
+      symbol: 'BTCUSDT',
+      side: 'long',
+      quantity: 100 / 74739.2,
+      reduce_only: false,
+      order_type: 'market',
+      order_price: 74739.2,
+      leverage: 15,
+      trigger_type: 'immediate',
+      execution_mode: 'live',
+      is_stoploss: false,
+      is_takeprofit: false,
+      stoploss_price: 73991.808,
+      takeprofit_price: 76233.984,
+    },
+    {
+      userId: 'user-1',
+      accountId: 'acct-1',
+    }
+  );
+  assert.equal(indiaSubmittedPayloads[0].routePath, '/v2/orders');
+  assert.deepEqual(indiaSubmittedPayloads.map((payload) => (payload.payload as any).product_id), [
+    27,
+    27,
+    27,
+  ]);
+  assert.equal(indiaResponse.order_id, 'delta-india-order-1');
+  assert.equal(indiaResponse.stop_loss_order_id, 'delta-india-order-2');
+  assert.equal(indiaResponse.take_profit_order_id, 'delta-india-order-3');
+
   await assert.rejects(
     () =>
       adapter.createOrder(

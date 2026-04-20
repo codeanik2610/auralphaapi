@@ -924,6 +924,46 @@ async function runNormalizationAssertion(): Promise<void> {
     harness.alerts[0]?.message,
     'Order create failed: Order rejected: insufficient margin for this route.'
   );
+
+  harness.setAdapterResult(
+    new BadRequestAppError(
+      'Delta Exchange product mapping is stale for BTCUSDT; requested product 139 was not found in the live product catalog'
+    )
+  );
+
+  await assert.rejects(
+    () =>
+      harness.service.createFuturesOrder('user-1', 'asset-1', {
+        brokerKey: 'delta_exchange',
+        accountId: 'acct-delta-1',
+        idempotency_key: 'order-submit-8-mapping-error',
+        symbol: 'BTCUSDT',
+        side: 'long',
+        execution_mode: 'live',
+        leverage: 15,
+        quantity: 1,
+        order_price: 74000,
+        order_type: 'market',
+        trigger_type: 'immediate',
+        is_takeprofit: false,
+        is_stoploss: false,
+        stoploss_price: 73000,
+        takeprofit_price: 76000,
+        reduce_only: false,
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as { httpCode?: number }).httpCode === 400 &&
+      error.message ===
+        'Order rejected: broker product mapping is stale or unavailable for this route.' &&
+      (error as { code?: string }).code === 'ORDER_REJECTED_BROKER_MAPPING'
+  );
+
+  const mappingStored = harness.submissions.get('user-1:order-submit-8-mapping-error');
+  assert.equal(mappingStored?.status, 'failed');
+  assert.equal(mappingStored?.placementState, 'rejected');
+  assert.equal(mappingStored?.reconciliationState, 'not_required');
+  assert.equal(mappingStored?.errorPayload?.code, 'ORDER_REJECTED_BROKER_MAPPING');
 }
 
 async function runAutomaticSyncReconciliationAssertion(): Promise<void> {
