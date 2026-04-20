@@ -325,6 +325,14 @@ export class AlertRepository {
     await this.alertRepository.update({ id: alertId, userId }, payload);
   }
 
+  async updateOpenAlertDetails(
+    userId: string,
+    alertId: string,
+    payload: Partial<Pick<Alert, 'severity' | 'symbol' | 'message' | 'route' | 'urgency'>>
+  ): Promise<void> {
+    await this.alertRepository.update({ id: alertId, userId, status: 'Open' }, payload);
+  }
+
   async createAlertAction(payload: {
     userId: string;
     alertId: string;
@@ -359,6 +367,28 @@ export class AlertRepository {
       .andWhere('alert.status = :status', { status: 'Open' })
       .andWhere('alert.channel = :channel', { channel: payload.channel })
       .andWhere('alert.message = :message', { message: payload.message })
+      .orderBy('alert.createdAt', 'DESC')
+      .limit(1);
+
+    if (payload.source) {
+      builder.andWhere('alert.source = :source', { source: payload.source });
+    } else {
+      builder.andWhere('alert.source IS NULL');
+    }
+
+    return builder.getOne();
+  }
+
+  async findOpenAlertBySource(payload: {
+    userId: string;
+    channel: string;
+    source?: string | null;
+  }): Promise<Alert | null> {
+    const builder = this.alertRepository
+      .createQueryBuilder('alert')
+      .where('alert.userId = :userId', { userId: payload.userId })
+      .andWhere('alert.status = :status', { status: 'Open' })
+      .andWhere('alert.channel = :channel', { channel: payload.channel })
       .orderBy('alert.createdAt', 'DESC')
       .limit(1);
 

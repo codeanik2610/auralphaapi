@@ -71,9 +71,18 @@ async function withMockedQuery<T>(handler: QueryHandler, run: () => Promise<T>):
   }
 }
 
-function createService(alerts: Array<Record<string, unknown>> = []) {
+function createService(
+  alerts: Array<Record<string, unknown>> = [],
+  options: {
+    openAlertBySource?: Record<string, unknown> | null;
+    updatedAlerts?: Array<Record<string, unknown>>;
+  } = {}
+) {
   const service = new BrokerCanaryProtectionMonitorService() as any;
   service.alertRepository = {
+    async findOpenAlertBySource() {
+      return options.openAlertBySource ?? null;
+    },
     async findRecentOpenAlertBySource() {
       return null;
     },
@@ -83,6 +92,16 @@ function createService(alerts: Array<Record<string, unknown>> = []) {
     async createAlert(payload: Record<string, unknown>) {
       alerts.push(payload);
       return { id: `alert-${alerts.length}`, ...payload };
+    },
+    async updateOpenAlertDetails(
+      userId: string,
+      alertId: string,
+      payload: Record<string, unknown>
+    ) {
+      options.updatedAlerts?.push({ userId, alertId, ...payload });
+      if (options.openAlertBySource) {
+        Object.assign(options.openAlertBySource, payload);
+      }
     },
   };
   return service as BrokerCanaryProtectionMonitorService;
@@ -275,6 +294,71 @@ async function testClosedPositionRankThreeIsNotTreatedAsOpen(): Promise<void> {
   assert.equal(alerts.length, 1);
 }
 
+async function testExistingCanaryAlertIsRefreshedWhenLifecycleChanges(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const updatedAlerts: Array<Record<string, unknown>> = [];
+  const service = createService(alerts, {
+    updatedAlerts,
+    openAlertBySource: {
+      id: 'alert-1',
+      userId: 'user-1',
+      severity: 'High',
+      channel: 'Broker Canary',
+      symbol: 'BTCUSDT',
+      message: 'Broker canary protection issue for BTCUSDT: Open live canary position does not have both active SL and TP protective orders.',
+      route: 'Orders',
+      status: 'Open',
+      source: 'broker-canary-monitor:submission-1',
+      urgency: 'immediate',
+    },
+  });
+
+  const response = await withMockedQuery(async (sql) => {
+    if (sql.includes('FROM order_submission_requests')) {
+      return [createCandidate()];
+    }
+    if (sql.includes('FROM scheduler_orders_snapshots')) {
+      return [
+        createOrderSnapshot(),
+        createOrderSnapshot({
+          externalId: 'sl-1',
+          orderStatus: 'PENDING',
+          statusRank: 1,
+          side: 'sell',
+        }),
+        createOrderSnapshot({
+          externalId: 'tp-1',
+          orderStatus: 'CLOSED',
+          statusRank: 4,
+          side: 'sell',
+        }),
+      ];
+    }
+    if (sql.includes('FROM scheduler_positions_snapshots')) {
+      return [
+        createPositionSnapshot({
+          status: 'CLOSED',
+          statusRank: 3,
+          quantityContracts: '1',
+        }),
+      ];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  }, () =>
+    service.runMonitor({
+      emitAlerts: true,
+      now: new Date('2026-04-20T07:01:00.000Z'),
+    })
+  );
+
+  assert.equal(response.alertsEmitted, 1);
+  assert.equal(alerts.length, 0);
+  assert.equal(updatedAlerts.length, 1);
+  assert.equal(updatedAlerts[0]?.alertId, 'alert-1');
+  assert.equal(updatedAlerts[0]?.urgency, 'review');
+  assert.match(String(updatedAlerts[0]?.message || ''), /protective order is still active/i);
+}
+
 async function testDisabledMonitorSkipsQueries(): Promise<void> {
   const originalEnabled = env.brokerCanaryMonitor.enabled;
   env.brokerCanaryMonitor.enabled = false;
@@ -296,6 +380,7 @@ async function main(): Promise<void> {
   await testOpenCanaryMissingProtectionEmitsAlert();
   await testClosedCanaryWithActiveProtectionAlertsAsOrphan();
   await testClosedPositionRankThreeIsNotTreatedAsOpen();
+  await testExistingCanaryAlertIsRefreshedWhenLifecycleChanges();
   await testDisabledMonitorSkipsQueries();
   console.log('Broker canary protection monitor assertions passed.');
 }

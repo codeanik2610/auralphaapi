@@ -452,10 +452,16 @@ export class BrokerCanaryProtectionMonitorService {
     if (!item.userId || !item.issues.length) {
       return false;
     }
+    const channel = 'Broker Canary';
     const source = `broker-canary-monitor:${item.submissionId}`.slice(0, 100);
     const severity = item.issues.some((issue) => issue.severity === 'critical')
       ? 'High'
       : 'Medium';
+    const symbol = (item.symbol || 'SYSTEM').slice(0, 50);
+    const route = 'Orders';
+    const urgency = item.issues.some((issue) => issue.code === 'open_position_unprotected')
+      ? 'immediate'
+      : 'review';
     const issueSummary = item.issues
       .slice(0, 3)
       .map((issue) => issue.message)
@@ -464,18 +470,33 @@ export class BrokerCanaryProtectionMonitorService {
       0,
       255
     );
-    const recent = await this.alertRepository.findRecentOpenAlertBySource({
+    const existingBySource = await this.alertRepository.findOpenAlertBySource({
       userId: item.userId,
-      channel: 'Broker Canary',
+      channel,
       source,
-      withinMinutes: env.observability.failureAlertThrottleMinutes,
     });
-    if (recent) {
+    if (existingBySource) {
+      if (
+        existingBySource.severity !== severity ||
+        existingBySource.symbol !== symbol ||
+        existingBySource.message !== message ||
+        existingBySource.route !== route ||
+        existingBySource.urgency !== urgency
+      ) {
+        await this.alertRepository.updateOpenAlertDetails(item.userId, existingBySource.id, {
+          severity,
+          symbol,
+          message,
+          route,
+          urgency,
+        });
+        return true;
+      }
       return false;
     }
     const existing = await this.alertRepository.findOpenAlertBySignature({
       userId: item.userId,
-      channel: 'Broker Canary',
+      channel,
       source,
       message,
     });
@@ -486,15 +507,13 @@ export class BrokerCanaryProtectionMonitorService {
     const created = await this.alertRepository.createAlert({
       userId: item.userId,
       severity,
-      channel: 'Broker Canary',
-      symbol: (item.symbol || 'SYSTEM').slice(0, 50),
+      channel,
+      symbol,
       message,
-      route: 'Orders',
+      route,
       status: 'Open',
       source,
-      urgency: item.issues.some((issue) => issue.code === 'open_position_unprotected')
-        ? 'immediate'
-        : 'review',
+      urgency,
       applyEscalationPolicy: true,
     });
 
