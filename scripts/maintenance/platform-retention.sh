@@ -11,7 +11,7 @@ fi
 
 MODE="dry-run"
 CANDLE_RETENTION_DAYS=90
-EXCHANGE_LOG_KEEP_RUNS=5
+SCHEDULER_RUN_KEEP_RUNS=5
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-auralpha-postgres-1}"
 MYSQL_CONTAINER="${MYSQL_CONTAINER:-auralpha-mysql-1}"
 POSTGRES_DB="${POSTGRES_DB:-auralpha}"
@@ -25,7 +25,7 @@ RUN_DOCKER_PRUNE=true
 RUN_DB_VACUUM=true
 EXACT_CANDLE_COUNT=false
 RUN_POSTGRES_CANDLES=true
-RUN_MYSQL_EXCHANGE_LOGS=true
+RUN_MYSQL_SCHEDULER_RUN_LOGS=true
 
 function usage() {
   cat <<'USAGE'
@@ -35,7 +35,8 @@ Usage:
 Purpose:
   Retain only production-safe operational data windows:
   - Postgres market_candles_1m: keep last 90 days by open_time.
-  - MySQL exchange_asset_update_logs: keep logs for the latest 5 runs per scheduler/user scope.
+  - MySQL scheduler_run_logs: keep latest 5 finished runs per scheduler/user scope.
+    Related exchange_asset_update_logs and scheduler_health_check_results cascade from those runs.
   - Docker build cache: prune old build cache only, never app images or volumes.
 
 Safety:
@@ -44,7 +45,7 @@ Safety:
 
 Options:
   --candle-retention-days DAYS       Default: 90
-  --exchange-log-keep-runs COUNT     Default: 5
+  --scheduler-run-keep-runs COUNT    Default: 5
   --postgres-container NAME          Default: auralpha-postgres-1
   --mysql-container NAME             Default: auralpha-mysql-1
   --postgres-db NAME                 Default: auralpha
@@ -57,7 +58,7 @@ Options:
   --skip-docker-prune                Do not prune Docker build cache in --apply.
   --skip-vacuum                      Do not run VACUUM ANALYZE after Postgres deletes.
   --skip-postgres-candles            Do not delete Postgres candle rows in --apply.
-  --skip-mysql-exchange-logs         Do not delete MySQL exchange asset update logs in --apply.
+  --skip-mysql-scheduler-run-logs    Do not delete MySQL scheduler run logs in --apply.
   --exact-candle-count               Count old candle rows even without a leading open_time index.
   -h, --help                         Show this help.
 USAGE
@@ -118,8 +119,8 @@ function parse_args() {
         CANDLE_RETENTION_DAYS="${2:-}"
         shift 2
         ;;
-      --exchange-log-keep-runs)
-        EXCHANGE_LOG_KEEP_RUNS="${2:-}"
+      --scheduler-run-keep-runs|--exchange-log-keep-runs)
+        SCHEDULER_RUN_KEEP_RUNS="${2:-}"
         shift 2
         ;;
       --postgres-container)
@@ -170,8 +171,8 @@ function parse_args() {
         RUN_POSTGRES_CANDLES=false
         shift
         ;;
-      --skip-mysql-exchange-logs)
-        RUN_MYSQL_EXCHANGE_LOGS=false
+      --skip-mysql-scheduler-run-logs|--skip-mysql-exchange-logs)
+        RUN_MYSQL_SCHEDULER_RUN_LOGS=false
         shift
         ;;
       --exact-candle-count)
@@ -191,7 +192,7 @@ function parse_args() {
 
 function validate_inputs() {
   require_uint "CANDLE_RETENTION_DAYS" "${CANDLE_RETENTION_DAYS}"
-  require_uint "EXCHANGE_LOG_KEEP_RUNS" "${EXCHANGE_LOG_KEEP_RUNS}"
+  require_uint "SCHEDULER_RUN_KEEP_RUNS" "${SCHEDULER_RUN_KEEP_RUNS}"
   require_uint "POSTGRES_BATCH_SIZE" "${POSTGRES_BATCH_SIZE}"
   require_uint "MYSQL_BATCH_SIZE" "${MYSQL_BATCH_SIZE}"
   require_uint "MAX_BATCHES" "${MAX_BATCHES}"
@@ -298,41 +299,90 @@ function require_postgres_candle_delete_ready() {
   fi
 }
 
-function print_mysql_exchange_log_report() {
-  echo "database	keep_runs_per_scheduler_user_scope	total_exchange_asset_update_logs	old_log_rows_outside_keep_window	old_run_ids_outside_keep_window	oldest_deletable_log_created_at	newest_deletable_log_created_at	exchange_asset_update_logs_mb"
+function print_mysql_scheduler_run_log_report() {
+  echo "database	keep_runs_per_scheduler_user_scope	total_scheduler_run_logs	deletable_scheduler_run_logs	deletable_scheduler_scopes	related_exchange_asset_update_logs	related_scheduler_health_check_results	oldest_deletable_run_started_at	newest_deletable_run_started_at	scheduler_run_logs_mb	exchange_asset_update_logs_mb	scheduler_health_check_results_mb"
   mysql_query "
 WITH ranked_runs AS (
   SELECT
     id,
     scheduler_key,
     COALESCE(actor_user_id, '__global__') AS actor_scope,
+    started_at,
+    finished_at,
     ROW_NUMBER() OVER (
       PARTITION BY scheduler_key, COALESCE(actor_user_id, '__global__')
       ORDER BY started_at DESC, created_at DESC, id DESC
     ) AS run_rank
   FROM scheduler_run_logs
 ),
-old_logs AS (
-  SELECT l.id, l.run_log_id, l.created_at
-  FROM exchange_asset_update_logs l
-  INNER JOIN ranked_runs r ON r.id = l.run_log_id
-  WHERE r.run_rank > ${EXCHANGE_LOG_KEEP_RUNS}
+doomed_runs AS (
+  SELECT id, scheduler_key, actor_scope, started_at
+  FROM ranked_runs
+  WHERE run_rank > ${SCHEDULER_RUN_KEEP_RUNS}
+    AND finished_at IS NOT NULL
 )
 SELECT
   DATABASE(),
-  ${EXCHANGE_LOG_KEEP_RUNS},
-  (SELECT COUNT(*) FROM exchange_asset_update_logs),
+  ${SCHEDULER_RUN_KEEP_RUNS},
+  (SELECT COUNT(*) FROM scheduler_run_logs),
   COUNT(*),
-  COUNT(DISTINCT run_log_id),
-  COALESCE(CAST(MIN(created_at) AS CHAR), 'none'),
-  COALESCE(CAST(MAX(created_at) AS CHAR), 'none'),
+  COUNT(DISTINCT CONCAT(scheduler_key, ':', actor_scope)),
+  (SELECT COUNT(*) FROM exchange_asset_update_logs l INNER JOIN doomed_runs d ON d.id = l.run_log_id),
+  (SELECT COUNT(*) FROM scheduler_health_check_results h INNER JOIN doomed_runs d ON d.id = h.run_log_id),
+  COALESCE(CAST(MIN(started_at) AS CHAR), 'none'),
+  COALESCE(CAST(MAX(started_at) AS CHAR), 'none'),
+  (
+    SELECT ROUND((data_length + index_length) / 1024 / 1024, 2)
+      FROM information_schema.tables
+     WHERE table_schema = DATABASE()
+       AND table_name = 'scheduler_run_logs'
+  ),
   (
     SELECT ROUND((data_length + index_length) / 1024 / 1024, 2)
       FROM information_schema.tables
      WHERE table_schema = DATABASE()
        AND table_name = 'exchange_asset_update_logs'
+  ),
+  (
+    SELECT ROUND((data_length + index_length) / 1024 / 1024, 2)
+      FROM information_schema.tables
+     WHERE table_schema = DATABASE()
+       AND table_name = 'scheduler_health_check_results'
   )
-FROM old_logs;
+FROM doomed_runs;
+"
+
+  echo "scheduler_key	actor_scope	total_runs	deletable_finished_runs	oldest_deletable_run_started_at	newest_deletable_run_started_at"
+  mysql_query "
+WITH ranked_runs AS (
+  SELECT
+    id,
+    scheduler_key,
+    COALESCE(actor_user_id, '__global__') AS actor_scope,
+    started_at,
+    finished_at,
+    ROW_NUMBER() OVER (
+      PARTITION BY scheduler_key, COALESCE(actor_user_id, '__global__')
+      ORDER BY started_at DESC, created_at DESC, id DESC
+    ) AS run_rank,
+    COUNT(*) OVER (
+      PARTITION BY scheduler_key, COALESCE(actor_user_id, '__global__')
+    ) AS total_runs
+  FROM scheduler_run_logs
+)
+SELECT
+  scheduler_key,
+  actor_scope,
+  MAX(total_runs),
+  COUNT(*),
+  MIN(started_at),
+  MAX(started_at)
+FROM ranked_runs
+WHERE run_rank > ${SCHEDULER_RUN_KEEP_RUNS}
+  AND finished_at IS NOT NULL
+GROUP BY scheduler_key, actor_scope
+ORDER BY COUNT(*) DESC, scheduler_key ASC, actor_scope ASC
+LIMIT 100;
 "
 }
 
@@ -389,7 +439,7 @@ SELECT COUNT(*) FROM deleted;
   fi
 }
 
-function apply_mysql_exchange_log_retention() {
+function apply_mysql_scheduler_run_log_retention() {
   local deleted total_deleted batch_number
   total_deleted=0
   batch_number=0
@@ -397,26 +447,27 @@ function apply_mysql_exchange_log_retention() {
   while [[ "${batch_number}" -lt "${MAX_BATCHES}" ]]; do
     deleted="$(mysql_query "
 SET sql_log_bin = 0;
-DELETE l
-FROM exchange_asset_update_logs l
+DELETE run
+FROM scheduler_run_logs run
 INNER JOIN (
   SELECT id
   FROM (
-    SELECT l2.id
-    FROM exchange_asset_update_logs l2
-    INNER JOIN (
+    SELECT id
+    FROM (
       SELECT
         id,
+        finished_at,
         ROW_NUMBER() OVER (
           PARTITION BY scheduler_key, COALESCE(actor_user_id, '__global__')
           ORDER BY started_at DESC, created_at DESC, id DESC
         ) AS run_rank
       FROM scheduler_run_logs
-    ) ranked_runs ON ranked_runs.id = l2.run_log_id
-    WHERE ranked_runs.run_rank > ${EXCHANGE_LOG_KEEP_RUNS}
+    ) ranked_runs
+    WHERE ranked_runs.run_rank > ${SCHEDULER_RUN_KEEP_RUNS}
+      AND ranked_runs.finished_at IS NOT NULL
   ) doomed_ids
   LIMIT ${MYSQL_BATCH_SIZE}
-) doomed ON doomed.id = l.id;
+) doomed ON doomed.id = run.id;
 SELECT ROW_COUNT();
 ")"
     deleted="$(printf '%s\n' "${deleted}" | tail -n 1)"
@@ -424,13 +475,13 @@ SELECT ROW_COUNT();
     deleted="${deleted:-0}"
     total_deleted=$((total_deleted + deleted))
     batch_number=$((batch_number + 1))
-    echo "mysql_exchange_asset_update_logs_deleted_batch_${batch_number}	${deleted}"
+    echo "mysql_scheduler_run_logs_deleted_batch_${batch_number}	${deleted}"
     if [[ "${deleted}" -eq 0 ]]; then
       break
     fi
   done
 
-  echo "mysql_exchange_asset_update_logs_deleted_total	${total_deleted}"
+  echo "mysql_scheduler_run_logs_deleted_total	${total_deleted}"
 }
 
 function apply_docker_builder_prune() {
@@ -452,7 +503,7 @@ function main() {
 mode	${MODE}
 root_dir	${ROOT_DIR}
 candle_retention_days	${CANDLE_RETENTION_DAYS}
-exchange_log_keep_runs	${EXCHANGE_LOG_KEEP_RUNS}
+scheduler_run_keep_runs	${SCHEDULER_RUN_KEEP_RUNS}
 postgres_container	${POSTGRES_CONTAINER}
 mysql_container	${MYSQL_CONTAINER}
 postgres_batch_size	${POSTGRES_BATCH_SIZE}
@@ -460,7 +511,7 @@ mysql_batch_size	${MYSQL_BATCH_SIZE}
 max_batches	${MAX_BATCHES}
 docker_builder_until	${DOCKER_BUILDER_UNTIL}
 run_postgres_candles	${RUN_POSTGRES_CANDLES}
-run_mysql_exchange_logs	${RUN_MYSQL_EXCHANGE_LOGS}
+run_mysql_scheduler_run_logs	${RUN_MYSQL_SCHEDULER_RUN_LOGS}
 run_docker_prune	${RUN_DOCKER_PRUNE}
 EOF
 
@@ -473,8 +524,8 @@ EOF
   section "Postgres market_candles_1m Retention Report"
   print_postgres_candle_report
 
-  section "MySQL exchange_asset_update_logs Retention Report"
-  print_mysql_exchange_log_report
+  section "MySQL scheduler_run_logs Retention Report"
+  print_mysql_scheduler_run_log_report
 
   section "MySQL Binary Log Report"
   print_mysql_binlog_report
@@ -489,12 +540,12 @@ EOF
       echo "postgres_candles	skipped"
     fi
 
-    if [[ "${RUN_MYSQL_EXCHANGE_LOGS}" == "true" ]]; then
-      section "Applying MySQL Exchange Asset Update Log Retention"
-      apply_mysql_exchange_log_retention
+    if [[ "${RUN_MYSQL_SCHEDULER_RUN_LOGS}" == "true" ]]; then
+      section "Applying MySQL Scheduler Run Log Retention"
+      apply_mysql_scheduler_run_log_retention
     else
-      section "Applying MySQL Exchange Asset Update Log Retention"
-      echo "mysql_exchange_asset_update_logs	skipped"
+      section "Applying MySQL Scheduler Run Log Retention"
+      echo "mysql_scheduler_run_logs	skipped"
     fi
 
     section "Applying Docker Builder Prune"
