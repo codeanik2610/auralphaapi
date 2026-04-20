@@ -1014,7 +1014,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
   const submittedPayloads: Record<string, unknown>[] = [];
   const publicProductRequests: string[] = [];
   const expectedClientOrderId = (key: string) =>
-    `auralpha_${createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
+    `aur_${createHash('sha256').update(key).digest('hex').slice(0, 28)}`;
 
   Object.defineProperty(adapter, 'exchangeAssetRepository', {
     get: () => ({
@@ -1344,6 +1344,16 @@ async function runDeltaLookupAssertions(): Promise<void> {
   assert.equal(convertedResponse.base_quantity, '0.001');
   assert.equal(convertedResponse.contract_value, '0.001');
   assert.equal(convertedResponse.amount, '74.7392');
+  for (const submittedPayload of submittedPayloads) {
+    const clientOrderId = (submittedPayload.payload as Record<string, unknown>).client_order_id;
+    if (clientOrderId) {
+      assert.equal(
+        String(clientOrderId).length <= 32,
+        true,
+        `Delta client_order_id must be <= 32 chars: ${clientOrderId}`
+      );
+    }
+  }
 
   const indiaAdapter = new DeltaExchangeOrdersAdapter() as any;
   const indiaSubmittedPayloads: Record<string, unknown>[] = [];

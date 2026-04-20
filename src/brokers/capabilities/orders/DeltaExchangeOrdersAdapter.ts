@@ -10,6 +10,9 @@ import { DeltaExchangeHttpClient } from '../../providers/delta_exchange/DeltaExc
 import { ExchangeAssetRepository } from '../../../database';
 import { BadRequestAppError } from '../../../api';
 
+const DELTA_CLIENT_ORDER_ID_MAX_LENGTH = 32;
+const DELTA_CLIENT_ORDER_ID_PREFIX = 'aur_';
+
 interface DeltaOrderPayload {
   id?: number | string;
   product_id?: number | string;
@@ -394,8 +397,9 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       return undefined;
     }
 
-    const digest = createHash('sha256').update(normalized).digest('hex').slice(0, 32);
-    return `auralpha_${digest}`;
+    const digestLength = DELTA_CLIENT_ORDER_ID_MAX_LENGTH - DELTA_CLIENT_ORDER_ID_PREFIX.length;
+    const digest = createHash('sha256').update(normalized).digest('hex').slice(0, digestLength);
+    return `${DELTA_CLIENT_ORDER_ID_PREFIX}${digest}`;
   }
 
   private isLiveAutoSubmission(body: ValidatedCreateOrderRouteBody): boolean {
