@@ -22,6 +22,8 @@ function createCandidate(overrides: Record<string, unknown> = {}) {
     stopLossOrderIdNested: null,
     takeProfitOrderId: 'tp-1',
     takeProfitOrderIdNested: null,
+    requestStopLossPrice: '73253',
+    requestTakeProfitPrice: '75473',
     createdAt: new Date('2026-04-20T06:00:00.000Z'),
     updatedAt: new Date('2026-04-20T06:01:00.000Z'),
     ...overrides,
@@ -54,6 +56,10 @@ function createPositionSnapshot(overrides: Record<string, unknown> = {}) {
     quantityContracts: '1',
     entryPrice: '74268.5',
     markPrice: '74740.1',
+    stopLossOrderId: null,
+    stopLossPrice: null,
+    takeProfitOrderId: null,
+    takeProfitPrice: null,
     lastSeenAt: new Date('2026-04-20T07:00:00.000Z'),
     updatedAt: new Date('2026-04-20T07:00:00.000Z'),
     ...overrides,
@@ -149,6 +155,113 @@ async function testHealthyProtectedCanaryDoesNotAlert(): Promise<void> {
   assert.equal(response.issueSubmissions, 0);
   assert.equal(alerts.length, 0);
   assert.equal(response.items[0]?.lifecycle, 'OPEN_WITH_SL_TP');
+}
+
+async function testMudrexOpenPositionProtectionCanComeFromPositionSnapshot(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const service = createService(alerts);
+
+  const response = await withMockedQuery(async (sql) => {
+    if (sql.includes('FROM order_submission_requests')) {
+      return [
+        createCandidate({
+          brokerKey: 'mudrex',
+          brokerOrderId: 'mudrex-entry-1',
+          requestSymbol: null,
+          requestOrderSymbol: 'BTCUSDT',
+          stopLossOrderId: null,
+          takeProfitOrderId: null,
+        }),
+      ];
+    }
+    if (sql.includes('FROM scheduler_orders_snapshots')) {
+      return [
+        createOrderSnapshot({
+          externalId: 'mudrex-entry-1',
+          symbol: 'BTCUSDT',
+          assetUuid: 'mudrex-asset-1',
+        }),
+      ];
+    }
+    if (sql.includes('FROM scheduler_positions_snapshots')) {
+      return [
+        createPositionSnapshot({
+          externalId: 'mudrex:mudrex-asset-1:2026-04-20T06:12:18.000Z:LONG',
+          symbol: 'BTCUSDT',
+          stopLossOrderId: 'mudrex-sl-1',
+          stopLossPrice: '73253',
+          takeProfitOrderId: 'mudrex-tp-1',
+          takeProfitPrice: '75473',
+        }),
+      ];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  }, () =>
+    service.runMonitor({
+      emitAlerts: true,
+      now: new Date('2026-04-20T07:01:00.000Z'),
+    })
+  );
+
+  assert.equal(response.status, 'ok');
+  assert.equal(response.items[0]?.brokerKey, 'mudrex');
+  assert.equal(response.items[0]?.lifecycle, 'OPEN_WITH_SL_TP');
+  assert.equal(response.items[0]?.stopLossOrderId, 'mudrex-sl-1');
+  assert.equal(response.items[0]?.takeProfitOrderId, 'mudrex-tp-1');
+  assert.equal(alerts.length, 0);
+}
+
+async function testMudrexOpenPositionMissingTakeProfitAlerts(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const service = createService(alerts);
+
+  const response = await withMockedQuery(async (sql) => {
+    if (sql.includes('FROM order_submission_requests')) {
+      return [
+        createCandidate({
+          brokerKey: 'mudrex',
+          brokerOrderId: 'mudrex-entry-1',
+          stopLossOrderId: null,
+          takeProfitOrderId: null,
+        }),
+      ];
+    }
+    if (sql.includes('FROM scheduler_orders_snapshots')) {
+      return [
+        createOrderSnapshot({
+          externalId: 'mudrex-entry-1',
+          symbol: 'BTCUSDT',
+          assetUuid: 'mudrex-asset-1',
+        }),
+      ];
+    }
+    if (sql.includes('FROM scheduler_positions_snapshots')) {
+      return [
+        createPositionSnapshot({
+          externalId: 'mudrex:mudrex-asset-1:2026-04-20T06:12:18.000Z:LONG',
+          symbol: 'BTCUSDT',
+          stopLossOrderId: 'mudrex-sl-1',
+          stopLossPrice: '73253',
+          takeProfitOrderId: null,
+          takeProfitPrice: null,
+        }),
+      ];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  }, () =>
+    service.runMonitor({
+      emitAlerts: true,
+      now: new Date('2026-04-20T07:01:00.000Z'),
+    })
+  );
+
+  assert.equal(response.status, 'degraded');
+  assert.equal(response.items[0]?.lifecycle, 'OPEN_UNPROTECTED');
+  assert.equal(
+    response.items[0]?.issues.some((issue) => issue.code === 'open_position_unprotected'),
+    true
+  );
+  assert.equal(alerts.length, 1);
 }
 
 async function testOpenCanaryMissingProtectionEmitsAlert(): Promise<void> {
@@ -375,13 +488,40 @@ async function testDisabledMonitorSkipsQueries(): Promise<void> {
   }
 }
 
+async function testBrokerKeyFilterIsPassedToCandidateQuery(): Promise<void> {
+  const service = createService();
+  let sawBrokerFilter = false;
+
+  const response = await withMockedQuery(async (sql, params) => {
+    if (sql.includes('FROM order_submission_requests')) {
+      sawBrokerFilter = sql.includes('LOWER(broker_key) = ?');
+      assert.deepEqual(params, ['mudrex']);
+      return [];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  }, () =>
+    service.runMonitor({
+      brokerKey: ' Mudrex ',
+      emitAlerts: false,
+      now: new Date('2026-04-20T07:01:00.000Z'),
+    })
+  );
+
+  assert.equal(response.status, 'ok');
+  assert.equal(response.monitoredSubmissions, 0);
+  assert.equal(sawBrokerFilter, true);
+}
+
 async function main(): Promise<void> {
   await testHealthyProtectedCanaryDoesNotAlert();
+  await testMudrexOpenPositionProtectionCanComeFromPositionSnapshot();
+  await testMudrexOpenPositionMissingTakeProfitAlerts();
   await testOpenCanaryMissingProtectionEmitsAlert();
   await testClosedCanaryWithActiveProtectionAlertsAsOrphan();
   await testClosedPositionRankThreeIsNotTreatedAsOpen();
   await testExistingCanaryAlertIsRefreshedWhenLifecycleChanges();
   await testDisabledMonitorSkipsQueries();
+  await testBrokerKeyFilterIsPassedToCandidateQuery();
   console.log('Broker canary protection monitor assertions passed.');
 }
 

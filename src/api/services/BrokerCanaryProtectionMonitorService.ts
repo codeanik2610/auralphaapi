@@ -28,6 +28,8 @@ interface SubmissionCandidateRow {
   stopLossOrderIdNested?: string | null;
   takeProfitOrderId?: string | null;
   takeProfitOrderIdNested?: string | null;
+  requestStopLossPrice?: string | null;
+  requestTakeProfitPrice?: string | null;
   createdAt?: Date | string | null;
   updatedAt?: Date | string | null;
 }
@@ -54,6 +56,10 @@ interface PositionSnapshotRow {
   quantityContracts?: string | null;
   entryPrice?: string | null;
   markPrice?: string | null;
+  stopLossOrderId?: string | null;
+  stopLossPrice?: string | null;
+  takeProfitOrderId?: string | null;
+  takeProfitPrice?: string | null;
   lastSeenAt?: Date | string | null;
   updatedAt?: Date | string | null;
 }
@@ -115,6 +121,7 @@ export class BrokerCanaryProtectionMonitorService {
     emitAlerts?: boolean;
     lookbackHours?: number;
     maxSubmissions?: number;
+    brokerKey?: string;
     now?: Date;
   } = {}): Promise<BrokerCanaryProtectionMonitorResponse> {
     const now = options.now ?? new Date();
@@ -149,7 +156,11 @@ export class BrokerCanaryProtectionMonitorService {
       };
     }
 
-    const candidates = await this.listCandidateSubmissions(lookbackHours, maxSubmissions);
+    const candidates = await this.listCandidateSubmissions({
+      lookbackHours,
+      maxSubmissions,
+      brokerKey: options.brokerKey,
+    });
     const items: BrokerCanaryProtectionItem[] = [];
     let alertsEmitted = 0;
 
@@ -188,15 +199,23 @@ export class BrokerCanaryProtectionMonitorService {
       alertsEmitted,
       items,
       ...(items.length === 0
-        ? { detail: 'No recent live broker canary submissions with protective order ids found.' }
+        ? {
+            detail:
+              'No recent live broker canary submissions with protective order ids or requested SL/TP prices found.',
+          }
         : {}),
     };
   }
 
-  private async listCandidateSubmissions(
-    lookbackHours: number,
-    maxSubmissions: number
-  ): Promise<SubmissionCandidateRow[]> {
+  private async listCandidateSubmissions(input: {
+    lookbackHours: number;
+    maxSubmissions: number;
+    brokerKey?: string;
+  }): Promise<SubmissionCandidateRow[]> {
+    const normalizedBrokerKey = this.readString(input.brokerKey).toLowerCase();
+    const brokerFilter = normalizedBrokerKey ? 'AND LOWER(broker_key) = ?' : '';
+    const params = normalizedBrokerKey ? [normalizedBrokerKey] : [];
+
     return coreDataSource.query(
       `SELECT id,
               user_id AS userId,
@@ -213,6 +232,8 @@ export class BrokerCanaryProtectionMonitorService {
               JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.data.stop_loss_order_id')) AS stopLossOrderIdNested,
               JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.take_profit_order_id')) AS takeProfitOrderId,
               JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.data.take_profit_order_id')) AS takeProfitOrderIdNested,
+              NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(request_json, '$.order.stopLossPrice')), 'null'), '') AS requestStopLossPrice,
+              NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(request_json, '$.order.takeProfitPrice')), 'null'), '') AS requestTakeProfitPrice,
               created_at AS createdAt,
               updated_at AS updatedAt
          FROM order_submission_requests
@@ -222,15 +243,19 @@ export class BrokerCanaryProtectionMonitorService {
           AND broker_order_id IS NOT NULL
           AND account_id IS NOT NULL
           AND broker_key IS NOT NULL
-          AND created_at >= DATE_SUB(NOW(), INTERVAL ${lookbackHours} HOUR)
+          ${brokerFilter}
+          AND created_at >= DATE_SUB(NOW(), INTERVAL ${input.lookbackHours} HOUR)
           AND (
-            JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.stop_loss_order_id')) IS NOT NULL
-            OR JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.data.stop_loss_order_id')) IS NOT NULL
-            OR JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.take_profit_order_id')) IS NOT NULL
-            OR JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.data.take_profit_order_id')) IS NOT NULL
+            NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.stop_loss_order_id')), 'null'), '') IS NOT NULL
+            OR NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.data.stop_loss_order_id')), 'null'), '') IS NOT NULL
+            OR NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.take_profit_order_id')), 'null'), '') IS NOT NULL
+            OR NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.data.take_profit_order_id')), 'null'), '') IS NOT NULL
+            OR NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(request_json, '$.order.stopLossPrice')), 'null'), '') IS NOT NULL
+            OR NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(request_json, '$.order.takeProfitPrice')), 'null'), '') IS NOT NULL
           )
         ORDER BY updated_at DESC
-        LIMIT ${maxSubmissions}`
+        LIMIT ${input.maxSubmissions}`,
+      params
     ) as Promise<SubmissionCandidateRow[]>;
   }
 
@@ -273,9 +298,16 @@ export class BrokerCanaryProtectionMonitorService {
         assetIdentifiers,
       })
     ).filter((position) => this.isOpenPositionSnapshot(position));
+    const positionProtection = this.resolvePositionProtection(positions);
+    const resolvedStopLossOrderId = stopLossOrderId ?? positionProtection.stopLossOrderId;
+    const resolvedTakeProfitOrderId = takeProfitOrderId ?? positionProtection.takeProfitOrderId;
     const positionOpen = positions.length > 0;
-    const stopLossActive = stopLossSnapshot ? this.isActiveOrderSnapshot(stopLossSnapshot) : false;
-    const takeProfitActive = takeProfitSnapshot ? this.isActiveOrderSnapshot(takeProfitSnapshot) : false;
+    const stopLossActive =
+      (stopLossSnapshot ? this.isActiveOrderSnapshot(stopLossSnapshot) : false) ||
+      positionProtection.stopLossActive;
+    const takeProfitActive =
+      (takeProfitSnapshot ? this.isActiveOrderSnapshot(takeProfitSnapshot) : false) ||
+      positionProtection.takeProfitActive;
     const activeProtectionCount = [stopLossActive, takeProfitActive].filter(Boolean).length;
     const issues: BrokerCanaryProtectionIssue[] = [];
 
@@ -354,8 +386,8 @@ export class BrokerCanaryProtectionMonitorService {
       symbol,
       lifecycle: this.resolveLifecycle(positionOpen, stopLossActive, takeProfitActive),
       entryOrderId,
-      stopLossOrderId,
-      takeProfitOrderId,
+      stopLossOrderId: resolvedStopLossOrderId,
+      takeProfitOrderId: resolvedTakeProfitOrderId,
       positionOpen,
       entryStatus: this.readNullableString(entrySnapshot?.orderStatus),
       stopLossStatus: this.readNullableString(stopLossSnapshot?.orderStatus),
@@ -433,6 +465,34 @@ export class BrokerCanaryProtectionMonitorService {
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.quantity_contracts')) AS quantityContracts,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.entry_price')) AS entryPrice,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.mark_price')) AS markPrice,
+              COALESCE(
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stoploss.order_id')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_loss.order_id')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stopLoss.orderId')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stoploss_order_id')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stopLossOrderId')), 'null'), '')
+              ) AS stopLossOrderId,
+              COALESCE(
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stoploss.price')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_loss.price')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stopLoss.price')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stoploss_price')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stopLossPrice')), 'null'), '')
+              ) AS stopLossPrice,
+              COALESCE(
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.takeprofit.order_id')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.take_profit.order_id')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.takeProfit.orderId')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.takeprofit_order_id')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.takeProfitOrderId')), 'null'), '')
+              ) AS takeProfitOrderId,
+              COALESCE(
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.takeprofit.price')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.take_profit.price')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.takeProfit.price')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.takeprofit_price')), 'null'), ''),
+                NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.takeProfitPrice')), 'null'), '')
+              ) AS takeProfitPrice,
               last_seen_at AS lastSeenAt,
               updated_at AS updatedAt
          FROM scheduler_positions_snapshots
@@ -576,6 +636,37 @@ export class BrokerCanaryProtectionMonitorService {
       return true;
     }
     return Number.isFinite(rank) && rank > 0 && rank < 4;
+  }
+
+  private resolvePositionProtection(positions: PositionSnapshotRow[]): {
+    stopLossActive: boolean;
+    takeProfitActive: boolean;
+    stopLossOrderId: string | null;
+    takeProfitOrderId: string | null;
+  } {
+    let stopLossOrderId: string | null = null;
+    let takeProfitOrderId: string | null = null;
+    let stopLossActive = false;
+    let takeProfitActive = false;
+
+    for (const position of positions) {
+      const positionStopLossOrderId = this.readNullableString(position.stopLossOrderId);
+      const positionTakeProfitOrderId = this.readNullableString(position.takeProfitOrderId);
+      const positionStopLossPrice = this.readNullableString(position.stopLossPrice);
+      const positionTakeProfitPrice = this.readNullableString(position.takeProfitPrice);
+
+      stopLossOrderId ??= positionStopLossOrderId;
+      takeProfitOrderId ??= positionTakeProfitOrderId;
+      stopLossActive ||= Boolean(positionStopLossOrderId || positionStopLossPrice);
+      takeProfitActive ||= Boolean(positionTakeProfitOrderId || positionTakeProfitPrice);
+    }
+
+    return {
+      stopLossActive,
+      takeProfitActive,
+      stopLossOrderId,
+      takeProfitOrderId,
+    };
   }
 
   private isOpenPositionSnapshot(snapshot: PositionSnapshotRow): boolean {
