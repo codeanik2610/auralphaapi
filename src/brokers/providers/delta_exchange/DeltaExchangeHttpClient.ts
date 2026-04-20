@@ -4,6 +4,8 @@ import { Inject, Service } from 'typedi';
 import {
   BadGatewayAppError,
   BadRequestAppError,
+  AppError,
+  ForbiddenAppError,
   RateLimitAppError,
   ServiceUnavailableAppError,
   UnauthorizedAppError,
@@ -26,6 +28,15 @@ interface DeltaCredentials {
   apiKey: string;
   apiSecret: string;
   baseUrl: string;
+}
+
+interface DeltaBrokerErrorContext {
+  broker: 'delta_exchange';
+  brokerStatusCode: number;
+  brokerRoutePath?: string;
+  brokerErrorCode?: string;
+  brokerErrorMessage: string;
+  brokerErrorPayload?: unknown;
 }
 
 @Service()
@@ -305,13 +316,24 @@ export class DeltaExchangeHttpClient {
   private throwMappedError(statusCode: number, parsed: unknown, routePath?: string): never {
     const payload =
       parsed && typeof parsed === 'object'
-        ? (parsed as { error?: { message?: string } | string; message?: string })
+        ? (parsed as {
+            error?: { code?: string; message?: string } | string;
+            message?: string;
+          })
         : undefined;
 
     const errorField = payload?.error;
+    const errorCode =
+      typeof errorField === 'string' ? errorField : String(errorField?.code || '').trim();
     const errorMessage =
-      typeof errorField === 'string' ? errorField : errorField?.message;
-    const baseMessage = errorMessage || payload?.message;
+      typeof errorField === 'string'
+        ? String(payload?.message || '').trim()
+        : String(errorField?.message || payload?.message || '').trim();
+    const baseMessage = [errorCode, errorMessage]
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .filter((item, index, items) => items.indexOf(item) === index)
+      .join(': ');
 
     const fallbackParts: string[] = [];
     fallbackParts.push(`Delta Exchange request failed (status ${statusCode})`);
@@ -333,19 +355,79 @@ export class DeltaExchangeHttpClient {
     const message = baseMessage
       ? `${baseMessage}${routePath ? ` (route ${routePath})` : ''}`
       : fallback;
+    const brokerContext: DeltaBrokerErrorContext = {
+      broker: 'delta_exchange',
+      brokerStatusCode: statusCode,
+      ...(routePath ? { brokerRoutePath: routePath } : {}),
+      ...(errorCode ? { brokerErrorCode: errorCode } : {}),
+      brokerErrorMessage: baseMessage || fallback,
+      ...(this.isSafeBrokerErrorPayload(parsed) ? { brokerErrorPayload: parsed } : {}),
+    };
+
+    const throwWithBrokerContext = (error: AppError): never => {
+      this.attachBrokerErrorContext(error, brokerContext);
+      throw error;
+    };
+
+    if (this.isBrokerAuthorizationFailure(statusCode, errorCode, message)) {
+      if (this.isIpWhitelistFailure(errorCode, message) || statusCode === 403) {
+        return throwWithBrokerContext(new ForbiddenAppError(message));
+      }
+      return throwWithBrokerContext(new UnauthorizedAppError(message));
+    }
 
     if (statusCode === 401 || statusCode === 403) {
-      throw new UnauthorizedAppError(message);
+      return throwWithBrokerContext(new UnauthorizedAppError(message));
     }
 
     if (statusCode === 429) {
-      throw new RateLimitAppError(message);
+      return throwWithBrokerContext(new RateLimitAppError(message));
     }
 
     if (statusCode >= 500) {
-      throw new ServiceUnavailableAppError(message);
+      return throwWithBrokerContext(new ServiceUnavailableAppError(message));
     }
 
-    throw new BadRequestAppError(message);
+    return throwWithBrokerContext(new BadRequestAppError(message));
+  }
+
+  private attachBrokerErrorContext(error: Error, context: DeltaBrokerErrorContext): void {
+    Object.assign(error, context);
+  }
+
+  private isSafeBrokerErrorPayload(value: unknown): boolean {
+    return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+  }
+
+  private isBrokerAuthorizationFailure(
+    statusCode: number,
+    errorCode: string,
+    message: string
+  ): boolean {
+    const normalizedCode = errorCode.trim().toLowerCase();
+    const normalizedMessage = message.trim().toLowerCase();
+    return (
+      statusCode === 401 ||
+      statusCode === 403 ||
+      normalizedCode === 'unauthorizedapiaccess' ||
+      normalizedCode === 'invalidapikey' ||
+      normalizedCode === 'ip_not_whitelisted_for_api_key' ||
+      normalizedMessage.includes('not authorised') ||
+      normalizedMessage.includes('not authorized') ||
+      normalizedMessage.includes('unauthorizedapiaccess') ||
+      normalizedMessage.includes('invalidapikey') ||
+      normalizedMessage.includes('ip not whitelisted') ||
+      normalizedMessage.includes('ip_not_whitelisted_for_api_key')
+    );
+  }
+
+  private isIpWhitelistFailure(errorCode: string, message: string): boolean {
+    const normalizedCode = errorCode.trim().toLowerCase();
+    const normalizedMessage = message.trim().toLowerCase();
+    return (
+      normalizedCode === 'ip_not_whitelisted_for_api_key' ||
+      normalizedMessage.includes('ip not whitelisted') ||
+      normalizedMessage.includes('ip_not_whitelisted_for_api_key')
+    );
   }
 }

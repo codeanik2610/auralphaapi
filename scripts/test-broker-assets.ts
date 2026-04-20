@@ -9,6 +9,7 @@ import path from 'node:path';
 import { ConnectionsService } from '../src/api/services/ConnectionsService';
 import { ExchangeAssetsService } from '../src/api/services/ExchangeAssetsService';
 import { DeltaExchangeOrdersAdapter } from '../src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter';
+import { DeltaExchangeHttpClient } from '../src/brokers/providers/delta_exchange/DeltaExchangeHttpClient';
 import { DropBrokerAssetLegacyUserOwnership1770709000000 } from './_fixtures/migrations/1770709000000-DropBrokerAssetLegacyUserOwnership';
 import {
   assertBrokerAssetsHealthSnapshot,
@@ -1538,11 +1539,90 @@ async function runDeltaLookupAssertions(): Promise<void> {
   );
 }
 
+async function runDeltaHttpClientErrorTransparencyAssertions(): Promise<void> {
+  const client = new DeltaExchangeHttpClient() as any;
+
+  assert.throws(
+    () =>
+      client.throwMappedError(
+        403,
+        {
+          success: false,
+          error: 'UnauthorizedApiAccess',
+          message: 'Api Key not authorised to access this endpoint',
+        },
+        '/v2/orders'
+      ),
+    (error: unknown) => {
+      const mapped = error as {
+        httpCode?: number;
+        message?: string;
+        broker?: string;
+        brokerStatusCode?: number;
+        brokerRoutePath?: string;
+        brokerErrorCode?: string;
+        brokerErrorMessage?: string;
+        brokerErrorPayload?: unknown;
+      };
+      assert.equal(mapped.httpCode, 403);
+      assert.equal(mapped.broker, 'delta_exchange');
+      assert.equal(mapped.brokerStatusCode, 403);
+      assert.equal(mapped.brokerRoutePath, '/v2/orders');
+      assert.equal(mapped.brokerErrorCode, 'UnauthorizedApiAccess');
+      assert.equal(
+        mapped.brokerErrorMessage,
+        'UnauthorizedApiAccess: Api Key not authorised to access this endpoint'
+      );
+      assert.equal(
+        String(mapped.message || '').includes('Api Key not authorised to access this endpoint'),
+        true
+      );
+      assert.deepEqual(mapped.brokerErrorPayload, {
+        success: false,
+        error: 'UnauthorizedApiAccess',
+        message: 'Api Key not authorised to access this endpoint',
+      });
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      client.throwMappedError(
+        200,
+        {
+          success: false,
+          error: {
+            code: 'ip_not_whitelisted_for_api_key',
+          },
+        },
+        '/v2/orders'
+      ),
+    (error: unknown) => {
+      const mapped = error as {
+        httpCode?: number;
+        brokerErrorCode?: string;
+        brokerErrorPayload?: unknown;
+      };
+      assert.equal(mapped.httpCode, 403);
+      assert.equal(mapped.brokerErrorCode, 'ip_not_whitelisted_for_api_key');
+      assert.deepEqual(mapped.brokerErrorPayload, {
+        success: false,
+        error: {
+          code: 'ip_not_whitelisted_for_api_key',
+        },
+      });
+      return true;
+    }
+  );
+}
+
 async function runFlowAssertions(): Promise<void> {
   await runSyncFlowAssertions();
   await runVisibilityFlowAssertions();
   await runProductMapVisibilityAssertions();
   await runDeltaLookupAssertions();
+  await runDeltaHttpClientErrorTransparencyAssertions();
 }
 
 function runPhase6Assertions(): void {

@@ -53,9 +53,11 @@ import {
   BadGatewayAppError,
   BadRequestAppError,
   ConflictAppError,
+  ForbiddenAppError,
   NotFoundAppError,
   RateLimitAppError,
   ServiceUnavailableAppError,
+  UnauthorizedAppError,
 } from '../errors/AppError';
 import { successResponse } from '../utils/response';
 import { UserTimeZoneService } from './UserTimeZoneService';
@@ -953,6 +955,9 @@ export class BrokerOrdersFacadeService {
         ? { code: String((error as { code?: string }).code) }
         : {}),
       message: error instanceof Error ? error.message : String(error),
+      ...(this.extractBrokerErrorContext(error)
+        ? { brokerError: this.extractBrokerErrorContext(error) }
+        : {}),
     };
   }
 
@@ -964,6 +969,16 @@ export class BrokerOrdersFacadeService {
     const message = error instanceof Error ? error.message : String(error);
     const lowerMessage = message.toLowerCase();
 
+    if (this.isBrokerAuthorizationOrderError(error, lowerMessage)) {
+      return this.withBrokerErrorContext(
+        new BadRequestAppError(
+          'Order rejected: broker authorization failed. Check Delta API key Trading permission and IP whitelist.',
+          'ORDER_BROKER_AUTHORIZATION_FAILED'
+        ),
+        error
+      );
+    }
+
     if (
       lowerMessage.includes('product mapping') ||
       lowerMessage.includes('live product catalog') ||
@@ -974,9 +989,12 @@ export class BrokerOrdersFacadeService {
         lowerMessage.includes('not live') &&
         lowerMessage.includes('operational'))
     ) {
-      return new BadRequestAppError(
-        'Order rejected: broker product mapping is stale or unavailable for this route.',
-        'ORDER_REJECTED_BROKER_MAPPING'
+      return this.withBrokerErrorContext(
+        new BadRequestAppError(
+          'Order rejected: broker product mapping is stale or unavailable for this route.',
+          'ORDER_REJECTED_BROKER_MAPPING'
+        ),
+        error
       );
     }
 
@@ -986,9 +1004,12 @@ export class BrokerOrdersFacadeService {
         lowerMessage.includes(token)
       )
     ) {
-      return new BadRequestAppError(
-        'Order rejected: insufficient margin for this route.',
-        'ORDER_REJECTED_INSUFFICIENT_MARGIN'
+      return this.withBrokerErrorContext(
+        new BadRequestAppError(
+          'Order rejected: insufficient margin for this route.',
+          'ORDER_REJECTED_INSUFFICIENT_MARGIN'
+        ),
+        error
       );
     }
 
@@ -998,9 +1019,12 @@ export class BrokerOrdersFacadeService {
         lowerMessage.includes(token)
       )
     ) {
-      return new BadRequestAppError(
-        'Order rejected: price does not match the broker rules for this asset.',
-        'ORDER_REJECTED_INVALID_PRICE'
+      return this.withBrokerErrorContext(
+        new BadRequestAppError(
+          'Order rejected: price does not match the broker rules for this asset.',
+          'ORDER_REJECTED_INVALID_PRICE'
+        ),
+        error
       );
     }
 
@@ -1012,16 +1036,22 @@ export class BrokerOrdersFacadeService {
         lowerMessage.includes(token)
       )
     ) {
-      return new BadRequestAppError(
-        'Order rejected: quantity does not match the broker rules for this asset.',
-        'ORDER_REJECTED_INVALID_QUANTITY'
+      return this.withBrokerErrorContext(
+        new BadRequestAppError(
+          'Order rejected: quantity does not match the broker rules for this asset.',
+          'ORDER_REJECTED_INVALID_QUANTITY'
+        ),
+        error
       );
     }
 
     if (lowerMessage.includes('leverage')) {
-      return new BadRequestAppError(
-        'Order rejected: leverage is outside the broker limits for this asset.',
-        'ORDER_REJECTED_INVALID_LEVERAGE'
+      return this.withBrokerErrorContext(
+        new BadRequestAppError(
+          'Order rejected: leverage is outside the broker limits for this asset.',
+          'ORDER_REJECTED_INVALID_LEVERAGE'
+        ),
+        error
       );
     }
 
@@ -1030,9 +1060,12 @@ export class BrokerOrdersFacadeService {
       lowerMessage.includes('already submitted') ||
       lowerMessage.includes('already exists')
     ) {
-      return new ConflictAppError(
-        'Order submission was already accepted by the broker. Refresh the live book before submitting again.',
-        'ORDER_REJECTED_DUPLICATE'
+      return this.withBrokerErrorContext(
+        new ConflictAppError(
+          'Order submission was already accepted by the broker. Refresh the live book before submitting again.',
+          'ORDER_REJECTED_DUPLICATE'
+        ),
+        error
       );
     }
 
@@ -1041,44 +1074,165 @@ export class BrokerOrdersFacadeService {
       lowerMessage.includes('timed out') ||
       lowerMessage.includes('gateway timeout')
     ) {
-      return new ServiceUnavailableAppError(
-        'Broker did not confirm the order in time. Retry with the same draft if the order does not appear.',
-        'ORDER_REJECTED_TIMEOUT'
+      return this.withBrokerErrorContext(
+        new ServiceUnavailableAppError(
+          'Broker did not confirm the order in time. Retry with the same draft if the order does not appear.',
+          'ORDER_REJECTED_TIMEOUT'
+        ),
+        error
       );
     }
 
     if (error instanceof RateLimitAppError) {
-      return new RateLimitAppError(
-        'Broker rate limit hit while creating the order. Try again in a moment.',
-        'ORDER_RATE_LIMITED'
+      return this.withBrokerErrorContext(
+        new RateLimitAppError(
+          'Broker rate limit hit while creating the order. Try again in a moment.',
+          'ORDER_RATE_LIMITED'
+        ),
+        error
       );
     }
 
     if (error instanceof ConflictAppError) {
-      return new ConflictAppError(
-        'Order submission conflicted with existing broker state. Refresh the live book before retrying.',
-        'ORDER_REJECTED_DUPLICATE'
+      return this.withBrokerErrorContext(
+        new ConflictAppError(
+          'Order submission conflicted with existing broker state. Refresh the live book before retrying.',
+          'ORDER_REJECTED_DUPLICATE'
+        ),
+        error
       );
     }
 
     if (error instanceof BadRequestAppError) {
-      return new BadRequestAppError(
-        'Order rejected by the broker. Review the ticket values and try again.',
-        'ORDER_REJECTED_BROKER_RULE'
+      return this.withBrokerErrorContext(
+        new BadRequestAppError(
+          'Order rejected by the broker. Review the ticket values and try again.',
+          'ORDER_REJECTED_BROKER_RULE'
+        ),
+        error
       );
     }
 
     if (error instanceof BadGatewayAppError || error instanceof ServiceUnavailableAppError) {
-      return new ServiceUnavailableAppError(
-        'Broker was unavailable while creating the order. Try again in a moment.',
-        'ORDER_BROKER_UNAVAILABLE'
+      return this.withBrokerErrorContext(
+        new ServiceUnavailableAppError(
+          'Broker was unavailable while creating the order. Try again in a moment.',
+          'ORDER_BROKER_UNAVAILABLE'
+        ),
+        error
       );
     }
 
-    return new ServiceUnavailableAppError(
-      'Broker was unavailable while creating the order. Try again in a moment.',
-      'ORDER_BROKER_UNAVAILABLE'
+    return this.withBrokerErrorContext(
+      new ServiceUnavailableAppError(
+        'Broker was unavailable while creating the order. Try again in a moment.',
+        'ORDER_BROKER_UNAVAILABLE'
+      ),
+      error
     );
+  }
+
+  private isBrokerAuthorizationOrderError(error: unknown, lowerMessage: string): boolean {
+    const brokerError = this.extractBrokerErrorContext(error);
+    const brokerErrorCode = String(brokerError?.code || '').trim().toLowerCase();
+    const brokerErrorMessage = String(brokerError?.message || '').trim().toLowerCase();
+    return (
+      error instanceof UnauthorizedAppError ||
+      error instanceof ForbiddenAppError ||
+      brokerErrorCode === 'unauthorizedapiaccess' ||
+      brokerErrorCode === 'invalidapikey' ||
+      brokerErrorCode === 'ip_not_whitelisted_for_api_key' ||
+      lowerMessage.includes('unauthorizedapiaccess') ||
+      lowerMessage.includes('invalidapikey') ||
+      lowerMessage.includes('not authorised') ||
+      lowerMessage.includes('not authorized') ||
+      lowerMessage.includes('ip not whitelisted') ||
+      lowerMessage.includes('ip_not_whitelisted_for_api_key') ||
+      brokerErrorMessage.includes('not authorised') ||
+      brokerErrorMessage.includes('not authorized') ||
+      brokerErrorMessage.includes('ip not whitelisted') ||
+      brokerErrorMessage.includes('ip_not_whitelisted_for_api_key')
+    );
+  }
+
+  private withBrokerErrorContext<T extends Error>(normalizedError: T, sourceError: unknown): T {
+    const brokerContext = this.extractRawBrokerErrorContext(sourceError);
+    if (brokerContext) {
+      Object.assign(normalizedError, brokerContext);
+    }
+    return normalizedError;
+  }
+
+  private extractBrokerErrorContext(error: unknown): Record<string, unknown> | null {
+    const raw = this.extractRawBrokerErrorContext(error);
+    if (!raw) {
+      return null;
+    }
+
+    return {
+      ...(raw.broker ? { broker: raw.broker } : {}),
+      ...(typeof raw.brokerStatusCode === 'number'
+        ? { statusCode: raw.brokerStatusCode }
+        : {}),
+      ...(raw.brokerRoutePath ? { routePath: raw.brokerRoutePath } : {}),
+      ...(raw.brokerErrorCode ? { code: raw.brokerErrorCode } : {}),
+      ...(raw.brokerErrorMessage ? { message: raw.brokerErrorMessage } : {}),
+      ...(raw.brokerErrorPayload ? { payload: raw.brokerErrorPayload } : {}),
+    };
+  }
+
+  private extractRawBrokerErrorContext(error: unknown):
+    | {
+        broker?: string;
+        brokerStatusCode?: number;
+        brokerRoutePath?: string;
+        brokerErrorCode?: string;
+        brokerErrorMessage?: string;
+        brokerErrorPayload?: unknown;
+      }
+    | null {
+    if (!error || typeof error !== 'object') {
+      return null;
+    }
+    const source = error as {
+      broker?: unknown;
+      brokerStatusCode?: unknown;
+      brokerRoutePath?: unknown;
+      brokerErrorCode?: unknown;
+      brokerErrorMessage?: unknown;
+      brokerErrorPayload?: unknown;
+    };
+    const broker = String(source.broker || '').trim();
+    const brokerStatusCode =
+      typeof source.brokerStatusCode === 'number'
+        ? source.brokerStatusCode
+        : Number.isFinite(Number(source.brokerStatusCode))
+          ? Number(source.brokerStatusCode)
+          : undefined;
+    const brokerRoutePath = String(source.brokerRoutePath || '').trim();
+    const brokerErrorCode = String(source.brokerErrorCode || '').trim();
+    const brokerErrorMessage = String(source.brokerErrorMessage || '').trim();
+    const brokerErrorPayload = source.brokerErrorPayload;
+
+    if (
+      !broker &&
+      brokerStatusCode === undefined &&
+      !brokerRoutePath &&
+      !brokerErrorCode &&
+      !brokerErrorMessage &&
+      brokerErrorPayload === undefined
+    ) {
+      return null;
+    }
+
+    return {
+      ...(broker ? { broker } : {}),
+      ...(brokerStatusCode !== undefined ? { brokerStatusCode } : {}),
+      ...(brokerRoutePath ? { brokerRoutePath } : {}),
+      ...(brokerErrorCode ? { brokerErrorCode } : {}),
+      ...(brokerErrorMessage ? { brokerErrorMessage } : {}),
+      ...(brokerErrorPayload !== undefined ? { brokerErrorPayload } : {}),
+    };
   }
 
   private resolveSnapshotState(statusRank: number, payload: unknown): 'open' | 'history' {

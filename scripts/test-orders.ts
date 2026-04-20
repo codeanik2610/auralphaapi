@@ -304,7 +304,7 @@ async function main(): Promise<void> {
 }
 
 async function ordersGuard08(): Promise<void> {
-  const { BadRequestAppError } = await import("../src/api/errors/AppError");
+  const { BadRequestAppError, UnauthorizedAppError } = await import("../src/api/errors/AppError");
   const { BrokerOrdersFacadeService } = await import("../src/api/services/BrokerOrdersFacadeService");
   const { InternalOrdersSyncService } = await import("../src/api/services/InternalOrdersSyncService");
   const { coreDataSource } = await import("../src/database/data-source");
@@ -964,6 +964,70 @@ async function runNormalizationAssertion(): Promise<void> {
   assert.equal(mappingStored?.placementState, 'rejected');
   assert.equal(mappingStored?.reconciliationState, 'not_required');
   assert.equal(mappingStored?.errorPayload?.code, 'ORDER_REJECTED_BROKER_MAPPING');
+
+  const deltaAuthError = new UnauthorizedAppError(
+    'UnauthorizedApiAccess: Api Key not authorised to access this endpoint (route /v2/orders)'
+  );
+  Object.assign(deltaAuthError, {
+    broker: 'delta_exchange',
+    brokerStatusCode: 403,
+    brokerRoutePath: '/v2/orders',
+    brokerErrorCode: 'UnauthorizedApiAccess',
+    brokerErrorMessage: 'Api Key not authorised to access this endpoint',
+    brokerErrorPayload: {
+      success: false,
+      error: 'UnauthorizedApiAccess',
+      message: 'Api Key not authorised to access this endpoint',
+    },
+  });
+  harness.setAdapterResult(deltaAuthError);
+
+  await assert.rejects(
+    () =>
+      harness.service.createFuturesOrder('user-1', 'asset-1', {
+        brokerKey: 'delta_exchange',
+        accountId: 'acct-delta-1',
+        idempotency_key: 'order-submit-8-delta-auth-error',
+        symbol: 'BTCUSDT',
+        side: 'long',
+        execution_mode: 'live',
+        leverage: 15,
+        quantity: 1,
+        order_price: 74000,
+        order_type: 'market',
+        trigger_type: 'immediate',
+        is_takeprofit: false,
+        is_stoploss: false,
+        stoploss_price: 73000,
+        takeprofit_price: 76000,
+        reduce_only: false,
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as { httpCode?: number }).httpCode === 400 &&
+      error.message ===
+        'Order rejected: broker authorization failed. Check Delta API key Trading permission and IP whitelist.' &&
+      (error as { code?: string }).code === 'ORDER_BROKER_AUTHORIZATION_FAILED'
+  );
+
+  const authStored = harness.submissions.get('user-1:order-submit-8-delta-auth-error');
+  assert.equal(authStored?.status, 'failed');
+  assert.equal(authStored?.placementState, 'rejected');
+  assert.equal(authStored?.reconciliationState, 'not_required');
+  assert.equal(authStored?.errorPayload?.code, 'ORDER_BROKER_AUTHORIZATION_FAILED');
+  assert.equal(authStored?.errorPayload?.brokerError?.broker, 'delta_exchange');
+  assert.equal(authStored?.errorPayload?.brokerError?.statusCode, 403);
+  assert.equal(authStored?.errorPayload?.brokerError?.routePath, '/v2/orders');
+  assert.equal(authStored?.errorPayload?.brokerError?.code, 'UnauthorizedApiAccess');
+  assert.equal(
+    authStored?.errorPayload?.brokerError?.message,
+    'Api Key not authorised to access this endpoint'
+  );
+  assert.deepEqual(authStored?.errorPayload?.brokerError?.payload, {
+    success: false,
+    error: 'UnauthorizedApiAccess',
+    message: 'Api Key not authorised to access this endpoint',
+  });
 }
 
 async function runAutomaticSyncReconciliationAssertion(): Promise<void> {
