@@ -238,13 +238,13 @@ async function main(): Promise<void> {
   assert.equal(response.data.meta.resilience.routingFallback, false);
   assert.ok(response.data.meta.resilience.degradedSections.includes('walletFunds'));
   assert.ok(response.data.meta.resilience.degradedSections.includes('futuresFunds'));
-  assert.ok(response.data.meta.resilience.degradedSections.includes('assets'));
-  assert.ok(response.data.meta.resilience.degradedSections.includes('selectedAsset'));
+  assert.equal(response.data.meta.resilience.degradedSections.includes('assets'), false);
+  assert.equal(response.data.meta.resilience.degradedSections.includes('selectedAsset'), false);
   assert.ok(response.data.meta.resilience.degradedSections.includes('automations'));
   assert.ok(response.data.meta.resilience.degradedSections.includes('portfolioSummary'));
   assert.ok(response.data.meta.resilience.degradedSections.includes('portfolioHoldings'));
-  assert.deepEqual(response.data.meta.resilience.timeoutSections, ['assets']);
-  assert.deepEqual(response.data.health.timeoutSections, ['assets']);
+  assert.deepEqual(response.data.meta.resilience.timeoutSections, []);
+  assert.deepEqual(response.data.health.timeoutSections, []);
 
   assert.equal(response.data.walletFunds?.total, 12500);
   assert.equal(response.data.futuresFunds?.balance, '8450.50');
@@ -257,19 +257,22 @@ async function main(): Promise<void> {
   assert.equal(response.data.meta.sections.activeFunds.availability, 'available');
 
   assert.equal(response.data.assets.length, 0);
-  assert.equal(response.data.meta.sections.assets.requestStatus, 'degraded');
+  assert.equal(response.data.meta.sections.assets.requestStatus, 'ok');
+  assert.equal(response.data.meta.sections.assets.fetchMode, 'skipped');
   assert.equal(response.data.meta.sections.assets.availability, 'missing');
-  assert.equal(response.data.meta.sections.assets.timeoutMs, 5);
-  assert.equal(response.data.meta.sections.assets.cache?.state, 'unavailable');
-  assert.match(response.data.meta.sections.assets.statusDetail, /timed out/i);
+  assert.equal(response.data.meta.sections.assets.timeoutMs, null);
+  assert.equal(response.data.meta.sections.assets.cache?.state, 'not_applicable');
+  assert.match(response.data.meta.sections.assets.statusDetail, /excluded from \/overview/i);
 
   assert.equal(response.data.selectedAsset, null);
-  assert.equal(response.data.meta.sections.selectedAsset.requestStatus, 'degraded');
+  assert.equal(response.data.meta.sections.selectedAsset.requestStatus, 'ok');
+  assert.equal(response.data.meta.sections.selectedAsset.fetchMode, 'skipped');
   assert.equal(response.data.meta.sections.selectedAsset.availability, 'missing');
-  assert.equal(response.data.meta.sections.selectedAsset.cache?.state, 'unavailable');
+  assert.equal(response.data.meta.sections.selectedAsset.cache?.state, 'not_applicable');
   assert.equal(response.data.meta.sections.leverage.requestStatus, 'ok');
-  assert.equal(response.data.leverage?.Leverage, '20x');
-  assert.equal(response.data.meta.sections.leverage.cache?.state, 'live');
+  assert.equal(response.data.meta.sections.leverage.fetchMode, 'skipped');
+  assert.equal(response.data.leverage, null);
+  assert.equal(response.data.meta.sections.leverage.cache?.state, 'not_applicable');
 
   assert.equal(response.data.automations.total, 0);
   assert.equal(response.data.meta.sections.automations.requestStatus, 'degraded');
@@ -287,7 +290,7 @@ async function main(): Promise<void> {
     response.data.meta.warnings.some(
       (warning: { code: string }) => warning.code === 'live_reference_feed_attention'
     ),
-    true
+    false
   );
   assert.equal(response.data.meta.observability.degradedSectionCount >= 1, true);
 

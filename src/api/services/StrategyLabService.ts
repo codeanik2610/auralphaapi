@@ -5,14 +5,17 @@ import {
   StrategyLabBacktestHandoffResult,
   StrategyLabDraftBody,
   StrategyLabDraftResult,
+  StrategyLabMoveToTemplateResult,
   StrategyLabProjectItem,
   StrategyLabProjectsListResult,
   StrategyLabValidationResult,
   StrategyValidationMessage,
 } from '../contracts/StrategyLab';
+import type { StrategyTemplateItem } from '../contracts/StrategyTemplate';
 import type { BacktestTemplateDiffSummary } from '../contracts/Backtest';
 import { BadRequestAppError, NotFoundAppError } from '../errors/AppError';
 import { successResponse } from '../utils/response';
+import { buildStrategyTemplateAutomationProfile } from '../utils/strategyTemplateAutomation';
 import {
   validateStrategyLabBacktestHandoffBody,
   validateStrategyLabDraftBody,
@@ -22,8 +25,10 @@ import {
   BacktestRepository,
   StrategyLabProject,
   StrategyLabRepository,
+  StrategyTemplate,
   StrategyTemplateRepository,
 } from '../../database';
+import type { StrategyTemplateCreatePayload } from '../../database/repositories/StrategyTemplateRepository';
 import { OperationalEventService } from './OperationalEventService';
 
 @Service()
@@ -170,6 +175,67 @@ export class StrategyLabService {
         channel: 'Strategy',
         source: 'strategy_lab',
         message: `Strategy draft update failed (${validatedProjectId}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        route: 'Alerts',
+      });
+      throw error;
+    }
+  }
+
+  async moveStrategyLabProjectToTemplate(
+    userId: string,
+    projectId: string
+  ): Promise<ApiSuccessResponse<StrategyLabMoveToTemplateResult>> {
+    const validatedProjectId = validateStrategyLabProjectId(projectId);
+    try {
+      const result = await this.strategyLabRepository.moveProjectToTemplate(
+        userId,
+        validatedProjectId,
+        (project, movedAt) => this.buildTemplatePayloadFromLabProject(project, movedAt)
+      );
+
+      if (!result) {
+        throw new NotFoundAppError('Strategy lab project not found');
+      }
+
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Strategy lab',
+        title: result.alreadyMoved
+          ? `Draft already moved to template: ${result.project.name || result.project.id}`
+          : `Draft moved to template: ${result.project.name || result.project.id}`,
+        status: 'Success',
+        route: 'Strategy lab',
+        stream: 'Templates',
+        related: result.project.market || undefined,
+        referenceId: result.project.id,
+        description: result.alreadyMoved
+          ? `Existing template ${result.template.id} returned`
+          : `Created strategy template ${result.template.id}`,
+      });
+
+      return successResponse({
+        message: result.alreadyMoved
+          ? 'Strategy draft already moved to template'
+          : 'Strategy draft moved to template',
+        project: this.mapProject(result.project),
+        template: this.mapTemplate(result.template),
+        alreadyMoved: result.alreadyMoved,
+      });
+    } catch (error) {
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Strategy lab',
+        title: 'Move to template failed',
+        status: 'Failed',
+        route: 'Strategy lab',
+        stream: 'Templates',
+        referenceId: validatedProjectId,
+        description: error instanceof Error ? error.message : String(error),
+      });
+      await this.operationalEventService.emitFailureAlert(userId, {
+        channel: 'Strategy',
+        source: 'strategy_lab',
+        message: `Move to template failed (${validatedProjectId}): ${
           error instanceof Error ? error.message : String(error)
         }`,
         route: 'Alerts',
@@ -458,6 +524,157 @@ export class StrategyLabService {
     }
   }
 
+  private buildTemplatePayloadFromLabProject(
+    project: StrategyLabProject,
+    movedAt: Date
+  ): StrategyTemplateCreatePayload {
+    const config =
+      project.config && typeof project.config === 'object' && !Array.isArray(project.config)
+        ? (project.config as Record<string, unknown>)
+        : {};
+    const rawCode = this.cleanText(
+      project.codeDefinition ||
+        config.codeDefinition ||
+        config.authoredCodeDefinition ||
+        config.compiledCodeDefinition
+    );
+    const authoredCodeTarget =
+      this.resolveCodeTarget(project.codeTarget || config.authoredCodeTarget || config.codeTarget, rawCode) ||
+      'dsl';
+    const market =
+      this.cleanText(project.market || config.market) || 'crypto-futures';
+    const entryLogic =
+      this.cleanText(config.entryLogic || config.entry_logic) ||
+      this.extractDslClause(rawCode, ['ENTRY', 'ENTRY_LONG']);
+    const exitLogic =
+      this.cleanText(config.exitLogic || config.exit_logic) ||
+      this.extractDslClause(rawCode, ['EXIT', 'EXIT_LONG']);
+    const entryShortLogic =
+      this.cleanText(config.entryShortLogic || config.entry_short_logic) ||
+      this.extractDslClause(rawCode, ['ENTRY_SHORT']);
+    const exitShortLogic =
+      this.cleanText(config.exitShortLogic || config.exit_short_logic) ||
+      this.extractDslClause(rawCode, ['EXIT_SHORT']);
+    const shortEnabled =
+      typeof config.shortEnabled === 'boolean'
+        ? config.shortEnabled
+        : Boolean(entryShortLogic || exitShortLogic);
+    const risk = this.resolveTemplateRiskConfig(project, config) || {};
+    const parameters = {
+      ...this.toRecord(project.parameters),
+      ...this.toRecord(config.parameters),
+    };
+    const filters = this.toRecord(config.filters);
+    const maxRisk = this.cleanText(risk.maxRisk ?? risk.max_per_trade) || '1.5';
+    const signalThreshold =
+      this.cleanText(parameters.signalThreshold ?? parameters.signal_threshold) || '0.82';
+    const sizingNotes = this.cleanText(risk.sizingNotes);
+    const templateName = this.cleanText(project.name) || `Strategy Lab ${project.id}`;
+    const description =
+      project.description ??
+      (typeof config.description === 'string' ? config.description : null);
+    const generatedPython = this.generatePythonFromLogic({
+      name: templateName,
+      market,
+      entryLogic,
+      exitLogic,
+      entryShortLogic: shortEnabled ? entryShortLogic : '',
+      exitShortLogic: shortEnabled ? exitShortLogic : '',
+      maxRisk,
+      signalThreshold,
+    });
+    const pythonDefinition =
+      authoredCodeTarget === 'python' && rawCode ? rawCode : generatedPython;
+    const editorMode =
+      this.cleanText(config.editorMode) ||
+      (authoredCodeTarget === 'python' && !entryLogic && !exitLogic
+        ? 'custom-python'
+        : 'rule-based');
+    const normalizedConfig = {
+      codeTarget: 'python',
+      codeDefinition: pythonDefinition,
+      authoredCodeTarget,
+      authoredCodeDefinition: rawCode || pythonDefinition,
+      compiledCodeTarget: 'python',
+      compiledCodeDefinition: pythonDefinition,
+      editorMode,
+      market,
+      entryLogic,
+      exitLogic,
+      shortEnabled,
+      entryShortLogic: shortEnabled ? entryShortLogic : '',
+      exitShortLogic: shortEnabled ? exitShortLogic : '',
+      risk: {
+        ...risk,
+        maxRisk,
+        max_per_trade:
+          risk.max_per_trade === undefined || risk.max_per_trade === null
+            ? maxRisk
+            : risk.max_per_trade,
+        sizingNotes,
+      },
+      parameters: {
+        ...parameters,
+        signalThreshold,
+        signal_threshold:
+          parameters.signal_threshold === undefined || parameters.signal_threshold === null
+            ? signalThreshold
+            : parameters.signal_threshold,
+      },
+      notes: this.cleanText(config.notes),
+      filters: {
+        useAiFilter: Boolean(filters.useAiFilter),
+        useRegimeFilter: Boolean(filters.useRegimeFilter),
+        paperTradeFirst: Boolean(filters.paperTradeFirst),
+      },
+      description: description || '',
+      source: 'strategy_lab',
+      sourceType: 'strategy_lab',
+      sourceProjectId: project.id,
+      sourceProjectVersion: Number(project.projectVersion || 1),
+      movedFromStrategyLabProjectId: project.id,
+      movedFromStrategyLabProjectVersion: Number(project.projectVersion || 1),
+      movedToTemplateAt: movedAt.toISOString(),
+      sourceTemplateId:
+        project.sourceTemplateId ||
+        (typeof config.sourceTemplateId === 'string' ? config.sourceTemplateId : null),
+      sourceTemplateVersion:
+        typeof project.sourceTemplateVersion === 'number'
+          ? project.sourceTemplateVersion
+          : typeof config.sourceTemplateVersion === 'number'
+            ? config.sourceTemplateVersion
+            : null,
+      sourceTemplateName:
+        typeof config.sourceTemplateName === 'string' ? config.sourceTemplateName : null,
+    };
+
+    return {
+      name: templateName,
+      description,
+      status: 'Draft',
+      config: {
+        ...normalizedConfig,
+        automationProfile: buildStrategyTemplateAutomationProfile(normalizedConfig),
+      },
+    };
+  }
+
+  private mapTemplate(strategy: StrategyTemplate): StrategyTemplateItem {
+    const automationProfile = buildStrategyTemplateAutomationProfile(strategy.config);
+    return {
+      id: strategy.id,
+      name: strategy.name,
+      description: strategy.description,
+      status: strategy.status as StrategyTemplateItem['status'],
+      templateVersion: Number(strategy.templateVersion || 1),
+      config: strategy.config,
+      automationReady: automationProfile.automationReady,
+      automationProfile,
+      createdAt: this.formatDate(strategy.createdAt),
+      updatedAt: this.formatDate(strategy.updatedAt),
+    };
+  }
+
   private normalizeDateBoundary(
     value: unknown,
     boundary: 'start' | 'end'
@@ -638,6 +855,16 @@ export class StrategyLabService {
             : null,
       sourceTemplateName:
         typeof config.sourceTemplateName === 'string' ? config.sourceTemplateName : null,
+      movedToTemplateId:
+        typeof config.movedToTemplateId === 'string' ? config.movedToTemplateId : null,
+      movedToTemplateAt:
+        typeof config.movedToTemplateAt === 'string' ? config.movedToTemplateAt : null,
+      movedToTemplateName:
+        typeof config.movedToTemplateName === 'string' ? config.movedToTemplateName : null,
+      movedToTemplateVersion:
+        typeof config.movedToTemplateVersion === 'number'
+          ? config.movedToTemplateVersion
+          : null,
       authoringMode: project.authoringMode || 'no_code',
       codeTarget: project.codeTarget,
       visualDefinition:
@@ -795,6 +1022,86 @@ export class StrategyLabService {
       return Number.isFinite(value) ? String(value) : '';
     }
     return String(value || '').trim();
+  }
+
+  private cleanText(value: unknown): string {
+    return String(value || '').trim();
+  }
+
+  private formatDate(value: unknown): string {
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+    if (typeof value === 'string') {
+      const parsed = new Date(value);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString();
+      }
+      return value;
+    }
+    if (value && typeof (value as { toISOString?: unknown }).toISOString === 'function') {
+      return (value as { toISOString: () => string }).toISOString();
+    }
+    return new Date().toISOString();
+  }
+
+  private extractDslClause(code: string, keywords: string[]): string {
+    const value = String(code || '');
+    for (const rawLine of value.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      for (const keyword of keywords) {
+        const upperLine = line.toUpperCase();
+        if (
+          upperLine === keyword ||
+          upperLine.startsWith(`${keyword} `) ||
+          upperLine.startsWith(`${keyword}\t`)
+        ) {
+          return line.slice(keyword.length).trim();
+        }
+      }
+    }
+    return '';
+  }
+
+  private generatePythonFromLogic(input: {
+    name: string;
+    market: string;
+    entryLogic: string;
+    exitLogic: string;
+    entryShortLogic?: string;
+    exitShortLogic?: string;
+    maxRisk?: string;
+    signalThreshold?: string;
+  }): string {
+    const entryExpr = this.convertDslExpressionToPython(input.entryLogic || '');
+    const exitExpr = this.convertDslExpressionToPython(input.exitLogic || '');
+    const entryShortExpr = this.convertDslExpressionToPython(input.entryShortLogic || '');
+    const exitShortExpr = this.convertDslExpressionToPython(input.exitShortLogic || '');
+    const safeName = this.sanitizeCodeString(input.name || 'Strategy Draft');
+    const safeMarket = this.sanitizeCodeString(input.market || 'crypto-futures');
+    const maxRisk = Number(input.maxRisk || '1.5') || 1.5;
+    const signalThreshold = Number(input.signalThreshold || '0.82') || 0.82;
+    return `from auralpha import Strategy\n\n\nclass StrategyDraft(Strategy):\n    name = "${safeName}"\n    market = "${safeMarket}"\n\n    def entry(self, ctx):\n        return ${entryExpr || 'False'}\n\n    def exit(self, ctx):\n        return ${exitExpr || 'False'}\n\n    def entry_short(self, ctx):\n        return ${entryShortExpr || 'False'}\n\n    def exit_short(self, ctx):\n        return ${exitShortExpr || 'False'}\n\n    risk = {\n        "max_per_trade": ${maxRisk},\n        "signal_threshold": ${signalThreshold},\n    }`;
+  }
+
+  private convertDslExpressionToPython(expression: string): string {
+    let expr = String(expression || '').trim();
+    if (!expr) return '';
+    expr = expr.replace(/\bAND\b/gi, 'and').replace(/\bOR\b/gi, 'or').replace(/\bNOT\b/gi, 'not');
+    expr = expr.replace(/ema\((\d+)\)/gi, 'ema(ctx, $1)');
+    expr = expr.replace(/rsi\((\d+)\)/gi, 'rsi(ctx, $1)');
+    expr = expr.replace(/adx\((\d+)\)/gi, 'adx(ctx, $1)');
+    expr = expr.replace(/\b(close|price)\b/gi, 'price(ctx)');
+    expr = expr.replace(/\bhigh\b/gi, 'high(ctx)');
+    expr = expr.replace(/\blow\b/gi, 'low(ctx)');
+    expr = expr.replace(/\bopen\b/gi, 'open(ctx)');
+    expr = expr.replace(/\bvolume\b/gi, 'volume(ctx)');
+    return expr;
+  }
+
+  private sanitizeCodeString(value: string): string {
+    return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   }
 
   private extractRiskValue(value: unknown, key: 'maxRisk' | 'sizingNotes'): unknown {

@@ -1,3 +1,5 @@
+import type { StrategyTemplateItem } from './StrategyTemplate';
+
 export interface StrategyValidationMessage {
   field?: string;
   message: string;
@@ -12,6 +14,10 @@ export interface StrategyLabProjectItem {
   sourceTemplateId?: string | null;
   sourceTemplateVersion?: number | null;
   sourceTemplateName?: string | null;
+  movedToTemplateId?: string | null;
+  movedToTemplateAt?: string | null;
+  movedToTemplateName?: string | null;
+  movedToTemplateVersion?: number | null;
   authoringMode: string;
   codeTarget?: string | null;
   visualDefinition?: Record<string, unknown> | null;
@@ -89,6 +95,13 @@ export interface StrategyLabBacktestHandoffResult {
   message: string;
   projectId: string;
   backtestId: string;
+}
+
+export interface StrategyLabMoveToTemplateResult {
+  message: string;
+  project: StrategyLabProjectItem;
+  template: StrategyTemplateItem;
+  alreadyMoved: boolean;
 }
 
 export interface StrategyLabValidationResult {

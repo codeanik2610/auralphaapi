@@ -10,6 +10,21 @@ function createSuccess<T>(data: T) {
   return { success: true as const, data };
 }
 
+function collectCommandCenterTargets(payload: any): string[] {
+  const targets: string[] = [];
+  for (const section of Object.values(payload || {})) {
+    if (!section || typeof section !== 'object') {
+      continue;
+    }
+    for (const item of [...((section as any).items || []), ...((section as any).actions || [])]) {
+      if (item?.target) {
+        targets.push(item.target);
+      }
+    }
+  }
+  return targets;
+}
+
 function createOverviewData() {
   const observedAt = '2026-04-20T08:45:00.000Z';
 
@@ -377,6 +392,13 @@ async function runServiceAssertions(): Promise<void> {
   assert.equal(riskCallCount, 1);
   assert.equal(suggestedTradesCallCount, 1);
   assert.equal(suggestedTradesSummaryCallCount, 1);
+  const actionTargets = collectCommandCenterTargets(data);
+  assert.ok(actionTargets.includes('/risk-center'));
+  assert.ok(actionTargets.includes('/suggested-trades'));
+  assert.ok(actionTargets.includes('/brokers-data'));
+  assert.equal(actionTargets.includes('/risk'), false);
+  assert.equal(actionTargets.includes('/trade-ideas'), false);
+  assert.equal(actionTargets.includes('/brokers'), false);
 
   service.riskOverviewService = {
     async getOverview() {

@@ -6,6 +6,7 @@ import type {
   StrategyLabBacktestHandoffResult,
   StrategyLabDraftBody,
   StrategyLabDraftResult,
+  StrategyLabMoveToTemplateResult,
   StrategyLabProjectItem,
   StrategyLabProjectsListResult,
   StrategyLabValidationResult,
@@ -62,6 +63,17 @@ export class StrategyLabController {
       requireAuthUserId(request),
       projectId,
       body as StrategyLabDraftBody
+    );
+  }
+
+  @Post('/projects/:projectId/move-to-template')
+  async moveStrategyLabProjectToTemplate(
+    @Req() request: unknown,
+    @Param('projectId') projectId: string
+  ): Promise<ApiSuccessResponse<StrategyLabMoveToTemplateResult>> {
+    return this.strategyLabService.moveStrategyLabProjectToTemplate(
+      requireAuthUserId(request),
+      projectId
     );
   }
 

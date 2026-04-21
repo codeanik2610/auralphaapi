@@ -671,6 +671,7 @@ async function runStrategyLabControllerAssertions(): Promise<void> {
     saveStrategyLabDraft: async (...args: unknown[]) => createSuccess({ args }),
     getStrategyLabProjectById: async (...args: unknown[]) => createSuccess({ args }),
     updateStrategyLabProject: async (...args: unknown[]) => createSuccess({ args }),
+    moveStrategyLabProjectToTemplate: async (...args: unknown[]) => createSuccess({ args }),
     validateStrategyLabProject: async (...args: unknown[]) => createSuccess({ args }),
     sendStrategyLabToBacktests: async (...args: unknown[]) => createSuccess({ args }),
   };
@@ -705,6 +706,10 @@ async function runStrategyLabControllerAssertions(): Promise<void> {
     updateBody,
   ]);
   assert.deepEqual((await controller.validateStrategyLabProject(authReq, 'proj-1')).data.args, ['user-1', 'proj-1']);
+  assert.deepEqual((await controller.moveStrategyLabProjectToTemplate(authReq, 'proj-1')).data.args, [
+    'user-1',
+    'proj-1',
+  ]);
 
   const handoffBody = { projectId: 'proj-1' };
   assert.deepEqual((await controller.sendStrategyLabToBacktests(authReq, handoffBody)).data.args, [

@@ -9114,6 +9114,134 @@ class StrategyDraft(Strategy):
   );
 }
 
+async function runStrategyLabMoveToTemplateAssertions(): Promise<void> {
+  const service = new StrategyLabService() as any;
+  const movePayloads: Array<Record<string, any>> = [];
+  const activities: Array<Record<string, unknown>> = [];
+  const project = {
+    id: 'proj-move-1',
+    userId: 'user-1',
+    name: 'Ema 20 50 draft',
+    description: 'Reusable EMA crossover',
+    status: 'Draft',
+    authoringMode: 'code',
+    codeTarget: 'dsl',
+    visualDefinition: null,
+    codeDefinition:
+      'STRATEGY Ema 20 50 draft\nMARKET crypto-futures\nENTRY ema(20) > ema(50)\nEXIT ema(20) < ema(50)\nRISK max_per_trade 1.5%',
+    parameters: {
+      signalThreshold: '0.81',
+      signal_threshold: '0.81',
+    },
+    riskConfig: {
+      maxRisk: '1.2',
+      max_per_trade: '1.2',
+      sizingNotes: 'Small test size',
+    },
+    validationState: 'valid',
+    validationErrors: [],
+    validationWarnings: [],
+    lastValidatedAt: new Date('2026-04-20T10:00:00.000Z'),
+    objective: 'probability-alpha',
+    market: 'crypto-futures',
+    timeframe: '15m',
+    universe: 'top-25-liquidity',
+    projectVersion: 4,
+    sourceTemplateId: null,
+    sourceTemplateVersion: null,
+    config: {
+      codeTarget: 'dsl',
+      codeDefinition:
+        'STRATEGY Ema 20 50 draft\nMARKET crypto-futures\nENTRY ema(20) > ema(50)\nEXIT ema(20) < ema(50)\nRISK max_per_trade 1.5%',
+      market: 'crypto-futures',
+      entryLogic: 'ema(20) > ema(50)',
+      exitLogic: 'ema(20) < ema(50)',
+      risk: {
+        maxRisk: '1.2',
+        max_per_trade: '1.2',
+        sizingNotes: 'Small test size',
+      },
+      parameters: {
+        signalThreshold: '0.81',
+        signal_threshold: '0.81',
+      },
+      filters: {
+        useAiFilter: true,
+        useRegimeFilter: true,
+        paperTradeFirst: true,
+      },
+      projectVersion: 4,
+    },
+    createdAt: new Date('2026-04-20T09:00:00.000Z'),
+    updatedAt: new Date('2026-04-20T10:00:00.000Z'),
+  };
+
+  service.strategyLabRepository = {
+    moveProjectToTemplate: async (
+      userId: string,
+      projectId: string,
+      buildTemplatePayload: (inputProject: typeof project, movedAt: Date) => Record<string, any>
+    ) => {
+      assert.equal(userId, 'user-1');
+      assert.equal(projectId, 'proj-move-1');
+      const movedAt = new Date('2026-04-20T10:30:00.000Z');
+      const payload = buildTemplatePayload(project, movedAt);
+      movePayloads.push(payload);
+      const template = {
+        id: 'template-moved-1',
+        userId,
+        name: payload.name,
+        description: payload.description,
+        status: payload.status,
+        templateVersion: 1,
+        config: payload.config,
+        createdAt: movedAt,
+        updatedAt: movedAt,
+      };
+      return {
+        project: {
+          ...project,
+          status: 'Moved to template',
+          config: {
+            ...project.config,
+            movedToTemplateId: template.id,
+            movedToTemplateAt: movedAt.toISOString(),
+            movedToTemplateName: template.name,
+            movedToTemplateVersion: 1,
+          },
+        },
+        template,
+        alreadyMoved: false,
+      };
+    },
+  };
+  service.operationalEventService = {
+    logActivity: async (_userId: string, payload: Record<string, unknown>) => {
+      activities.push(payload);
+    },
+    emitFailureAlert: async () => undefined,
+  };
+
+  const response = await service.moveStrategyLabProjectToTemplate('user-1', 'proj-move-1');
+
+  assert.equal(response.data.alreadyMoved, false);
+  assert.equal(response.data.project.status, 'Moved to template');
+  assert.equal(response.data.project.movedToTemplateId, 'template-moved-1');
+  assert.equal(response.data.template.id, 'template-moved-1');
+  assert.equal(movePayloads.length, 1);
+  assert.equal(movePayloads[0]?.name, 'Ema 20 50 draft');
+  const config = movePayloads[0]?.config as Record<string, any>;
+  assert.equal(config?.sourceType, 'strategy_lab');
+  assert.equal(config?.sourceProjectId, 'proj-move-1');
+  assert.equal(config?.sourceProjectVersion, 4);
+  assert.equal(config?.codeTarget, 'python');
+  assert.match(String(config?.compiledCodeDefinition || ''), /ema\(ctx, 20\) > ema\(ctx, 50\)/);
+  assert.equal(config?.risk?.maxRisk, '1.2');
+  assert.equal(config?.parameters?.signalThreshold, '0.81');
+  assert.equal(activities.length, 1);
+  assert.equal(activities[0]?.stream, 'Templates');
+}
+
 async function runStrategyLibraryBacktestSnapshotAssertions(): Promise<void> {
   const service = new StrategyLibraryService() as any;
   const queuedPayloads: Array<Record<string, unknown>> = [];
@@ -12974,6 +13102,7 @@ async function main(): Promise<void> {
   await runBacktestPromotionDelegationAssertions();
   await runBacktestPromotionFailureAlertAssertions();
   await runStrategyLabBacktestHandoffAssertions();
+  await runStrategyLabMoveToTemplateAssertions();
   await runStrategyLibraryBacktestSnapshotAssertions();
   await runStrategyLibraryLifecycleGuardAssertions();
   await runStrategyLibraryStatusUpdateAssertions();

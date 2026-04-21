@@ -47,6 +47,7 @@ async function runStrategyLabControllerAssertions(): Promise<void> {
     updateStrategyLabProject: async (...args: unknown[]) => createSuccess({ args }),
     validateStrategyLabProject: async (...args: unknown[]) => createSuccess({ args }),
     sendStrategyLabToBacktests: async (...args: unknown[]) => createSuccess({ args }),
+    moveStrategyLabProjectToTemplate: async (...args: unknown[]) => createSuccess({ args }),
   };
 
   const createBody = {
@@ -98,9 +99,14 @@ async function runStrategyLabControllerAssertions(): Promise<void> {
     'user-1',
     handoffBody,
   ]);
+  assert.deepEqual((await controller.moveStrategyLabProjectToTemplate(authReq, 'proj-1')).data.args, [
+    'user-1',
+    'proj-1',
+  ]);
 
   await assertAuthRequired(() => controller.listStrategyLabProjects(unauthReq));
   await assertAuthRequired(() => controller.getStrategyLabProjectById(unauthReq, 'proj-1'));
+  await assertAuthRequired(() => controller.moveStrategyLabProjectToTemplate(unauthReq, 'proj-1'));
 }
 
 async function runStrategyLibraryControllerAssertions(): Promise<void> {

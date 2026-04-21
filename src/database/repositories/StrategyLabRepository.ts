@@ -2,7 +2,16 @@ import { Service } from 'typedi';
 import { Repository } from 'typeorm';
 import { strategyDataSource } from '../pg-data-source';
 import { StrategyLabProject } from '../entities/StrategyLabProject';
+import { StrategyTemplate } from '../entities/StrategyTemplate';
+import { StrategyTemplateVersion } from '../entities/StrategyTemplateVersion';
 import { ValidatedStrategyLabDraftBody } from '../../api/validators/strategyLab.validator';
+import type { StrategyTemplateCreatePayload } from './StrategyTemplateRepository';
+
+export interface StrategyLabMoveToTemplateResult {
+  project: StrategyLabProject;
+  template: StrategyTemplate;
+  alreadyMoved: boolean;
+}
 
 @Service()
 export class StrategyLabRepository {
@@ -106,6 +115,95 @@ export class StrategyLabRepository {
 
   async getProjectById(userId: string, projectId: string): Promise<StrategyLabProject | null> {
     return this.projectRepository.findOne({ where: { id: projectId, userId } });
+  }
+
+  async moveProjectToTemplate(
+    userId: string,
+    projectId: string,
+    buildTemplatePayload: (
+      project: StrategyLabProject,
+      movedAt: Date
+    ) => StrategyTemplateCreatePayload
+  ): Promise<StrategyLabMoveToTemplateResult | null> {
+    return strategyDataSource.transaction(async (manager) => {
+      const projectRepository = manager.getRepository(StrategyLabProject);
+      const templateRepository = manager.getRepository(StrategyTemplate);
+      const templateVersionRepository = manager.getRepository(StrategyTemplateVersion);
+      const project = await projectRepository.findOne({
+        where: { id: projectId, userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!project) {
+        return null;
+      }
+
+      const existingConfig =
+        project.config && typeof project.config === 'object' && !Array.isArray(project.config)
+          ? (project.config as Record<string, unknown>)
+          : {};
+      const existingTemplateId =
+        typeof existingConfig.movedToTemplateId === 'string'
+          ? existingConfig.movedToTemplateId.trim()
+          : '';
+
+      if (existingTemplateId) {
+        const existingTemplate = await templateRepository.findOne({
+          where: { id: existingTemplateId, userId },
+        });
+
+        if (existingTemplate) {
+          return {
+            project,
+            template: existingTemplate,
+            alreadyMoved: true,
+          };
+        }
+      }
+
+      const movedAt = new Date();
+      const templatePayload = buildTemplatePayload(project, movedAt);
+      const template = templateRepository.create({
+        userId,
+        name: templatePayload.name,
+        description: templatePayload.description ?? null,
+        status: templatePayload.status || 'Draft',
+        templateVersion: 1,
+        config: templatePayload.config ?? null,
+      });
+      const savedTemplate = await templateRepository.save(template);
+      const versionSnapshot = templateVersionRepository.create({
+        strategyTemplateId: savedTemplate.id,
+        userId: savedTemplate.userId,
+        actorUserId: userId,
+        templateVersion: Number(savedTemplate.templateVersion || 1),
+        changeType: 'created',
+        name: savedTemplate.name,
+        description: savedTemplate.description ?? null,
+        status: savedTemplate.status,
+        config: savedTemplate.config ?? null,
+      });
+      await templateVersionRepository.save(versionSnapshot);
+
+      project.status = 'Moved to template';
+      project.config = {
+        ...existingConfig,
+        movedToTemplateId: savedTemplate.id,
+        movedToTemplateAt: movedAt.toISOString(),
+        movedToTemplateName: savedTemplate.name,
+        movedToTemplateVersion: Number(savedTemplate.templateVersion || 1),
+        movedFromStrategyLabProjectId: project.id,
+        movedFromStrategyLabProjectVersion: Number(project.projectVersion || 1),
+      };
+
+      const savedProject = await projectRepository.save(project);
+
+      return {
+        project: savedProject,
+        template: savedTemplate,
+        alreadyMoved: false,
+      };
+    });
   }
 
   async saveDraft(userId: string, payload: ValidatedStrategyLabDraftBody): Promise<StrategyLabProject> {

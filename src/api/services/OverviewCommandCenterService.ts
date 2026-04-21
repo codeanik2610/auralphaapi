@@ -310,7 +310,7 @@ export class OverviewCommandCenterService {
         meta: alert.time,
         severity: alert.severity,
         tone: alert.severity === 'High' ? 'red' : 'amber',
-        target: alert.route || '/alerts',
+        target: this.normalizeCommandCenterActionTarget(alert.route || '/alerts'),
         source: alert.source,
         actionLabel: 'Open alert',
       });
@@ -324,7 +324,7 @@ export class OverviewCommandCenterService {
         meta: riskAlert.createdAtIso || riskAlert.createdAt,
         severity: riskAlert.severity,
         tone: this.isHighSeverity(riskAlert.severity) ? 'red' : 'amber',
-        target: '/risk',
+        target: '/risk-center',
         source: 'risk_rule_evaluations',
         actionLabel: 'Review risk',
       });
@@ -438,7 +438,7 @@ export class OverviewCommandCenterService {
         {
           id: 'openRisk',
           label: 'Open risk',
-          target: '/risk',
+          target: '/risk-center',
           style: state === 'blocked' ? 'danger' : 'secondary',
         },
       ],
@@ -575,7 +575,7 @@ export class OverviewCommandCenterService {
         {
           id: 'openBrokers',
           label: 'Review brokers',
-          target: '/brokers',
+          target: '/brokers-data',
           style: 'secondary',
         },
       ],
@@ -639,7 +639,7 @@ export class OverviewCommandCenterService {
         meta: alert.time,
         severity: alert.severity,
         tone: alert.severity === 'High' ? 'red' : 'amber',
-        target: alert.route || '/alerts',
+        target: this.normalizeCommandCenterActionTarget(alert.route || '/alerts'),
         source: alert.source,
         actionLabel: 'Open',
       })),
@@ -914,7 +914,7 @@ export class OverviewCommandCenterService {
           meta: alert.createdAtIso || alert.createdAt,
           severity: alert.severity,
           tone: this.isHighSeverity(alert.severity) ? 'red' : 'amber',
-          target: '/risk',
+          target: '/risk-center',
           source: 'risk_rule_evaluations',
           actionLabel: 'Open risk',
         })) ?? [],
@@ -922,7 +922,7 @@ export class OverviewCommandCenterService {
         {
           id: 'openRisk',
           label: 'Open risk center',
-          target: '/risk',
+          target: '/risk-center',
           style: state === 'blocked' ? 'danger' : 'secondary',
         },
       ],
@@ -998,7 +998,7 @@ export class OverviewCommandCenterService {
         {
           id: 'openTradeIdeas',
           label: 'Open trade ideas',
-          target: '/trade-ideas',
+          target: '/suggested-trades',
           style: 'secondary',
         },
       ],
@@ -1084,7 +1084,7 @@ export class OverviewCommandCenterService {
           meta: item.observedAtIso || item.observedAt || undefined,
           severity: item.error ? 'error' : item.status,
           tone: item.error ? 'red' : item.status === 'Connected' ? 'emerald' : 'amber',
-          target: '/brokers',
+          target: '/brokers-data',
           source: 'funds_snapshots',
           actionLabel: 'Open broker',
         })),
@@ -1092,7 +1092,7 @@ export class OverviewCommandCenterService {
         {
           id: 'openBrokers',
           label: 'Open brokers',
-          target: '/brokers',
+          target: '/brokers-data',
           style: state === 'blocked' ? 'danger' : 'secondary',
         },
       ],
@@ -1237,7 +1237,7 @@ export class OverviewCommandCenterService {
         meta: trade.updatedAt || trade.createdAt,
         severity: trade.executionStage,
         tone: this.toneForSuggestedTrade(trade),
-        target: '/trade-ideas',
+        target: '/suggested-trades',
         source: 'suggested_trades',
         actionLabel: 'Open idea',
       }));
@@ -1250,7 +1250,7 @@ export class OverviewCommandCenterService {
       meta: signal.updatedAt || signal.createdAt,
       severity: signal.status,
       tone: signal.status === 'Triggered' ? 'amber' : 'blue',
-      target: '/trade-ideas',
+      target: '/suggested-trades',
       source: 'signals',
       actionLabel: 'Open signal',
     }));
@@ -1461,6 +1461,34 @@ export class OverviewCommandCenterService {
         .trim()
         .toLowerCase()
     );
+  }
+
+  private normalizeCommandCenterActionTarget(value: unknown): string {
+    const raw = String(value ?? '').trim();
+    const normalized = raw.toLowerCase();
+    const aliases: Record<string, string> = {
+      risk: '/risk-center',
+      '/risk': '/risk-center',
+      brokers: '/brokers-data',
+      broker: '/brokers-data',
+      '/brokers': '/brokers-data',
+      'trade-ideas': '/suggested-trades',
+      '/trade-ideas': '/suggested-trades',
+      signals: '/signals',
+      orders: '/orders',
+      automations: '/automations',
+      alerts: '/alerts',
+    };
+
+    if (aliases[normalized]) {
+      return aliases[normalized];
+    }
+
+    if (raw.startsWith('/') && !raw.startsWith('//')) {
+      return raw;
+    }
+
+    return '/alerts';
   }
 
   private normalizeOptionalText(value: unknown): string | null {
