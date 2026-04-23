@@ -131,6 +131,25 @@ function append_csv_value() {
   printf '%s,%s\n' "${csv}" "${value}"
 }
 
+function filter_production_csv_values() {
+  local csv="$1"
+  local filtered=""
+  local value
+  IFS=',' read -ra values <<< "${csv}"
+  for value in "${values[@]}"; do
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ -z "${value}" ]]; then
+      continue
+    fi
+    case "${value}" in
+      *localhost*|*127.0.0.1*) continue ;;
+    esac
+    filtered="$(append_csv_value "${filtered}" "${value}")"
+  done
+  printf '%s\n' "${filtered}"
+}
+
 require_dir "${ROOT_DIR}/environments/production"
 require_dir "${ROOT_DIR}/../aurAlphaSchedulerWorker/environments/production"
 require_dir "${ROOT_DIR}/../discovery-engine/environments/production"
@@ -160,13 +179,9 @@ PRODUCTION_BOOTSTRAP_BROKER_ACCOUNT_MODE="$(preserve_env_value PRODUCTION_BOOTST
 PRODUCTION_BOOTSTRAP_MUDREX_BASE_URL="$(preserve_env_value PRODUCTION_BOOTSTRAP_MUDREX_BASE_URL https://trade.mudrex.com)"
 PRODUCTION_BOOTSTRAP_DELTA_BASE_URL="$(preserve_env_value PRODUCTION_BOOTSTRAP_DELTA_BASE_URL https://api.india.delta.exchange)"
 PRODUCTION_BOOTSTRAP_STRATEGY_TEMPLATE_NAME="$(preserve_env_value PRODUCTION_BOOTSTRAP_STRATEGY_TEMPLATE_NAME "Bootstrap Momentum Guard")"
-APP_CORS_ORIGINS="$(preserve_env_value APP_CORS_ORIGINS "")"
+APP_CORS_ORIGINS="$(filter_production_csv_values "$(preserve_env_value APP_CORS_ORIGINS "")")"
 for origin in \
-  "http://${DROPLET_IP}" \
-  "http://localhost:4173" \
-  "http://127.0.0.1:4173" \
-  "http://localhost:5173" \
-  "http://127.0.0.1:5173"; do
+  "http://${DROPLET_IP}"; do
   APP_CORS_ORIGINS="$(append_csv_value "${APP_CORS_ORIGINS}" "${origin}")"
 done
 
