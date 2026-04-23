@@ -2837,6 +2837,46 @@ async function portfolioGuard11(): Promise<void> {
   console.log('Portfolio phase 11 assertions passed.');
 }
 
+async function portfolioGuard12(): Promise<void> {
+  const { PaperTradingReadModelRepository } = await import("../src/database/repositories/PaperTradingReadModelRepository");
+  const { coreDataSource } = await import("../src/database/data-source");
+
+  const repository = new PaperTradingReadModelRepository();
+  const originalQuery = coreDataSource.query;
+  const seenQueries: string[] = [];
+
+  try {
+    coreDataSource.query = (async (sql: string) => {
+      seenQueries.push(sql);
+      if (sql.includes("SHOW COLUMNS FROM paper_accounts LIKE 'reset_at'")) {
+        return [];
+      }
+      if (sql.includes('ALTER TABLE paper_accounts ADD COLUMN reset_at')) {
+        const duplicate = new Error('Duplicate column name') as Error & { code?: string };
+        duplicate.code = 'ER_DUP_FIELDNAME';
+        throw duplicate;
+      }
+      return [];
+    }) as typeof coreDataSource.query;
+
+    await repository.ensureStorage();
+    await repository.ensureStorage();
+  } finally {
+    coreDataSource.query = originalQuery;
+  }
+
+  assert.equal(
+    seenQueries.some((sql) => sql.includes("SHOW COLUMNS FROM paper_accounts LIKE 'reset_at'")),
+    true
+  );
+  assert.equal(
+    seenQueries.some((sql) => sql.includes('ALTER TABLE paper_accounts ADD COLUMN reset_at')),
+    true
+  );
+
+  console.log('Portfolio phase 12 assertions passed.');
+}
+
 const suiteSteps = {
   "01": portfolioGuard01,
   "02": portfolioGuard02,
@@ -2849,10 +2889,11 @@ const suiteSteps = {
   "09": portfolioGuard09,
   "10": portfolioGuard10,
   "11": portfolioGuard11,
+  "12": portfolioGuard12,
 } as const;
 
 export async function runPortfolioSuite(): Promise<void> {
-  await runSuiteSteps("Portfolio module", "scripts/test-portfolio.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11"]);
+  await runSuiteSteps("Portfolio module", "scripts/test-portfolio.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"]);
   console.log("Portfolio module assertions passed.");
 }
 

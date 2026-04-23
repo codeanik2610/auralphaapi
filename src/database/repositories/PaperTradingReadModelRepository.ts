@@ -140,9 +140,15 @@ export class PaperTradingReadModelRepository {
       "SHOW COLUMNS FROM paper_accounts LIKE 'reset_at'"
     );
     if (!Array.isArray(resetAtColumns) || !resetAtColumns.length) {
-      await coreDataSource.query(
-        'ALTER TABLE paper_accounts ADD COLUMN reset_at TIMESTAMP NULL AFTER observed_at'
-      );
+      try {
+        await coreDataSource.query(
+          'ALTER TABLE paper_accounts ADD COLUMN reset_at TIMESTAMP NULL AFTER observed_at'
+        );
+      } catch (error) {
+        if ((error as { code?: string } | null)?.code !== 'ER_DUP_FIELDNAME') {
+          throw error;
+        }
+      }
     }
 
     await coreDataSource.query(`
