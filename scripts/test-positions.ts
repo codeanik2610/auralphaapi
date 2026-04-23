@@ -1745,6 +1745,150 @@ async function run(): Promise<void> {
   await run();
 }
 
+async function positionsGuard12(): Promise<void> {
+  const { PaperTradingWorkspaceService } = await import("../src/api/services/PaperTradingWorkspaceService");
+
+  const service = new PaperTradingWorkspaceService() as any;
+  const syncCalls: Array<Record<string, unknown>> = [];
+  const simulateCalls: Array<Record<string, unknown>> = [];
+  const closeCalls: Array<Record<string, unknown>> = [];
+  const suggestionSyncCalls: Array<Record<string, unknown>> = [];
+  let closeLookupCount = 0;
+
+  service.userTimeZoneService = {
+    resolveUserTimeZone: async () => 'UTC',
+  };
+  service.syncUserReadModel = async (
+    userId: string,
+    options: Record<string, unknown> = {}
+  ) => {
+    syncCalls.push({ userId, ...options });
+  };
+  service.paperOrderExecutionService = {
+    simulateUserPaperOrders: async (
+      userId: string,
+      options: Record<string, unknown> = {}
+    ) => {
+      simulateCalls.push({ userId, ...options });
+      return {
+        updatedOrderIds: ['paper-order-1'],
+        updatedOrders: [{ userId, paperOrderId: 'paper-order-1' }],
+        processedOrders: 1,
+        distinctUsers: 1,
+      };
+    },
+    closePaperOrderAtMarket: async (userId: string, paperOrderId: string) => {
+      closeCalls.push({ userId, paperOrderId });
+      return { id: paperOrderId };
+    },
+  };
+  service.suggestedTradesService = {
+    syncExecutionForPaperOrderUpdates: async (
+      userId: string,
+      paperOrderIds: string[]
+    ) => {
+      suggestionSyncCalls.push({ userId, paperOrderIds });
+      return paperOrderIds.length;
+    },
+  };
+  service.paperTradingReadModelRepository = {
+    getPositionById: async (_userId: string, positionId: string) => {
+      closeLookupCount += 1;
+      return {
+        id: positionId,
+        userId: 'user-1',
+        paperAccountId: 'acc-1',
+        paperOrderId: 'paper-order-1',
+        suggestedTradeId: null,
+        brokerKey: 'mudrex',
+        linkedAccountId: 'acc-1',
+        accountName: 'Mudrex Paper',
+        accountKey: 'mudrex-paper',
+        accountStatus: 'Connected',
+        symbol: 'SOLUSDT',
+        side: 'Long',
+        sideKey: 'long',
+        status: closeLookupCount > 1 ? 'Closed' : 'Open',
+        statusKey: closeLookupCount > 1 ? 'closed' : 'open',
+        executionState: closeLookupCount > 1 ? 'closed' : 'filled',
+        quantity: 1.2,
+        entryPrice: 87.47,
+        currentPrice: 85.56,
+        exitPrice: closeLookupCount > 1 ? 85.56 : null,
+        stopLossPrice: 0,
+        takeProfitPrice: 0,
+        leverage: 4,
+        liquidationPrice: 75,
+        exposure: 102.672,
+        unrealizedPnl: closeLookupCount > 1 ? 0 : -2.292,
+        realizedPnl: closeLookupCount > 1 ? -2.292 : null,
+        outcome: closeLookupCount > 1 ? 'loss' : null,
+        closeReason: closeLookupCount > 1 ? 'manual-close' : null,
+        observationSource: 'candle',
+        payload: null,
+        createdAt: new Date('2026-04-23T10:00:00.000Z'),
+        openedAt: new Date('2026-04-23T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-23T10:05:00.000Z'),
+        closedAt:
+          closeLookupCount > 1 ? new Date('2026-04-23T10:05:00.000Z') : null,
+        firstSeenAt: new Date('2026-04-23T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-04-23T10:05:00.000Z'),
+      };
+    },
+  };
+
+  const simulationResponse = await service.runPaperSimulation('user-1', {
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+  }) as any;
+
+  assert.equal(simulationResponse.success, true);
+  assert.equal(simulationResponse.data.updatedOrders, 1);
+  assert.equal(simulationResponse.data.brokerKey, 'mudrex');
+  assert.equal(simulateCalls.length, 1);
+  assert.deepEqual(simulateCalls[0], {
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+  });
+  assert.deepEqual(suggestionSyncCalls[0], {
+    userId: 'user-1',
+    paperOrderIds: ['paper-order-1'],
+  });
+
+  const closeResponse = await service.closePaperPosition(
+    'user-1',
+    'paper-position-1'
+  ) as any;
+
+  assert.equal(closeResponse.success, true);
+  assert.equal(closeResponse.data.position.status, 'Closed');
+  assert.equal(closeResponse.data.position.close_reason, 'manual-close');
+  assert.deepEqual(closeCalls[0], {
+    userId: 'user-1',
+    paperOrderId: 'paper-order-1',
+  });
+  assert.equal(syncCalls.length, 3);
+  assert.deepEqual(syncCalls[0], {
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    skipSimulation: true,
+  });
+  assert.deepEqual(syncCalls[1], {
+    userId: 'user-1',
+    skipSimulation: true,
+  });
+  assert.deepEqual(syncCalls[2], {
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    skipSimulation: true,
+  });
+
+  console.log('Positions phase 12 assertions passed.');
+}
+
 const suiteSteps = {
   "01": positionsGuard01,
   "04": positionsGuard04,
@@ -1754,10 +1898,11 @@ const suiteSteps = {
   "09": positionsGuard09,
   "10": positionsGuard10,
   "11": positionsGuard11,
+  "12": positionsGuard12,
 } as const;
 
 export async function runPositionsSuite(): Promise<void> {
-  await runSuiteSteps("Positions module", "scripts/test-positions.ts", ["01", "04", "05", "06", "08", "09", "10", "11"]);
+  await runSuiteSteps("Positions module", "scripts/test-positions.ts", ["01", "04", "05", "06", "08", "09", "10", "11", "12"]);
   console.log("Positions module assertions passed.");
 }
 

@@ -2725,6 +2725,118 @@ async function main(): Promise<void> {
   await main();
 }
 
+async function portfolioGuard11(): Promise<void> {
+  const { PaperTradingWorkspaceService } = await import("../src/api/services/PaperTradingWorkspaceService");
+
+  const service = new PaperTradingWorkspaceService() as any;
+  const syncCalls: Array<Record<string, unknown>> = [];
+  let startingBalance = 100000;
+  let resetAt: Date | null = null;
+
+  const buildAccount = () => ({
+    id: 'acc-1',
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    linkedAccountId: 'acc-1',
+    accountName: 'Mudrex Paper',
+    accountKey: 'mudrex-paper',
+    accountStatus: 'Connected',
+    label: 'Mudrex Paper',
+    baseCurrency: 'USD',
+    startingBalance,
+    cashBalance: startingBalance + 250,
+    equity: startingBalance + 325,
+    usedMargin: 125,
+    availableMargin: startingBalance + 200,
+    openPositions: 1,
+    closedPositions: 3,
+    realizedPnl: 250,
+    unrealizedPnl: 75,
+    observedAt: new Date('2026-04-23T10:10:00.000Z'),
+    resetAt,
+  });
+
+  service.userTimeZoneService = {
+    resolveUserTimeZone: async () => 'UTC',
+  };
+  service.syncUserReadModel = async (
+    userId: string,
+    options: Record<string, unknown> = {}
+  ) => {
+    syncCalls.push({ userId, ...options });
+  };
+  service.paperTradingReadModelRepository = {
+    listAccounts: async () => [buildAccount()],
+    getAccountByLinkedAccountId: async () => buildAccount(),
+    updateAccountSettings: async (
+      _userId: string,
+      _accountId: string,
+      payload: { startingBalance?: number; resetAt?: Date | null }
+    ) => {
+      if (payload.startingBalance !== undefined) {
+        startingBalance = payload.startingBalance;
+      }
+      if (payload.resetAt !== undefined) {
+        resetAt = payload.resetAt;
+      }
+    },
+  };
+
+  const listResponse = await service.getPaperAccounts('user-1', {
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+  }) as any;
+  assert.equal(listResponse.success, true);
+  assert.equal(listResponse.data.source, 'paper_accounts');
+  assert.equal(listResponse.data.items.length, 1);
+  assert.equal(listResponse.data.items[0].startingBalance, 100000);
+  assert.equal(listResponse.data.items[0].funds.balance, 100325);
+
+  const updateResponse = await service.updatePaperAccount('user-1', 'acc-1', {
+    startingBalance: 125000,
+  }) as any;
+  assert.equal(updateResponse.success, true);
+  assert.equal(updateResponse.data.account.startingBalance, 125000);
+  assert.equal(updateResponse.data.account.equity, 125325);
+
+  const resetResponse = await service.resetPaperAccount('user-1', 'acc-1', {
+    startingBalance: 90000,
+  }) as any;
+  assert.equal(resetResponse.success, true);
+  assert.equal(resetResponse.data.account.startingBalance, 90000);
+  assert.ok(resetResponse.data.account.resetAtIso);
+
+  assert.deepEqual(syncCalls[0], {
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+  });
+  assert.deepEqual(syncCalls[1], {
+    userId: 'user-1',
+    accountId: 'acc-1',
+    skipSimulation: true,
+  });
+  assert.deepEqual(syncCalls[2], {
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    skipSimulation: true,
+  });
+  assert.deepEqual(syncCalls[3], {
+    userId: 'user-1',
+    accountId: 'acc-1',
+    skipSimulation: true,
+  });
+  assert.deepEqual(syncCalls[4], {
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    skipSimulation: true,
+  });
+
+  console.log('Portfolio phase 11 assertions passed.');
+}
+
 const suiteSteps = {
   "01": portfolioGuard01,
   "02": portfolioGuard02,
@@ -2736,10 +2848,11 @@ const suiteSteps = {
   "08": portfolioGuard08,
   "09": portfolioGuard09,
   "10": portfolioGuard10,
+  "11": portfolioGuard11,
 } as const;
 
 export async function runPortfolioSuite(): Promise<void> {
-  await runSuiteSteps("Portfolio module", "scripts/test-portfolio.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]);
+  await runSuiteSteps("Portfolio module", "scripts/test-portfolio.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11"]);
   console.log("Portfolio module assertions passed.");
 }
 

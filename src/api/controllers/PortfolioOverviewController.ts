@@ -1,4 +1,4 @@
-import { Get, JsonController, QueryParam, Req } from 'routing-controllers';
+import { Body, Get, JsonController, Param, Patch, Post, QueryParam, Req } from 'routing-controllers';
 import { Request } from 'express';
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
@@ -45,5 +45,46 @@ export class PortfolioOverviewController {
         holdingsLimit,
       }
     ) as Promise<ApiSuccessResponse<PortfolioOverviewResponse>>;
+  }
+
+  @Get('/paper/accounts')
+  async getPaperAccounts(
+    @Req() request: Request,
+    @QueryParam('brokerKey') brokerKey?: string,
+    @QueryParam('accountId') accountId?: string
+  ): Promise<ApiSuccessResponse<Record<string, unknown>>> {
+    return this.paperTradingWorkspaceService.getPaperAccounts(
+      requireAuthUserId(request),
+      {
+        brokerKey,
+        accountId,
+      }
+    ) as Promise<ApiSuccessResponse<Record<string, unknown>>>;
+  }
+
+  @Patch('/paper/accounts/:accountId')
+  async updatePaperAccount(
+    @Req() request: Request,
+    @Param('accountId') accountId: string,
+    @Body() body: Record<string, unknown> = {}
+  ): Promise<ApiSuccessResponse<Record<string, unknown>>> {
+    return this.paperTradingWorkspaceService.updatePaperAccount(
+      requireAuthUserId(request),
+      accountId,
+      body
+    ) as Promise<ApiSuccessResponse<Record<string, unknown>>>;
+  }
+
+  @Post('/paper/accounts/:accountId/reset')
+  async resetPaperAccount(
+    @Req() request: Request,
+    @Param('accountId') accountId: string,
+    @Body() body: Record<string, unknown> = {}
+  ): Promise<ApiSuccessResponse<Record<string, unknown>>> {
+    return this.paperTradingWorkspaceService.resetPaperAccount(
+      requireAuthUserId(request),
+      accountId,
+      body
+    ) as Promise<ApiSuccessResponse<Record<string, unknown>>>;
   }
 }

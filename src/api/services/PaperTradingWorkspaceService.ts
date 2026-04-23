@@ -35,13 +35,17 @@ import {
   validatePositionId,
   validatePositionsHistoryQuery,
   validatePositionsQuery,
+  validatePositionsRefreshBody,
 } from '../validators/positions.validator';
 import {
   PortfolioOverviewQuery,
+  validatePaperPortfolioAccountResetBody,
+  validatePaperPortfolioAccountsQuery,
+  validatePaperPortfolioAccountUpdateBody,
   validatePortfolioOverviewQuery,
   validatePortfolioTimeframe,
 } from '../validators/portfolio.validator';
-import { NotFoundAppError } from '../errors/AppError';
+import { BadRequestAppError, NotFoundAppError } from '../errors/AppError';
 import { getUtcDateRangeFromLocalDates } from '../utils/timezone';
 import { env } from '../../env';
 
@@ -73,6 +77,7 @@ type PaperAccountCatalog = {
   accountStatus: string | null;
   label: string | null;
   startingBalance: number;
+  resetAt: Date | null;
 };
 
 const DEFAULT_PAPER_STARTING_BALANCE = 100_000;
@@ -139,11 +144,18 @@ export class PaperTradingWorkspaceService {
         this.toNumber(item.startingBalance) ?? DEFAULT_PAPER_STARTING_BALANCE,
       ])
     );
+    const previousResetAtByAccountId = new Map(
+      existingAccounts.map((item) => [
+        String(item.linkedAccountId || '').trim(),
+        this.toDate(item.resetAt),
+      ])
+    );
 
     const accountCatalog = this.buildAccountCatalog(
       paperOrders,
       activeAccounts,
-      previousStartingBalanceByAccountId
+      previousStartingBalanceByAccountId,
+      previousResetAtByAccountId
     );
     const positions = this.buildPaperPositionRows(paperOrders, accountCatalog);
     const accounts = this.buildPaperAccountRows(
@@ -408,6 +420,261 @@ export class PaperTradingWorkspaceService {
     return successResponse(response);
   }
 
+  async getPaperAccounts(
+    userId: string,
+    query: {
+      brokerKey?: string;
+      accountId?: string;
+    } = {}
+  ): Promise<unknown> {
+    const params = validatePaperPortfolioAccountsQuery(query);
+    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+
+    await this.syncUserReadModel(userId, {
+      brokerKey: params.brokerKey,
+      accountId: params.accountId,
+    });
+
+    const items = (await this.paperTradingReadModelRepository.listAccounts(userId))
+      .filter((item) =>
+        params.brokerKey
+          ? String(item.brokerKey || '').trim().toLowerCase() ===
+            String(params.brokerKey || '').trim().toLowerCase()
+          : true
+      )
+      .filter((item) =>
+        params.accountId
+          ? String(item.linkedAccountId || '').trim() ===
+            String(params.accountId || '').trim()
+          : true
+      )
+      .map((item) => this.mapPaperAccountWorkspaceItem(item, timeZone));
+
+    const observedAtIso = this.pickLatestTimestamp(
+      items.map((item) => item.observedAtIso)
+    );
+
+    return successResponse({
+      source: 'paper_accounts',
+      definition:
+        'Paper account workspace state derived from paper-account balances, margin, and reset metadata.',
+      observedAt: formatApiDisplayTime(observedAtIso, timeZone) || null,
+      observedAtIso,
+      total: items.length,
+      items,
+      time: buildApiTimeContract(timeZone),
+    });
+  }
+
+  async updatePaperAccount(
+    userId: string,
+    accountId: string,
+    body: {
+      startingBalance?: number | string;
+    } = {}
+  ): Promise<unknown> {
+    const validatedAccountId = String(accountId || '').trim();
+    if (!validatedAccountId) {
+      throw new BadRequestAppError('accountId is required');
+    }
+
+    const payload = validatePaperPortfolioAccountUpdateBody(body);
+    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+
+    await this.syncUserReadModel(userId, {
+      accountId: validatedAccountId,
+      skipSimulation: true,
+    });
+
+    const existing = await this.paperTradingReadModelRepository.getAccountByLinkedAccountId(
+      userId,
+      validatedAccountId
+    );
+    if (!existing) {
+      throw new NotFoundAppError('Paper account not found');
+    }
+
+    await this.paperTradingReadModelRepository.updateAccountSettings(
+      userId,
+      validatedAccountId,
+      {
+        startingBalance: payload.startingBalance,
+      }
+    );
+
+    await this.syncUserReadModel(userId, {
+      brokerKey: existing.brokerKey,
+      accountId: validatedAccountId,
+      skipSimulation: true,
+    });
+
+    const updated = await this.paperTradingReadModelRepository.getAccountByLinkedAccountId(
+      userId,
+      validatedAccountId
+    );
+    if (!updated) {
+      throw new NotFoundAppError('Paper account not found after update');
+    }
+
+    return successResponse({
+      message: 'Paper account updated',
+      account: this.mapPaperAccountWorkspaceItem(updated, timeZone),
+    });
+  }
+
+  async resetPaperAccount(
+    userId: string,
+    accountId: string,
+    body: {
+      startingBalance?: number | string;
+    } = {}
+  ): Promise<unknown> {
+    const validatedAccountId = String(accountId || '').trim();
+    if (!validatedAccountId) {
+      throw new BadRequestAppError('accountId is required');
+    }
+
+    const payload = validatePaperPortfolioAccountResetBody(body);
+    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+
+    await this.syncUserReadModel(userId, {
+      accountId: validatedAccountId,
+      skipSimulation: true,
+    });
+
+    const existing = await this.paperTradingReadModelRepository.getAccountByLinkedAccountId(
+      userId,
+      validatedAccountId
+    );
+    if (!existing) {
+      throw new NotFoundAppError('Paper account not found');
+    }
+
+    await this.paperTradingReadModelRepository.updateAccountSettings(
+      userId,
+      validatedAccountId,
+      {
+        startingBalance:
+          payload.startingBalance ??
+          this.toNumber(existing.startingBalance) ??
+          DEFAULT_PAPER_STARTING_BALANCE,
+        resetAt: new Date(),
+      }
+    );
+
+    await this.syncUserReadModel(userId, {
+      brokerKey: existing.brokerKey,
+      accountId: validatedAccountId,
+      skipSimulation: true,
+    });
+
+    const updated = await this.paperTradingReadModelRepository.getAccountByLinkedAccountId(
+      userId,
+      validatedAccountId
+    );
+    if (!updated) {
+      throw new NotFoundAppError('Paper account not found after reset');
+    }
+
+    return successResponse({
+      message: 'Paper account reset',
+      account: this.mapPaperAccountWorkspaceItem(updated, timeZone),
+    });
+  }
+
+  async runPaperSimulation(
+    userId: string,
+    body: {
+      brokerKey?: string;
+      accountId?: string;
+    } = {}
+  ): Promise<unknown> {
+    const params = validatePositionsRefreshBody(body);
+    const simulation = await this.paperOrderExecutionService.simulateUserPaperOrders(
+      userId,
+      {
+        brokerKey: params.brokerKey,
+        accountId: params.accountId,
+      }
+    );
+
+    if (simulation.updatedOrderIds.length) {
+      await this.suggestedTradesService.syncExecutionForPaperOrderUpdates(
+        userId,
+        simulation.updatedOrderIds
+      );
+    }
+
+    await this.syncUserReadModel(userId, {
+      brokerKey: params.brokerKey,
+      accountId: params.accountId,
+      skipSimulation: true,
+    });
+
+    return successResponse({
+      message:
+        simulation.updatedOrderIds.length > 0
+          ? 'Paper simulation refreshed'
+          : 'Paper simulation already current',
+      brokerKey: params.brokerKey || null,
+      accountId: params.accountId || null,
+      processedOrders: simulation.processedOrders,
+      updatedOrders: simulation.updatedOrderIds.length,
+      updatedOrderIds: simulation.updatedOrderIds,
+      refreshedAt: new Date().toISOString(),
+    });
+  }
+
+  async closePaperPosition(
+    userId: string,
+    positionId: string
+  ): Promise<unknown> {
+    const validatedPositionId = validatePositionId(positionId);
+    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+
+    await this.syncUserReadModel(userId, {
+      skipSimulation: true,
+    });
+
+    const position = await this.paperTradingReadModelRepository.getPositionById(
+      userId,
+      validatedPositionId
+    );
+    if (!position) {
+      throw new NotFoundAppError('Paper position not found');
+    }
+    if (position.statusKey !== 'open') {
+      throw new BadRequestAppError('Only open paper positions can be closed');
+    }
+
+    await this.paperOrderExecutionService.closePaperOrderAtMarket(
+      userId,
+      position.paperOrderId
+    );
+    await this.suggestedTradesService.syncExecutionForPaperOrderUpdates(userId, [
+      position.paperOrderId,
+    ]);
+
+    await this.syncUserReadModel(userId, {
+      brokerKey: position.brokerKey,
+      accountId: position.linkedAccountId,
+      skipSimulation: true,
+    });
+
+    const updated = await this.paperTradingReadModelRepository.getPositionById(
+      userId,
+      validatedPositionId
+    );
+    if (!updated) {
+      throw new NotFoundAppError('Paper position not found after close');
+    }
+
+    return successResponse({
+      message: 'Paper position closed',
+      position: this.mapPositionRowToRecord(updated, timeZone),
+    });
+  }
+
   async getPaperPortfolioOverview(
     userId: string,
     query: PortfolioOverviewQuery = {}
@@ -548,7 +815,8 @@ export class PaperTradingWorkspaceService {
   private buildAccountCatalog(
     paperOrders: PaperOrder[],
     activeAccounts: BrokerAccount[],
-    previousStartingBalanceByAccountId: Map<string, number>
+    previousStartingBalanceByAccountId: Map<string, number>,
+    previousResetAtByAccountId: Map<string, Date | null>
   ): Map<string, PaperAccountCatalog> {
     const catalog = new Map<string, PaperAccountCatalog>();
 
@@ -570,6 +838,7 @@ export class PaperTradingWorkspaceService {
         startingBalance:
           previousStartingBalanceByAccountId.get(accountId) ??
           DEFAULT_PAPER_STARTING_BALANCE,
+        resetAt: previousResetAtByAccountId.get(accountId) ?? null,
       });
     });
 
@@ -589,6 +858,7 @@ export class PaperTradingWorkspaceService {
         startingBalance:
           previousStartingBalanceByAccountId.get(accountId) ??
           DEFAULT_PAPER_STARTING_BALANCE,
+        resetAt: previousResetAtByAccountId.get(accountId) ?? null,
       });
     });
 
@@ -600,6 +870,20 @@ export class PaperTradingWorkspaceService {
     accountCatalog: Map<string, PaperAccountCatalog>
   ): PaperPositionReadModelRow[] {
     return paperOrders
+      .filter((order) => {
+        const account = accountCatalog.get(String(order.accountId || '').trim());
+        const resetAt = account?.resetAt;
+        if (!resetAt) {
+          return true;
+        }
+
+        const orderCreatedAt = this.toDate(order.createdAt);
+        if (!orderCreatedAt) {
+          return true;
+        }
+
+        return orderCreatedAt.getTime() >= resetAt.getTime();
+      })
       .map((order) => this.mapPaperOrderToPositionRow(order, accountCatalog))
       .filter((item): item is PaperPositionReadModelRow => Boolean(item));
   }
@@ -768,6 +1052,7 @@ export class PaperTradingWorkspaceService {
         realizedPnl,
         unrealizedPnl,
         observedAt,
+        resetAt: account.resetAt,
       };
     });
   }
@@ -1053,6 +1338,40 @@ export class PaperTradingWorkspaceService {
     };
   }
 
+  private mapPaperAccountWorkspaceItem(
+    item: PaperAccountReadModelRow,
+    timeZone: string
+  ) {
+    return {
+      accountId: item.linkedAccountId,
+      accountName: item.accountName || item.label || item.linkedAccountId,
+      accountKey: item.accountKey || item.linkedAccountId,
+      brokerKey: item.brokerKey,
+      status: item.accountStatus || 'Paper',
+      mode: 'paper',
+      label: item.label || null,
+      observedAt: formatApiDisplayTime(item.observedAt, timeZone) || null,
+      observedAtIso: formatApiRawIso(item.observedAt) || null,
+      resetAt: formatApiDisplayTime(item.resetAt, timeZone) || null,
+      resetAtIso: formatApiRawIso(item.resetAt) || null,
+      error: null,
+      startingBalance: this.toNumber(item.startingBalance),
+      cashBalance: this.toNumber(item.cashBalance),
+      equity: this.toNumber(item.equity),
+      usedMargin: this.toNumber(item.usedMargin),
+      availableMargin: this.toNumber(item.availableMargin),
+      openPositions: item.openPositions,
+      closedPositions: item.closedPositions,
+      realizedPnl: this.toNumber(item.realizedPnl),
+      unrealizedPnl: this.toNumber(item.unrealizedPnl),
+      funds: {
+        balance: this.toNumber(item.equity),
+        available: this.toNumber(item.availableMargin),
+        invested: this.toNumber(item.usedMargin),
+      },
+    };
+  }
+
   private buildPortfolioFuturesSummary(
     accounts: PaperAccountReadModelRow[],
     openPositions: PaperPositionReadModelRow[],
@@ -1179,21 +1498,9 @@ export class PaperTradingWorkspaceService {
     accounts: PaperAccountReadModelRow[],
     timeZone: string
   ) {
-    const items = accounts.map((item) => ({
-      accountId: item.linkedAccountId,
-      accountName: item.accountName || item.label || item.linkedAccountId,
-      accountKey: item.accountKey || item.linkedAccountId,
-      brokerKey: item.brokerKey,
-      status: item.accountStatus || 'Paper',
-      observedAt: formatApiDisplayTime(item.observedAt, timeZone) || null,
-      observedAtIso: formatApiRawIso(item.observedAt) || null,
-      error: null,
-      funds: {
-        balance: this.toNumber(item.equity),
-        available: this.toNumber(item.availableMargin),
-        invested: this.toNumber(item.usedMargin),
-      },
-    }));
+    const items = accounts.map((item) =>
+      this.mapPaperAccountWorkspaceItem(item, timeZone)
+    );
     const totalVisibleCapital = items.reduce(
       (sum, item) => sum + (this.toNumber(item.funds.balance) ?? 0),
       0

@@ -26,6 +26,19 @@ export interface PortfolioOverviewQuery {
   holdingsLimit?: string;
 }
 
+export interface PaperPortfolioAccountsQuery {
+  brokerKey?: string;
+  accountId?: string;
+}
+
+export interface PaperPortfolioAccountUpdateBody {
+  startingBalance?: number | string;
+}
+
+export interface PaperPortfolioAccountResetBody {
+  startingBalance?: number | string;
+}
+
 export type PortfolioTimeframe = 'daily' | 'weekly' | 'monthly';
 
 export interface ValidatedPortfolioHoldingsQuery {
@@ -46,6 +59,19 @@ export interface ValidatedPortfolioOverviewQuery {
   snapshotsLimit: number;
   snapshotsOffset: number;
   holdingsLimit: number;
+}
+
+export interface ValidatedPaperPortfolioAccountsQuery {
+  brokerKey?: string;
+  accountId?: string;
+}
+
+export interface ValidatedPaperPortfolioAccountUpdateBody {
+  startingBalance: number;
+}
+
+export interface ValidatedPaperPortfolioAccountResetBody {
+  startingBalance?: number;
 }
 
 export interface ValidatedPortfolioWorkspaceState {
@@ -145,6 +171,53 @@ export const validatePortfolioOverviewQuery = (
     snapshotsLimit: snapshots.limit,
     snapshotsOffset: snapshots.offset,
     holdingsLimit: holdings.limit,
+  };
+};
+
+export const validatePaperPortfolioAccountsQuery = (
+  query: PaperPortfolioAccountsQuery = {}
+): ValidatedPaperPortfolioAccountsQuery => {
+  const brokerKey = String(query.brokerKey || '').trim() || undefined;
+  const accountId = String(query.accountId || '').trim() || undefined;
+
+  return {
+    brokerKey,
+    accountId,
+  };
+};
+
+export const validatePaperPortfolioAccountUpdateBody = (
+  body: PaperPortfolioAccountUpdateBody = {}
+): ValidatedPaperPortfolioAccountUpdateBody => {
+  const startingBalance = Number(body.startingBalance);
+
+  if (!Number.isFinite(startingBalance) || startingBalance <= 0) {
+    throw new BadRequestAppError('startingBalance must be a positive number');
+  }
+
+  return {
+    startingBalance,
+  };
+};
+
+export const validatePaperPortfolioAccountResetBody = (
+  body: PaperPortfolioAccountResetBody = {}
+): ValidatedPaperPortfolioAccountResetBody => {
+  if (
+    body.startingBalance === undefined ||
+    body.startingBalance === null ||
+    body.startingBalance === ''
+  ) {
+    return {};
+  }
+
+  const startingBalance = Number(body.startingBalance);
+  if (!Number.isFinite(startingBalance) || startingBalance <= 0) {
+    throw new BadRequestAppError('startingBalance must be a positive number');
+  }
+
+  return {
+    startingBalance,
   };
 };
 

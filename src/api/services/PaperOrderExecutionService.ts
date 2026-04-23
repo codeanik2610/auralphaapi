@@ -8,6 +8,7 @@ import {
 import { PaperOrder } from '../../database';
 import { strategyDataSource } from '../../database/pg-data-source';
 import { OperationalEventService } from './OperationalEventService';
+import { BadRequestAppError, NotFoundAppError } from '../errors/AppError';
 
 interface PaperOrderSimulationOptions {
   brokerKey?: string;
@@ -103,6 +104,117 @@ export class PaperOrderExecutionService {
     return this.withSimulationLock(async () => {
       const orders = await this.paperOrderRepository.listExecutablePaperOrdersGlobal(options.limit);
       return this.simulateOrders(orders);
+    });
+  }
+
+  async closePaperOrderAtMarket(
+    userId: string,
+    paperOrderId: string
+  ): Promise<PaperOrder> {
+    return this.withSimulationLock(async () => {
+      const order = await this.paperOrderRepository.getPaperOrderById(userId, paperOrderId);
+      if (!order) {
+        throw new NotFoundAppError('Paper order not found');
+      }
+
+      const currentStatus = String(order.status || '').trim().toUpperCase();
+      if (currentStatus !== 'FILLED') {
+        throw new BadRequestAppError('Only open paper positions can be closed');
+      }
+
+      const symbol = String(order.symbol || '').trim().toUpperCase();
+      if (!symbol) {
+        throw new BadRequestAppError('Paper order symbol is required for a manual close');
+      }
+
+      const [priceBySymbol, priceByScopedSymbol, candleObservations] = await Promise.all([
+        this.loadFallbackMarketPrices([symbol]),
+        this.loadScopedMarketPrices([order]),
+        this.loadLatestCandleObservations([symbol]),
+      ]);
+
+      const preferredSource = this.resolvePriceSourceForBroker(order.brokerKey);
+      const snapshotPrice =
+        (preferredSource
+          ? priceByScopedSymbol.get(this.buildScopedSymbolKey(preferredSource, symbol)) ?? null
+          : null) ?? priceBySymbol.get(symbol) ?? null;
+      const observation = this.resolveMarketObservation(
+        symbol,
+        candleObservations.get(symbol) ?? null,
+        snapshotPrice
+      );
+
+      if (!observation) {
+        throw new BadRequestAppError('No market observation is available to close this paper position');
+      }
+
+      const payload = this.readPayload(order.payload);
+      const simulation = this.readSimulation(payload);
+      const observedAtIso = observation.observedAt.toISOString();
+      const quantity = this.toNumber(order.quantity) ?? 0;
+      const exitPrice = observation.referencePrice;
+      const nextSimulation: PaperSimulationState = {
+        ...simulation,
+        lastPrice: this.formatDecimal(observation.referencePrice),
+        lastPriceSeenAt: observedAtIso,
+        lastObservationSource: observation.source,
+        lastCandleOpenTime: observation.candleOpenTime
+          ? observation.candleOpenTime.toISOString()
+          : null,
+        lastCandleCloseTime: observation.candleCloseTime
+          ? observation.candleCloseTime.toISOString()
+          : null,
+        lastCandleOpen:
+          observation.candleOpen === null ? null : this.formatDecimal(observation.candleOpen),
+        lastCandleHigh:
+          observation.candleHigh === null ? null : this.formatDecimal(observation.candleHigh),
+        lastCandleLow:
+          observation.candleLow === null ? null : this.formatDecimal(observation.candleLow),
+        lastCandleClose:
+          observation.candleClose === null ? null : this.formatDecimal(observation.candleClose),
+        positionId: simulation.positionId ?? `paper:${order.id}`,
+        executionState: 'closed',
+        positionStatus: 'CLOSED',
+        filledAt: simulation.filledAt ?? observedAtIso,
+        filledPrice:
+          simulation.filledPrice ??
+          this.formatDecimal(this.toNumber(order.orderPrice) ?? observation.referencePrice),
+        filledQuantity: simulation.filledQuantity ?? quantity,
+        remainingQuantity: 0,
+        positionOpenedAt: simulation.positionOpenedAt ?? simulation.filledAt ?? observedAtIso,
+        closedAt: observedAtIso,
+        positionClosedAt: observedAtIso,
+        exitPrice: this.formatDecimal(exitPrice),
+        realizedPnl: this.formatDecimal(
+          this.computeRealizedPnl(order, simulation, exitPrice, quantity)
+        ),
+        outcome: this.deriveOutcome(
+          this.formatDecimal(this.computeRealizedPnl(order, simulation, exitPrice, quantity))
+        ),
+        closeReason: 'manual-close',
+      };
+
+      order.status = 'CLOSED';
+      order.payload = {
+        ...payload,
+        simulation: nextSimulation,
+      };
+      await this.paperOrderRepository.savePaperOrder(order);
+
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Paper position',
+        title: `Paper position closed: ${symbol}`,
+        status: 'Success',
+        route: 'Positions',
+        stream: 'Paper execution',
+        related: `${order.brokerKey} · ${order.accountId}`,
+        referenceId: order.id,
+        correlationId: order.id,
+        symbol,
+        description: `Paper position closed at market @ ${this.formatDecimal(exitPrice)}`,
+      });
+
+      return order;
     });
   }
 

@@ -22,6 +22,7 @@ export interface PaperAccountReadModelRow {
   realizedPnl: number;
   unrealizedPnl: number;
   observedAt: Date | null;
+  resetAt?: Date | null;
   createdAt?: Date | null;
   updatedAt?: Date | null;
 }
@@ -134,6 +135,15 @@ export class PaperTradingReadModelRepository {
         KEY idx_paper_accounts_user_observed (user_id, observed_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+
+    const resetAtColumns = await coreDataSource.query(
+      "SHOW COLUMNS FROM paper_accounts LIKE 'reset_at'"
+    );
+    if (!Array.isArray(resetAtColumns) || !resetAtColumns.length) {
+      await coreDataSource.query(
+        'ALTER TABLE paper_accounts ADD COLUMN reset_at TIMESTAMP NULL AFTER observed_at'
+      );
+    }
 
     await coreDataSource.query(`
       CREATE TABLE IF NOT EXISTS paper_position_read_models (
@@ -275,6 +285,7 @@ export class PaperTradingReadModelRepository {
          realized_pnl AS realizedPnl,
          unrealized_pnl AS unrealizedPnl,
          observed_at AS observedAt,
+         reset_at AS resetAt,
          created_at AS createdAt,
          updated_at AS updatedAt
        FROM paper_accounts
@@ -312,6 +323,7 @@ export class PaperTradingReadModelRepository {
          realized_pnl AS realizedPnl,
          unrealized_pnl AS unrealizedPnl,
          observed_at AS observedAt,
+         reset_at AS resetAt,
          created_at AS createdAt,
          updated_at AS updatedAt
        FROM paper_accounts
@@ -321,6 +333,41 @@ export class PaperTradingReadModelRepository {
     )) as PaperAccountReadModelRow[];
 
     return rows[0] || null;
+  }
+
+  async updateAccountSettings(
+    userId: string,
+    linkedAccountId: string,
+    payload: {
+      startingBalance?: number;
+      resetAt?: Date | null;
+    }
+  ): Promise<void> {
+    await this.ensureStorage();
+
+    const updates: string[] = [];
+    const values: unknown[] = [];
+
+    if (payload.startingBalance !== undefined) {
+      updates.push('starting_balance = ?');
+      values.push(payload.startingBalance);
+    }
+
+    if (payload.resetAt !== undefined) {
+      updates.push('reset_at = ?');
+      values.push(payload.resetAt);
+    }
+
+    if (!updates.length) {
+      return;
+    }
+
+    await coreDataSource.query(
+      `UPDATE paper_accounts
+       SET ${updates.join(', ')}
+       WHERE user_id = ? AND linked_account_id = ?`,
+      [...values, userId, linkedAccountId]
+    );
   }
 
   async listPositions(
@@ -531,8 +578,9 @@ export class PaperTradingReadModelRepository {
          closed_positions,
          realized_pnl,
          unrealized_pnl,
-         observed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         observed_at,
+         reset_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         account.id,
         account.userId,
@@ -553,6 +601,7 @@ export class PaperTradingReadModelRepository {
         account.realizedPnl,
         account.unrealizedPnl,
         account.observedAt,
+        account.resetAt ?? null,
       ]
     );
   }

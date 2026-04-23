@@ -182,4 +182,26 @@ export class PositionsController {
       positionId
     ) as Promise<ApiSuccessResponse<PositionLifecycleResponse>>;
   }
+
+  @Post('/paper/simulate')
+  async runPaperSimulation(
+    @Req() request: Request,
+    @Body() body: PositionsRefreshBody = {}
+  ): Promise<ApiSuccessResponse<Record<string, unknown>>> {
+    return this.paperTradingWorkspaceService.runPaperSimulation(
+      requireAuthUserId(request),
+      body
+    ) as Promise<ApiSuccessResponse<Record<string, unknown>>>;
+  }
+
+  @Post('/paper/:positionId/close')
+  async closePaperPosition(
+    @Req() request: Request,
+    @Param('positionId') positionId: string
+  ): Promise<ApiSuccessResponse<Record<string, unknown>>> {
+    return this.paperTradingWorkspaceService.closePaperPosition(
+      requireAuthUserId(request),
+      positionId
+    ) as Promise<ApiSuccessResponse<Record<string, unknown>>>;
+  }
 }

@@ -1120,13 +1120,122 @@ async function main(): Promise<void> {
   await main();
 }
 
+async function ordersGuard09(): Promise<void> {
+  const { BadRequestAppError } = await import("../src/api/errors/AppError");
+  const { PaperOrderExecutionService } = await import("../src/api/services/PaperOrderExecutionService");
+
+  const savedOrders: Array<Record<string, unknown>> = [];
+  const activities: Array<Record<string, unknown>> = [];
+  const observedAt = new Date('2026-04-23T13:12:00.000Z');
+
+  const filledOrder = {
+    id: 'paper-order-1',
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+    assetId: 'asset-1',
+    symbol: 'SOLUSDT',
+    side: 'long',
+    status: 'FILLED',
+    quantity: 1.2,
+    orderPrice: 87.5,
+    orderType: 'market',
+    triggerType: 'immediate',
+    stoplossPrice: 84,
+    takeprofitPrice: 91,
+    payload: {
+      simulation: {
+        executionState: 'filled',
+        positionStatus: 'OPEN',
+        filledAt: '2026-04-23T12:45:00.000Z',
+        filledPrice: '87.5',
+        filledQuantity: 1.2,
+        positionOpenedAt: '2026-04-23T12:45:00.000Z',
+      },
+    },
+  };
+
+  const service = new PaperOrderExecutionService() as any;
+  service.paperOrderRepository = {
+    async getPaperOrderById(userId: string, paperOrderId: string) {
+      assert.equal(userId, 'user-1');
+      if (paperOrderId === 'paper-order-1') {
+        return { ...filledOrder };
+      }
+      if (paperOrderId === 'paper-order-closed') {
+        return {
+          ...filledOrder,
+          id: 'paper-order-closed',
+          status: 'CLOSED',
+        };
+      }
+      return null;
+    },
+    async savePaperOrder(order: Record<string, unknown>) {
+      savedOrders.push(JSON.parse(JSON.stringify(order)));
+      return order;
+    },
+  };
+  service.operationalEventService = {
+    async logActivity(userId: string, payload: Record<string, unknown>) {
+      activities.push({ userId, ...payload });
+    },
+  };
+  service.loadFallbackMarketPrices = async () => new Map();
+  service.loadScopedMarketPrices = async () => new Map();
+  service.loadLatestCandleObservations = async () =>
+    new Map([
+      [
+        'SOLUSDT',
+        {
+          symbol: 'SOLUSDT',
+          observedAt,
+          referencePrice: 89,
+          source: 'candle',
+          candleOpenTime: new Date('2026-04-23T13:11:00.000Z'),
+          candleCloseTime: observedAt,
+          candleOpen: 88.2,
+          candleHigh: 89.4,
+          candleLow: 88.1,
+          candleClose: 89,
+        },
+      ],
+    ]);
+
+  const closedOrder = await service.closePaperOrderAtMarket('user-1', 'paper-order-1');
+  assert.equal(closedOrder.status, 'CLOSED');
+  assert.equal(savedOrders.length, 1);
+  assert.equal(savedOrders[0]?.payload?.simulation?.executionState, 'closed');
+  assert.equal(savedOrders[0]?.payload?.simulation?.positionStatus, 'CLOSED');
+  assert.equal(savedOrders[0]?.payload?.simulation?.closeReason, 'manual-close');
+  assert.equal(savedOrders[0]?.payload?.simulation?.exitPrice, '89');
+  assert.equal(savedOrders[0]?.payload?.simulation?.realizedPnl, '1.8');
+  assert.equal(savedOrders[0]?.payload?.simulation?.outcome, 'profit');
+  assert.equal(savedOrders[0]?.payload?.simulation?.lastObservationSource, 'candle');
+  assert.equal(savedOrders[0]?.payload?.simulation?.positionClosedAt, observedAt.toISOString());
+  assert.equal(activities.length, 1);
+  assert.equal(activities[0]?.userId, 'user-1');
+  assert.equal(activities[0]?.route, 'Positions');
+  assert.equal(activities[0]?.stream, 'Paper execution');
+
+  await assert.rejects(
+    () => service.closePaperOrderAtMarket('user-1', 'paper-order-closed'),
+    (error: unknown) =>
+      error instanceof BadRequestAppError &&
+      error.message === 'Only open paper positions can be closed'
+  );
+
+  console.log('Orders phase 9 checks passed');
+}
+
 const suiteSteps = {
   "07": ordersGuard07,
   "08": ordersGuard08,
+  "09": ordersGuard09,
 } as const;
 
 export async function runOrdersSuite(): Promise<void> {
-  await runSuiteSteps("Orders module", "scripts/test-orders.ts", ["07", "08"]);
+  await runSuiteSteps("Orders module", "scripts/test-orders.ts", ["07", "08", "09"]);
   await runScriptSuite("Orders module", ["scripts/test-orders-contract.ts"]);
   console.log("Orders module assertions passed.");
 }
