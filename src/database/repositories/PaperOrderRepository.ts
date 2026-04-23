@@ -119,6 +119,33 @@ export class PaperOrderRepository {
     return builder.getMany();
   }
 
+  async listAllPaperOrders(
+    userId: string,
+    options: {
+      brokerKey?: string;
+      accountId?: string;
+    } = {}
+  ): Promise<PaperOrder[]> {
+    const builder = this.repository
+      .createQueryBuilder('paper_order')
+      .where('paper_order.userId = :userId', { userId })
+      .orderBy('paper_order.createdAt', 'DESC');
+
+    if (options.brokerKey) {
+      builder.andWhere('LOWER(paper_order.brokerKey) = :brokerKey', {
+        brokerKey: options.brokerKey.toLowerCase(),
+      });
+    }
+
+    if (options.accountId) {
+      builder.andWhere('paper_order.accountId = :accountId', {
+        accountId: options.accountId,
+      });
+    }
+
+    return builder.getMany();
+  }
+
   async listExecutablePaperOrders(
     userId: string,
     options: {

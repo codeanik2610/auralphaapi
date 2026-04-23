@@ -4,6 +4,7 @@ import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import { PortfolioOverviewResponse } from '../contracts/PortfolioOverview';
 import { PortfolioOverviewService } from '../services/PortfolioOverviewService';
+import { PaperTradingWorkspaceService } from '../services/PaperTradingWorkspaceService';
 import { requireAuthUserId } from '../utils/auth';
 
 @JsonController('/portfolio')
@@ -11,6 +12,9 @@ import { requireAuthUserId } from '../utils/auth';
 export class PortfolioOverviewController {
   @Inject(() => PortfolioOverviewService)
   private portfolioOverviewService!: PortfolioOverviewService;
+
+  @Inject(() => PaperTradingWorkspaceService)
+  private paperTradingWorkspaceService!: PaperTradingWorkspaceService;
 
   @Get('/overview')
   async getOverview(
@@ -26,5 +30,20 @@ export class PortfolioOverviewController {
       snapshotsOffset,
       holdingsLimit,
     });
+  }
+
+  @Get('/paper/overview')
+  async getPaperOverview(
+    @Req() request: Request,
+    @QueryParam('timeframe') timeframe?: string,
+    @QueryParam('holdingsLimit') holdingsLimit?: string
+  ): Promise<ApiSuccessResponse<PortfolioOverviewResponse>> {
+    return this.paperTradingWorkspaceService.getPaperPortfolioOverview(
+      requireAuthUserId(request),
+      {
+        timeframe,
+        holdingsLimit,
+      }
+    ) as Promise<ApiSuccessResponse<PortfolioOverviewResponse>>;
   }
 }

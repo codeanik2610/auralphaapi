@@ -1991,6 +1991,93 @@ async function main(): Promise<void> {
   await main();
 }
 
+async function schedulersGuard10(): Promise<void> {
+  const { PaperOrdersSchedulerService } = await import("../src/api/services/PaperOrdersSchedulerService");
+
+async function run(): Promise<void> {
+  const service = new PaperOrdersSchedulerService() as any;
+  const suggestionSyncCalls: Array<{ userId: string; paperOrderIds: string[] }> = [];
+  const workspaceSyncCalls: Array<{ userIds: string[]; options: Record<string, unknown> }> = [];
+  let releasedLock = false;
+
+  service.schedulerConfigRepository = {
+    createIfMissing: async () => ({
+      enabled: true,
+      batchSize: 25,
+      config: {
+        pollIntervalMs: 30_000,
+        logStrategy: 'updates-only',
+        simulationMode: 'latest-price-snapshot',
+      },
+      name: 'Paper Order Execution',
+      description: 'Background paper-order simulator',
+      schedulerType: 'global',
+    }),
+    tryAcquireRunLock: async () => true,
+    updateByKey: async () => undefined,
+    releaseRunLock: async () => {
+      releasedLock = true;
+    },
+  };
+  service.paperOrderRepository = {
+    countExecutablePaperOrdersGlobal: async () => 3,
+  };
+  service.paperOrderExecutionService = {
+    simulateActivePaperOrders: async () => ({
+      processedOrders: 3,
+      updatedOrders: [
+        { userId: 'user-1', paperOrderId: 'paper-1' },
+        { userId: 'user-1', paperOrderId: 'paper-2' },
+        { userId: 'user-2', paperOrderId: 'paper-3' },
+      ],
+      distinctUsers: 2,
+    }),
+  };
+  service.suggestedTradesService = {
+    syncExecutionForPaperOrderUpdates: async (userId: string, paperOrderIds: string[]) => {
+      suggestionSyncCalls.push({ userId, paperOrderIds });
+      return paperOrderIds.length;
+    },
+  };
+  service.paperTradingWorkspaceService = {
+    syncUsers: async (userIds: string[], options: Record<string, unknown>) => {
+      workspaceSyncCalls.push({ userIds, options });
+    },
+  };
+  service.schedulerRunLogRepository = {
+    createRun: async () => undefined,
+  };
+  service.operationalEventService = {
+    logActivity: async () => undefined,
+    emitFailureAlert: async () => undefined,
+  };
+
+  await service.runBatchOnce();
+
+  assert.equal(suggestionSyncCalls.length, 2);
+  assert.deepEqual(suggestionSyncCalls[0], {
+    userId: 'user-1',
+    paperOrderIds: ['paper-1', 'paper-2'],
+  });
+  assert.deepEqual(suggestionSyncCalls[1], {
+    userId: 'user-2',
+    paperOrderIds: ['paper-3'],
+  });
+  assert.equal(workspaceSyncCalls.length, 1);
+  assert.deepEqual(workspaceSyncCalls[0], {
+    userIds: ['user-1', 'user-2'],
+    options: {
+      skipSimulation: true,
+    },
+  });
+  assert.equal(releasedLock, true);
+
+  console.log('Schedulers Phase 10 assertions passed.');
+}
+
+  await run();
+}
+
 const suiteSteps = {
   "02": schedulersGuard02,
   "03": schedulersGuard03,
@@ -1999,10 +2086,11 @@ const suiteSteps = {
   "07": schedulersGuard07,
   "08": schedulersGuard08,
   "09": schedulersGuard09,
+  "10": schedulersGuard10,
 } as const;
 
 export async function runSchedulersSuite(): Promise<void> {
-  await runSuiteSteps("Orders scheduler module", "scripts/test-schedulers.ts", ["02", "03", "04", "05", "07", "08", "09"]);
+  await runSuiteSteps("Orders scheduler module", "scripts/test-schedulers.ts", ["02", "03", "04", "05", "07", "08", "09", "10"]);
   console.log("Orders scheduler module assertions passed.");
 }
 

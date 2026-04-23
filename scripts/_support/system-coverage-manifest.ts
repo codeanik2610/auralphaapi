@@ -423,7 +423,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     label: 'Positions',
     lane: 'cross-cutting',
     controllers: ['PositionsController.ts'],
-    services: ['BrokerPositionsFacadeService.ts'],
+    services: ['BrokerPositionsFacadeService.ts', 'PaperTradingWorkspaceService.ts'],
     tests: [script('test:positions', 'scripts/test-positions.ts')],
     checks: [script('check:positions-health', 'scripts/checks/check-positions-health.ts')],
     releaseGates: [script('release-gate:positions', 'scripts/release-gates/release-gate-positions.ts')],

@@ -9,6 +9,7 @@ import { Logger } from '../../lib/logger';
 import { RuntimeLoopSnapshot } from '../contracts/Runtime';
 import { OperationalEventService } from './OperationalEventService';
 import { PaperOrderExecutionService } from './PaperOrderExecutionService';
+import { PaperTradingWorkspaceService } from './PaperTradingWorkspaceService';
 import { SuggestedTradesService } from './SuggestedTradesService';
 
 const log = new Logger(__filename);
@@ -34,6 +35,9 @@ export class PaperOrdersSchedulerService {
 
   @Inject(() => SuggestedTradesService)
   private suggestedTradesService!: SuggestedTradesService;
+
+  @Inject(() => PaperTradingWorkspaceService)
+  private paperTradingWorkspaceService!: PaperTradingWorkspaceService;
 
   @Inject(() => OperationalEventService)
   private operationalEventService!: OperationalEventService;
@@ -202,6 +206,13 @@ export class PaperOrdersSchedulerService {
             paperOrderIds
           );
         }
+
+        await this.paperTradingWorkspaceService.syncUsers(
+          Array.from(paperOrderIdsByUser.keys()),
+          {
+            skipSimulation: true,
+          }
+        );
       }
 
       const finishedAt = new Date();

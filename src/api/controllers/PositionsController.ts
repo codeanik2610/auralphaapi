@@ -21,6 +21,7 @@ import {
   UpdateRiskOrderBody,
 } from '../validators/positions.validator';
 import { BrokerPositionsFacadeService } from '../services/BrokerPositionsFacadeService';
+import { PaperTradingWorkspaceService } from '../services/PaperTradingWorkspaceService';
 import { requireAuthUserId } from '../utils/auth';
 
 @JsonController('/positions')
@@ -28,6 +29,9 @@ import { requireAuthUserId } from '../utils/auth';
 export class PositionsController {
   @Inject(() => BrokerPositionsFacadeService)
   private positionsService!: BrokerPositionsFacadeService;
+
+  @Inject(() => PaperTradingWorkspaceService)
+  private paperTradingWorkspaceService!: PaperTradingWorkspaceService;
 
   @Get('/futures')
   async getFuturesPositions(
@@ -129,5 +133,53 @@ export class PositionsController {
   async getPositionHistoryForActiveAccounts(@Req() request: Request, @QueryParam('limit') limit?: string, @QueryParam('brokerKey') brokerKey?: string, @QueryParam('startDate') startDate?: string, @QueryParam('endDate') endDate?: string): Promise<ApiSuccessResponse<PositionsGroupedResponse>> {
     const query: PositionsHistoryQuery = { limit, brokerKey, startDate, endDate };
     return this.positionsService.getPositionHistoryForActiveAccounts(query, requireAuthUserId(request), brokerKey) as unknown as Promise<ApiSuccessResponse<PositionsGroupedResponse>>;
+  }
+
+  @Get('/paper/active')
+  async getPaperPositionsForActiveAccounts(
+    @Req() request: Request,
+    @QueryParam('limit') limit?: string,
+    @QueryParam('brokerKey') brokerKey?: string,
+    @QueryParam('accountId') accountId?: string
+  ): Promise<ApiSuccessResponse<PositionsGroupedResponse>> {
+    const query: PositionsQuery = { limit, brokerKey, accountId };
+    return this.paperTradingWorkspaceService.getPaperPositionsForActiveAccounts(
+      requireAuthUserId(request),
+      brokerKey,
+      query
+    ) as Promise<ApiSuccessResponse<PositionsGroupedResponse>>;
+  }
+
+  @Get('/paper/history/active')
+  async getPaperPositionHistoryForActiveAccounts(
+    @Req() request: Request,
+    @QueryParam('limit') limit?: string,
+    @QueryParam('brokerKey') brokerKey?: string,
+    @QueryParam('accountId') accountId?: string,
+    @QueryParam('startDate') startDate?: string,
+    @QueryParam('endDate') endDate?: string
+  ): Promise<ApiSuccessResponse<PositionsGroupedResponse>> {
+    const query: PositionsHistoryQuery = {
+      limit,
+      brokerKey,
+      accountId,
+      startDate,
+      endDate,
+    };
+    return this.paperTradingWorkspaceService.getPaperPositionHistoryForActiveAccounts(
+      requireAuthUserId(request),
+      query
+    ) as Promise<ApiSuccessResponse<PositionsGroupedResponse>>;
+  }
+
+  @Get('/paper/:positionId/lifecycle')
+  async getPaperPositionLifecycle(
+    @Req() request: Request,
+    @Param('positionId') positionId: string
+  ): Promise<ApiSuccessResponse<PositionLifecycleResponse>> {
+    return this.paperTradingWorkspaceService.getPaperPositionLifecycle(
+      requireAuthUserId(request),
+      positionId
+    ) as Promise<ApiSuccessResponse<PositionLifecycleResponse>>;
   }
 }

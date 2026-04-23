@@ -21,6 +21,7 @@ export * from './MarketSymbolSnapshotRepository';
 export * from './ExchangeRepository';
 export * from './OrderSubmissionRequestRepository';
 export * from './PaperOrderRepository';
+export * from './PaperTradingReadModelRepository';
 export * from './PortfolioRepository';
 export * from './PositionReadModelRepository';
 export * from './PositionSnapshotRepository';

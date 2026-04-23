@@ -1624,6 +1624,127 @@ async function run(): Promise<void> {
   await run();
 }
 
+async function positionsGuard11(): Promise<void> {
+  const { PaperTradingWorkspaceService } = await import("../src/api/services/PaperTradingWorkspaceService");
+
+async function run(): Promise<void> {
+  const service = new PaperTradingWorkspaceService() as any;
+  const syncCalls: Array<{ userId: string; brokerKey?: string; accountId?: string }> = [];
+
+  service.syncUserReadModel = async (
+    userId: string,
+    options: { brokerKey?: string; accountId?: string } = {}
+  ) => {
+    syncCalls.push({
+      userId,
+      brokerKey: options.brokerKey,
+      accountId: options.accountId,
+    });
+  };
+  service.userTimeZoneService = {
+    resolveUserTimeZone: async () => 'UTC',
+  };
+  service.paperTradingReadModelRepository = {
+    listAccounts: async () => [
+      {
+        id: 'paper-account-1',
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        linkedAccountId: 'account-1',
+        accountName: 'Mudrex Paper',
+        accountKey: 'mudrex-paper',
+        accountStatus: 'Connected',
+        label: 'Mudrex Paper',
+        baseCurrency: 'USD',
+        startingBalance: 100000,
+        cashBalance: 100000,
+        equity: 99965.05,
+        usedMargin: 104.38,
+        availableMargin: 99860.67,
+        openPositions: 1,
+        closedPositions: 0,
+        realizedPnl: 0,
+        unrealizedPnl: -34.95,
+        observedAt: new Date('2026-04-23T13:42:00.000Z'),
+      },
+    ],
+    listPositions: async (_userId: string, options: Record<string, unknown>) => {
+      assert.equal(options.statusKey, 'open');
+      assert.equal(options.brokerKey, 'mudrex');
+      assert.equal(options.limit, 5);
+      return [
+        {
+          id: 'paper-position-1',
+          userId: 'user-1',
+          paperAccountId: 'paper-account-1',
+          paperOrderId: 'paper-order-1',
+          suggestedTradeId: null,
+          brokerKey: 'mudrex',
+          linkedAccountId: 'account-1',
+          accountName: 'Mudrex Paper',
+          accountKey: 'mudrex-paper',
+          accountStatus: 'Connected',
+          symbol: 'SOLUSDT',
+          side: 'Long',
+          sideKey: 'long',
+          status: 'Open',
+          statusKey: 'open',
+          executionState: 'filled',
+          quantity: 18.3,
+          entryPrice: 87.47,
+          currentPrice: 85.56,
+          exitPrice: null,
+          stopLossPrice: 0,
+          takeProfitPrice: 0,
+          leverage: 15,
+          liquidationPrice: 82.05,
+          exposure: 1565.748,
+          unrealizedPnl: -34.95,
+          realizedPnl: null,
+          outcome: null,
+          closeReason: null,
+          observationSource: 'candles',
+          payload: null,
+          createdAt: new Date('2026-04-23T03:12:00.000Z'),
+          openedAt: new Date('2026-04-23T03:12:00.000Z'),
+          updatedAt: new Date('2026-04-23T13:42:00.000Z'),
+          closedAt: null,
+          firstSeenAt: new Date('2026-04-23T03:12:00.000Z'),
+          lastSeenAt: new Date('2026-04-23T13:42:00.000Z'),
+        },
+      ];
+    },
+  };
+
+  const response = await service.getPaperPositionsForActiveAccounts('user-1', 'mudrex', {
+    limit: '5',
+  }) as any;
+
+  assert.equal(syncCalls.length, 1);
+  assert.deepEqual(syncCalls[0], {
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: undefined,
+  });
+  assert.equal(response.success, true);
+  assert.equal(response.data.source, 'paper_position_read_models');
+  assert.equal(response.data.totalActiveAccounts, 1);
+  assert.equal(response.data.items[0].accountName, 'Mudrex Paper');
+  assert.equal(response.data.items[0].positions.length, 1);
+  assert.equal(response.data.items[0].data[0].mode, 'paper');
+  assert.equal(response.data.items[0].data[0].symbol, 'SOLUSDT');
+  assert.equal(response.data.items[0].data[0].entry_price, 87.47);
+  assert.equal(
+    response.data.items[0].freshness?.account?.source,
+    'paper_position_read_models'
+  );
+
+  console.log('Positions phase 11 assertions passed.');
+}
+
+  await run();
+}
+
 const suiteSteps = {
   "01": positionsGuard01,
   "04": positionsGuard04,
@@ -1632,10 +1753,11 @@ const suiteSteps = {
   "08": positionsGuard08,
   "09": positionsGuard09,
   "10": positionsGuard10,
+  "11": positionsGuard11,
 } as const;
 
 export async function runPositionsSuite(): Promise<void> {
-  await runSuiteSteps("Positions module", "scripts/test-positions.ts", ["01", "04", "05", "06", "08", "09", "10"]);
+  await runSuiteSteps("Positions module", "scripts/test-positions.ts", ["01", "04", "05", "06", "08", "09", "10", "11"]);
   console.log("Positions module assertions passed.");
 }
 

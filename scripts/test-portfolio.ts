@@ -2553,6 +2553,178 @@ async function main(): Promise<void> {
   await main();
 }
 
+async function portfolioGuard10(): Promise<void> {
+  const { PaperTradingWorkspaceService } = await import("../src/api/services/PaperTradingWorkspaceService");
+
+const RealDate = Date;
+
+class MockDate extends Date {
+  constructor(value?: string | number | Date) {
+    super(value ?? '2026-04-23T12:00:00.000Z');
+  }
+
+  static now(): number {
+    return new RealDate('2026-04-23T12:00:00.000Z').getTime();
+  }
+}
+
+async function run(): Promise<void> {
+  const service = new PaperTradingWorkspaceService() as any;
+
+  service.syncUserReadModel = async () => undefined;
+  service.userTimeZoneService = {
+    resolveUserTimeZone: async () => 'UTC',
+  };
+  service.paperTradingReadModelRepository = {
+    listAccounts: async () => [
+      {
+        id: 'paper-account-1',
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        linkedAccountId: 'account-1',
+        accountName: 'Mudrex Paper',
+        accountKey: 'mudrex-paper',
+        accountStatus: 'Connected',
+        label: 'Mudrex Paper',
+        baseCurrency: 'USD',
+        startingBalance: 100000,
+        cashBalance: 100018.88,
+        equity: 99983.93,
+        usedMargin: 104.38,
+        availableMargin: 99879.55,
+        openPositions: 1,
+        closedPositions: 1,
+        realizedPnl: 18.88,
+        unrealizedPnl: -34.95,
+        observedAt: new Date('2026-04-23T13:42:00.000Z'),
+      },
+    ],
+    listPositions: async (_userId: string, options: Record<string, unknown>) => {
+      if (options.statusKey === 'open') {
+        assert.equal(options.limit, 10);
+        return [
+          {
+            id: 'paper-position-open-1',
+            userId: 'user-1',
+            paperAccountId: 'paper-account-1',
+            paperOrderId: 'paper-order-open-1',
+            suggestedTradeId: null,
+            brokerKey: 'mudrex',
+            linkedAccountId: 'account-1',
+            accountName: 'Mudrex Paper',
+            accountKey: 'mudrex-paper',
+            accountStatus: 'Connected',
+            symbol: 'SOLUSDT',
+            side: 'Long',
+            sideKey: 'long',
+            status: 'Open',
+            statusKey: 'open',
+            executionState: 'filled',
+            quantity: 18.3,
+            entryPrice: 87.47,
+            currentPrice: 85.56,
+            exitPrice: null,
+            stopLossPrice: 0,
+            takeProfitPrice: 0,
+            leverage: 15,
+            liquidationPrice: 82.05,
+            exposure: 1565.748,
+            unrealizedPnl: -34.95,
+            realizedPnl: null,
+            outcome: null,
+            closeReason: null,
+            observationSource: 'candles',
+            payload: null,
+            createdAt: new Date('2026-04-23T03:12:00.000Z'),
+            openedAt: new Date('2026-04-23T03:12:00.000Z'),
+            updatedAt: new Date('2026-04-23T13:42:00.000Z'),
+            closedAt: null,
+            firstSeenAt: new Date('2026-04-23T03:12:00.000Z'),
+            lastSeenAt: new Date('2026-04-23T13:42:00.000Z'),
+          },
+        ];
+      }
+
+      assert.equal(options.statusKey, 'closed');
+      return [
+        {
+          id: 'paper-position-closed-1',
+          userId: 'user-1',
+          paperAccountId: 'paper-account-1',
+          paperOrderId: 'paper-order-closed-1',
+          suggestedTradeId: null,
+          brokerKey: 'mudrex',
+          linkedAccountId: 'account-1',
+          accountName: 'Mudrex Paper',
+          accountKey: 'mudrex-paper',
+          accountStatus: 'Connected',
+          symbol: 'BTCUSDT',
+          side: 'Short',
+          sideKey: 'short',
+          status: 'Closed',
+          statusKey: 'closed',
+          executionState: 'closed',
+          quantity: 1,
+          entryPrice: 74268.5,
+          currentPrice: null,
+          exitPrice: 74249.62,
+          stopLossPrice: 0,
+          takeProfitPrice: 0,
+          leverage: 10,
+          liquidationPrice: null,
+          exposure: 74249.62,
+          unrealizedPnl: null,
+          realizedPnl: 18.88,
+          outcome: 'profit',
+          closeReason: 'target',
+          observationSource: 'candles',
+          payload: null,
+          createdAt: new Date('2026-04-22T14:00:00.000Z'),
+          openedAt: new Date('2026-04-22T14:00:00.000Z'),
+          updatedAt: new Date('2026-04-23T10:23:00.000Z'),
+          closedAt: new Date('2026-04-23T10:23:00.000Z'),
+          firstSeenAt: new Date('2026-04-22T14:00:00.000Z'),
+          lastSeenAt: new Date('2026-04-23T10:23:00.000Z'),
+        },
+      ];
+    },
+  };
+
+  const response = await service.getPaperPortfolioOverview('user-1', {
+    timeframe: 'weekly',
+    holdingsLimit: '10',
+  }) as any;
+
+  assert.equal(response.success, true);
+  assert.equal(response.data.meta.primaryEndpoint, '/portfolio/paper/overview');
+  assert.equal(response.data.summary.equity, 99983.93);
+  assert.equal(response.data.summary.holdings, 1);
+  assert.equal(response.data.positions.source, 'paper_position_read_models');
+  assert.equal(response.data.positions.items.length, 1);
+  assert.equal(response.data.positions.items[0].symbol, 'SOLUSDT');
+  assert.equal(response.data.capital.source, 'paper_accounts');
+  assert.equal(response.data.capital.futuresTotal, 99983.93);
+  assert.equal(response.data.activity.source, 'paper_position_read_models');
+  assert.equal(response.data.activity.pnl.weeklyPnL, 18.88);
+  assert.equal(response.data.performance.summary.totalTrades, 1);
+  assert.equal(response.data.performance.points.length, 7);
+
+  console.log('Portfolio Phase 10 assertions passed.');
+}
+
+async function main(): Promise<void> {
+  (globalThis as { Date: DateConstructor }).Date = MockDate as unknown as DateConstructor;
+
+  try {
+    await run();
+  } finally {
+    (globalThis as { Date: DateConstructor }).Date = RealDate;
+  }
+}
+
+  await main();
+}
+
 const suiteSteps = {
   "01": portfolioGuard01,
   "02": portfolioGuard02,
@@ -2563,10 +2735,11 @@ const suiteSteps = {
   "07": portfolioGuard07,
   "08": portfolioGuard08,
   "09": portfolioGuard09,
+  "10": portfolioGuard10,
 } as const;
 
 export async function runPortfolioSuite(): Promise<void> {
-  await runSuiteSteps("Portfolio module", "scripts/test-portfolio.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09"]);
+  await runSuiteSteps("Portfolio module", "scripts/test-portfolio.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]);
   console.log("Portfolio module assertions passed.");
 }
 
