@@ -338,6 +338,32 @@ function testPhase3Markers(): void {
     findings.push('README.md: missing positions/orders sync verification command');
   }
 
+  const positionsSyncSource = read('src/api/services/InternalPositionsSyncService.ts');
+  for (const marker of [
+    'resolveHistoryOverlapDays(',
+    'const historyOverlapDays = this.resolveHistoryOverlapDays(adapter);',
+    'historyStart = this.addDays(checkpoint, -historyOverlapDays);',
+  ]) {
+    if (!positionsSyncSource.includes(marker)) {
+      findings.push(`InternalPositionsSyncService.ts: missing positions history overlap marker ${marker}`);
+    }
+  }
+
+  const positionsAdapterTypesSource = read('src/brokers/capabilities/positions/types.ts');
+  if (!positionsAdapterTypesSource.includes('historyOverlapDays?: number;')) {
+    findings.push('positions types: missing broker-specific history overlap contract marker');
+  }
+
+  const deltaAdapterSource = read('src/brokers/capabilities/positions/DeltaExchangePositionsAdapter.ts');
+  for (const marker of [
+    "readonly historyWindowMode = 'contiguous' as const;",
+    'readonly historyOverlapDays = 30;',
+  ]) {
+    if (!deltaAdapterSource.includes(marker)) {
+      findings.push(`DeltaExchangePositionsAdapter.ts: missing overlap marker ${marker}`);
+    }
+  }
+
   assert.equal(
     findings.length,
     0,

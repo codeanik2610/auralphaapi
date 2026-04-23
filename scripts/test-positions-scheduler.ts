@@ -2327,8 +2327,131 @@ async function runContiguousHistoryWindowAssertions(): Promise<void> {
   }
 }
 
+async function runBrokerAwareHistoryOverlapAssertions(): Promise<void> {
+  const service = new InternalPositionsSyncService() as any;
+  const historyCalls: Array<Record<string, unknown>> = [];
+
+  service.brokerAccountRepository = {
+    async getActiveBrokerAccounts() {
+      return [
+        {
+          id: 'delta-account-1',
+          userId: 'user-1',
+          brokerKey: 'delta_exchange',
+          createdAt: new Date('2026-04-01T00:00:00.000Z'),
+        },
+      ];
+    },
+  };
+  service.brokerAccountRoutingService = {
+    async resolve(userId: string, brokerKey: string, accountId: string) {
+      return { userId, brokerKey, accountId };
+    },
+  };
+  service.brokerRuntimeRegistry = {
+    getPositionsAdapter() {
+      return {
+        historyWindowMode: 'contiguous',
+        historyOverlapDays: 30,
+        async getPositions() {
+          return { data: [] };
+        },
+        async getPositionHistory(query: Record<string, unknown>) {
+          historyCalls.push(query);
+          return { data: [] };
+        },
+      };
+    },
+  };
+  service.exchangeAssetUpdateLogRepository = {
+    async createMany() {},
+  };
+  service.positionReadModelRepository = {
+    async upsertReadModels() {},
+    async markPositionsClosed() {},
+  };
+  service.assetPriceRepository = {
+    async getBySymbols() {
+      return [];
+    },
+  };
+  service.operationalEventService = {
+    async logActivity() {},
+    async emitFailureAlert() {},
+  };
+  service.suggestedTradesService = {
+    async syncExecutionForPositionUpdates() {},
+  };
+
+  const originalQuery = (coreDataSource as any).query;
+  (coreDataSource as any).query = async (sql: string) => {
+    const statement = String(sql || '');
+    if (statement.includes('SELECT NOW() AS now')) {
+      return [{ now: new Date('2026-04-14T04:00:00.000Z') }];
+    }
+    if (statement.includes('SELECT checkpoint_at FROM scheduler_sync_checkpoints')) {
+      return [{ checkpoint_at: new Date('2026-04-10T04:00:00.000Z') }];
+    }
+    if (statement.includes('FROM information_schema.columns') && statement.includes("table_name = 'scheduler_sync_checkpoints'")) {
+      return [
+        { columnName: 'scheduler_key' },
+        { columnName: 'account_id' },
+        { columnName: 'checkpoint_at' },
+        { columnName: 'updated_at' },
+      ];
+    }
+    if (statement.includes('INSERT INTO scheduler_sync_checkpoints')) {
+      return [{ affectedRows: 1 }];
+    }
+    if (statement.includes('SELECT id, external_id, symbol, status, payload_json')) {
+      return [];
+    }
+    if (statement.includes('UPDATE scheduler_positions_snapshots')) {
+      return [{ affectedRows: 0 }];
+    }
+    if (statement.includes('FROM information_schema.columns') && statement.includes("table_name = 'scheduler_positions_snapshots'")) {
+      return [{ count: 1 }];
+    }
+    if (statement.includes('SELECT external_id, status, payload_hash, status_rank')) {
+      return [];
+    }
+    if (statement.includes('INSERT INTO scheduler_positions_snapshots')) {
+      return [{ affectedRows: 0 }];
+    }
+    if (statement.includes('CREATE TABLE IF NOT EXISTS scheduler_positions_snapshots')) {
+      return [{ affectedRows: 0 }];
+    }
+    if (statement.includes('CREATE TABLE IF NOT EXISTS scheduler_sync_checkpoints')) {
+      return [{ affectedRows: 0 }];
+    }
+    throw new Error(`Unexpected SQL in positions scheduler phase 10 overlap test: ${statement}`);
+  };
+
+  try {
+    const result = await service.runBatch({
+      executionScope: 'product_user',
+      requestUserId: 'user-1',
+      targetUserIds: ['user-1'],
+      brokerKeys: ['delta_exchange'],
+      accountIds: ['delta-account-1'],
+      historyWindowDays: 30,
+    });
+
+    assert.equal(result.failedAccounts, 0);
+    assert.equal(historyCalls.length, 1);
+    assert.deepEqual(historyCalls[0], {
+      startDate: '2026-03-11',
+      endDate: '2026-04-14',
+      limit: '50000',
+    });
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
 async function run(): Promise<void> {
   await runContiguousHistoryWindowAssertions();
+  await runBrokerAwareHistoryOverlapAssertions();
   console.log('Positions scheduler phase 10 assertions passed.');
 }
 

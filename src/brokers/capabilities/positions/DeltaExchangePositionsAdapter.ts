@@ -60,6 +60,7 @@ type DeltaProductMaps = {
 @Service()
 export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
   readonly historyWindowMode = 'contiguous' as const;
+  readonly historyOverlapDays = 30;
 
   @Inject(() => DeltaExchangeHttpClient)
   private deltaHttpClient!: DeltaExchangeHttpClient;

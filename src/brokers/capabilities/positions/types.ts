@@ -21,6 +21,7 @@ export type BrokerPositionsHistoryWindowMode = 'split_safe' | 'contiguous';
 
 export interface BrokerPositionsAdapter {
   historyWindowMode?: BrokerPositionsHistoryWindowMode;
+  historyOverlapDays?: number;
   getPositions(
     query: ValidatedPositionsRouteQuery,
     context?: BrokerPositionContext

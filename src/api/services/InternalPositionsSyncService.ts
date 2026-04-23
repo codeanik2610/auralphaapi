@@ -111,6 +111,14 @@ export class InternalPositionsSyncService {
     return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
   }
 
+  private resolveHistoryOverlapDays(adapter: { historyOverlapDays?: number } | null | undefined): number {
+    const raw = Number(adapter?.historyOverlapDays);
+    if (!Number.isFinite(raw)) {
+      return 1;
+    }
+    return Math.min(MAX_LOOKBACK_DAYS, Math.max(1, Math.floor(raw)));
+  }
+
   private buildDateWindows(startDate: string, endDate: string, windowDays: number): Array<{ startDate: string; endDate: string }> {
     const start = this.parseIsoDate(startDate);
     const end = this.parseIsoDate(endDate);
@@ -934,6 +942,7 @@ export class InternalPositionsSyncService {
             let historyError: string | null = null;
 
             const adapter = this.brokerRuntimeRegistry.getPositionsAdapter(resolvedBrokerKey);
+            const historyOverlapDays = this.resolveHistoryOverlapDays(adapter);
 
             // Step 1: Always fetch open positions (lightweight, catches status changes fast)
             try {
@@ -962,8 +971,8 @@ export class InternalPositionsSyncService {
                   error: `Checkpoint gap exceeds ${MAX_LOOKBACK_DAYS} days for account ${resolvedAccountId} — backfilling last ${MAX_LOOKBACK_DAYS} days, older data may be missing`,
                 });
               } else {
-                // Incremental: checkpoint - 1 day overlap for safety
-                historyStart = this.addDays(checkpoint, -1);
+                // Incremental: re-read a recent overlap window so broker normalization fixes self-heal.
+                historyStart = this.addDays(checkpoint, -historyOverlapDays);
               }
             }
 
