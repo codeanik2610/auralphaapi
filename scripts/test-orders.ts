@@ -1205,14 +1205,17 @@ async function ordersGuard09(): Promise<void> {
   const closedOrder = await service.closePaperOrderAtMarket('user-1', 'paper-order-1');
   assert.equal(closedOrder.status, 'CLOSED');
   assert.equal(savedOrders.length, 1);
-  assert.equal(savedOrders[0]?.payload?.simulation?.executionState, 'closed');
-  assert.equal(savedOrders[0]?.payload?.simulation?.positionStatus, 'CLOSED');
-  assert.equal(savedOrders[0]?.payload?.simulation?.closeReason, 'manual-close');
-  assert.equal(savedOrders[0]?.payload?.simulation?.exitPrice, '89');
-  assert.equal(savedOrders[0]?.payload?.simulation?.realizedPnl, '1.8');
-  assert.equal(savedOrders[0]?.payload?.simulation?.outcome, 'profit');
-  assert.equal(savedOrders[0]?.payload?.simulation?.lastObservationSource, 'candle');
-  assert.equal(savedOrders[0]?.payload?.simulation?.positionClosedAt, observedAt.toISOString());
+  const savedSimulation =
+    ((savedOrders[0]?.payload as { simulation?: Record<string, unknown> } | undefined)
+      ?.simulation as Record<string, unknown> | undefined) ?? {};
+  assert.equal(savedSimulation.executionState, 'closed');
+  assert.equal(savedSimulation.positionStatus, 'CLOSED');
+  assert.equal(savedSimulation.closeReason, 'manual-close');
+  assert.equal(savedSimulation.exitPrice, '89');
+  assert.equal(savedSimulation.realizedPnl, '1.8');
+  assert.equal(savedSimulation.outcome, 'profit');
+  assert.equal(savedSimulation.lastObservationSource, 'candle');
+  assert.equal(savedSimulation.positionClosedAt, observedAt.toISOString());
   assert.equal(activities.length, 1);
   assert.equal(activities[0]?.userId, 'user-1');
   assert.equal(activities[0]?.route, 'Positions');
