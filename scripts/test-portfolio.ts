@@ -87,16 +87,16 @@ async function runPnLAssertions(): Promise<void> {
   const responses = [
     [
       { accountId: 'acct-1', brokerKey: 'mudrex', payload: { pnl: '15' } },
-      { accountId: 'acct-1', brokerKey: 'mudrex', payload: { realized_pnl: '-5' } },
+      { accountId: 'acct-1', brokerKey: 'mudrex', payload: { pnl: '999', realized_pnl: '-5' } },
     ],
     [
       { accountId: 'acct-1', brokerKey: 'mudrex', payload: { pnl: '15' } },
-      { accountId: 'acct-1', brokerKey: 'mudrex', payload: { realized_pnl: '-5' } },
+      { accountId: 'acct-1', brokerKey: 'mudrex', payload: { pnl: '999', realized_pnl: '-5' } },
       { accountId: 'acct-2', brokerKey: 'delta_exchange', payload: { net_pnl: '25' } },
     ],
     [
       { accountId: 'acct-1', brokerKey: 'mudrex', payload: { pnl: '15' } },
-      { accountId: 'acct-1', brokerKey: 'mudrex', payload: { realized_pnl: '-5' } },
+      { accountId: 'acct-1', brokerKey: 'mudrex', payload: { pnl: '999', realized_pnl: '-5' } },
       { accountId: 'acct-2', brokerKey: 'delta_exchange', payload: { net_pnl: '25' } },
       { accountId: 'acct-1', brokerKey: 'mudrex', payload: { realized: '-7' } },
     ],
@@ -173,6 +173,7 @@ async function runPerformanceAssertions(): Promise<void> {
         brokerKey: 'mudrex',
         payload: {
           closedAt: '2026-04-07T03:00:00.000Z',
+          pnl: '999',
           realized_pnl: '-4',
           notional: '80',
         },

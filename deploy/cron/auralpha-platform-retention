@@ -1,0 +1,7 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# Run AurAlpha platform retention hourly.
+# Uses flock so a long candle cleanup cannot overlap the next hourly run.
+0 * * * * root cd /opt/auralpha/Backend/aurAlpha && /usr/bin/flock -n /var/lock/auralpha-platform-retention.lock bash -lc 'AURALPHA_RETENTION_CONFIRM=delete ./scripts/maintenance/platform-retention.sh --apply' >> /var/log/auralpha-platform-retention.log 2>&1

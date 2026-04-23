@@ -1,9 +1,20 @@
-import { Body, Get, JsonController, Param, Patch, Post, QueryParam, Req } from 'routing-controllers';
+import {
+  Body,
+  Delete,
+  Get,
+  JsonController,
+  Param,
+  Patch,
+  Post,
+  QueryParam,
+  Req,
+} from 'routing-controllers';
 import { Inject, Service } from 'typedi';
 import type { ApiSuccessResponse } from '../contracts/ApiResponse';
 import type {
   StrategyLabBacktestHandoffBody,
   StrategyLabBacktestHandoffResult,
+  StrategyLabDeleteResult,
   StrategyLabDraftBody,
   StrategyLabDraftResult,
   StrategyLabMoveToTemplateResult,
@@ -41,7 +52,7 @@ export class StrategyLabController {
     return this.strategyLabService.listStrategyLabProjects(requireAuthUserId(request), {
       limit,
       offset,
-      search
+      search,
     });
   }
 
@@ -66,6 +77,14 @@ export class StrategyLabController {
     );
   }
 
+  @Delete('/projects/:projectId')
+  async deleteStrategyLabProject(
+    @Req() request: unknown,
+    @Param('projectId') projectId: string
+  ): Promise<ApiSuccessResponse<StrategyLabDeleteResult>> {
+    return this.strategyLabService.deleteStrategyLabProject(requireAuthUserId(request), projectId);
+  }
+
   @Post('/projects/:projectId/move-to-template')
   async moveStrategyLabProjectToTemplate(
     @Req() request: unknown,
@@ -82,7 +101,10 @@ export class StrategyLabController {
     @Req() request: unknown,
     @Param('projectId') projectId: string
   ): Promise<ApiSuccessResponse<StrategyLabValidationResult>> {
-    return this.strategyLabService.validateStrategyLabProject(requireAuthUserId(request), projectId);
+    return this.strategyLabService.validateStrategyLabProject(
+      requireAuthUserId(request),
+      projectId
+    );
   }
 
   @Post('/projects/send-to-backtests')

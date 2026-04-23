@@ -195,22 +195,22 @@ async function runActivityQueryFilterAssertions(): Promise<void> {
     listActivity: async (_userId: string, query: Record<string, unknown>) => {
       capturedQueries.push({ ...query });
       return {
-	        items: [
-	          {
-	            id: 'activity-1',
-	            type: 'Connections',
-	            title: 'Route test passed',
-	            status: 'Success',
-	            actor: 'user-1',
-	            symbol: null,
-	            route: 'Brokers data',
-	            description: 'Diagnostics completed',
-	            referenceId: 'conn-1',
-	            correlationId: 'corr-1',
-	            stream: 'controls',
-	            related: 'delta_exchange',
-	            flags: null,
-	            createdAt: new Date('2026-04-04T08:00:00.000Z'),
+        items: [
+          {
+            id: 'activity-1',
+            type: 'Connections',
+            title: 'Route test passed',
+            status: 'Success',
+            actor: 'user-1',
+            symbol: null,
+            route: 'Brokers data',
+            description: 'Diagnostics completed',
+            referenceId: 'conn-1',
+            correlationId: 'corr-1',
+            stream: 'controls',
+            related: 'delta_exchange',
+            flags: null,
+            createdAt: new Date('2026-04-04T08:00:00.000Z'),
           },
         ],
         total: 1,
@@ -226,11 +226,11 @@ async function runActivityQueryFilterAssertions(): Promise<void> {
     limit: '4',
     offset: '0',
     stream: 'controls',
-	    route: 'Brokers data',
-	    referenceId: 'conn-1',
-	    correlationId: 'corr-1',
-	    related: 'delta_exchange',
-	  });
+    route: 'Brokers data',
+    referenceId: 'conn-1',
+    correlationId: 'corr-1',
+    related: 'delta_exchange',
+  });
 
   assert.deepEqual(capturedQueries, [
     {
@@ -240,11 +240,11 @@ async function runActivityQueryFilterAssertions(): Promise<void> {
       status: undefined,
       search: undefined,
       stream: 'controls',
-	      route: 'Brokers data',
-	      referenceId: 'conn-1',
-	      correlationId: 'corr-1',
-	      related: 'delta_exchange',
-	      readState: 'all',
+      route: 'Brokers data',
+      referenceId: 'conn-1',
+      correlationId: 'corr-1',
+      related: 'delta_exchange',
+      readState: 'all',
       view: 'feed',
       savedViewId: undefined,
       groupBy: undefined,
@@ -276,10 +276,7 @@ async function runScopedActivitySummaryAssertions(): Promise<void> {
     },
   };
   service.activityExportRepository = {
-    async countReadyExports(
-      userId: string,
-      options?: { filters?: Record<string, string> | null }
-    ) {
+    async countReadyExports(userId: string, options?: { filters?: Record<string, string> | null }) {
       assert.equal(userId, 'user-1');
       capturedReadyExportFilters = options?.filters ?? undefined;
       return 1;
@@ -308,11 +305,11 @@ async function runScopedActivitySummaryAssertions(): Promise<void> {
     status: 'Success',
     search: 'delta',
     stream: 'controls',
-	    route: 'Brokers data',
-	    referenceId: 'conn-1',
-	    correlationId: 'corr-1',
-	    related: 'delta_exchange',
-	  });
+    route: 'Brokers data',
+    referenceId: 'conn-1',
+    correlationId: 'corr-1',
+    related: 'delta_exchange',
+  });
 
   assert.equal(capturedUserId, 'user-1');
   assert.ok(capturedQuery);
@@ -714,10 +711,10 @@ async function runActivityDetailAssertions(): Promise<void> {
 
   const response = await service.getActivityById('user-1', 'activity-1');
 
-	  assert.equal(response.data.statusTone, 'success');
-	  assert.equal(response.data.streamKey, 'controls');
-	  assert.equal(response.data.linkedEntity?.kind, 'connection');
-	  assert.equal(response.data.linkedEntity?.path, '/brokers-data');
+  assert.equal(response.data.statusTone, 'success');
+  assert.equal(response.data.streamKey, 'controls');
+  assert.equal(response.data.linkedEntity?.kind, 'connection');
+  assert.equal(response.data.linkedEntity?.path, '/brokers-data');
   assert.deepEqual(
     response.data.flags?.map((flag: { id: string }) => flag.id),
     ['connection-status-synced']
@@ -732,17 +729,17 @@ async function runActivityDetailAssertions(): Promise<void> {
       route: 'Brokers data',
       stream: 'controls',
     },
-	    historyPath: '/activity?panel=exports',
-	  });
+    historyPath: '/activity?panel=exports',
+  });
   assert.deepEqual(
     response.data.routeTargets.map((target: { path: string }) => target.path),
-	    [
-	      '/brokers-data',
-	      '/activity?referenceId=conn-1',
-	      '/activity?related=delta_exchange',
-	      '/activity?panel=exports',
-	    ]
-	  );
+    [
+      '/brokers-data',
+      '/activity?referenceId=conn-1',
+      '/activity?related=delta_exchange',
+      '/activity?panel=exports',
+    ]
+  );
   assert.ok(
     response.data.context.some(
       (item: { label: string; value: string }) =>
@@ -994,10 +991,7 @@ async function runActivityExportAssertions(): Promise<void> {
   assert.equal(historyResponse.data.items[0]?.exportId, 'export-2');
   assert.equal(historyResponse.data.items[0]?.format, 'json');
   assert.deepEqual(historyResponse.data.items[0]?.filters, { referenceId: 'conn-1' });
-  assert.equal(
-    historyResponse.data.items[0]?.downloadPath,
-    '/activity/exports/export-2/download'
-  );
+  assert.equal(historyResponse.data.items[0]?.downloadPath, '/activity/exports/export-2/download');
 
   const exportByIdResponse = await service.getActivityExportById('user-1', 'export-2');
 
@@ -1178,29 +1172,31 @@ async function runActivityReadStateAssertions(): Promise<void> {
   assert.equal(unreadResponse.data.updatedCount, 1);
   assert.equal(unreadResponse.data.unreadCount, 4);
 
-	  const markAllResponse = await service.markAllActivityRead('user-1', {
-	    stream: 'controls',
-	    route: 'Risk',
-	    correlationId: 'corr-1',
-	    view: 'grouped',
-	  });
+  const markAllResponse = await service.markAllActivityRead('user-1', {
+    stream: 'controls',
+    route: 'Risk',
+    correlationId: 'corr-1',
+    view: 'grouped',
+  });
   assert.equal(markAllResponse.data.updatedCount, 3);
   assert.equal(markAllResponse.data.unreadCount, 4);
   assert.deepEqual(capturedMarkAllQuery, {
     type: undefined,
     status: undefined,
     search: undefined,
-	    stream: 'controls',
-	    route: 'Risk',
-	    referenceId: undefined,
-	    correlationId: 'corr-1',
-	    related: undefined,
-	    readState: 'all',
-	  });
+    stream: 'controls',
+    route: 'Risk',
+    referenceId: undefined,
+    correlationId: 'corr-1',
+    related: undefined,
+    readState: 'all',
+  });
 }
 
 function runBrokerDefinitionEntitySchemaAssertions(): void {
-  const brokerColumns = getMetadataArgsStorage().columns.filter((column) => column.target === Broker);
+  const brokerColumns = getMetadataArgsStorage().columns.filter(
+    (column) => column.target === Broker
+  );
 
   for (const propertyName of [
     'capabilities',
@@ -1218,8 +1214,8 @@ function runBrokerDefinitionEntitySchemaAssertions(): void {
 }
 
 function runAlertEntitySchemaAssertions(): void {
-  const alertIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === Alert)
+  const alertIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === Alert)
     .map((entry) => entry.name);
 
   for (const indexName of [
@@ -1232,8 +1228,8 @@ function runAlertEntitySchemaAssertions(): void {
 }
 
 function runActivityEntitySchemaAssertions(): void {
-  const activityIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === ActivityLog)
+  const activityIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === ActivityLog)
     .map((entry) => entry.name);
 
   for (const indexName of [
@@ -1254,17 +1250,17 @@ function runActivityEntitySchemaAssertions(): void {
   const activityColumns = getMetadataArgsStorage().columns.filter(
     (column) => column.target === ActivityLog
   );
-	  const readAtColumn = activityColumns.find((column) => column.propertyName === 'readAt');
-	  assert.equal(readAtColumn?.options.name, 'read_at');
-	  const correlationIdColumn = activityColumns.find(
-	    (column) => column.propertyName === 'correlationId'
-	  );
-	  assert.equal(correlationIdColumn?.options.name, 'correlation_id');
-	}
+  const readAtColumn = activityColumns.find((column) => column.propertyName === 'readAt');
+  assert.equal(readAtColumn?.options.name, 'read_at');
+  const correlationIdColumn = activityColumns.find(
+    (column) => column.propertyName === 'correlationId'
+  );
+  assert.equal(correlationIdColumn?.options.name, 'correlation_id');
+}
 
 function runActivityExportEntitySchemaAssertions(): void {
-  const exportIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === ActivityExport)
+  const exportIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === ActivityExport)
     .map((entry) => entry.name);
 
   for (const indexName of [
@@ -1296,8 +1292,8 @@ function runActivityExportEntitySchemaAssertions(): void {
 }
 
 function runActivitySavedViewEntitySchemaAssertions(): void {
-  const savedViewIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === ActivitySavedView)
+  const savedViewIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === ActivitySavedView)
     .map((entry) => entry.name);
 
   for (const indexName of [
@@ -1309,8 +1305,8 @@ function runActivitySavedViewEntitySchemaAssertions(): void {
 }
 
 function runEmailDeliveryEntitySchemaAssertions(): void {
-  const emailDeliveryIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === EmailDelivery)
+  const emailDeliveryIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === EmailDelivery)
     .map((entry) => entry.name);
 
   for (const indexName of [
@@ -1323,19 +1319,22 @@ function runEmailDeliveryEntitySchemaAssertions(): void {
 }
 
 function runSuggestedTradeExecutionEntitySchemaAssertions(): void {
-  const suggestedTradeIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === SuggestedTrade)
+  const suggestedTradeIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === SuggestedTrade)
     .map((entry) => entry.name);
 
   for (const indexName of [
     'idx_suggested_trades_user_automation_status_signal_time',
     'idx_suggested_trades_user_run_signal_time',
   ]) {
-    assert.ok(suggestedTradeIndexes.includes(indexName), `SuggestedTrade should define ${indexName}`);
+    assert.ok(
+      suggestedTradeIndexes.includes(indexName),
+      `SuggestedTrade should define ${indexName}`
+    );
   }
 
-  const executionIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === SuggestedTradeExecution)
+  const executionIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === SuggestedTradeExecution)
     .map((entry) => entry.name);
 
   for (const indexName of [
@@ -1370,16 +1369,16 @@ function runSuggestedTradeExecutionEntitySchemaAssertions(): void {
     'execution_state'
   );
 
-  const paperOrderIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === PaperOrder)
+  const paperOrderIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === PaperOrder)
     .map((entry) => entry.name);
   assert.ok(
     paperOrderIndexes.includes('idx_paper_orders_suggested_trade_id'),
     'PaperOrder should define idx_paper_orders_suggested_trade_id'
   );
 
-  const outputIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === AutomationRunOutput)
+  const outputIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === AutomationRunOutput)
     .map((entry) => entry.name);
   assert.ok(
     outputIndexes.includes('idx_automation_run_outputs_suggested_trade_id'),
@@ -1596,11 +1595,7 @@ async function runAlertsAtomicActionAssertions(): Promise<void> {
       getRepository(entity: unknown) {
         if (entity === Alert) {
           return {
-            async findOne({
-              where: { id, userId },
-            }: {
-              where: { id: string; userId: string };
-            }) {
+            async findOne({ where: { id, userId } }: { where: { id: string; userId: string } }) {
               const alert = pendingAlerts.get(id);
               if (!alert || alert.userId !== userId) {
                 return null;
@@ -1673,10 +1668,7 @@ async function runAlertsAtomicActionAssertions(): Promise<void> {
     assert.equal(committedActions.length, 1);
     assert.equal(committedActions[0].actionType, 'acknowledge');
     assert.equal(committedActions[0].note, 'Reviewed by ops');
-    assert.equal(
-      activityLogs.filter((item) => item.title === 'Alert acknowledged').length,
-      1
-    );
+    assert.equal(activityLogs.filter((item) => item.title === 'Alert acknowledged').length, 1);
     assert.equal(failureAlerts.length, 0);
 
     const muted = await service.muteAlert('user-1', 'alert-2', {
@@ -1716,7 +1708,8 @@ async function runAlertsAtomicActionAssertions(): Promise<void> {
       targetLabel: 'Automation desk',
     });
     assert.equal(
-      activityLogs.filter((item) => item.title === 'Alert triage updated to Automation desk').length,
+      activityLogs.filter((item) => item.title === 'Alert triage updated to Automation desk')
+        .length,
       1
     );
     assert.equal(failureAlerts.length, 0);
@@ -2052,13 +2045,22 @@ async function runDiscoveryDependencyServiceAssertions(): Promise<void> {
       'strategy-detail',
     ]);
     assert.equal(response.endpoints.length, 8);
-    assert.equal(response.endpoints.every((item) => item.status === 'ok'), true);
+    assert.equal(
+      response.endpoints.every((item) => item.status === 'ok'),
+      true
+    );
     assert.equal(response.readiness.dependencies?.postgres?.status, 'ok');
     assert.equal(response.readiness.dependencies?.mysql?.status, 'ok');
     assert.equal(response.readiness.dependencies?.redis?.status, 'ok');
-    assert.equal(response.endpoints.find((item) => item.key === 'bot-detail')?.probeMode, 'sampled');
+    assert.equal(
+      response.endpoints.find((item) => item.key === 'bot-detail')?.probeMode,
+      'sampled'
+    );
     assert.equal(response.endpoints.find((item) => item.key === 'bot-detail')?.sampledId, 'bot-1');
-    assert.equal(response.endpoints.find((item) => item.key === 'run-detail')?.probeMode, 'sampled');
+    assert.equal(
+      response.endpoints.find((item) => item.key === 'run-detail')?.probeMode,
+      'sampled'
+    );
     assert.equal(response.endpoints.find((item) => item.key === 'run-detail')?.sampledId, 'run-1');
     assert.equal(
       response.endpoints.find((item) => item.key === 'strategy-detail')?.probeMode,
@@ -2110,7 +2112,10 @@ async function runDiscoverySummaryServiceAssertions(): Promise<void> {
       });
     }
 
-    if (url === 'http://localhost:8000/api/v1/discovery/strategies?limit=1&offset=0&status=pending_review') {
+    if (
+      url ===
+      'http://localhost:8000/api/v1/discovery/strategies?limit=1&offset=0&status=pending_review'
+    ) {
       return jsonResponse(200, {
         items: [{ id: 'strat-2', score: 0.82 }],
         total: 2,
@@ -2484,7 +2489,6 @@ async function runSchedulerOverviewUserScopeAssertions(): Promise<void> {
     assert.equal(broker?.runId, 'run-broker-1');
     assert.equal(broker?.startedAt, '2026-04-05T01:00:00.000+00:00');
     assert.equal(broker?.lastStatus, 'Completed');
-
   } finally {
     (coreDataSource as any).query = originalQuery;
   }
@@ -2830,10 +2834,7 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     assert.equal(created.data.timezone, 'Asia/Kolkata');
     assert.equal(created.data.notifyEmail, false);
     assert.equal(created.data.notifyInApp, true);
-    assert.deepEqual(
-      created.data.backtestPromotionRules,
-      createDefaultBacktestPromotionRules()
-    );
+    assert.deepEqual(created.data.backtestPromotionRules, createDefaultBacktestPromotionRules());
     assert.deepEqual(
       committedSettings.get('user-1')?.backtestPromotionRules,
       createDefaultBacktestPromotionRules()
@@ -2846,7 +2847,9 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
       ['notifyEmail', 'timezone']
     );
     const createdTimezoneAudit = committedAudits.find((item) => item.fieldName === 'timezone');
-    const createdNotifyEmailAudit = committedAudits.find((item) => item.fieldName === 'notifyEmail');
+    const createdNotifyEmailAudit = committedAudits.find(
+      (item) => item.fieldName === 'notifyEmail'
+    );
     assert.equal(createdTimezoneAudit?.oldValueType, 'null');
     assert.equal(createdTimezoneAudit?.newValueType, 'string');
     assert.equal(createdTimezoneAudit?.newValueJson, 'Asia/Kolkata');
@@ -2866,10 +2869,7 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     });
     assert.equal(noOpResponse.data.notifyEmail, false);
     assert.equal(noOpResponse.data.versionToken, '2026-04-04T00:05:00.000Z');
-    assert.equal(
-      committedAudits.filter((item) => item.userId === 'user-1').length,
-      2
-    );
+    assert.equal(committedAudits.filter((item) => item.userId === 'user-1').length, 2);
     assert.equal(
       committedActivities.filter(
         (item) => item.userId === 'user-1' && item.title === 'User settings updated'
@@ -2886,17 +2886,12 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     assert.equal(customizedRules.data.backtestPromotionRules.minScore, 0.82);
     assert.equal(customizedRules.data.backtestPromotionRules.minTrades, 9);
     assert.equal(customizedRules.data.backtestPromotionRules.requireRobustness, false);
-    const customizedRulesAudits = committedAudits.filter(
-      (item) => item.userId === 'user-5'
-    );
-    assert.deepEqual(
-      customizedRulesAudits.map((item) => item.fieldName).sort(),
-      [
-        'backtestPromotionRules.minScore',
-        'backtestPromotionRules.minTrades',
-        'backtestPromotionRules.requireRobustness',
-      ]
-    );
+    const customizedRulesAudits = committedAudits.filter((item) => item.userId === 'user-5');
+    assert.deepEqual(customizedRulesAudits.map((item) => item.fieldName).sort(), [
+      'backtestPromotionRules.minScore',
+      'backtestPromotionRules.minTrades',
+      'backtestPromotionRules.requireRobustness',
+    ]);
     const customizedMinScoreAudit = customizedRulesAudits.find(
       (item) => item.fieldName === 'backtestPromotionRules.minScore'
     );
@@ -2906,10 +2901,7 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     assert.equal(customizedMinScoreAudit?.newValueType, 'number');
     assert.equal(customizedMinScoreAudit?.newValueJson, 0.82);
     assert.equal(customizedRobustnessAudit?.newValueType, 'boolean');
-    assert.equal(
-      customizedRobustnessAudit?.newValueJson,
-      false
-    );
+    assert.equal(customizedRobustnessAudit?.newValueJson, false);
     await assert.rejects(
       service.updateSettings('user-1', {
         notifyInApp: false,
@@ -2935,7 +2927,10 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     );
 
     assert.equal(committedSettings.has('user-2'), false);
-    assert.equal(committedAudits.some((item) => item.userId === 'user-2'), false);
+    assert.equal(
+      committedAudits.some((item) => item.userId === 'user-2'),
+      false
+    );
     assert.equal(
       committedActivities.some(
         (item) => item.userId === 'user-2' && item.title === 'User settings updated'
@@ -2954,7 +2949,10 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     );
 
     assert.equal(committedSettings.has('user-3'), false);
-    assert.equal(committedAudits.some((item) => item.userId === 'user-3'), false);
+    assert.equal(
+      committedAudits.some((item) => item.userId === 'user-3'),
+      false
+    );
     assert.equal(
       committedActivities.some(
         (item) => item.userId === 'user-3' && item.title === 'User settings updated'
@@ -2973,7 +2971,10 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     );
 
     assert.equal(committedSettings.has('user-4'), false);
-    assert.equal(committedAudits.some((item) => item.userId === 'user-4'), false);
+    assert.equal(
+      committedAudits.some((item) => item.userId === 'user-4'),
+      false
+    );
     assert.equal(
       committedActivities.some(
         (item) => item.userId === 'user-4' && item.title === 'User settings updated'
@@ -3116,11 +3117,7 @@ async function runConnectionsCanonicalizationAssertions(): Promise<void> {
       ) {
         connectionUpdates.push({ userId, connectionId, payload });
       },
-      async replaceConnection(
-        userId: string,
-        connectionId: string,
-        payload: Partial<Connection>
-      ) {
+      async replaceConnection(userId: string, connectionId: string, payload: Partial<Connection>) {
         replacedPayloads.push({ userId, connectionId, payload });
         persistedConnection = {
           ...persistedConnection,
@@ -3244,7 +3241,11 @@ async function runConnectionsCanonicalizationAssertions(): Promise<void> {
         return [definition, binanceDefinition];
       },
       async getRequiredDefinition(brokerKey: string) {
-        if (String(brokerKey || '').trim().toLowerCase() === 'binance') {
+        if (
+          String(brokerKey || '')
+            .trim()
+            .toLowerCase() === 'binance'
+        ) {
           return binanceDefinition;
         }
 
@@ -3349,7 +3350,10 @@ async function runConnectionsCanonicalizationAssertions(): Promise<void> {
   assert.equal(listResponse.data.items[0].status, 'Disconnected');
   assert.equal(listResponse.data.items[0].diagnosticSummary, 'Legacy sync note');
   assert.equal(listResponse.data.items[0].accountCount, 2);
-  assert.equal(Object.prototype.hasOwnProperty.call(listResponse.data.items[0], 'exchangeId'), false);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(listResponse.data.items[0], 'exchangeId'),
+    false
+  );
 
   const detailResponse = await service.getConnectionById('user-1', 'conn-1');
   assert.equal(detailResponse.data.id, 'conn-1');
@@ -3389,9 +3393,8 @@ async function runConnectionsCanonicalizationAssertions(): Promise<void> {
   );
   assert.equal(
     workspaceResponse.data.connection.integrity?.checks.some(
-      (item: { id: string; status: string }) =>
-        item.id === 'exchange-link'
-      ),
+      (item: { id: string; status: string }) => item.id === 'exchange-link'
+    ),
     false
   );
   assert.equal(workspaceResponse.data.selectedAccount?.integrity?.status, 'ok');
@@ -3417,7 +3420,10 @@ async function runConnectionsCanonicalizationAssertions(): Promise<void> {
   assert.equal(replacedPayloads.length, 1);
   assert.equal(replacedPayloads[0].connectionId, 'conn-1');
   assert.equal(replacedPayloads[0].payload.brokerId, 'broker-def-1');
-  assert.equal(Object.prototype.hasOwnProperty.call(replacedPayloads[0].payload, 'exchangeId'), false);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(replacedPayloads[0].payload, 'exchangeId'),
+    false
+  );
   assert.equal(updateResponse.data.name, 'Delta backup route');
   assert.equal(updateResponse.data.mode, 'Backup');
   assert.equal(updateResponse.data.route, 'Backup execution');
@@ -3438,7 +3444,10 @@ async function runConnectionsCanonicalizationAssertions(): Promise<void> {
   assert.equal(binanceCreateResponse.data.category, 'feed');
   assert.equal(binanceCreateResponse.data.providerType, 'feed');
   assert.equal(binanceCreateResponse.data.brokerId, undefined);
-  assert.equal(Object.prototype.hasOwnProperty.call(binanceCreateResponse.data, 'exchangeId'), false);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(binanceCreateResponse.data, 'exchangeId'),
+    false
+  );
 
   const binanceProviderIds = await service.resolveProviderIds({
     id: 'exchange-binance',
@@ -3492,15 +3501,13 @@ async function runConnectionsCanonicalizationAssertions(): Promise<void> {
   assert.equal(binanceIntegrity.status, 'ok');
   assert.equal(
     binanceIntegrity.checks.some(
-      (item: { id: string; status: string }) =>
-        item.id === 'provider-link' && item.status === 'ok'
+      (item: { id: string; status: string }) => item.id === 'provider-link' && item.status === 'ok'
     ),
     true
   );
   assert.equal(
     binanceIntegrity.checks.some(
-      (item: { id: string; status: string }) =>
-        item.id === 'exchange-link' && item.status === 'ok'
+      (item: { id: string; status: string }) => item.id === 'exchange-link' && item.status === 'ok'
     ),
     true
   );
@@ -3543,7 +3550,9 @@ async function runExchangeAssetsProviderCompatibilityAssertions(): Promise<void>
   Object.defineProperty(service, 'brokerDefinitionService', {
     get: () => ({
       async getRequiredDefinition(source: string) {
-        const normalizedSource = String(source || '').trim().toLowerCase();
+        const normalizedSource = String(source || '')
+          .trim()
+          .toLowerCase();
 
         if (normalizedSource === 'delta_exchange') {
           return {
@@ -3580,7 +3589,9 @@ async function runExchangeAssetsProviderCompatibilityAssertions(): Promise<void>
   Object.defineProperty(service, 'exchangeRepository', {
     get: () => ({
       async getExchangeByKey(exchangeKey: string) {
-        const normalizedKey = String(exchangeKey || '').trim().toLowerCase();
+        const normalizedKey = String(exchangeKey || '')
+          .trim()
+          .toLowerCase();
 
         if (normalizedKey === 'delta_exchange') {
           return { id: 'exchange-delta', exchangeKey: 'delta_exchange' };
@@ -3884,7 +3895,7 @@ async function runDeltaExchangeOrdersAdapterCatalogAssertions(): Promise<void> {
       size: 2,
       side: 'buy',
       order_type: 'limit_order',
-      limit_price: 101.5,
+      limit_price: '101.5',
       time_in_force: 'gtc',
     },
     userId: 'user-1',
@@ -4001,14 +4012,12 @@ async function runMudrexServiceExchangeAssetFallbackAssertions(): Promise<void> 
 
 async function runBrokerMarketFacadeCompatibilityAssertions(): Promise<void> {
   const service = new BrokerMarketFacadeService() as any;
-  let capturedResolveArgs:
-    | {
-        userId: string;
-        requestedBrokerKey?: string;
-        requestedAccountId?: string;
-        fallbackBrokerKey?: string;
-      }
-    | null = null;
+  let capturedResolveArgs: {
+    userId: string;
+    requestedBrokerKey?: string;
+    requestedAccountId?: string;
+    fallbackBrokerKey?: string;
+  } | null = null;
   const adapterRequests: string[] = [];
 
   Object.defineProperty(service, 'brokerAccountRoutingService', {
@@ -4159,10 +4168,7 @@ async function runBrokerAccountSecretHandlingAssertions(): Promise<void> {
         return { items: [persistedAccount], total: 1 };
       },
       async getBrokerAccountByKey(_userId: string, accountKey: string) {
-        if (
-          accountKey !== String(persistedAccount.accountKey) ||
-          !persistedAccount.settings
-        ) {
+        if (accountKey !== String(persistedAccount.accountKey) || !persistedAccount.settings) {
           return null;
         }
 
@@ -4230,9 +4236,7 @@ async function runBrokerAccountSecretHandlingAssertions(): Promise<void> {
   assert.equal(createdRecords.length, 1);
   const createdSettings = (createdRecords[0].settings as Record<string, unknown>) ?? {};
   assert.ok(String(createdSettings.apiKey || '').startsWith('enc:v1:'));
-  assert.ok(
-    String(createdSettings.clientSecret || '').startsWith('enc:v1:')
-  );
+  assert.ok(String(createdSettings.clientSecret || '').startsWith('enc:v1:'));
   assert.equal(createdSettings.username, 'auralpha');
   assert.equal(createResult.data.settings?.apiKey, '****1234');
   assert.equal(createResult.data.settings?.clientSecret, '****5678');
@@ -4494,7 +4498,9 @@ async function runBrokerDefinitionServicePhase2Assertions(): Promise<void> {
   Object.defineProperty(service, 'brokerRepository', {
     get: () => ({
       async getActiveBrokerByKey(brokerKey: string) {
-        const normalizedKey = String(brokerKey || '').trim().toLowerCase();
+        const normalizedKey = String(brokerKey || '')
+          .trim()
+          .toLowerCase();
         if (normalizedKey === 'delta_exchange') {
           return legacyDeltaDefinition;
         }
@@ -4507,7 +4513,9 @@ async function runBrokerDefinitionServicePhase2Assertions(): Promise<void> {
         return null;
       },
       async getBrokerByKey(brokerKey: string) {
-        const normalizedKey = String(brokerKey || '').trim().toLowerCase();
+        const normalizedKey = String(brokerKey || '')
+          .trim()
+          .toLowerCase();
         if (normalizedKey === 'delta_exchange') {
           return legacyDeltaDefinition;
         }
@@ -4531,7 +4539,9 @@ async function runBrokerDefinitionServicePhase2Assertions(): Promise<void> {
   Object.defineProperty(service, 'exchangeRepository', {
     get: () => ({
       async getExchangeByKey(exchangeKey: string) {
-        const normalizedKey = String(exchangeKey || '').trim().toLowerCase();
+        const normalizedKey = String(exchangeKey || '')
+          .trim()
+          .toLowerCase();
         if (normalizedKey !== 'binance') {
           return null;
         }
@@ -4551,7 +4561,9 @@ async function runBrokerDefinitionServicePhase2Assertions(): Promise<void> {
   Object.defineProperty(service, 'brokerRegistry', {
     get: () => ({
       getOptional(brokerKey: string) {
-        const normalizedKey = String(brokerKey || '').trim().toLowerCase();
+        const normalizedKey = String(brokerKey || '')
+          .trim()
+          .toLowerCase();
         if (normalizedKey === 'mudrex') {
           return { brokerKey: 'mudrex', category: 'broker', providerType: 'broker' };
         }
@@ -4613,7 +4625,9 @@ async function runBrokerDefinitionRuntimeSupportAssertions(): Promise<void> {
   Object.defineProperty(runtimeSupportService, 'exchangeRepository', {
     get: () => ({
       async getExchangeByKey(exchangeKey: string) {
-        const normalizedKey = String(exchangeKey || '').trim().toLowerCase();
+        const normalizedKey = String(exchangeKey || '')
+          .trim()
+          .toLowerCase();
         if (normalizedKey === 'binance') {
           return {
             id: 'exchange-binance',
@@ -4637,10 +4651,7 @@ async function runBrokerDefinitionRuntimeSupportAssertions(): Promise<void> {
     get: () => ({
       getOptional(brokerKey: string) {
         const modules = new Map([
-          [
-            'mudrex',
-            { brokerKey: 'mudrex', category: 'broker', providerType: 'broker' },
-          ],
+          ['mudrex', { brokerKey: 'mudrex', category: 'broker', providerType: 'broker' }],
           [
             'delta_exchange',
             {
@@ -4666,7 +4677,13 @@ async function runBrokerDefinitionRuntimeSupportAssertions(): Promise<void> {
             },
           ],
         ]);
-        return modules.get(String(brokerKey || '').trim().toLowerCase()) ?? null;
+        return (
+          modules.get(
+            String(brokerKey || '')
+              .trim()
+              .toLowerCase()
+          ) ?? null
+        );
       },
     }),
   });
@@ -4675,22 +4692,30 @@ async function runBrokerDefinitionRuntimeSupportAssertions(): Promise<void> {
     get: () => ({
       supportsMarketAdapter(brokerKey: string) {
         return ['mudrex', 'delta_exchange', 'binance', 'custom_feed'].includes(
-          String(brokerKey || '').trim().toLowerCase()
+          String(brokerKey || '')
+            .trim()
+            .toLowerCase()
         );
       },
       supportsOrdersAdapter(brokerKey: string) {
         return ['mudrex', 'delta_exchange'].includes(
-          String(brokerKey || '').trim().toLowerCase()
+          String(brokerKey || '')
+            .trim()
+            .toLowerCase()
         );
       },
       supportsPositionsAdapter(brokerKey: string) {
         return ['mudrex', 'delta_exchange'].includes(
-          String(brokerKey || '').trim().toLowerCase()
+          String(brokerKey || '')
+            .trim()
+            .toLowerCase()
         );
       },
       supportsWalletAdapter(brokerKey: string) {
         return ['mudrex', 'delta_exchange'].includes(
-          String(brokerKey || '').trim().toLowerCase()
+          String(brokerKey || '')
+            .trim()
+            .toLowerCase()
         );
       },
     }),
@@ -4710,7 +4735,9 @@ async function runBrokerDefinitionRuntimeSupportAssertions(): Promise<void> {
     get: () => ({
       supportsSource(source: string) {
         return ['mudrex', 'delta_exchange'].includes(
-          String(source || '').trim().toLowerCase()
+          String(source || '')
+            .trim()
+            .toLowerCase()
         );
       },
     }),
@@ -4871,7 +4898,10 @@ async function runBrokerDefinitionRuntimeSupportAssertions(): Promise<void> {
     },
     expectedUpdatedAt: '2026-04-04T00:05:00.000Z',
   });
-  assert.equal(validatedGuideBody.integrationGuide?.docsUrl, 'https://docs.auralpha.test/brokers/custom');
+  assert.equal(
+    validatedGuideBody.integrationGuide?.docsUrl,
+    'https://docs.auralpha.test/brokers/custom'
+  );
   assert.equal(validatedGuideBody.expectedUpdatedAt, '2026-04-04T00:05:00.000Z');
 
   assert.throws(
@@ -5032,7 +5062,11 @@ async function runBrokerDefinitionRuntimeSupportAssertions(): Promise<void> {
         return null;
       },
       async getBrokerByName(name: string) {
-        if (String(name || '').trim().toLowerCase() === 'duplicate broker') {
+        if (
+          String(name || '')
+            .trim()
+            .toLowerCase() === 'duplicate broker'
+        ) {
           return {
             id: 'broker-duplicate',
             brokerKey: 'duplicate_broker',
@@ -5060,7 +5094,11 @@ async function runBrokerDefinitionRuntimeSupportAssertions(): Promise<void> {
   Object.defineProperty(brokerDefinitionsService, 'brokerDefinitionService', {
     get: () => ({
       isSystemManagedBrokerKey(brokerKey: string) {
-        return ['binance', 'binance_market_data'].includes(String(brokerKey || '').trim().toLowerCase());
+        return ['binance', 'binance_market_data'].includes(
+          String(brokerKey || '')
+            .trim()
+            .toLowerCase()
+        );
       },
       async getPersistedDefinition() {
         const saved = savedDefinitions[savedDefinitions.length - 1];
@@ -5135,7 +5173,9 @@ async function runBrokerDefinitionRuntimeSupportAssertions(): Promise<void> {
         return String((error as { message?: string })?.message || '').includes('uidx_brokers_name');
       },
       async saveBrokerDefinition() {
-        const error = new Error("Duplicate entry for key 'uidx_brokers_name'") as Error & { code?: string };
+        const error = new Error("Duplicate entry for key 'uidx_brokers_name'") as Error & {
+          code?: string;
+        };
         error.code = 'ER_DUP_ENTRY';
         throw error;
       },
@@ -5921,11 +5961,7 @@ async function runWatchlistsLifecycleAssertions(): Promise<void> {
       }
       return { ...manualWatchlist, id: watchlistId };
     },
-    async updateWatchlist(
-      userId: string,
-      watchlistId: string,
-      input: Record<string, unknown>
-    ) {
+    async updateWatchlist(userId: string, watchlistId: string, input: Record<string, unknown>) {
       repositoryCalls.push({ userId, watchlistId, input });
       return {
         ...manualWatchlist,
@@ -6383,7 +6419,10 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
     offset: '0',
   });
 
-  assert.deepEqual(auditQueries, [{ limit: 20, offset: 0 }, { limit: 10, offset: 0 }]);
+  assert.deepEqual(auditQueries, [
+    { limit: 20, offset: 0 },
+    { limit: 10, offset: 0 },
+  ]);
   assert.equal(auditResponse.data.total, 6);
   assert.equal(auditResponse.data.items[0]?.fieldLabel, 'Email notifications');
   assert.equal(auditResponse.data.items[0]?.fieldKey, 'notifyEmail');
@@ -6399,10 +6438,7 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
   assert.equal(auditResponse.data.items[2]?.newValue, 30);
   assert.equal(auditResponse.data.items[2]?.newValueType, 'number');
   assert.equal(auditResponse.data.items[2]?.changeType, 'created');
-  assert.equal(
-    auditResponse.data.items[3]?.fieldLabel,
-    'Promotion rule: Minimum score'
-  );
+  assert.equal(auditResponse.data.items[3]?.fieldLabel, 'Promotion rule: Minimum score');
   assert.equal(auditResponse.data.items[3]?.oldValueType, 'number');
   assert.equal(auditResponse.data.items[3]?.newValueType, 'number');
   assert.equal(auditResponse.data.items[3]?.oldValueDisplay, '0.60');
@@ -6415,10 +6451,7 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
   assert.equal(auditResponse.data.items[4]?.newValueDisplay, 'Optional');
   assert.equal(auditResponse.data.items[5]?.fieldLabel, 'Backtests promotion rules');
   assert.equal(auditResponse.data.items[5]?.newValueType, 'json');
-  assert.equal(
-    (auditResponse.data.items[5]?.newValue as Record<string, unknown>)?.minScore,
-    0.8
-  );
+  assert.equal((auditResponse.data.items[5]?.newValue as Record<string, unknown>)?.minScore, 0.8);
   assert.match(auditResponse.data.items[5]?.newValueDisplay || '', /score >= 0\.80/);
 }
 
@@ -6569,32 +6602,20 @@ async function runSuggestedTradeExecutionStorageMigrationAssertions(): Promise<v
   } as any);
 
   assert.deepEqual(createdTables, ['suggested_trade_executions']);
-  assert.equal(
-    createdIndexes.includes('idx_suggested_trade_executions_user_order_lookup'),
-    true
-  );
+  assert.equal(createdIndexes.includes('idx_suggested_trade_executions_user_order_lookup'), true);
   assert.equal(
     createdIndexes.includes('idx_suggested_trades_user_automation_status_signal_time'),
     true
   );
-  assert.equal(
-    createdForeignKeys.includes('fk_suggested_trade_executions_trade'),
-    true
-  );
-  assert.equal(
-    createdForeignKeys.includes('fk_paper_orders_suggested_trade'),
-    true
-  );
-  assert.equal(
-    createdForeignKeys.includes('fk_automation_run_outputs_suggested_trade'),
-    true
-  );
+  assert.equal(createdForeignKeys.includes('fk_suggested_trade_executions_trade'), true);
+  assert.equal(createdForeignKeys.includes('fk_paper_orders_suggested_trade'), true);
+  assert.equal(createdForeignKeys.includes('fk_automation_run_outputs_suggested_trade'), true);
   assert.equal(
     executedQueries.some((sql) => sql.includes('INSERT INTO suggested_trade_executions')),
     true
   );
   assert.equal(
-    executedQueries.some((sql) => sql.includes('JSON_REMOVE(meta_json, \'$.execution\')')),
+    executedQueries.some((sql) => sql.includes("JSON_REMOVE(meta_json, '$.execution')")),
     true
   );
 }
@@ -6619,9 +6640,7 @@ async function runCleanupBrokerExchangeMastersMigrationAssertions(): Promise<voi
       ]);
 
       return (
-        columnsByTable
-          .get(String(tableName || ''))
-          ?.includes(String(columnName || '')) ?? false
+        columnsByTable.get(String(tableName || ''))?.includes(String(columnName || '')) ?? false
       );
     },
     async query(sql: string, params?: unknown[]) {
@@ -6639,7 +6658,9 @@ async function runCleanupBrokerExchangeMastersMigrationAssertions(): Promise<voi
   } as any);
 
   assert.equal(
-    executedQueries.some((sql) => sql.includes("INSERT INTO exchanges") && sql.includes("'binance'")),
+    executedQueries.some(
+      (sql) => sql.includes('INSERT INTO exchanges') && sql.includes("'binance'")
+    ),
     true
   );
   assert.equal(
@@ -6716,7 +6737,9 @@ async function runDropConnectionExchangeIdMigrationAssertions(): Promise<void> {
       return String(tableName || '') === 'connections';
     },
     async hasColumn(tableName: string, columnName: string) {
-      return String(tableName || '') === 'connections' && String(columnName || '') === 'exchange_id';
+      return (
+        String(tableName || '') === 'connections' && String(columnName || '') === 'exchange_id'
+      );
     },
     async query(sql: string, params?: unknown[]) {
       executedQueries.push(sql);
@@ -6745,14 +6768,14 @@ async function runDropConnectionExchangeIdMigrationAssertions(): Promise<void> {
     true
   );
   assert.equal(
-    executedQueries.some(
-      (sql) => sql.includes('ALTER TABLE connections DROP FOREIGN KEY FK_connections_exchange_id')
+    executedQueries.some((sql) =>
+      sql.includes('ALTER TABLE connections DROP FOREIGN KEY FK_connections_exchange_id')
     ),
     true
   );
   assert.equal(
-    executedQueries.some(
-      (sql) => sql.includes('ALTER TABLE connections DROP INDEX idx_connections_user_exchange_id')
+    executedQueries.some((sql) =>
+      sql.includes('ALTER TABLE connections DROP INDEX idx_connections_user_exchange_id')
     ),
     true
   );
@@ -6792,15 +6815,16 @@ async function runDropConnectionExchangeIdMigrationAssertions(): Promise<void> {
   } as any);
 
   assert.equal(
-    rollbackQueries.some(
-      (sql) => sql.includes('ALTER TABLE connections ADD COLUMN exchange_id char(36) NULL')
+    rollbackQueries.some((sql) =>
+      sql.includes('ALTER TABLE connections ADD COLUMN exchange_id char(36) NULL')
     ),
     true
   );
   assert.equal(
-    rollbackQueries.some(
-      (sql) =>
-        sql.includes('CREATE INDEX idx_connections_user_exchange_id ON connections (user_id, exchange_id)')
+    rollbackQueries.some((sql) =>
+      sql.includes(
+        'CREATE INDEX idx_connections_user_exchange_id ON connections (user_id, exchange_id)'
+      )
     ),
     true
   );
@@ -6826,7 +6850,9 @@ async function runDropBrokerAssetExchangeIdMigrationAssertions(): Promise<void> 
       return String(tableName || '') === 'broker_assets';
     },
     async hasColumn(tableName: string, columnName: string) {
-      return String(tableName || '') === 'broker_assets' && String(columnName || '') === 'exchange_id';
+      return (
+        String(tableName || '') === 'broker_assets' && String(columnName || '') === 'exchange_id'
+      );
     },
     async query(sql: string, params?: unknown[]) {
       executedQueries.push(sql);
@@ -6855,19 +6881,21 @@ async function runDropBrokerAssetExchangeIdMigrationAssertions(): Promise<void> 
     true
   );
   assert.equal(
-    executedQueries.some(
-      (sql) => sql.includes('ALTER TABLE broker_assets DROP FOREIGN KEY FK_exchange_assets_exchange_id')
+    executedQueries.some((sql) =>
+      sql.includes('ALTER TABLE broker_assets DROP FOREIGN KEY FK_exchange_assets_exchange_id')
     ),
     true
   );
   assert.equal(
-    executedQueries.some(
-      (sql) => sql.includes('ALTER TABLE broker_assets DROP INDEX idx_broker_assets_user_exchange_id')
+    executedQueries.some((sql) =>
+      sql.includes('ALTER TABLE broker_assets DROP INDEX idx_broker_assets_user_exchange_id')
     ),
     true
   );
   assert.equal(
-    executedQueries.some((sql) => sql.includes('ALTER TABLE broker_assets DROP COLUMN exchange_id')),
+    executedQueries.some((sql) =>
+      sql.includes('ALTER TABLE broker_assets DROP COLUMN exchange_id')
+    ),
     true
   );
 
@@ -6902,17 +6930,16 @@ async function runDropBrokerAssetExchangeIdMigrationAssertions(): Promise<void> 
   } as any);
 
   assert.equal(
-    rollbackQueries.some(
-      (sql) => sql.includes('ALTER TABLE broker_assets ADD COLUMN exchange_id char(36) NULL')
+    rollbackQueries.some((sql) =>
+      sql.includes('ALTER TABLE broker_assets ADD COLUMN exchange_id char(36) NULL')
     ),
     true
   );
   assert.equal(
-    rollbackQueries.some(
-      (sql) =>
-        sql.includes(
-          'CREATE INDEX idx_broker_assets_user_exchange_id ON broker_assets (user_id, exchange_id)'
-        )
+    rollbackQueries.some((sql) =>
+      sql.includes(
+        'CREATE INDEX idx_broker_assets_user_exchange_id ON broker_assets (user_id, exchange_id)'
+      )
     ),
     true
   );
@@ -7004,7 +7031,10 @@ RISK max_per_trade=1.5 signal_threshold=0.82`,
   assert.equal(normalizedDsl.authoredCodeTarget, 'dsl');
   assert.match(String(normalizedDsl.authoredCodeDefinition || ''), /^STRATEGY Mean Reversion/m);
   assert.match(String(normalizedDsl.compiledCodeDefinition || ''), /def entry\(self, ctx\):/);
-  assert.match(String(normalizedDsl.compiledCodeDefinition || ''), /def entry_short\(self, ctx\):\n {8}return False/);
+  assert.match(
+    String(normalizedDsl.compiledCodeDefinition || ''),
+    /def entry_short\(self, ctx\):\n {8}return False/
+  );
   assert.equal(normalizedDsl.shortEnabled, false);
   assert.equal(normalizedDsl.entryShortLogic, '');
   assert.equal(normalizedDsl.exitShortLogic, '');
@@ -7664,7 +7694,10 @@ async function runBacktestTopSetupCandidateQueryAssertions(): Promise<void> {
         'review',
       ],
     });
-    assert.match(capturedWhereClauses[3].clause, /jsonb_array_length\(result\.config->'performanceSurface'->'results'\)/);
+    assert.match(
+      capturedWhereClauses[3].clause,
+      /jsonb_array_length\(result\.config->'performanceSurface'->'results'\)/
+    );
     assert.match(capturedWhereClauses[3].clause, /> 0$/);
   } finally {
     (strategyDataSource as any).getRepository = originalGetRepository;
@@ -7791,11 +7824,11 @@ async function runStrategyLibrarySearchQueryAssertions(): Promise<void> {
     assert.deepEqual(capturedWhereClauses[1].params, { status: 'Draft' });
     assert.equal(
       capturedWhereClauses[2].clause,
-      "CASE WHEN library.assets IS NULL THEN 0 ELSE jsonb_array_length(library.assets) END > 0"
+      'CASE WHEN library.assets IS NULL THEN 0 ELSE jsonb_array_length(library.assets) END > 0'
     );
     assert.equal(
       capturedWhereClauses[3].clause,
-      "CASE WHEN library.timeframes IS NULL THEN 0 ELSE jsonb_array_length(library.timeframes) END = 0"
+      'CASE WHEN library.timeframes IS NULL THEN 0 ELSE jsonb_array_length(library.timeframes) END = 0'
     );
     assert.equal(
       capturedWhereClauses[4].clause,
@@ -7892,7 +7925,8 @@ async function runAutomationScopeLookupAssertions(): Promise<void> {
     assert.deepEqual(capturedWhereClauses, [
       { clause: 'automation.userId = :userId', params: { userId: 'user-1' } },
       {
-        clause: '(automation.automationType IN (:...automationTypes) OR automation.automationType IS NULL)',
+        clause:
+          '(automation.automationType IN (:...automationTypes) OR automation.automationType IS NULL)',
         params: { automationTypes: ['trade-suggestion', 'strategy'] },
       },
       { clause: 'automation.sourceBacktestId = :backtestId', params: { backtestId: 'backtest-1' } },
@@ -8080,7 +8114,10 @@ async function runBacktestSummaryQueryAssertions(): Promise<void> {
     assert.deepEqual(capturedParams, ['user-summary-1']);
     assert.match(capturedSql, /WITH scoped_backtests AS/);
     assert.match(capturedSql, /WITH scoped_backtests AS[\s\S]*scoped_results AS/);
-    assert.match(capturedSql, /status_lower IN \('queued', 'running', 'started', 'processing', 'in_progress', 'in-progress'\)/);
+    assert.match(
+      capturedSql,
+      /status_lower IN \('queued', 'running', 'started', 'processing', 'in_progress', 'in-progress'\)/
+    );
     assert.match(capturedSql, /best_cagr AS/);
     assert.match(capturedSql, /best_sharpe AS/);
     assert.match(capturedSql, /max_drawdown AS/);
@@ -8462,11 +8499,7 @@ async function runBacktestRecoveryServiceAssertions(): Promise<void> {
     },
   } as any;
 
-  const plan = service.buildRecoveryPlan(
-    backtest,
-    'Failed',
-    new Date('2026-04-05T08:00:00.000Z')
-  );
+  const plan = service.buildRecoveryPlan(backtest, 'Failed', new Date('2026-04-05T08:00:00.000Z'));
 
   assert.equal(plan.message, 'Backtest re-queued from checkpoint');
   assert.equal(plan.status, 'Queued');
@@ -8476,8 +8509,14 @@ async function runBacktestRecoveryServiceAssertions(): Promise<void> {
   assert.equal((plan.nextConfig.progress as Record<string, unknown>).processed, 6);
   assert.equal((plan.nextConfig.progress as Record<string, unknown>).total, 12);
   assert.equal((plan.nextConfig.progress as Record<string, unknown>).percent, 50);
-  assert.equal((plan.nextConfig.progress as Record<string, unknown>).startedAt, '2026-04-02T10:00:00.000Z');
-  assert.equal((plan.nextConfig.progress as Record<string, unknown>).updatedAt, '2026-04-05T08:00:00.000Z');
+  assert.equal(
+    (plan.nextConfig.progress as Record<string, unknown>).startedAt,
+    '2026-04-02T10:00:00.000Z'
+  );
+  assert.equal(
+    (plan.nextConfig.progress as Record<string, unknown>).updatedAt,
+    '2026-04-05T08:00:00.000Z'
+  );
   assert.equal((plan.nextConfig.progress as Record<string, unknown>).okCount, 5);
   assert.equal((plan.nextConfig.progress as Record<string, unknown>).failedCount, 1);
   assert.equal((plan.nextConfig.progress as Record<string, unknown>).tradeEventCount, 15);
@@ -8629,10 +8668,7 @@ async function runBacktestInputSnapshotServiceAssertions(): Promise<void> {
   assert.equal(response.snapshot.lineage.templateDiffSummary?.changedCount, 2);
   assert.equal(response.snapshot.dateRange.start, '2026-02-01T00:00:00.000Z');
   assert.equal(response.snapshot.dateRange.end, '2026-04-01T23:59:59.999Z');
-  assert.equal(
-    response.snapshot.executionAssumptions?.fillPolicy,
-    'conservative-stop-first'
-  );
+  assert.equal(response.snapshot.executionAssumptions?.fillPolicy, 'conservative-stop-first');
   assert.equal(
     (response.snapshot.inputs.inputSnapshot as Record<string, unknown>)?.templateId,
     'template-9'
@@ -8681,7 +8717,10 @@ async function runBacktestInputSnapshotDelegationAssertions(): Promise<void> {
     getBacktestById: async () => backtest,
   };
   service.backtestSnapshotService = {
-    buildInputSnapshotResponse: (capturedBacktest: unknown, mappedBacktest: Record<string, unknown>) => {
+    buildInputSnapshotResponse: (
+      capturedBacktest: unknown,
+      mappedBacktest: Record<string, unknown>
+    ) => {
       capturedCalls.push({ backtest: capturedBacktest, mappedBacktest });
       return {
         backtestId: 'backtest-snapshot-2',
@@ -8722,10 +8761,7 @@ async function runBacktestInputSnapshotDelegationAssertions(): Promise<void> {
   assert.equal(capturedCalls[0].mappedBacktest.lineage?.libraryId, 'library-2');
   assert.equal(capturedCalls[0].mappedBacktest.dateRangeStart, '2026-03-01T00:00:00.000Z');
   assert.equal(capturedCalls[0].mappedBacktest.dateRangeEnd, '2026-04-01T23:59:59.999Z');
-  assert.equal(
-    capturedCalls[0].mappedBacktest.executionAssumptions?.fillPolicy,
-    'best-effort'
-  );
+  assert.equal(capturedCalls[0].mappedBacktest.executionAssumptions?.fillPolicy, 'best-effort');
 }
 
 async function runBacktestRecoveryDelegationAssertions(): Promise<void> {
@@ -9242,6 +9278,34 @@ async function runStrategyLabMoveToTemplateAssertions(): Promise<void> {
   assert.equal(activities[0]?.stream, 'Templates');
 }
 
+async function runStrategyLabDeleteAssertions(): Promise<void> {
+  const service = new StrategyLabService() as any;
+  const activities: Array<Record<string, unknown>> = [];
+  const deletedProjects: Array<{ userId: string; projectId: string }> = [];
+
+  service.strategyLabRepository = {
+    deleteProject: async (userId: string, projectId: string) => {
+      deletedProjects.push({ userId, projectId });
+      return true;
+    },
+  };
+  service.operationalEventService = {
+    logActivity: async (_userId: string, payload: Record<string, unknown>) => {
+      activities.push(payload);
+    },
+    emitFailureAlert: async () => undefined,
+  };
+
+  const response = await service.deleteStrategyLabProject('user-1', 'proj-delete-1');
+
+  assert.equal(response.data.deleted, true);
+  assert.equal(response.data.projectId, 'proj-delete-1');
+  assert.deepEqual(deletedProjects, [{ userId: 'user-1', projectId: 'proj-delete-1' }]);
+  assert.equal(activities.length, 1);
+  assert.equal(activities[0]?.stream, 'Drafts');
+  assert.equal(activities[0]?.status, 'Success');
+}
+
 async function runStrategyLibraryBacktestSnapshotAssertions(): Promise<void> {
   const service = new StrategyLibraryService() as any;
   const queuedPayloads: Array<Record<string, unknown>> = [];
@@ -9439,7 +9503,11 @@ async function runStrategyLibraryStatusUpdateAssertions(): Promise<void> {
 
   service.strategyLibraryRepository = {
     getById: async () => draftRecord,
-    updateLibraryStatus: async (_userId: string, _id: string, payload: Record<string, unknown>) => ({
+    updateLibraryStatus: async (
+      _userId: string,
+      _id: string,
+      payload: Record<string, unknown>
+    ) => ({
       ...draftRecord,
       status: payload.status,
       updatedAt: new Date('2026-04-03T00:00:00.000Z'),
@@ -9826,14 +9894,8 @@ async function runStrategyLibraryTemplateMappingAssertions(): Promise<void> {
   assert.equal(item.templateVersion, 5);
   assert.equal(item.templateType, 'Rule-based');
   assert.equal(item.templateAutomationReady, true);
-  assert.equal(
-    Array.isArray(item.templateAutomationReasons),
-    true
-  );
-  assert.equal(
-    Object.prototype.hasOwnProperty.call(item.overrides ?? {}, 'required'),
-    false
-  );
+  assert.equal(Array.isArray(item.templateAutomationReasons), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(item.overrides ?? {}, 'required'), false);
   assert.equal(item.lifecycle.canEdit, true);
   assert.equal(item.lifecycle.canRunManually, true);
   assert.equal(item.lifecycle.scheduledSignalsEnabled, true);
@@ -9891,7 +9953,11 @@ async function runStrategyLibraryDerivedListFilteringAssertions(): Promise<void>
   let capturedPaginate: boolean | undefined;
 
   service.strategyLibraryRepository = {
-    async listLibrary(_userId: string, _params: Record<string, unknown>, options?: { paginate?: boolean }) {
+    async listLibrary(
+      _userId: string,
+      _params: Record<string, unknown>,
+      options?: { paginate?: boolean }
+    ) {
       capturedPaginate = options?.paginate;
       return {
         data: records,
@@ -10312,7 +10378,9 @@ async function runBacktestPromotionIdempotencyAssertions(): Promise<void> {
       throw new Error('createAutomation should not be called when an automation already exists');
     },
     createAutomationEvent: async () => {
-      throw new Error('createAutomationEvent should not be called when an automation already exists');
+      throw new Error(
+        'createAutomationEvent should not be called when an automation already exists'
+      );
     },
   };
   service.operationalEventService = {
@@ -10560,14 +10628,8 @@ async function runBacktestPromotionDelegationAssertions(): Promise<void> {
   assert.equal(capturedCalls.length, 1);
   assert.equal(capturedCalls[0].userId, 'user-1');
   assert.equal((capturedCalls[0].backtest as Record<string, unknown>).id, backtest.id);
-  assert.equal(
-    ((capturedCalls[0].selectedTopSetup as Record<string, unknown>).symbol),
-    'BTCUSDT'
-  );
-  assert.equal(
-    ((capturedCalls[0].selectedTopSetup as Record<string, unknown>).timeframe),
-    '1h'
-  );
+  assert.equal((capturedCalls[0].selectedTopSetup as Record<string, unknown>).symbol, 'BTCUSDT');
+  assert.equal((capturedCalls[0].selectedTopSetup as Record<string, unknown>).timeframe, '1h');
   const promotionRulesSnapshot = capturedPromotionRules as PromotionRulesCapture | null;
   assert.equal(promotionRulesSnapshot?.minScore, 0.82);
   assert.equal(promotionRulesSnapshot?.minTrades, 7);
@@ -10783,10 +10845,7 @@ function runAutomationLineageMappingAssertions(): void {
   assert.equal(mappedAutomation.lineage?.sourceTemplateName, 'Momentum Template');
   assert.equal(mappedAutomation.lineage?.sourceTemplateVersion, 8);
   assert.equal(mappedAutomation.lineage?.templateDiffSummary?.changedCount, 3);
-  assert.equal(
-    mappedAutomation.lineage?.templateDiffSummary?.changedFields?.[2],
-    'AI filter'
-  );
+  assert.equal(mappedAutomation.lineage?.templateDiffSummary?.changedFields?.[2], 'AI filter');
   assert.equal(mappedAutomation.events?.[0]?.lineage?.projectId, 'lab-3');
   assert.equal(mappedAutomation.events?.[0]?.lineage?.sourceTemplateVersion, 8);
   assert.equal(mappedAutomation.events?.[0]?.lineage?.templateDiffSummary?.changedCount, 3);
@@ -10855,7 +10914,12 @@ function runAutomationLineageMappingAssertions(): void {
 async function runAutomationReconcileAssertions(): Promise<void> {
   const service = new AutomationsService() as any;
   const runUpdateCalls: Array<{ runId: string; payload: Record<string, unknown> }> = [];
-  const statusUpdates: Array<{ userId: string; automationId: string; status: string; nextRun: Date | null | undefined }> = [];
+  const statusUpdates: Array<{
+    userId: string;
+    automationId: string;
+    status: string;
+    nextRun: Date | null | undefined;
+  }> = [];
   const events: Array<Record<string, unknown>> = [];
   const activities: Array<Record<string, unknown>> = [];
   const automation = {
@@ -10926,13 +10990,22 @@ async function runAutomationReconcileAssertions(): Promise<void> {
   assert.equal(runUpdateCalls.length, 1);
   assert.equal(runUpdateCalls[0].runId, 'run-stale');
   assert.equal(runUpdateCalls[0].payload.status, 'Failed');
-  assert.match(String(runUpdateCalls[0].payload.errorMessage || ''), /Operator requested stale-run recovery/);
+  assert.match(
+    String(runUpdateCalls[0].payload.errorMessage || ''),
+    /Operator requested stale-run recovery/
+  );
   assert.equal(statusUpdates.length, 1);
   assert.equal(statusUpdates[0].automationId, 'automation-1');
   assert.equal(statusUpdates[0].status, 'Running');
   assert.ok(statusUpdates[0].nextRun instanceof Date);
-  assert.equal(events.some((event) => event.type === 'Run reconciled'), true);
-  assert.equal(events.some((event) => event.type === 'State reconciled'), true);
+  assert.equal(
+    events.some((event) => event.type === 'Run reconciled'),
+    true
+  );
+  assert.equal(
+    events.some((event) => event.type === 'State reconciled'),
+    true
+  );
   assert.equal(activities.length > 0, true);
 }
 
@@ -11124,10 +11197,16 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
   const createdPayloads: Array<Record<string, unknown>> = [];
   const savedAutomations: Array<Record<string, unknown>> = [];
 
-  service.prepareAutomationConfig = async (_userId: string, _automationType: string, config: Record<string, unknown>) =>
-    config;
-  service.deriveAutomationCoreFields = (_automationType: string, _config: Record<string, unknown>, fields: Record<string, unknown>) =>
-    fields;
+  service.prepareAutomationConfig = async (
+    _userId: string,
+    _automationType: string,
+    config: Record<string, unknown>
+  ) => config;
+  service.deriveAutomationCoreFields = (
+    _automationType: string,
+    _config: Record<string, unknown>,
+    fields: Record<string, unknown>
+  ) => fields;
   service.resolveAutomationTimeZone = async (_userId: string, automationTimeZone?: string | null) =>
     automationTimeZone || 'UTC';
   service.mapAutomation = (automation: Record<string, unknown>) => automation;
@@ -11142,7 +11221,14 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
     status: 'Paused',
     automationType: 'trade-suggestion',
     timeZone: 'UTC',
-    schedule: { type: 'daily', scheduleMode: 'daily', runAt: '09:30', hour: 9, minute: 30, intervalDays: 1 },
+    schedule: {
+      type: 'daily',
+      scheduleMode: 'daily',
+      runAt: '09:30',
+      hour: 9,
+      minute: 30,
+      intervalDays: 1,
+    },
     riskMode: null,
     config: {
       symbol: 'BTCUSDT',
@@ -11289,10 +11375,7 @@ async function runSuggestedTradesReadPathAssertions(): Promise<void> {
   assert.equal(listResponse.data.items[0]?.id, 'st-1');
   assert.equal(listResponse.data.items[0]?.execution?.paperOrderId, 'paper-1');
   assert.deepEqual(listResponse.data.items[0]?.allowedActions, ['reconcile_execution']);
-  assert.equal(
-    listResponse.data.items[0]?.statusReason,
-    'Accepted and linked to a paper order'
-  );
+  assert.equal(listResponse.data.items[0]?.statusReason, 'Accepted and linked to a paper order');
   assert.equal(listResponse.data.items[0]?.statusDisplay, 'Order Linked');
   assert.equal(listResponse.data.items[0]?.reviewStage, 'accepted');
   assert.equal(listResponse.data.items[0]?.executionStage, 'linked');
@@ -11461,10 +11544,7 @@ async function runSuggestedTradeTransitionAssertions(): Promise<void> {
 
     const savedMeta = savedTrade?.['meta'] as Record<string, unknown> | undefined;
     assert.equal(savedTrade?.['status'], 'Accepted');
-    assert.equal(
-      (savedMeta?.review as Record<string, unknown> | undefined)?.status,
-      'Accepted'
-    );
+    assert.equal((savedMeta?.review as Record<string, unknown> | undefined)?.status, 'Accepted');
     assert.equal(response.data.suggestedTrade.status, 'Accepted');
   }
 
@@ -12460,9 +12540,8 @@ async function runSignalsOverviewServiceAssertions(): Promise<void> {
   });
   assert.equal(response.data.summary.muted, 2);
   assert.equal(
-    response.data.cards.find(
-      (card: { id: string; value: number }) => card.id === 'clusters'
-    )?.value,
+    response.data.cards.find((card: { id: string; value: number }) => card.id === 'clusters')
+      ?.value,
     3
   );
   assert.equal(
@@ -12727,7 +12806,8 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       assert.equal(events.length, 1);
       assert.equal(events[0].type, 'Run skipped');
       assert.equal(
-        ((events[0].meta as Record<string, unknown> | undefined)?.reason as string | undefined) ?? null,
+        ((events[0].meta as Record<string, unknown> | undefined)?.reason as string | undefined) ??
+          null,
         'overlap-protected'
       );
       assert.equal(commits, 1);
@@ -12792,7 +12872,8 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       assert.equal(events.length, 1);
       assert.equal(events[0].type, 'Run skipped');
       assert.equal(
-        ((events[0].meta as Record<string, unknown> | undefined)?.reason as string | undefined) ?? null,
+        ((events[0].meta as Record<string, unknown> | undefined)?.reason as string | undefined) ??
+          null,
         'duplicate-schedule'
       );
       assert.equal(commits, 0);
@@ -12912,9 +12993,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         }),
       };
 
-      const syncResult = await service.syncBacktestRunnerLifecycleByBacktestId(
-        'child-backtest-1'
-      );
+      const syncResult = await service.syncBacktestRunnerLifecycleByBacktestId('child-backtest-1');
 
       assert.equal(syncResult.synced, true);
       assert.equal(runUpdates.length, 1);
@@ -12925,20 +13004,27 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         childFinishedAt.toISOString()
       );
       assert.equal(
-        ((runUpdates[0]?.payload.meta as Record<string, unknown> | undefined)?.childBacktestStatus as string | undefined) ?? null,
+        ((runUpdates[0]?.payload.meta as Record<string, unknown> | undefined)
+          ?.childBacktestStatus as string | undefined) ?? null,
         'Completed'
       );
       assert.equal(
-        ((runUpdates[0]?.payload.meta as Record<string, unknown> | undefined)?.backtestLifecycle as string | undefined) ?? null,
+        ((runUpdates[0]?.payload.meta as Record<string, unknown> | undefined)?.backtestLifecycle as
+          | string
+          | undefined) ?? null,
         'finalized'
       );
-      assert.equal(events.some((item) => item.type === 'Run completed'), true);
+      assert.equal(
+        events.some((item) => item.type === 'Run completed'),
+        true
+      );
       assert.equal(outputs.length, 1);
       assert.equal(outputs[0]?.outputType, 'backtest-runner.summary');
       assert.equal(outputs[0]?.status, 'Created');
     }
   } finally {
-    coreDataSource.createQueryRunner = originalCreateQueryRunner as typeof coreDataSource.createQueryRunner;
+    coreDataSource.createQueryRunner =
+      originalCreateQueryRunner as typeof coreDataSource.createQueryRunner;
   }
 }
 
@@ -13103,6 +13189,7 @@ async function main(): Promise<void> {
   await runBacktestPromotionFailureAlertAssertions();
   await runStrategyLabBacktestHandoffAssertions();
   await runStrategyLabMoveToTemplateAssertions();
+  await runStrategyLabDeleteAssertions();
   await runStrategyLibraryBacktestSnapshotAssertions();
   await runStrategyLibraryLifecycleGuardAssertions();
   await runStrategyLibraryStatusUpdateAssertions();

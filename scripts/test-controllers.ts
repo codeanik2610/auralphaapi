@@ -98,24 +98,51 @@ async function runSignalsControllerAssertions(): Promise<void> {
     promoteSignal: async (...args: unknown[]) => createSuccess({ args }),
   };
 
-  assert.deepEqual((await controller.getSignals(authReq, undefined, undefined, 'Triggered', undefined, undefined, undefined, 'BTC')).data.args, ['user-1', { limit: undefined, offset: undefined, status: 'Triggered', symbol: undefined, source: undefined, timeframe: undefined, search: 'BTC', view: undefined }]);
+  assert.deepEqual(
+    (
+      await controller.getSignals(
+        authReq,
+        undefined,
+        undefined,
+        'Triggered',
+        undefined,
+        undefined,
+        undefined,
+        'BTC'
+      )
+    ).data.args,
+    [
+      'user-1',
+      {
+        limit: undefined,
+        offset: undefined,
+        status: 'Triggered',
+        symbol: undefined,
+        source: undefined,
+        timeframe: undefined,
+        search: 'BTC',
+        view: undefined,
+      },
+    ]
+  );
   assert.deepEqual((await controller.getSignalsSummary(authReq)).data, { ok: true });
-  assert.deepEqual((await controller.getSignalById(authReq, 'sig-1')).data.args, ['user-1', 'sig-1']);
-  assert.deepEqual((await controller.acknowledgeSignal(authReq, 'sig-1', { note: 'reviewed' })).data.args, [
+  assert.deepEqual((await controller.getSignalById(authReq, 'sig-1')).data.args, [
     'user-1',
     'sig-1',
-    { note: 'reviewed' },
   ]);
+  assert.deepEqual(
+    (await controller.acknowledgeSignal(authReq, 'sig-1', { note: 'reviewed' })).data.args,
+    ['user-1', 'sig-1', { note: 'reviewed' }]
+  );
   assert.deepEqual((await controller.muteSignal(authReq, 'sig-2', { reason: 'noise' })).data.args, [
     'user-1',
     'sig-2',
     { reason: 'noise' },
   ]);
-  assert.deepEqual((await controller.promoteSignal(authReq, 'sig-3', { target: 'execution_queue' })).data.args, [
-    'user-1',
-    'sig-3',
-    { target: 'execution_queue' },
-  ]);
+  assert.deepEqual(
+    (await controller.promoteSignal(authReq, 'sig-3', { target: 'execution_queue' })).data.args,
+    ['user-1', 'sig-3', { target: 'execution_queue' }]
+  );
 }
 
 async function runSignalsOverviewControllerAssertions(): Promise<void> {
@@ -338,21 +365,18 @@ async function runSuggestedTradesControllerAssertions(): Promise<void> {
     'user-1',
     'st-1',
   ]);
-  assert.deepEqual((await controller.reviewSuggestedTrade(authReq, 'st-1', { note: 'reviewed' })).data.args, [
-    'user-1',
-    'st-1',
-    { note: 'reviewed' },
-  ]);
-  assert.deepEqual((await controller.acceptSuggestedTrade(authReq, 'st-2', { note: 'accepted' })).data.args, [
-    'user-1',
-    'st-2',
-    { note: 'accepted' },
-  ]);
-  assert.deepEqual((await controller.dismissSuggestedTrade(authReq, 'st-3', { note: 'skip' })).data.args, [
-    'user-1',
-    'st-3',
-    { note: 'skip' },
-  ]);
+  assert.deepEqual(
+    (await controller.reviewSuggestedTrade(authReq, 'st-1', { note: 'reviewed' })).data.args,
+    ['user-1', 'st-1', { note: 'reviewed' }]
+  );
+  assert.deepEqual(
+    (await controller.acceptSuggestedTrade(authReq, 'st-2', { note: 'accepted' })).data.args,
+    ['user-1', 'st-2', { note: 'accepted' }]
+  );
+  assert.deepEqual(
+    (await controller.dismissSuggestedTrade(authReq, 'st-3', { note: 'skip' })).data.args,
+    ['user-1', 'st-3', { note: 'skip' }]
+  );
   assert.deepEqual(
     (
       await controller.linkSuggestedTradeOrder(authReq, 'st-4', {
@@ -369,10 +393,10 @@ async function runSuggestedTradesControllerAssertions(): Promise<void> {
       },
     ]
   );
-  assert.deepEqual(
-    (await controller.reconcileSuggestedTradeExecution(authReq, 'st-4')).data.args,
-    ['user-1', 'st-4']
-  );
+  assert.deepEqual((await controller.reconcileSuggestedTradeExecution(authReq, 'st-4')).data.args, [
+    'user-1',
+    'st-4',
+  ]);
 
   env.suggestedTrades.rolloutEnabled = false;
   await assert.rejects(
@@ -381,8 +405,7 @@ async function runSuggestedTradesControllerAssertions(): Promise<void> {
         staleOnly: true,
       }),
     (error: unknown) =>
-      error instanceof Error &&
-      error.message === 'Suggested trades rollout controls are disabled'
+      error instanceof Error && error.message === 'Suggested trades rollout controls are disabled'
   );
   env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
 }
@@ -432,8 +455,7 @@ async function runSuggestedTradesOverviewControllerAssertions(): Promise<void> {
   await assert.rejects(
     () => controller.getOverview(authReq),
     (error: unknown) =>
-      error instanceof Error &&
-      error.message === 'Suggested trades overview rollout is disabled'
+      error instanceof Error && error.message === 'Suggested trades overview rollout is disabled'
   );
   env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
 }
@@ -451,25 +473,31 @@ async function runAutomationsControllerAssertions(): Promise<void> {
     reconcileAutomationState: async (...args: unknown[]) => createSuccess({ args }),
   };
 
-  assert.deepEqual((await controller.getAutomations(authReq, undefined, undefined, 'Running', 'BTC')).data.args, ['user-1', { limit: undefined, offset: undefined, status: 'Running', search: 'BTC' }]);
+  assert.deepEqual(
+    (await controller.getAutomations(authReq, undefined, undefined, 'Running', 'BTC')).data.args,
+    ['user-1', { limit: undefined, offset: undefined, status: 'Running', search: 'BTC' }]
+  );
   assert.deepEqual((await controller.getAutomationsSummary(authReq)).data, { ok: true });
-  assert.deepEqual((await controller.getAutomationById(authReq, 'bot-1')).data.args, ['user-1', 'bot-1']);
-  assert.deepEqual((await controller.runAutomationNow(authReq, 'bot-1')).data.args, ['user-1', 'bot-1']);
-  assert.deepEqual((await controller.pauseAutomation(authReq, 'bot-1', { reason: 'pause' })).data.args, [
+  assert.deepEqual((await controller.getAutomationById(authReq, 'bot-1')).data.args, [
     'user-1',
     'bot-1',
-    { reason: 'pause' },
   ]);
-  assert.deepEqual((await controller.resumeAutomation(authReq, 'bot-2', { reason: 'resume' })).data.args, [
+  assert.deepEqual((await controller.runAutomationNow(authReq, 'bot-1')).data.args, [
     'user-1',
-    'bot-2',
-    { reason: 'resume' },
+    'bot-1',
   ]);
-  assert.deepEqual((await controller.reconcileAutomationState(authReq, 'bot-3', { reason: 'repair' })).data.args, [
-    'user-1',
-    'bot-3',
-    { reason: 'repair' },
-  ]);
+  assert.deepEqual(
+    (await controller.pauseAutomation(authReq, 'bot-1', { reason: 'pause' })).data.args,
+    ['user-1', 'bot-1', { reason: 'pause' }]
+  );
+  assert.deepEqual(
+    (await controller.resumeAutomation(authReq, 'bot-2', { reason: 'resume' })).data.args,
+    ['user-1', 'bot-2', { reason: 'resume' }]
+  );
+  assert.deepEqual(
+    (await controller.reconcileAutomationState(authReq, 'bot-3', { reason: 'repair' })).data.args,
+    ['user-1', 'bot-3', { reason: 'repair' }]
+  );
 }
 
 async function runDiscoveryControllerAssertions(): Promise<void> {
@@ -489,10 +517,10 @@ async function runDiscoveryControllerAssertions(): Promise<void> {
     },
   } as any;
 
-  assert.deepEqual(
-    (await controller.getFeed(request, '25', 'bot-1')).data.args,
-    ['Bearer discovery-token', { limit: '25', botId: 'bot-1' }]
-  );
+  assert.deepEqual((await controller.getFeed(request, '25', 'bot-1')).data.args, [
+    'Bearer discovery-token',
+    { limit: '25', botId: 'bot-1' },
+  ]);
   assert.deepEqual((await controller.getSummary(request)).data.args, ['Bearer discovery-token']);
 }
 
@@ -508,10 +536,19 @@ async function runBacktestsControllerAssertions(): Promise<void> {
     createBacktest: async (...args: unknown[]) => createSuccess({ args }),
   };
 
-  assert.deepEqual((await controller.getBacktests(authReq, undefined, undefined, 'Stable', 'BTC')).data.args, ['user-1', { limit: undefined, offset: undefined, status: 'Stable', search: 'BTC' }]);
+  assert.deepEqual(
+    (await controller.getBacktests(authReq, undefined, undefined, 'Stable', 'BTC')).data.args,
+    ['user-1', { limit: undefined, offset: undefined, status: 'Stable', search: 'BTC' }]
+  );
   assert.deepEqual((await controller.getBacktestsSummary(authReq)).data.args, ['user-1']);
-  assert.deepEqual((await controller.getBacktestById(authReq, 'bt-1')).data.args, ['user-1', 'bt-1']);
-  assert.deepEqual((await controller.getBacktestInputSnapshot(authReq, 'bt-1')).data.args, ['user-1', 'bt-1']);
+  assert.deepEqual((await controller.getBacktestById(authReq, 'bt-1')).data.args, [
+    'user-1',
+    'bt-1',
+  ]);
+  assert.deepEqual((await controller.getBacktestInputSnapshot(authReq, 'bt-1')).data.args, [
+    'user-1',
+    'bt-1',
+  ]);
   assert.deepEqual(
     (
       await controller.getBacktestChart(
@@ -553,7 +590,19 @@ async function runOrdersControllerAssertions(): Promise<void> {
     cancelFuturesOrder: async (...args: unknown[]) => createSuccess({ args }),
   };
 
-  assert.deepEqual((await controller.getFuturesOrders(authReq, '5', undefined, undefined)).data.args, ['user-1', { limit: '5', brokerKey: undefined, accountId: undefined, startDate: undefined, endDate: undefined }]);
+  assert.deepEqual(
+    (await controller.getFuturesOrders(authReq, '5', undefined, undefined)).data.args,
+    [
+      'user-1',
+      {
+        limit: '5',
+        brokerKey: undefined,
+        accountId: undefined,
+        startDate: undefined,
+        endDate: undefined,
+      },
+    ]
+  );
   assert.deepEqual(
     (
       await controller.requestFuturesOrdersRefresh(authReq, {
@@ -575,9 +624,27 @@ async function runOrdersControllerAssertions(): Promise<void> {
     ).data.args,
     ['user-1', 'BTCUSDT', { leverage: 10 }]
   );
-  assert.deepEqual((await controller.getFuturesOrder(authReq, 'ord-1', undefined, undefined)).data.args, ['user-1', 'ord-1', { brokerKey: undefined, accountId: undefined }]);
-  assert.deepEqual((await controller.getFuturesOrderHistory(authReq, '3', undefined, undefined)).data.args, ['user-1', { limit: '3', brokerKey: undefined, accountId: undefined, startDate: undefined, endDate: undefined }]);
-  assert.deepEqual((await controller.cancelFuturesOrder(authReq, 'ord-1', undefined, undefined)).data.args, ['user-1', 'ord-1', { brokerKey: undefined, accountId: undefined }]);
+  assert.deepEqual(
+    (await controller.getFuturesOrder(authReq, 'ord-1', undefined, undefined)).data.args,
+    ['user-1', 'ord-1', { brokerKey: undefined, accountId: undefined }]
+  );
+  assert.deepEqual(
+    (await controller.getFuturesOrderHistory(authReq, '3', undefined, undefined)).data.args,
+    [
+      'user-1',
+      {
+        limit: '3',
+        brokerKey: undefined,
+        accountId: undefined,
+        startDate: undefined,
+        endDate: undefined,
+      },
+    ]
+  );
+  assert.deepEqual(
+    (await controller.cancelFuturesOrder(authReq, 'ord-1', undefined, undefined)).data.args,
+    ['user-1', 'ord-1', { brokerKey: undefined, accountId: undefined }]
+  );
 }
 
 async function runOrdersOverviewControllerAssertions(): Promise<void> {
@@ -588,15 +655,8 @@ async function runOrdersOverviewControllerAssertions(): Promise<void> {
   };
 
   assert.deepEqual(
-    (
-      await controller.getOverview(
-        authReq,
-        'mudrex',
-        'acct-2',
-        '2026-04-01',
-        '2026-04-09'
-      )
-    ).data.args,
+    (await controller.getOverview(authReq, 'mudrex', 'acct-2', '2026-04-01', '2026-04-09')).data
+      .args,
     [
       'user-1',
       {
@@ -626,12 +686,14 @@ async function runWatchlistsControllerAssertions(): Promise<void> {
     (await controller.updateWatchlist(authReq, 'wl-1', { name: 'Priority majors' })).data.args,
     ['user-1', 'wl-1', { name: 'Priority majors' }]
   );
-  assert.deepEqual((await controller.getWatchlistById(authReq, 'wl-1')).data.args, ['user-1', 'wl-1']);
-  assert.deepEqual((await controller.getWatchlistItems(authReq, 'wl-1', '5', '10', 'btc')).data.args, [
+  assert.deepEqual((await controller.getWatchlistById(authReq, 'wl-1')).data.args, [
     'user-1',
     'wl-1',
-    { limit: '5', offset: '10', search: 'btc' },
   ]);
+  assert.deepEqual(
+    (await controller.getWatchlistItems(authReq, 'wl-1', '5', '10', 'btc')).data.args,
+    ['user-1', 'wl-1', { limit: '5', offset: '10', search: 'btc' }]
+  );
 }
 
 async function runMarketControllerAssertions(): Promise<void> {
@@ -655,13 +717,20 @@ async function runPortfolioControllerAssertions(): Promise<void> {
     rebalancePortfolio: async (...args: unknown[]) => createSuccess({ args }),
   };
 
-  assert.deepEqual((await controller.getPortfolioHoldings(authReq, undefined, undefined, 'BTC', 'Core', 'Long')).data.args, ['user-1', { limit: undefined, offset: undefined, search: 'BTC', sleeve: 'Core', side: 'Long' }]);
+  assert.deepEqual(
+    (await controller.getPortfolioHoldings(authReq, undefined, undefined, 'BTC', 'Core', 'Long'))
+      .data.args,
+    ['user-1', { limit: undefined, offset: undefined, search: 'BTC', sleeve: 'Core', side: 'Long' }]
+  );
   assert.deepEqual((await controller.getPortfolioSummary(authReq)).data.args, ['user-1']);
-  assert.deepEqual((await controller.getPortfolioHoldingById(authReq, 'hold-1')).data.args, ['user-1', 'hold-1']);
-  assert.deepEqual((await controller.rebalancePortfolio(authReq, { note: 'rebalance' })).data.args, [
+  assert.deepEqual((await controller.getPortfolioHoldingById(authReq, 'hold-1')).data.args, [
     'user-1',
-    { note: 'rebalance' },
+    'hold-1',
   ]);
+  assert.deepEqual(
+    (await controller.rebalancePortfolio(authReq, { note: 'rebalance' })).data.args,
+    ['user-1', { note: 'rebalance' }]
+  );
 }
 
 async function runStrategyLabControllerAssertions(): Promise<void> {
@@ -671,6 +740,7 @@ async function runStrategyLabControllerAssertions(): Promise<void> {
     saveStrategyLabDraft: async (...args: unknown[]) => createSuccess({ args }),
     getStrategyLabProjectById: async (...args: unknown[]) => createSuccess({ args }),
     updateStrategyLabProject: async (...args: unknown[]) => createSuccess({ args }),
+    deleteStrategyLabProject: async (...args: unknown[]) => createSuccess({ args }),
     moveStrategyLabProjectToTemplate: async (...args: unknown[]) => createSuccess({ args }),
     validateStrategyLabProject: async (...args: unknown[]) => createSuccess({ args }),
     sendStrategyLabToBacktests: async (...args: unknown[]) => createSuccess({ args }),
@@ -689,8 +759,14 @@ async function runStrategyLabControllerAssertions(): Promise<void> {
     parameters: {},
     riskConfig: {},
   };
-  assert.deepEqual((await controller.saveStrategyLabDraft(authReq, createBody)).data.args, ['user-1', createBody]);
-  assert.deepEqual((await controller.getStrategyLabProjectById(authReq, 'proj-1')).data.args, ['user-1', 'proj-1']);
+  assert.deepEqual((await controller.saveStrategyLabDraft(authReq, createBody)).data.args, [
+    'user-1',
+    createBody,
+  ]);
+  assert.deepEqual((await controller.getStrategyLabProjectById(authReq, 'proj-1')).data.args, [
+    'user-1',
+    'proj-1',
+  ]);
 
   const updateBody = {
     ...createBody,
@@ -700,16 +776,22 @@ async function runStrategyLabControllerAssertions(): Promise<void> {
     codeDefinition:
       'STRATEGY Draft\nMARKET crypto-futures\nTIMEFRAME 1h\nUNIVERSE top-25-liquidity\nENTRY breakout\nEXIT reversal\nRISK max_per_trade 1.5%',
   };
-  assert.deepEqual((await controller.updateStrategyLabProject(authReq, 'proj-1', updateBody)).data.args, [
-    'user-1',
-    'proj-1',
-    updateBody,
-  ]);
-  assert.deepEqual((await controller.validateStrategyLabProject(authReq, 'proj-1')).data.args, ['user-1', 'proj-1']);
-  assert.deepEqual((await controller.moveStrategyLabProjectToTemplate(authReq, 'proj-1')).data.args, [
+  assert.deepEqual(
+    (await controller.updateStrategyLabProject(authReq, 'proj-1', updateBody)).data.args,
+    ['user-1', 'proj-1', updateBody]
+  );
+  assert.deepEqual((await controller.validateStrategyLabProject(authReq, 'proj-1')).data.args, [
     'user-1',
     'proj-1',
   ]);
+  assert.deepEqual((await controller.deleteStrategyLabProject(authReq, 'proj-1')).data.args, [
+    'user-1',
+    'proj-1',
+  ]);
+  assert.deepEqual(
+    (await controller.moveStrategyLabProjectToTemplate(authReq, 'proj-1')).data.args,
+    ['user-1', 'proj-1']
+  );
 
   const handoffBody = { projectId: 'proj-1' };
   assert.deepEqual((await controller.sendStrategyLabToBacktests(authReq, handoffBody)).data.args, [
@@ -764,7 +846,10 @@ async function runStrategyLibraryControllerAssertions(): Promise<void> {
       },
     ]
   );
-  assert.deepEqual((await controller.getLibraryById(authReq, 'lib-1')).data.args, ['user-1', 'lib-1']);
+  assert.deepEqual((await controller.getLibraryById(authReq, 'lib-1')).data.args, [
+    'user-1',
+    'lib-1',
+  ]);
   assert.deepEqual((await controller.getLibraryRuns(authReq, 'lib-1', '5')).data.args, [
     'user-1',
     'lib-1',
@@ -787,7 +872,10 @@ async function runStrategyLibraryControllerAssertions(): Promise<void> {
     (await controller.updateLibraryStatus(authReq, 'lib-1', { status: 'Paused' })).data.args,
     ['user-1', 'lib-1', { status: 'Paused' }]
   );
-  assert.deepEqual((await controller.deleteLibrary(authReq, 'lib-1')).data.args, ['user-1', 'lib-1']);
+  assert.deepEqual((await controller.deleteLibrary(authReq, 'lib-1')).data.args, [
+    'user-1',
+    'lib-1',
+  ]);
   assert.deepEqual(
     (
       await controller.runLibraryStrategy(authReq, 'lib-1', {
@@ -845,6 +933,8 @@ async function runRiskControllerAssertions(): Promise<void> {
       weeklyLossLimitPct: 12,
       monthlyLossLimitPct: 20,
       maxLeverage: undefined,
+      minLeverage: undefined,
+      minNotionalPerTrade: undefined,
       maxOrderAllocation: undefined,
       maxTotalAllocation: undefined,
       maxAvgLeverage: undefined,
@@ -869,6 +959,8 @@ async function runRiskControllerAssertions(): Promise<void> {
       maxOrderAllocation: undefined,
       maxTotalAllocation: undefined,
       maxAvgLeverage: undefined,
+      minLeverage: undefined,
+      minNotionalPerTrade: undefined,
     },
   ]);
   assert.deepEqual(
@@ -918,16 +1010,19 @@ async function runPositionsControllerAssertions(): Promise<void> {
     getPositionHistoryForActiveAccounts: async (...args: unknown[]) => createSuccess({ args }),
   };
 
-  assert.deepEqual((await controller.getFuturesPositions(authReq, undefined, undefined)).data.args, [
-    'user-1',
-    undefined,
-    undefined,
-    { brokerKey: undefined, accountId: undefined, limit: undefined },
-  ]);
-  assert.deepEqual((await controller.getFuturesPositionsForActiveAccounts(authReq, undefined)).data.args, [
-    'user-1',
-    undefined,
-  ]);
+  assert.deepEqual(
+    (await controller.getFuturesPositions(authReq, undefined, undefined)).data.args,
+    [
+      'user-1',
+      undefined,
+      undefined,
+      { brokerKey: undefined, accountId: undefined, limit: undefined },
+    ]
+  );
+  assert.deepEqual(
+    (await controller.getFuturesPositionsForActiveAccounts(authReq, undefined)).data.args,
+    ['user-1', undefined]
+  );
   assert.deepEqual(
     (
       await controller.requestFuturesPositionsRefresh(authReq, {
@@ -945,15 +1040,20 @@ async function runPositionsControllerAssertions(): Promise<void> {
     (await controller.getPositionLifecycle(authReq, 'pos-1', undefined, 'acc-1')).data.args,
     ['user-1', 'pos-1', undefined, 'acc-1']
   );
-  assert.deepEqual((await controller.getPositionLiquidationPrice(authReq, 'pos-1', '100', undefined, undefined)).data.args, [
-    'pos-1',
-    { ext_margin: '100', brokerKey: undefined, accountId: undefined },
-    'user-1',
-    undefined,
-    undefined,
-  ]);
   assert.deepEqual(
-    (await controller.addPositionMargin(authReq, 'pos-1', undefined, undefined, { margin: 50 })).data.args,
+    (await controller.getPositionLiquidationPrice(authReq, 'pos-1', '100', undefined, undefined))
+      .data.args,
+    [
+      'pos-1',
+      { ext_margin: '100', brokerKey: undefined, accountId: undefined },
+      'user-1',
+      undefined,
+      undefined,
+    ]
+  );
+  assert.deepEqual(
+    (await controller.addPositionMargin(authReq, 'pos-1', undefined, undefined, { margin: 50 }))
+      .data.args,
     ['pos-1', { margin: 50 }, 'user-1', undefined, undefined]
   );
   assert.deepEqual(
@@ -972,33 +1072,37 @@ async function runPositionsControllerAssertions(): Promise<void> {
     ).data.args,
     ['pos-1', { order_price: 10 }, 'user-1', undefined, undefined]
   );
-  assert.deepEqual((await controller.reversePosition(authReq, 'pos-1', undefined, undefined)).data.args, [
-    'pos-1',
-    'user-1',
-    undefined,
-    undefined,
-  ]);
-  assert.deepEqual((await controller.closePositionPartial(authReq, 'pos-1', undefined, undefined, { size: 0.5 })).data.args, [
-    'pos-1',
-    { size: 0.5 },
-    'user-1',
-    undefined,
-    undefined,
-  ]);
-  assert.deepEqual((await controller.closePosition(authReq, 'pos-1', undefined, undefined)).data.args, [
-    'pos-1',
-    'user-1',
-    undefined,
-    undefined,
-  ]);
-  assert.deepEqual((await controller.getPositionHistory(authReq, undefined, undefined, '10')).data.args, [
-    { limit: undefined, brokerKey: undefined, accountId: '10', startDate: undefined, endDate: undefined },
-    'user-1',
-    undefined,
-    '10',
-  ]);
   assert.deepEqual(
-    (await controller.getPositionHistoryForActiveAccounts(authReq, undefined, undefined, undefined)).data.args,
+    (await controller.reversePosition(authReq, 'pos-1', undefined, undefined)).data.args,
+    ['pos-1', 'user-1', undefined, undefined]
+  );
+  assert.deepEqual(
+    (await controller.closePositionPartial(authReq, 'pos-1', undefined, undefined, { size: 0.5 }))
+      .data.args,
+    ['pos-1', { size: 0.5 }, 'user-1', undefined, undefined]
+  );
+  assert.deepEqual(
+    (await controller.closePosition(authReq, 'pos-1', undefined, undefined)).data.args,
+    ['pos-1', 'user-1', undefined, undefined]
+  );
+  assert.deepEqual(
+    (await controller.getPositionHistory(authReq, undefined, undefined, '10')).data.args,
+    [
+      {
+        limit: undefined,
+        brokerKey: undefined,
+        accountId: '10',
+        startDate: undefined,
+        endDate: undefined,
+      },
+      'user-1',
+      undefined,
+      '10',
+    ]
+  );
+  assert.deepEqual(
+    (await controller.getPositionHistoryForActiveAccounts(authReq, undefined, undefined, undefined))
+      .data.args,
     [
       { limit: undefined, brokerKey: undefined, startDate: undefined, endDate: undefined },
       'user-1',
@@ -1070,39 +1174,44 @@ async function runActivityControllerAssertions(): Promise<void> {
       },
     ]
   );
-  assert.deepEqual((await controller.getActivity(
-    authReq,
-    '25',
-    '5',
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    'Connections',
-    'Success',
-    'delta',
-    'controls',
-    'Brokers data',
-    'conn-1',
-    'corr-1',
-    'delta_exchange',
-    undefined
-  )).data.args, [
-    'user-1',
-    {
-      limit: '25',
-      offset: '5',
-      type: 'Connections',
-      status: 'Success',
-      search: 'delta',
-      stream: 'controls',
-      route: 'Brokers data',
-      referenceId: 'conn-1',
-      correlationId: 'corr-1',
-      related: 'delta_exchange',
-    },
-  ]);
+  assert.deepEqual(
+    (
+      await controller.getActivity(
+        authReq,
+        '25',
+        '5',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'Connections',
+        'Success',
+        'delta',
+        'controls',
+        'Brokers data',
+        'conn-1',
+        'corr-1',
+        'delta_exchange',
+        undefined
+      )
+    ).data.args,
+    [
+      'user-1',
+      {
+        limit: '25',
+        offset: '5',
+        type: 'Connections',
+        status: 'Success',
+        search: 'delta',
+        stream: 'controls',
+        route: 'Brokers data',
+        referenceId: 'conn-1',
+        correlationId: 'corr-1',
+        related: 'delta_exchange',
+      },
+    ]
+  );
   assert.deepEqual((await controller.getActivityById(authReq, 'activity-1')).data.args, [
     'user-1',
     'activity-1',
@@ -1235,12 +1344,26 @@ async function runAlertsControllerAssertions(): Promise<void> {
     routeAlert: async (...args: unknown[]) => createSuccess({ args }),
   };
 
-  assert.deepEqual((await controller.getAlerts(authReq, undefined, undefined, 'Open', 'Critical', 'Risk')).data.args, [
-    'user-1',
-    { limit: undefined, offset: undefined, status: 'Open', search: 'Critical', severity: 'Risk', channel: undefined },
-  ]);
+  assert.deepEqual(
+    (await controller.getAlerts(authReq, undefined, undefined, 'Open', 'Critical', 'Risk')).data
+      .args,
+    [
+      'user-1',
+      {
+        limit: undefined,
+        offset: undefined,
+        status: 'Open',
+        search: 'Critical',
+        severity: 'Risk',
+        channel: undefined,
+      },
+    ]
+  );
   assert.deepEqual((await controller.getAlertsSummary(authReq)).data.args, ['user-1']);
-  assert.deepEqual((await controller.getAlertById(authReq, 'alert-1')).data.args, ['user-1', 'alert-1']);
+  assert.deepEqual((await controller.getAlertById(authReq, 'alert-1')).data.args, [
+    'user-1',
+    'alert-1',
+  ]);
   assert.deepEqual(
     (await controller.acknowledgeAlert(authReq, 'alert-1', { note: 'Reviewed' })).data.args,
     ['user-1', 'alert-1', { note: 'Reviewed' }]
@@ -1250,7 +1373,8 @@ async function runAlertsControllerAssertions(): Promise<void> {
     ['user-1', 'alert-1', { reason: 'Duplicate alert' }]
   );
   assert.deepEqual(
-    (await controller.routeAlert(authReq, 'alert-1', { target: 'risk', note: 'Risk team first' })).data.args,
+    (await controller.routeAlert(authReq, 'alert-1', { target: 'risk', note: 'Risk team first' }))
+      .data.args,
     ['user-1', 'alert-1', { target: 'risk', note: 'Risk team first' }]
   );
 }
@@ -1271,10 +1395,11 @@ async function runConnectionsControllerAssertions(): Promise<void> {
     deleteConnection: async (...args: unknown[]) => createSuccess({ args }),
   };
 
-  assert.deepEqual((await controller.getConnections(authReq, undefined, undefined, 'Connected', undefined)).data.args, [
-    'user-1',
-    { limit: undefined, offset: undefined, type: 'Connected', search: undefined },
-  ]);
+  assert.deepEqual(
+    (await controller.getConnections(authReq, undefined, undefined, 'Connected', undefined)).data
+      .args,
+    ['user-1', { limit: undefined, offset: undefined, type: 'Connected', search: undefined }]
+  );
   assert.deepEqual((await controller.getConnectionsSummary(authReq)).data.args, ['user-1']);
   assert.deepEqual((await controller.getBrokerCatalog(authReq)).data.args, ['user-1']);
   assert.deepEqual(
@@ -1302,7 +1427,12 @@ async function runConnectionsControllerAssertions(): Promise<void> {
     ]
   );
   assert.deepEqual(
-    (await controller.createConnection(authReq, { name: 'Delta route', brokerKey: 'delta_exchange' })).data.args,
+    (
+      await controller.createConnection(authReq, {
+        name: 'Delta route',
+        brokerKey: 'delta_exchange',
+      })
+    ).data.args,
     ['user-1', { name: 'Delta route', brokerKey: 'delta_exchange' }]
   );
   assert.deepEqual(
@@ -1314,10 +1444,24 @@ async function runConnectionsControllerAssertions(): Promise<void> {
     ).data.args,
     ['user-1', 'con-1', { name: 'Delta backup route', brokerKey: 'delta_exchange' }]
   );
-  assert.deepEqual((await controller.getConnectionById(authReq, 'con-1')).data.args, ['user-1', 'con-1']);
-  assert.deepEqual((await controller.reconnectConnection(authReq, 'con-1')).data.args, ['user-1', 'con-1', undefined]);
-  assert.deepEqual((await controller.testConnection(authReq, 'con-1', { ping: true })).data.args, ['user-1', 'con-1', { ping: true }]);
-  assert.deepEqual((await controller.deleteConnection(authReq, 'con-1')).data.args, ['user-1', 'con-1']);
+  assert.deepEqual((await controller.getConnectionById(authReq, 'con-1')).data.args, [
+    'user-1',
+    'con-1',
+  ]);
+  assert.deepEqual((await controller.reconnectConnection(authReq, 'con-1')).data.args, [
+    'user-1',
+    'con-1',
+    undefined,
+  ]);
+  assert.deepEqual((await controller.testConnection(authReq, 'con-1', { ping: true })).data.args, [
+    'user-1',
+    'con-1',
+    { ping: true },
+  ]);
+  assert.deepEqual((await controller.deleteConnection(authReq, 'con-1')).data.args, [
+    'user-1',
+    'con-1',
+  ]);
 }
 
 async function runSettingsControllerAssertions(): Promise<void> {
@@ -1365,8 +1509,7 @@ async function runEmailDeliveriesControllerAssertions(): Promise<void> {
     retryAllFailedEmailDeliveries: async (...args: unknown[]) => createSuccess({ args }),
     retryMatchingFailedEmailDeliveries: async (...args: unknown[]) => createSuccess({ args }),
     previewCleanupEmailDeliveries: async (...args: unknown[]) => createSuccess({ args }),
-    previewMatchingCleanupEmailDeliveries: async (...args: unknown[]) =>
-      createSuccess({ args }),
+    previewMatchingCleanupEmailDeliveries: async (...args: unknown[]) => createSuccess({ args }),
     getLatestCleanupActivity: async (...args: unknown[]) => createSuccess({ args }),
     getEmailDeliveryById: async (...args: unknown[]) => createSuccess({ args }),
     cleanupEmailDeliveries: async (...args: unknown[]) => createSuccess({ args }),
@@ -1485,10 +1628,10 @@ async function runEmailDeliveriesControllerAssertions(): Promise<void> {
       },
     ]
   );
-  assert.deepEqual(
-    (await controller.previewCleanupEmailDeliveries(adminAuthReq, '30')).data.args,
-    [{ userId: 'user-1', role: 'admin' }, '30']
-  );
+  assert.deepEqual((await controller.previewCleanupEmailDeliveries(adminAuthReq, '30')).data.args, [
+    { userId: 'user-1', role: 'admin' },
+    '30',
+  ]);
   assert.deepEqual(
     (
       await controller.previewMatchingCleanupEmailDeliveries(
@@ -1723,18 +1866,9 @@ async function runHealthControllerAssertions(): Promise<void> {
   assert.equal(backtestHealth.data.openPromotionAlerts, 2);
   assert.equal(backtestHealth.data.oldestActiveCreatedAt, '2026-04-04T06:00:00.000Z');
   assert.equal(backtestHealth.data.oldestStaleUpdatedAt, '2026-04-04T05:30:00.000Z');
-  assert.match(
-    String(backtestHealth.data.detail || ''),
-    /running backtest/
-  );
-  assert.match(
-    String(backtestHealth.data.detail || ''),
-    /stored trade events/
-  );
-  assert.match(
-    String(backtestHealth.data.detail || ''),
-    /open Backtests alert/
-  );
+  assert.match(String(backtestHealth.data.detail || ''), /running backtest/);
+  assert.match(String(backtestHealth.data.detail || ''), /stored trade events/);
+  assert.match(String(backtestHealth.data.detail || ''), /open Backtests alert/);
 
   const apiKeyBacktestHealth = await controller.getBacktestHealth(apiKeyReq);
   assert.equal(apiKeyBacktestHealth.data.status, 'degraded');
@@ -2054,11 +2188,10 @@ async function runStrategyTemplatesControllerAssertions(): Promise<void> {
   ]);
 
   const updateBody = { name: 'Momentum Core v2' };
-  assert.deepEqual((await controller.updateStrategyTemplate(authReq, 'template-1', updateBody)).data.args, [
-    'user-1',
-    'template-1',
-    updateBody,
-  ]);
+  assert.deepEqual(
+    (await controller.updateStrategyTemplate(authReq, 'template-1', updateBody)).data.args,
+    ['user-1', 'template-1', updateBody]
+  );
 
   const statusBody = { status: 'Paused' };
   assert.deepEqual(
@@ -2379,28 +2512,52 @@ async function runSchedulerControllerAuthAssertions(): Promise<void> {
       await assertAuthRequired(() =>
         testCase.controller[testCase.controllerMethod](unauthReq, ...(testCase.args || []))
       );
-      assert.equal(calls.length, 0, `${testCase.label} should not call the service for unauthenticated users`);
+      assert.equal(
+        calls.length,
+        0,
+        `${testCase.label} should not call the service for unauthenticated users`
+      );
 
       const response = await testCase.controller[testCase.controllerMethod](
         authReq,
         ...(testCase.args || [])
       );
-      assert.deepEqual(response.data.args, testCase.expectedArgs, `${testCase.label} should pass signed-in args through`);
-      assert.equal(calls.length, 1, `${testCase.label} should call the service exactly once for signed-in users`);
+      assert.deepEqual(
+        response.data.args,
+        testCase.expectedArgs,
+        `${testCase.label} should pass signed-in args through`
+      );
+      assert.equal(
+        calls.length,
+        1,
+        `${testCase.label} should call the service exactly once for signed-in users`
+      );
       continue;
     }
 
     await assertAdminRoleRequired(() =>
       testCase.controller[testCase.controllerMethod](authReq, ...(testCase.args || []))
     );
-    assert.equal(calls.length, 0, `${testCase.label} should not call the service for non-admin users`);
+    assert.equal(
+      calls.length,
+      0,
+      `${testCase.label} should not call the service for non-admin users`
+    );
 
     const response = await testCase.controller[testCase.controllerMethod](
       adminAuthReq,
       ...(testCase.args || [])
     );
-    assert.deepEqual(response.data.args, testCase.expectedArgs, `${testCase.label} should pass admin args through`);
-    assert.equal(calls.length, 1, `${testCase.label} should call the service exactly once for admins`);
+    assert.deepEqual(
+      response.data.args,
+      testCase.expectedArgs,
+      `${testCase.label} should pass admin args through`
+    );
+    assert.equal(
+      calls.length,
+      1,
+      `${testCase.label} should call the service exactly once for admins`
+    );
   }
 }
 

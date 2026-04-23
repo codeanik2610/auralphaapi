@@ -82,6 +82,12 @@ export interface StrategyLabDraftResult {
   project: StrategyLabProjectItem;
 }
 
+export interface StrategyLabDeleteResult {
+  message: string;
+  projectId: string;
+  deleted: boolean;
+}
+
 export interface StrategyLabProjectsListResult {
   items: StrategyLabProjectItem[];
   total: number;

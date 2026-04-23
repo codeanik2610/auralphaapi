@@ -3,6 +3,7 @@ import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import {
   StrategyLabBacktestHandoffBody,
   StrategyLabBacktestHandoffResult,
+  StrategyLabDeleteResult,
   StrategyLabDraftBody,
   StrategyLabDraftResult,
   StrategyLabMoveToTemplateResult,
@@ -105,12 +106,12 @@ export class StrategyLabService {
     const { items, total } = await this.strategyLabRepository.listProjects(userId, {
       limit,
       offset,
-      search
+      search,
     });
 
     return successResponse({
       items: items.map((project) => this.mapProject(project)),
-      total
+      total,
     });
   }
 
@@ -244,6 +245,55 @@ export class StrategyLabService {
     }
   }
 
+  async deleteStrategyLabProject(
+    userId: string,
+    projectId: string
+  ): Promise<ApiSuccessResponse<StrategyLabDeleteResult>> {
+    const validatedProjectId = validateStrategyLabProjectId(projectId);
+    try {
+      const deleted = await this.strategyLabRepository.deleteProject(userId, validatedProjectId);
+
+      if (!deleted) {
+        throw new NotFoundAppError('Strategy lab project not found');
+      }
+
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Strategy lab',
+        title: 'Draft deleted',
+        status: 'Success',
+        route: 'Strategy lab',
+        stream: 'Drafts',
+        referenceId: validatedProjectId,
+        description: 'Strategy draft deleted',
+      });
+
+      return successResponse({
+        message: 'Strategy draft deleted',
+        projectId: validatedProjectId,
+        deleted: true,
+      });
+    } catch (error) {
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Strategy lab',
+        title: 'Draft delete failed',
+        status: 'Failed',
+        route: 'Strategy lab',
+        stream: 'Drafts',
+        referenceId: validatedProjectId,
+        description: error instanceof Error ? error.message : String(error),
+      });
+      await this.operationalEventService.emitFailureAlert(userId, {
+        channel: 'Strategy',
+        source: 'strategy_lab',
+        message: `Strategy draft delete failed (${validatedProjectId}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        route: 'Alerts',
+      });
+      throw error;
+    }
+  }
+
   async validateStrategyLabProject(
     userId: string,
     projectId: string
@@ -328,10 +378,10 @@ export class StrategyLabService {
         );
 
         project.validationState = validation.validationState;
-        project.validationErrors =
-          validation.errors as unknown as Array<Record<string, unknown>>;
-        project.validationWarnings =
-          validation.warnings as unknown as Array<Record<string, unknown>>;
+        project.validationErrors = validation.errors as unknown as Array<Record<string, unknown>>;
+        project.validationWarnings = validation.warnings as unknown as Array<
+          Record<string, unknown>
+        >;
         project.lastValidatedAt = validatedAt;
 
         if (validation.validationState !== 'valid') {
@@ -371,10 +421,8 @@ export class StrategyLabService {
           typeof config.shortEnabled === 'boolean'
             ? config.shortEnabled
             : Boolean(config.entryShortLogic || config.exitShortLogic),
-        entryShortLogic:
-          config.entryShortLogic || config.entry_short_logic || null,
-        exitShortLogic:
-          config.exitShortLogic || config.exit_short_logic || null,
+        entryShortLogic: config.entryShortLogic || config.entry_short_logic || null,
+        exitShortLogic: config.exitShortLogic || config.exit_short_logic || null,
         risk: this.resolveTemplateRiskConfig(project, config),
         parameters: config.parameters || project.parameters || null,
         filters: config.filters || null,
@@ -539,10 +587,11 @@ export class StrategyLabService {
         config.compiledCodeDefinition
     );
     const authoredCodeTarget =
-      this.resolveCodeTarget(project.codeTarget || config.authoredCodeTarget || config.codeTarget, rawCode) ||
-      'dsl';
-    const market =
-      this.cleanText(project.market || config.market) || 'crypto-futures';
+      this.resolveCodeTarget(
+        project.codeTarget || config.authoredCodeTarget || config.codeTarget,
+        rawCode
+      ) || 'dsl';
+    const market = this.cleanText(project.market || config.market) || 'crypto-futures';
     const entryLogic =
       this.cleanText(config.entryLogic || config.entry_logic) ||
       this.extractDslClause(rawCode, ['ENTRY', 'ENTRY_LONG']);
@@ -571,8 +620,7 @@ export class StrategyLabService {
     const sizingNotes = this.cleanText(risk.sizingNotes);
     const templateName = this.cleanText(project.name) || `Strategy Lab ${project.id}`;
     const description =
-      project.description ??
-      (typeof config.description === 'string' ? config.description : null);
+      project.description ?? (typeof config.description === 'string' ? config.description : null);
     const generatedPython = this.generatePythonFromLogic({
       name: templateName,
       market,
@@ -583,8 +631,7 @@ export class StrategyLabService {
       maxRisk,
       signalThreshold,
     });
-    const pythonDefinition =
-      authoredCodeTarget === 'python' && rawCode ? rawCode : generatedPython;
+    const pythonDefinition = authoredCodeTarget === 'python' && rawCode ? rawCode : generatedPython;
     const editorMode =
       this.cleanText(config.editorMode) ||
       (authoredCodeTarget === 'python' && !entryLogic && !exitLogic
@@ -675,18 +722,13 @@ export class StrategyLabService {
     };
   }
 
-  private normalizeDateBoundary(
-    value: unknown,
-    boundary: 'start' | 'end'
-  ): string | null {
+  private normalizeDateBoundary(value: unknown, boundary: 'start' | 'end'): string | null {
     const trimmed = String(value || '').trim();
     if (!trimmed) {
       return null;
     }
     if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-      return boundary === 'start'
-        ? `${trimmed}T00:00:00.000Z`
-        : `${trimmed}T23:59:59.999Z`;
+      return boundary === 'start' ? `${trimmed}T00:00:00.000Z` : `${trimmed}T23:59:59.999Z`;
     }
     return trimmed;
   }
@@ -715,8 +757,12 @@ export class StrategyLabService {
           }
         });
 
-        const hasEntry = lines.some((line) => line.startsWith('ENTRY ') || line.startsWith('ENTRY_LONG '));
-        const hasExit = lines.some((line) => line.startsWith('EXIT ') || line.startsWith('EXIT_LONG '));
+        const hasEntry = lines.some(
+          (line) => line.startsWith('ENTRY ') || line.startsWith('ENTRY_LONG ')
+        );
+        const hasExit = lines.some(
+          (line) => line.startsWith('EXIT ') || line.startsWith('EXIT_LONG ')
+        );
 
         if (!hasEntry) {
           errors.push({ field: 'codeDefinition', message: 'Missing ENTRY or ENTRY_LONG clause' });
@@ -726,47 +772,90 @@ export class StrategyLabService {
         }
       } else if (codeTarget === 'javascript') {
         if (!/export\s+default\s+defineStrategy\s*\(/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'JavaScript strategies must export defineStrategy(...)' });
+          errors.push({
+            field: 'codeDefinition',
+            message: 'JavaScript strategies must export defineStrategy(...)',
+          });
         }
         if (!/name\s*:\s*['"`].+['"`]/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'JavaScript strategies must define a name' });
+          errors.push({
+            field: 'codeDefinition',
+            message: 'JavaScript strategies must define a name',
+          });
         }
         if (!/market\s*:\s*['"`].+['"`]/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'JavaScript strategies must define a market' });
+          errors.push({
+            field: 'codeDefinition',
+            message: 'JavaScript strategies must define a market',
+          });
         }
         if (!/(entryLong|entry)\s*\(/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'JavaScript strategies must define an entry(ctx) or entryLong(ctx) block' });
+          errors.push({
+            field: 'codeDefinition',
+            message: 'JavaScript strategies must define an entry(ctx) or entryLong(ctx) block',
+          });
         }
         if (!/(exitLong|exit)\s*\(/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'JavaScript strategies must define an exit(ctx) or exitLong(ctx) block' });
+          errors.push({
+            field: 'codeDefinition',
+            message: 'JavaScript strategies must define an exit(ctx) or exitLong(ctx) block',
+          });
         }
         if (!/risk\s*:\s*\{/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'JavaScript strategies must define a risk block' });
+          errors.push({
+            field: 'codeDefinition',
+            message: 'JavaScript strategies must define a risk block',
+          });
         }
         if (/\b(require|process\.|window\.|document\.|fetch\()/.test(code)) {
-          warnings.push({ field: 'codeDefinition', message: 'JavaScript target is validated as a constrained strategy draft; avoid runtime globals and imports until sandbox execution is added.' });
+          warnings.push({
+            field: 'codeDefinition',
+            message:
+              'JavaScript target is validated as a constrained strategy draft; avoid runtime globals and imports until sandbox execution is added.',
+          });
         }
       } else if (codeTarget === 'python') {
         if (!/class\s+\w+\s*\(\s*Strategy\s*\)\s*:/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'Python strategies must define a class that extends Strategy' });
+          errors.push({
+            field: 'codeDefinition',
+            message: 'Python strategies must define a class that extends Strategy',
+          });
         }
         if (!/name\s*=\s*['"].+['"]/.test(code)) {
           errors.push({ field: 'codeDefinition', message: 'Python strategies must define a name' });
         }
         if (!/market\s*=\s*['"].+['"]/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'Python strategies must define a market' });
+          errors.push({
+            field: 'codeDefinition',
+            message: 'Python strategies must define a market',
+          });
         }
         if (!/def\s+entry(_long)?\s*\(\s*self\s*,\s*ctx\s*\)\s*:/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'Python strategies must define an entry(self, ctx) or entry_long(self, ctx) method' });
+          errors.push({
+            field: 'codeDefinition',
+            message:
+              'Python strategies must define an entry(self, ctx) or entry_long(self, ctx) method',
+          });
         }
         if (!/def\s+exit(_long)?\s*\(\s*self\s*,\s*ctx\s*\)\s*:/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'Python strategies must define an exit(self, ctx) or exit_long(self, ctx) method' });
+          errors.push({
+            field: 'codeDefinition',
+            message:
+              'Python strategies must define an exit(self, ctx) or exit_long(self, ctx) method',
+          });
         }
         if (!/risk\s*=\s*\{/.test(code)) {
-          errors.push({ field: 'codeDefinition', message: 'Python strategies must define a risk mapping' });
+          errors.push({
+            field: 'codeDefinition',
+            message: 'Python strategies must define a risk mapping',
+          });
         }
         if (/\bimport\s+(os|sys|subprocess|requests)\b/.test(code)) {
-          warnings.push({ field: 'codeDefinition', message: 'Python target is validated as a constrained strategy draft; avoid system and network imports until sandbox execution is added.' });
+          warnings.push({
+            field: 'codeDefinition',
+            message:
+              'Python target is validated as a constrained strategy draft; avoid system and network imports until sandbox execution is added.',
+          });
         }
       } else {
         errors.push({ field: 'codeTarget', message: 'Unsupported code target' });
@@ -826,7 +915,9 @@ export class StrategyLabService {
       project.config && typeof project.config === 'object' && !Array.isArray(project.config)
         ? (project.config as Record<string, unknown>)
         : {};
-    const assets = Array.isArray(config.assets) ? (config.assets as Array<Record<string, unknown>>) : null;
+    const assets = Array.isArray(config.assets)
+      ? (config.assets as Array<Record<string, unknown>>)
+      : null;
     const timeframes = Array.isArray(config.timeframes)
       ? (config.timeframes as string[])
       : project.timeframe
@@ -835,8 +926,7 @@ export class StrategyLabService {
     const start = typeof config.start === 'string' ? config.start : null;
     const end = typeof config.end === 'string' ? config.end : null;
     const description =
-      project.description ??
-      (typeof config.description === 'string' ? config.description : null);
+      project.description ?? (typeof config.description === 'string' ? config.description : null);
 
     return {
       id: project.id,
@@ -862,9 +952,7 @@ export class StrategyLabService {
       movedToTemplateName:
         typeof config.movedToTemplateName === 'string' ? config.movedToTemplateName : null,
       movedToTemplateVersion:
-        typeof config.movedToTemplateVersion === 'number'
-          ? config.movedToTemplateVersion
-          : null,
+        typeof config.movedToTemplateVersion === 'number' ? config.movedToTemplateVersion : null,
       authoringMode: project.authoringMode || 'no_code',
       codeTarget: project.codeTarget,
       visualDefinition:
@@ -880,8 +968,7 @@ export class StrategyLabService {
       end,
       validationState: project.validationState || 'idle',
       validationErrors: (project.validationErrors as StrategyValidationMessage[] | null) || [],
-      validationWarnings:
-        (project.validationWarnings as StrategyValidationMessage[] | null) || [],
+      validationWarnings: (project.validationWarnings as StrategyValidationMessage[] | null) || [],
       objective: project.objective,
       market: project.market,
       timeframe: project.timeframe,
@@ -914,7 +1001,9 @@ export class StrategyLabService {
     }
 
     const sourceConfig =
-      sourceTemplate.config && typeof sourceTemplate.config === 'object' && !Array.isArray(sourceTemplate.config)
+      sourceTemplate.config &&
+      typeof sourceTemplate.config === 'object' &&
+      !Array.isArray(sourceTemplate.config)
         ? (sourceTemplate.config as Record<string, unknown>)
         : {};
 
@@ -922,8 +1011,7 @@ export class StrategyLabService {
       this.compareTemplateField('Name', project.name, sourceTemplate.name),
       this.compareTemplateField(
         'Description',
-        project.description ??
-          (typeof config.description === 'string' ? config.description : null),
+        project.description ?? (typeof config.description === 'string' ? config.description : null),
         sourceTemplate.description ??
           (typeof sourceConfig.description === 'string' ? sourceConfig.description : null)
       ),
@@ -1008,7 +1096,11 @@ export class StrategyLabService {
     };
   }
 
-  private compareTemplateField(label: string, currentValue: unknown, sourceValue: unknown): string | null {
+  private compareTemplateField(
+    label: string,
+    currentValue: unknown,
+    sourceValue: unknown
+  ): string | null {
     return this.normalizeCompareValue(currentValue) === this.normalizeCompareValue(sourceValue)
       ? null
       : label;
@@ -1088,7 +1180,10 @@ export class StrategyLabService {
   private convertDslExpressionToPython(expression: string): string {
     let expr = String(expression || '').trim();
     if (!expr) return '';
-    expr = expr.replace(/\bAND\b/gi, 'and').replace(/\bOR\b/gi, 'or').replace(/\bNOT\b/gi, 'not');
+    expr = expr
+      .replace(/\bAND\b/gi, 'and')
+      .replace(/\bOR\b/gi, 'or')
+      .replace(/\bNOT\b/gi, 'not');
     expr = expr.replace(/ema\((\d+)\)/gi, 'ema(ctx, $1)');
     expr = expr.replace(/rsi\((\d+)\)/gi, 'rsi(ctx, $1)');
     expr = expr.replace(/adx\((\d+)\)/gi, 'adx(ctx, $1)');
@@ -1101,7 +1196,9 @@ export class StrategyLabService {
   }
 
   private sanitizeCodeString(value: string): string {
-    return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return String(value || '')
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"');
   }
 
   private extractRiskValue(value: unknown, key: 'maxRisk' | 'sizingNotes'): unknown {
@@ -1197,7 +1294,9 @@ export class StrategyLabService {
   }
 
   private resolveCodeTarget(codeTarget: unknown, codeDefinition: string): string | null {
-    const normalizedCodeTarget = String(codeTarget || '').trim().toLowerCase();
+    const normalizedCodeTarget = String(codeTarget || '')
+      .trim()
+      .toLowerCase();
     if (normalizedCodeTarget) {
       return normalizedCodeTarget;
     }

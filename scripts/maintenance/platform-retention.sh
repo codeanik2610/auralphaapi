@@ -20,12 +20,21 @@ MYSQL_DATABASE="${MYSQL_DATABASE:-auralpha}"
 POSTGRES_BATCH_SIZE=50000
 MYSQL_BATCH_SIZE=50000
 MAX_BATCHES=200
-DOCKER_BUILDER_UNTIL="72h"
+DOCKER_BUILDER_UNTIL="1h"
+MYSQL_BINLOG_RETENTION_HOURS=1
+POSTGRES_INDEX_MAX_ATTEMPTS=5
+POSTGRES_INDEX_RETRY_SECONDS=15
+DISK_PRESSURE_THRESHOLD_PERCENT=90
+MYSQL_TEMP_RECLAIM_THRESHOLD_GB=4
 RUN_DOCKER_PRUNE=true
 RUN_DB_VACUUM=true
 EXACT_CANDLE_COUNT=false
 RUN_POSTGRES_CANDLES=true
 RUN_MYSQL_SCHEDULER_RUN_LOGS=true
+RUN_MYSQL_BINLOG_PURGE=true
+RUN_MYSQL_TEMP_RECLAIM=true
+CREATE_POSTGRES_CANDLE_RETENTION_INDEX=true
+DOCKER_BUILDER_PRUNE_RAN=false
 
 function usage() {
   cat <<'USAGE'
@@ -37,6 +46,8 @@ Purpose:
   - Postgres market_candles_1m: keep last 90 days by open_time.
   - MySQL scheduler_run_logs: keep latest 5 finished runs per scheduler/user scope.
     Related exchange_asset_update_logs and scheduler_health_check_results cascade from those runs.
+  - MySQL binary logs: purge logs older than the configured short local window.
+  - MySQL InnoDB temp space: restart MySQL under disk pressure to reclaim #innodb_temp.
   - Docker build cache: prune old build cache only, never app images or volumes.
 
 Safety:
@@ -54,11 +65,19 @@ Options:
   --postgres-batch-size COUNT        Default: 50000
   --mysql-batch-size COUNT           Default: 50000
   --max-batches COUNT                Default: 200
-  --docker-builder-until AGE         Default: 72h
+  --docker-builder-until AGE         Default: 1h
+  --mysql-binlog-retention-hours N   Default: 1
+  --postgres-index-max-attempts N     Default: 5
+  --postgres-index-retry-seconds N    Default: 15
+  --disk-pressure-threshold-percent N Default: 90
+  --mysql-temp-reclaim-threshold-gb N Default: 4
   --skip-docker-prune                Do not prune Docker build cache in --apply.
+  --skip-mysql-binlog-purge          Do not purge MySQL binary logs in --apply.
+  --skip-mysql-temp-reclaim          Do not restart MySQL to reclaim #innodb_temp.
   --skip-vacuum                      Do not run VACUUM ANALYZE after Postgres deletes.
   --skip-postgres-candles            Do not delete Postgres candle rows in --apply.
   --skip-mysql-scheduler-run-logs    Do not delete MySQL scheduler run logs in --apply.
+  --skip-candle-retention-index      Do not create the leading Postgres open_time index.
   --exact-candle-count               Count old candle rows even without a leading open_time index.
   -h, --help                         Show this help.
 USAGE
@@ -159,8 +178,36 @@ function parse_args() {
         DOCKER_BUILDER_UNTIL="${2:-}"
         shift 2
         ;;
+      --mysql-binlog-retention-hours)
+        MYSQL_BINLOG_RETENTION_HOURS="${2:-}"
+        shift 2
+        ;;
+      --postgres-index-max-attempts)
+        POSTGRES_INDEX_MAX_ATTEMPTS="${2:-}"
+        shift 2
+        ;;
+      --postgres-index-retry-seconds)
+        POSTGRES_INDEX_RETRY_SECONDS="${2:-}"
+        shift 2
+        ;;
+      --disk-pressure-threshold-percent)
+        DISK_PRESSURE_THRESHOLD_PERCENT="${2:-}"
+        shift 2
+        ;;
+      --mysql-temp-reclaim-threshold-gb)
+        MYSQL_TEMP_RECLAIM_THRESHOLD_GB="${2:-}"
+        shift 2
+        ;;
       --skip-docker-prune)
         RUN_DOCKER_PRUNE=false
+        shift
+        ;;
+      --skip-mysql-binlog-purge)
+        RUN_MYSQL_BINLOG_PURGE=false
+        shift
+        ;;
+      --skip-mysql-temp-reclaim)
+        RUN_MYSQL_TEMP_RECLAIM=false
         shift
         ;;
       --skip-vacuum)
@@ -173,6 +220,10 @@ function parse_args() {
         ;;
       --skip-mysql-scheduler-run-logs|--skip-mysql-exchange-logs)
         RUN_MYSQL_SCHEDULER_RUN_LOGS=false
+        shift
+        ;;
+      --skip-candle-retention-index)
+        CREATE_POSTGRES_CANDLE_RETENTION_INDEX=false
         shift
         ;;
       --exact-candle-count)
@@ -196,11 +247,20 @@ function validate_inputs() {
   require_uint "POSTGRES_BATCH_SIZE" "${POSTGRES_BATCH_SIZE}"
   require_uint "MYSQL_BATCH_SIZE" "${MYSQL_BATCH_SIZE}"
   require_uint "MAX_BATCHES" "${MAX_BATCHES}"
+  require_uint "MYSQL_BINLOG_RETENTION_HOURS" "${MYSQL_BINLOG_RETENTION_HOURS}"
+  require_uint "POSTGRES_INDEX_MAX_ATTEMPTS" "${POSTGRES_INDEX_MAX_ATTEMPTS}"
+  require_uint "POSTGRES_INDEX_RETRY_SECONDS" "${POSTGRES_INDEX_RETRY_SECONDS}"
+  require_uint "DISK_PRESSURE_THRESHOLD_PERCENT" "${DISK_PRESSURE_THRESHOLD_PERCENT}"
+  require_uint "MYSQL_TEMP_RECLAIM_THRESHOLD_GB" "${MYSQL_TEMP_RECLAIM_THRESHOLD_GB}"
   require_safe_container_name "POSTGRES_CONTAINER" "${POSTGRES_CONTAINER}"
   require_safe_container_name "MYSQL_CONTAINER" "${MYSQL_CONTAINER}"
   require_safe_identifier "POSTGRES_DB" "${POSTGRES_DB}"
   require_safe_identifier "POSTGRES_USER" "${POSTGRES_USER}"
   require_safe_identifier "MYSQL_DATABASE" "${MYSQL_DATABASE}"
+
+  if [[ "${DISK_PRESSURE_THRESHOLD_PERCENT}" -gt 100 ]]; then
+    fail "DISK_PRESSURE_THRESHOLD_PERCENT must be between 1 and 100. Got: ${DISK_PRESSURE_THRESHOLD_PERCENT}"
+  fi
 
   if [[ "${MODE}" == "apply" && "${AURALPHA_RETENTION_CONFIRM:-}" != "delete" ]]; then
     fail "--apply requires AURALPHA_RETENTION_CONFIRM=delete"
@@ -212,6 +272,18 @@ function postgres_query() {
   docker exec -i \
     -e POSTGRES_USER="${POSTGRES_USER}" \
     -e POSTGRES_DB="${POSTGRES_DB}" \
+    "${POSTGRES_CONTAINER}" \
+    sh -lc 'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atq' \
+    <<<"${sql}"
+}
+
+function postgres_query_with_pgoptions() {
+  local pgoptions="$1"
+  local sql="$2"
+  docker exec -i \
+    -e POSTGRES_USER="${POSTGRES_USER}" \
+    -e POSTGRES_DB="${POSTGRES_DB}" \
+    -e PGOPTIONS="${pgoptions}" \
     "${POSTGRES_CONTAINER}" \
     sh -lc 'psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atq' \
     <<<"${sql}"
@@ -234,6 +306,61 @@ function print_docker_snapshot() {
   docker system df
 }
 
+function bytes_to_gib() {
+  local bytes="${1:-0}"
+  awk -v bytes="${bytes}" 'BEGIN { printf "%.2f", bytes / 1024 / 1024 / 1024 }'
+}
+
+function get_root_disk_use_percent() {
+  df -P / | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }'
+}
+
+function get_dir_size_bytes() {
+  local dir="$1"
+  if [[ -d "${dir}" ]]; then
+    du -s -B1 "${dir}" 2>/dev/null | awk 'NR == 1 { print $1 }'
+  else
+    echo "0"
+  fi
+}
+
+function get_mysql_data_dir() {
+  docker inspect \
+    --format '{{range .Mounts}}{{if eq .Destination "/var/lib/mysql"}}{{.Source}}{{end}}{{end}}' \
+    "${MYSQL_CONTAINER}" 2>/dev/null || true
+}
+
+function get_mysql_innodb_temp_bytes() {
+  local mysql_data_dir mysql_temp_dir
+  mysql_data_dir="$(get_mysql_data_dir)"
+  if [[ -z "${mysql_data_dir}" ]]; then
+    echo "0"
+    return
+  fi
+
+  mysql_temp_dir="${mysql_data_dir}/#innodb_temp"
+  get_dir_size_bytes "${mysql_temp_dir}"
+}
+
+function print_disk_pressure_report() {
+  local root_disk_use_percent mysql_data_dir mysql_temp_bytes mysql_temp_gib threshold_bytes
+  root_disk_use_percent="$(get_root_disk_use_percent)"
+  mysql_data_dir="$(get_mysql_data_dir)"
+  mysql_temp_bytes="$(get_mysql_innodb_temp_bytes)"
+  threshold_bytes=$((MYSQL_TEMP_RECLAIM_THRESHOLD_GB * 1024 * 1024 * 1024))
+  mysql_temp_gib="$(bytes_to_gib "${mysql_temp_bytes}")"
+
+  cat <<EOF
+root_disk_use_percent	${root_disk_use_percent:-unknown}
+disk_pressure_threshold_percent	${DISK_PRESSURE_THRESHOLD_PERCENT}
+mysql_data_dir	${mysql_data_dir:-unknown}
+mysql_innodb_temp_gb	${mysql_temp_gib}
+mysql_temp_reclaim_threshold_gb	${MYSQL_TEMP_RECLAIM_THRESHOLD_GB}
+mysql_temp_reclaim_threshold_bytes	${threshold_bytes}
+run_mysql_temp_reclaim	${RUN_MYSQL_TEMP_RECLAIM}
+EOF
+}
+
 function postgres_candle_cutoff_sql() {
   cat <<SQL
 now() - make_interval(days => ${CANDLE_RETENTION_DAYS})
@@ -244,12 +371,56 @@ function postgres_has_leading_open_time_index() {
   postgres_query "
 SELECT EXISTS (
   SELECT 1
-    FROM pg_indexes
-   WHERE schemaname = 'public'
-     AND tablename = 'market_candles_1m'
-     AND indexdef ~* 'USING btree \\(open_time'
+    FROM pg_index i
+    JOIN pg_class t ON t.oid = i.indrelid
+    JOIN pg_class ix ON ix.oid = i.indexrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = i.indkey[0]
+   WHERE n.nspname = 'public'
+     AND t.relname = 'market_candles_1m'
+     AND ix.relkind = 'i'
+     AND i.indisready
+     AND i.indisvalid
+     AND a.attname = 'open_time'
 )::text;
 "
+}
+
+function ensure_postgres_candle_retention_index() {
+  local has_leading_open_time_index
+  local attempt
+  has_leading_open_time_index="$(postgres_has_leading_open_time_index)"
+  has_leading_open_time_index="${has_leading_open_time_index//$'\n'/}"
+
+  if [[ "${has_leading_open_time_index}" == "true" ]]; then
+    echo "postgres_candle_retention_index	exists"
+    return
+  fi
+
+  if [[ "${CREATE_POSTGRES_CANDLE_RETENTION_INDEX}" != "true" ]]; then
+    fail "Refusing market_candles_1m deletes without a leading open_time index. Re-run without --skip-candle-retention-index or add one manually."
+  fi
+
+  for attempt in $(seq 1 "${POSTGRES_INDEX_MAX_ATTEMPTS}"); do
+    echo "postgres_candle_retention_index	creating_attempt_${attempt}_of_${POSTGRES_INDEX_MAX_ATTEMPTS}"
+
+    if postgres_query_with_pgoptions "-c temp_file_limit=-1 -c maintenance_work_mem=256MB" "
+DROP INDEX CONCURRENTLY IF EXISTS public.idx_market_candles_1m_open_time_retention;
+" && postgres_query_with_pgoptions "-c temp_file_limit=-1 -c maintenance_work_mem=256MB" "
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_market_candles_1m_open_time_retention
+  ON public.market_candles_1m (open_time);
+"; then
+      echo "postgres_candle_retention_index	created_or_already_exists"
+      return
+    fi
+
+    if [[ "${attempt}" -lt "${POSTGRES_INDEX_MAX_ATTEMPTS}" ]]; then
+      echo "postgres_candle_retention_index	retry_in_${POSTGRES_INDEX_RETRY_SECONDS}_seconds"
+      sleep "${POSTGRES_INDEX_RETRY_SECONDS}"
+    fi
+  done
+
+  fail "Unable to create the market_candles_1m open_time retention index after ${POSTGRES_INDEX_MAX_ATTEMPTS} attempts."
 }
 
 function print_postgres_candle_report() {
@@ -269,9 +440,10 @@ SELECT 'estimated_rows' || chr(9) || reltuples::bigint::text
   FROM pg_class
  WHERE oid = 'public.market_candles_1m'::regclass;
 SELECT 'leading_open_time_index_exists' || chr(9) || '${has_leading_open_time_index}';
+SELECT 'create_retention_index_on_apply' || chr(9) || '${CREATE_POSTGRES_CANDLE_RETENTION_INDEX}';
 "
 
-  if [[ "${has_leading_open_time_index}" != "t" && "${EXACT_CANDLE_COUNT}" != "true" ]]; then
+  if [[ "${has_leading_open_time_index}" != "true" && "${EXACT_CANDLE_COUNT}" != "true" ]]; then
     echo "oldest_open_time	skipped_no_leading_open_time_index"
     echo "newest_open_time	skipped_no_leading_open_time_index"
     echo "rows_older_than_retention	skipped_no_leading_open_time_index"
@@ -294,8 +466,13 @@ function require_postgres_candle_delete_ready() {
   local has_leading_open_time_index
   has_leading_open_time_index="$(postgres_has_leading_open_time_index)"
   has_leading_open_time_index="${has_leading_open_time_index//$'\n'/}"
-  if [[ "${has_leading_open_time_index}" != "t" ]]; then
-    fail "Refusing market_candles_1m deletes without a leading open_time index. Add one first with CREATE INDEX CONCURRENTLY, then rerun."
+  if [[ "${has_leading_open_time_index}" != "true" ]]; then
+    ensure_postgres_candle_retention_index
+    has_leading_open_time_index="$(postgres_has_leading_open_time_index)"
+    has_leading_open_time_index="${has_leading_open_time_index//$'\n'/}"
+  fi
+  if [[ "${has_leading_open_time_index}" != "true" ]]; then
+    fail "Refusing market_candles_1m deletes because leading open_time index is still missing after index setup."
   fi
 }
 
@@ -484,13 +661,73 @@ SELECT ROW_COUNT();
   echo "mysql_scheduler_run_logs_deleted_total	${total_deleted}"
 }
 
+function apply_mysql_binlog_purge() {
+  if [[ "${RUN_MYSQL_BINLOG_PURGE}" != "true" ]]; then
+    echo "mysql_binlog_purge	skipped"
+    return
+  fi
+
+  mysql_query "
+PURGE BINARY LOGS BEFORE DATE_SUB(NOW(), INTERVAL ${MYSQL_BINLOG_RETENTION_HOURS} HOUR);
+"
+  echo "mysql_binlog_purge	older_than_${MYSQL_BINLOG_RETENTION_HOURS}_hours"
+}
+
 function apply_docker_builder_prune() {
   if [[ "${RUN_DOCKER_PRUNE}" != "true" ]]; then
     echo "docker_builder_prune	skipped"
     return
   fi
 
-  docker builder prune --force --filter "until=${DOCKER_BUILDER_UNTIL}"
+  if [[ "${DOCKER_BUILDER_PRUNE_RAN}" == "true" ]]; then
+    echo "docker_builder_prune	already_run"
+    return
+  fi
+
+  if docker builder prune --force --filter "until=${DOCKER_BUILDER_UNTIL}"; then
+    DOCKER_BUILDER_PRUNE_RAN=true
+    return
+  fi
+
+  echo "docker_builder_prune	failed"
+}
+
+function apply_mysql_temp_reclaim() {
+  local root_disk_use_percent mysql_temp_bytes threshold_bytes before_gb after_gb
+
+  if [[ "${RUN_MYSQL_TEMP_RECLAIM}" != "true" ]]; then
+    echo "mysql_temp_reclaim	skipped"
+    return
+  fi
+
+  root_disk_use_percent="$(get_root_disk_use_percent)"
+  mysql_temp_bytes="$(get_mysql_innodb_temp_bytes)"
+  threshold_bytes=$((MYSQL_TEMP_RECLAIM_THRESHOLD_GB * 1024 * 1024 * 1024))
+  before_gb="$(bytes_to_gib "${mysql_temp_bytes}")"
+
+  echo "mysql_temp_reclaim_root_disk_use_percent	${root_disk_use_percent:-unknown}"
+  echo "mysql_temp_reclaim_before_gb	${before_gb}"
+
+  if [[ -z "${root_disk_use_percent}" || ! "${root_disk_use_percent}" =~ ^[0-9]+$ ]]; then
+    echo "mysql_temp_reclaim	skipped_root_disk_unknown"
+    return
+  fi
+
+  if [[ "${mysql_temp_bytes}" -lt "${threshold_bytes}" ]]; then
+    echo "mysql_temp_reclaim	skipped_temp_below_threshold"
+    return
+  fi
+
+  if [[ "${root_disk_use_percent}" -lt "${DISK_PRESSURE_THRESHOLD_PERCENT}" ]]; then
+    echo "mysql_temp_reclaim	skipped_disk_below_threshold"
+    return
+  fi
+
+  echo "mysql_temp_reclaim	restarting_${MYSQL_CONTAINER}"
+  docker restart "${MYSQL_CONTAINER}" >/dev/null
+  after_gb="$(bytes_to_gib "$(get_mysql_innodb_temp_bytes)")"
+  echo "mysql_temp_reclaim	restarted_${MYSQL_CONTAINER}"
+  echo "mysql_temp_reclaim_after_gb	${after_gb}"
 }
 
 function main() {
@@ -510,8 +747,15 @@ postgres_batch_size	${POSTGRES_BATCH_SIZE}
 mysql_batch_size	${MYSQL_BATCH_SIZE}
 max_batches	${MAX_BATCHES}
 docker_builder_until	${DOCKER_BUILDER_UNTIL}
+mysql_binlog_retention_hours	${MYSQL_BINLOG_RETENTION_HOURS}
+postgres_index_max_attempts	${POSTGRES_INDEX_MAX_ATTEMPTS}
+postgres_index_retry_seconds	${POSTGRES_INDEX_RETRY_SECONDS}
+disk_pressure_threshold_percent	${DISK_PRESSURE_THRESHOLD_PERCENT}
+mysql_temp_reclaim_threshold_gb	${MYSQL_TEMP_RECLAIM_THRESHOLD_GB}
 run_postgres_candles	${RUN_POSTGRES_CANDLES}
 run_mysql_scheduler_run_logs	${RUN_MYSQL_SCHEDULER_RUN_LOGS}
+run_mysql_binlog_purge	${RUN_MYSQL_BINLOG_PURGE}
+run_mysql_temp_reclaim	${RUN_MYSQL_TEMP_RECLAIM}
 run_docker_prune	${RUN_DOCKER_PRUNE}
 EOF
 
@@ -520,6 +764,21 @@ EOF
 
   section "Docker Usage Before"
   print_docker_snapshot
+
+  section "Disk Pressure Report Before Cleanup"
+  print_disk_pressure_report
+
+  if [[ "${MODE}" == "apply" ]]; then
+    section "Applying Early Disk Pressure Cleanup"
+    apply_docker_builder_prune
+    apply_mysql_temp_reclaim
+
+    section "Disk After Early Cleanup"
+    print_disk_snapshot
+
+    section "Disk Pressure Report After Early Cleanup"
+    print_disk_pressure_report
+  fi
 
   section "Postgres market_candles_1m Retention Report"
   print_postgres_candle_report
@@ -531,14 +790,8 @@ EOF
   print_mysql_binlog_report
 
   if [[ "${MODE}" == "apply" ]]; then
-    if [[ "${RUN_POSTGRES_CANDLES}" == "true" ]]; then
-      section "Applying Postgres Candle Retention"
-      require_postgres_candle_delete_ready
-      apply_postgres_candle_retention
-    else
-      section "Applying Postgres Candle Retention"
-      echo "postgres_candles	skipped"
-    fi
+    section "Applying MySQL Binary Log Purge"
+    apply_mysql_binlog_purge
 
     if [[ "${RUN_MYSQL_SCHEDULER_RUN_LOGS}" == "true" ]]; then
       section "Applying MySQL Scheduler Run Log Retention"
@@ -550,6 +803,15 @@ EOF
 
     section "Applying Docker Builder Prune"
     apply_docker_builder_prune
+
+    if [[ "${RUN_POSTGRES_CANDLES}" == "true" ]]; then
+      section "Applying Postgres Candle Retention"
+      require_postgres_candle_delete_ready
+      apply_postgres_candle_retention
+    else
+      section "Applying Postgres Candle Retention"
+      echo "postgres_candles	skipped"
+    fi
 
     section "Disk After"
     print_disk_snapshot

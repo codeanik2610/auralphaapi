@@ -52,6 +52,11 @@ interface DeltaProduct {
   contract_unit_currency?: string | null;
 }
 
+type DeltaProductMaps = {
+  byId: Map<string, DeltaProduct>;
+  bySymbol: Map<string, DeltaProduct>;
+};
+
 @Service()
 export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
   readonly historyWindowMode = 'contiguous' as const;
@@ -63,10 +68,7 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     | { fetchedAt: number; byId: Map<string, DeltaProduct>; bySymbol: Map<string, DeltaProduct> }
     | null = null;
 
-  private async getProductMaps(): Promise<{
-    byId: Map<string, DeltaProduct>;
-    bySymbol: Map<string, DeltaProduct>;
-  }> {
+  private async getProductMaps(): Promise<DeltaProductMaps> {
     const now = Date.now();
     if (this.productCache && now - this.productCache.fetchedAt < 5 * 60 * 1000) {
       return { byId: this.productCache.byId, bySymbol: this.productCache.bySymbol };
@@ -253,7 +255,8 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
       },
       context
     );
-    const closedPositions = this.reconstructClosedPositionsFromFills(fills);
+    const productMaps = await this.getProductMaps();
+    const closedPositions = this.reconstructClosedPositionsFromFills(fills, productMaps);
     const limit = Math.max(1, Math.floor(Number(query.limit || 20)));
     return closedPositions.slice(0, limit);
   }
@@ -290,7 +293,10 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     return result;
   }
 
-  private reconstructClosedPositionsFromFills(fills: DeltaPositionHistoryPayload[]) {
+  private reconstructClosedPositionsFromFills(
+    fills: DeltaPositionHistoryPayload[],
+    productMaps: DeltaProductMaps
+  ) {
     type PositionState = {
       sizeSigned: number;
       avgEntry: number;
@@ -319,7 +325,10 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
 
       for (const fill of sorted) {
         const side = String(fill.side || '').toLowerCase();
-        const qty = Math.abs(this.toNumber(fill.size));
+        const quantityContracts = Math.abs(this.toNumber(fill.size));
+        const product = this.resolveProductForFill(fill, productMaps);
+        const contractValue = this.toNumber(product?.contract_value ?? 0);
+        const qty = contractValue > 0 ? quantityContracts * contractValue : quantityContracts;
         const price = this.toNumber(fill.price);
         if (!qty || !Number.isFinite(qty) || qty <= 0) continue;
         if (!price || !Number.isFinite(price) || price <= 0) continue;
@@ -347,6 +356,7 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
         // Closing trade (opposite direction).
         const oldAbs = Math.abs(state.sizeSigned);
         const closingQty = Math.min(oldAbs, qty);
+        const closingContracts = contractValue > 0 ? closingQty / contractValue : closingQty;
         const direction = state.sizeSigned > 0 ? 1 : -1;
         const realized = direction * (price - state.avgEntry) * closingQty;
         const afterSizeSigned = state.sizeSigned + delta;
@@ -362,6 +372,10 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
           closed_price: String(price || 0),
           liquidation_price: '0',
           quantity: String(closingQty),
+          quantity_contracts: String(closingContracts),
+          base_quantity: contractValue > 0 ? String(closingQty) : null,
+          contract_value: contractValue > 0 ? String(contractValue) : null,
+          contract_unit_currency: product?.contract_unit_currency ?? null,
           leverage: '1',
           order_type: direction > 0 ? 'buy' : 'sell',
           side: direction > 0 ? 'Long' : 'Short',
@@ -403,6 +417,19 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     // Most recent first.
     output.sort((a, b) => toTimestamp(String(b.updated_at || '')) - toTimestamp(String(a.updated_at || '')));
     return output;
+  }
+
+  private resolveProductForFill(
+    fill: DeltaPositionHistoryPayload,
+    productMaps: DeltaProductMaps
+  ): DeltaProduct | undefined {
+    const productId = String(fill.product_id ?? '').trim();
+    const productSymbol = String(fill.product_symbol ?? '').trim().toUpperCase();
+    return (
+      (productId && productMaps.byId.get(productId)) ||
+      (productSymbol && productMaps.bySymbol.get(productSymbol)) ||
+      undefined
+    );
   }
 
   private async fetchFillsWindow(
@@ -482,7 +509,7 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
 
   private mapPosition(
     item: DeltaPositionPayload,
-    productMaps: { byId: Map<string, DeltaProduct>; bySymbol: Map<string, DeltaProduct> }
+    productMaps: DeltaProductMaps
   ) {
     const isLong = this.toNumber(item.size) >= 0;
     const entryPrice = this.toNumber(item.entry_price);

@@ -1211,10 +1211,10 @@ export class PortfolioService {
 
       const pnlExpr =
         "CAST(COALESCE(" +
-        " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.pnl'))," +
         " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.realized_pnl'))," +
         " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.realized'))," +
         " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.net_pnl'))," +
+        " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.pnl'))," +
         " '0'" +
         ") AS DECIMAL(30,10))";
 
@@ -1313,10 +1313,10 @@ export class PortfolioService {
 
       const pnlExpr =
         "CAST(COALESCE(" +
-        " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.pnl'))," +
         " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.realized_pnl'))," +
         " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.realized'))," +
         " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.net_pnl'))," +
+        " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.pnl'))," +
         " '0'" +
         ") AS DECIMAL(30,10))";
 
@@ -1424,10 +1424,10 @@ export class PortfolioService {
              0
            )) AS totalNotional,
            SUM(COALESCE(
-             JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.pnl')),
              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.realized_pnl')),
              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.realized')),
              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.net_pnl')),
+             JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.pnl')),
              0
            )) AS totalPnl
       `;
@@ -1479,10 +1479,10 @@ export class PortfolioService {
 
       const pnlExpr =
         "CAST(COALESCE(" +
-        " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.pnl'))," +
         " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.realized_pnl'))," +
         " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.realized'))," +
         " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.net_pnl'))," +
+        " JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.pnl'))," +
         " '0'" +
         ") AS DECIMAL(30,10))";
 
@@ -1556,7 +1556,7 @@ export class PortfolioService {
   }
 
   private extractPnl(value: Record<string, unknown>): number {
-    const candidates = [value.pnl, value.realized, value.realized_pnl, value.net_pnl];
+    const candidates = [value.realized_pnl, value.realized, value.net_pnl, value.pnl];
     for (const candidate of candidates) {
       const numeric = Number(candidate);
       if (Number.isFinite(numeric)) return numeric;

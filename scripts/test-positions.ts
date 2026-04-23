@@ -1494,6 +1494,23 @@ async function run(): Promise<void> {
   }> = [];
 
   adapter.deltaHttpClient = {
+    async publicGet(path: string) {
+      assert.equal(path, '/v2/products');
+      return [
+        {
+          id: '123',
+          symbol: 'BTCUSD',
+          contract_value: '0.001',
+          contract_unit_currency: 'BTC',
+        },
+        {
+          id: '456',
+          symbol: 'ETHUSD',
+          contract_value: '0.01',
+          contract_unit_currency: 'ETH',
+        },
+      ];
+    },
     async signedGetEnvelope(
       accountId: string,
       path: string,
@@ -1572,8 +1589,20 @@ async function run(): Promise<void> {
   assert.equal(history[0].symbol, 'ETHUSD');
   assert.equal(history[0].status, 'closed');
   assert.equal(history[0].closed_price, '55');
+  assert.equal(history[0].quantity, '0.02');
+  assert.equal(history[0].quantity_contracts, '2');
+  assert.equal(history[0].base_quantity, '0.02');
+  assert.equal(history[0].contract_value, '0.01');
+  assert.equal(history[0].contract_unit_currency, 'ETH');
+  assert.equal(Math.abs(Number(history[0].pnl) - 0.1) < 1e-12, true);
   assert.equal(history[1].symbol, 'BTCUSD');
   assert.equal(history[1].closed_price, '120');
+  assert.equal(history[1].quantity, '0.001');
+  assert.equal(history[1].quantity_contracts, '1');
+  assert.equal(history[1].base_quantity, '0.001');
+  assert.equal(history[1].contract_value, '0.001');
+  assert.equal(history[1].contract_unit_currency, 'BTC');
+  assert.equal(Math.abs(Number(history[1].pnl) - 0.02) < 1e-12, true);
 
   assert.equal(capturedQueries.length, 2);
   assert.equal(capturedQueries[0].path, '/v2/fills');

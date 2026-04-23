@@ -47,6 +47,7 @@ async function runStrategyLabControllerAssertions(): Promise<void> {
     updateStrategyLabProject: async (...args: unknown[]) => createSuccess({ args }),
     validateStrategyLabProject: async (...args: unknown[]) => createSuccess({ args }),
     sendStrategyLabToBacktests: async (...args: unknown[]) => createSuccess({ args }),
+    deleteStrategyLabProject: async (...args: unknown[]) => createSuccess({ args }),
     moveStrategyLabProjectToTemplate: async (...args: unknown[]) => createSuccess({ args }),
   };
 
@@ -99,7 +100,11 @@ async function runStrategyLabControllerAssertions(): Promise<void> {
     'user-1',
     handoffBody,
   ]);
-  assert.deepEqual((await controller.moveStrategyLabProjectToTemplate(authReq, 'proj-1')).data.args, [
+  assert.deepEqual(
+    (await controller.moveStrategyLabProjectToTemplate(authReq, 'proj-1')).data.args,
+    ['user-1', 'proj-1']
+  );
+  assert.deepEqual((await controller.deleteStrategyLabProject(authReq, 'proj-1')).data.args, [
     'user-1',
     'proj-1',
   ]);
@@ -107,6 +112,7 @@ async function runStrategyLabControllerAssertions(): Promise<void> {
   await assertAuthRequired(() => controller.listStrategyLabProjects(unauthReq));
   await assertAuthRequired(() => controller.getStrategyLabProjectById(unauthReq, 'proj-1'));
   await assertAuthRequired(() => controller.moveStrategyLabProjectToTemplate(unauthReq, 'proj-1'));
+  await assertAuthRequired(() => controller.deleteStrategyLabProject(unauthReq, 'proj-1'));
 }
 
 async function runStrategyLibraryControllerAssertions(): Promise<void> {
@@ -783,11 +789,11 @@ async function runStrategyLibrarySearchQueryAssertions(): Promise<void> {
     assert.deepEqual(capturedWhereClauses[1].params, { status: 'Draft' });
     assert.equal(
       capturedWhereClauses[2].clause,
-      "CASE WHEN library.assets IS NULL THEN 0 ELSE jsonb_array_length(library.assets) END > 0"
+      'CASE WHEN library.assets IS NULL THEN 0 ELSE jsonb_array_length(library.assets) END > 0'
     );
     assert.equal(
       capturedWhereClauses[3].clause,
-      "CASE WHEN library.timeframes IS NULL THEN 0 ELSE jsonb_array_length(library.timeframes) END = 0"
+      'CASE WHEN library.timeframes IS NULL THEN 0 ELSE jsonb_array_length(library.timeframes) END = 0'
     );
     assert.equal(
       capturedWhereClauses[4].clause,
@@ -1214,7 +1220,11 @@ async function runStrategyLibraryStatusUpdateAssertions(): Promise<void> {
 
   service.strategyLibraryRepository = {
     getById: async () => draftRecord,
-    updateLibraryStatus: async (_userId: string, _id: string, payload: Record<string, unknown>) => ({
+    updateLibraryStatus: async (
+      _userId: string,
+      _id: string,
+      payload: Record<string, unknown>
+    ) => ({
       ...draftRecord,
       status: payload.status,
       updatedAt: new Date('2026-04-03T00:00:00.000Z'),

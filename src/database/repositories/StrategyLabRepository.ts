@@ -88,9 +88,9 @@ export class StrategyLabRepository {
 
     if (options.search) {
       query.andWhere(
-        '(project.name ILIKE :search OR COALESCE(project.description, \'\') ILIKE :search)',
+        "(project.name ILIKE :search OR COALESCE(project.description, '') ILIKE :search)",
         {
-          search: `%${options.search}%`
+          search: `%${options.search}%`,
         }
       );
     }
@@ -115,6 +115,11 @@ export class StrategyLabRepository {
 
   async getProjectById(userId: string, projectId: string): Promise<StrategyLabProject | null> {
     return this.projectRepository.findOne({ where: { id: projectId, userId } });
+  }
+
+  async deleteProject(userId: string, projectId: string): Promise<boolean> {
+    const result = await this.projectRepository.delete({ id: projectId, userId });
+    return Boolean(result.affected && result.affected > 0);
   }
 
   async moveProjectToTemplate(
@@ -206,7 +211,10 @@ export class StrategyLabRepository {
     });
   }
 
-  async saveDraft(userId: string, payload: ValidatedStrategyLabDraftBody): Promise<StrategyLabProject> {
+  async saveDraft(
+    userId: string,
+    payload: ValidatedStrategyLabDraftBody
+  ): Promise<StrategyLabProject> {
     const projectVersion = 1;
     const config = this.buildConfig(payload, {
       projectVersion,
