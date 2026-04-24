@@ -96,6 +96,7 @@ require_nonempty "${WORKER_ENV_FILE}" "REDIS_PASSWORD" "Worker Redis password"
 require_not_placeholder "${DISCOVERY_ENV_FILE}" "APP_HOST" "Discovery app host"
 require_nonempty "${DISCOVERY_ENV_FILE}" "APP_CORS_ORIGINS" "Discovery CORS origins"
 require_nonempty "${DISCOVERY_ENV_FILE}" "BROKER_ACCOUNT_SECRETS_KEY" "Discovery broker account secrets key"
+require_nonempty "${DISCOVERY_ENV_FILE}" "SCHEDULER_SECRET" "Discovery scheduler secret"
 require_nonempty "${DISCOVERY_ENV_FILE}" "JWT_SECRET" "Discovery JWT secret"
 require_not_placeholder "${DISCOVERY_ENV_FILE}" "DB_HOST" "Discovery MySQL host"
 require_nonempty "${DISCOVERY_ENV_FILE}" "DB_PASSWORD" "Discovery MySQL password"
@@ -112,6 +113,7 @@ require_equals "${BACKEND_ENV_FILE}" "APP_API_KEY" "${DISCOVERY_ENV_FILE}" "NODE
 require_equals "${BACKEND_ENV_FILE}" "BROKER_ACCOUNT_SECRETS_KEY" "${WORKER_ENV_FILE}" "BROKER_ACCOUNT_SECRETS_KEY" "Broker account secrets key"
 require_equals "${BACKEND_ENV_FILE}" "BROKER_ACCOUNT_SECRETS_KEY" "${DISCOVERY_ENV_FILE}" "BROKER_ACCOUNT_SECRETS_KEY" "Discovery broker account secrets key"
 require_equals "${BACKEND_ENV_FILE}" "DISCOVERY_SCHEDULER_SECRET" "${WORKER_ENV_FILE}" "DISCOVERY_SCHEDULER_SECRET" "Worker discovery scheduler secret"
+require_equals "${BACKEND_ENV_FILE}" "DISCOVERY_SCHEDULER_SECRET" "${DISCOVERY_ENV_FILE}" "SCHEDULER_SECRET" "Discovery scheduler secret"
 
 if [[ "$(read_env_value "${BACKEND_ENV_FILE}" "APP_HOST")" != "$(read_env_value "${PLATFORM_ENV_FILE}" "API_DOMAIN")" ]]; then
   add_error "Backend APP_HOST must match platform API_DOMAIN"

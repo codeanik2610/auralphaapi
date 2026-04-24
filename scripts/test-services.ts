@@ -13093,7 +13093,7 @@ async function runAutomationOperationalSnapshotAssertions(): Promise<void> {
   assert.equal(snapshot.connectedAccounts, 5);
   assert.equal(snapshot.healthStatus, 'degraded');
   assert.equal(snapshot.health, 'Degraded');
-  assert.match(String(snapshot.detail || ''), /automation run/i);
+  assert.match(String(snapshot.detail || ''), /stale cursor/i);
   assert.equal(snapshot.summary.activeRuns, 2);
   assert.equal(snapshot.summary.failedRuns24h, 1);
   assert.equal(snapshot.summary.overlapSkips24h, 2);

@@ -149,7 +149,7 @@ export class AutomationsService {
 
   async getRuntimeStaleRunCandidates(limit = 100): Promise<RuntimeStaleItem[]> {
     const staleCutoff = new Date(
-      Date.now() - AutomationsService.BACKTEST_RUN_STALE_MINUTES * 60 * 1000
+      Date.now() - AutomationsService.TRADE_SUGGESTION_RUN_STALE_MINUTES * 60 * 1000
     );
     const runs = await this.automationRunRepository.findStaleRuns({
       olderThan: staleCutoff,
@@ -161,8 +161,7 @@ export class AutomationsService {
     for (const run of runs) {
       const automation = await this.automationRepository.getAutomationByIdAny(run.automationId);
       const meta = this.parseRecord(run.meta) ?? {};
-      const lineage = extractAutomationLineage(meta.lineage ?? meta);
-      const backtestId = this.readString(meta.backtestId, lineage?.backtestId);
+      const backtestId = this.readRunChildBacktestId(meta);
       let backtestStatus: string | null = null;
 
       if (automation && backtestId) {
@@ -268,8 +267,7 @@ export class AutomationsService {
     }
 
     const meta = this.parseRecord(run.meta) ?? {};
-    const lineage = extractAutomationLineage(meta.lineage ?? meta);
-    const backtestId = this.readString(meta.backtestId, lineage?.backtestId);
+    const backtestId = this.readRunChildBacktestId(meta);
 
     if (backtestId) {
       await this.automationExecutionService.syncBacktestRunnerLifecycleByBacktestId(backtestId);
@@ -399,8 +397,7 @@ export class AutomationsService {
         }
 
         const meta = this.parseRecord(run.meta) ?? {};
-        const lineage = extractAutomationLineage(meta.lineage ?? meta);
-        const backtestId = this.readString(meta.backtestId, lineage?.backtestId);
+        const backtestId = this.readRunChildBacktestId(meta);
 
         if (backtestId) {
           await this.automationExecutionService.syncBacktestRunnerLifecycleByBacktestId(backtestId);
@@ -417,11 +414,7 @@ export class AutomationsService {
         }
 
         const refreshedMeta = this.parseRecord(run.meta) ?? {};
-        const refreshedLineage = extractAutomationLineage(refreshedMeta.lineage ?? refreshedMeta);
-        const refreshedBacktestId = this.readString(
-          refreshedMeta.backtestId,
-          refreshedLineage?.backtestId
-        );
+        const refreshedBacktestId = this.readRunChildBacktestId(refreshedMeta);
         const refreshedBacktestStatus = this.readString(refreshedMeta.childBacktestStatus);
         const recovery = this.buildAutomationRunRecovery(
           run,
@@ -1014,10 +1007,7 @@ export class AutomationsService {
         ? (run.meta as Record<string, unknown>)
         : {};
     const lineage = extractAutomationLineage(meta.lineage ?? meta);
-    const backtestId =
-      typeof meta.backtestId === 'string' && meta.backtestId.trim()
-        ? meta.backtestId
-        : lineage?.backtestId ?? null;
+    const backtestId = this.readRunChildBacktestId(meta);
     const backtestStatus =
       typeof meta.childBacktestStatus === 'string' && meta.childBacktestStatus.trim()
         ? meta.childBacktestStatus
@@ -1064,8 +1054,7 @@ export class AutomationsService {
     reason?: string
   ): Promise<{ message: string }> {
     const meta = this.parseRecord(run.meta) ?? {};
-    const lineage = extractAutomationLineage(meta.lineage ?? meta);
-    const backtestId = this.readString(meta.backtestId, lineage?.backtestId);
+    const backtestId = this.readRunChildBacktestId(meta);
 
     if (backtestId) {
       await this.automationExecutionService.syncBacktestRunnerLifecycleByBacktestId(backtestId);
@@ -1259,25 +1248,6 @@ export class AutomationsService {
         issues.push(workerHealth.detail);
       }
     }
-
-    if (healthStatus === 'ok' && runDiagnostics.failedRuns24h > 0) {
-      healthStatus = 'degraded';
-      issues.push(
-        `${runDiagnostics.failedRuns24h} automation run${
-          runDiagnostics.failedRuns24h === 1 ? '' : 's'
-        } failed in the last 24h`
-      );
-    }
-
-    if (healthStatus === 'ok' && eventDiagnostics.overlapSkips24h > 0) {
-      healthStatus = 'degraded';
-      issues.push(
-        `${eventDiagnostics.overlapSkips24h} run${
-          eventDiagnostics.overlapSkips24h === 1 ? '' : 's'
-        } skipped due to overlap protection in the last 24h`
-      );
-    }
-
     if (healthStatus === 'ok' && cursorDiagnostics.staleCursorCount > 0) {
       healthStatus = 'degraded';
       issues.push(
@@ -1458,8 +1428,9 @@ export class AutomationsService {
     const backtestPending =
       String(backtestStatus || '').toLowerCase() === 'queued' ||
       String(backtestStatus || '').toLowerCase() === 'running';
+    const referenceTime = run.lastProgressAt instanceof Date ? run.lastProgressAt : run.startedAt;
     const ageMs =
-      run.startedAt instanceof Date ? Math.max(0, Date.now() - run.startedAt.getTime()) : 0;
+      referenceTime instanceof Date ? Math.max(0, Date.now() - referenceTime.getTime()) : 0;
     const isStaleCandidate = Boolean(
       active &&
         staleThresholdMinutes &&
@@ -1491,6 +1462,10 @@ export class AutomationsService {
   private isAutomationRunActive(status: string | null | undefined): boolean {
     const normalized = String(status || '').trim().toLowerCase();
     return normalized === 'queued' || normalized === 'running';
+  }
+
+  private readRunChildBacktestId(meta: Record<string, unknown>): string | null {
+    return this.readString(meta.backtestId, meta.childBacktestId);
   }
 
   private resolveChildBacktestStatus(

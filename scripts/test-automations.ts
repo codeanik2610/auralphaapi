@@ -463,7 +463,7 @@ function runAutomationLineageMappingAssertions(): void {
   );
 
   assert.equal(mappedRun.trigger, 'manual');
-  assert.equal(mappedRun.backtestId, 'backtest-7');
+  assert.equal(mappedRun.backtestId, null);
   assert.equal(mappedRun.lineage?.sourceType, 'strategy_library');
   assert.equal(mappedRun.recovery?.canRetry, false);
 
@@ -496,6 +496,7 @@ async function runAutomationReconcileAssertions(): Promise<void> {
   }> = [];
   const events: Array<Record<string, unknown>> = [];
   const activities: Array<Record<string, unknown>> = [];
+  const backtestSyncCalls: string[] = [];
   const automation = {
     id: 'automation-1',
     name: 'Momentum Deployment',
@@ -517,13 +518,22 @@ async function runAutomationReconcileAssertions(): Promise<void> {
     finishedAt: null,
     durationMs: null,
     errorMessage: null,
-    meta: { trigger: 'scheduled' },
+    meta: {
+      trigger: 'scheduled',
+      lineage: {
+        source: 'backtest',
+        backtestId: 'source-backtest-1',
+      },
+    },
   };
 
   service.requireAutomation = async () => automation;
   service.automationExecutionService = {
     syncBacktestRunnerLifecycle: async () => undefined,
-    syncBacktestRunnerLifecycleByBacktestId: async () => ({ synced: false }),
+    syncBacktestRunnerLifecycleByBacktestId: async (backtestId: string) => {
+      backtestSyncCalls.push(backtestId);
+      return { synced: false };
+    },
   };
   service.automationRunRepository = {
     listRunsByAutomationStatuses: async () => [staleRun],
@@ -575,6 +585,7 @@ async function runAutomationReconcileAssertions(): Promise<void> {
   assert.equal(events.some((event) => event.type === 'Run reconciled'), true);
   assert.equal(events.some((event) => event.type === 'State reconciled'), true);
   assert.equal(activities.length > 0, true);
+  assert.deepEqual(backtestSyncCalls, []);
 }
 
 async function runAutomationControlHardeningAssertions(): Promise<void> {
@@ -972,6 +983,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         return payload;
       },
       createAutomationAlert: async () => undefined,
+      getAutomationCoreById: async () => null,
       updateAutomationStatus: async () => undefined,
     };
     service.automationRunRepository = {
@@ -1174,6 +1186,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       service.automationRepository = {
         ...service.automationRepository,
         getAutomationById: async () => automationRunner,
+        getAutomationCoreById: async () => automationRunner,
         createAutomationEvent: async (payload: Record<string, unknown>) => {
           events.push(payload);
           return payload;
@@ -1364,7 +1377,7 @@ async function runAutomationOperationalSnapshotAssertions(): Promise<void> {
   assert.equal(snapshot.connectedAccounts, 5);
   assert.equal(snapshot.healthStatus, 'degraded');
   assert.equal(snapshot.health, 'Degraded');
-  assert.match(String(snapshot.detail || ''), /automation run/i);
+  assert.match(String(snapshot.detail || ''), /stale cursor/i);
   assert.equal(snapshot.summary.activeRuns, 2);
   assert.equal(snapshot.summary.failedRuns24h, 1);
   assert.equal(snapshot.summary.overlapSkips24h, 2);
@@ -1526,6 +1539,76 @@ function runAutomationSignalEvaluatorAssertions(): void {
   assert.equal(fallback.status, 'failed');
 }
 
+
+async function runAutomationRuntimeStaleCandidateAssertions(): Promise<void> {
+  const { AutomationsService } = await import('../src/api/services/AutomationsService');
+
+  const service = new AutomationsService() as any;
+  const now = Date.now();
+  const captured: { olderThan?: Date; statuses?: string[]; limit?: number } = {};
+
+  service.automationRunRepository = {
+    async findStaleRuns(query: { olderThan: Date; statuses: string[]; limit: number }) {
+      captured.olderThan = query.olderThan;
+      captured.statuses = query.statuses;
+      captured.limit = query.limit;
+      return [
+        {
+          id: 'run-stale',
+          automationId: 'automation-1',
+          userId: 'user-1',
+          status: 'Running',
+          startedAt: new Date(now - 30 * 60 * 1000),
+          lastProgressAt: new Date(now - 25 * 60 * 1000),
+          workerId: 'worker-1',
+          errorMessage: null,
+          meta: {},
+        },
+        {
+          id: 'run-fresh-progress',
+          automationId: 'automation-2',
+          userId: 'user-1',
+          status: 'Running',
+          startedAt: new Date(now - 40 * 60 * 1000),
+          lastProgressAt: new Date(now - 5 * 60 * 1000),
+          workerId: 'worker-1',
+          errorMessage: null,
+          meta: {},
+        },
+      ];
+    },
+  };
+  service.automationRepository = {
+    async getAutomationByIdAny(automationId: string) {
+      return {
+        id: automationId,
+        name: automationId === 'automation-1' ? 'Trade Suggestion Alpha' : 'Fresh Progress Beta',
+        userId: 'user-1',
+      };
+    },
+  };
+  service.backtestRepository = {
+    async getBacktestById() {
+      return null;
+    },
+  };
+
+  const items = await service.getRuntimeStaleRunCandidates(7);
+  const staleThresholdMs = 20 * 60 * 1000;
+
+  assert.ok(captured.olderThan instanceof Date);
+  assert.equal(captured.limit, 7);
+  assert.deepEqual(captured.statuses, ['Queued', 'Running']);
+
+  const cutoffDeltaMs = Math.abs(captured.olderThan!.getTime() - (now - staleThresholdMs));
+  assert.ok(cutoffDeltaMs < 15_000, `expected stale cutoff near 20 minutes, got ${cutoffDeltaMs}ms drift`);
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, 'run-stale');
+  assert.equal(items[0].staleThresholdMs, staleThresholdMs);
+  assert.equal(items[0].repairAction, 'reconcile');
+}
+
 function runAutomationsScriptWiringAssertions(): void {
   const packageSource = read('package.json');
   const packageJson = JSON.parse(packageSource) as { scripts?: Record<string, string> };
@@ -1608,6 +1691,7 @@ async function main(): Promise<void> {
   await runAutomationExecutionHardeningAssertions();
   await runAutomationOperationalSnapshotAssertions();
   await runAutomationsOperationalAssertions();
+  await runAutomationRuntimeStaleCandidateAssertions();
   runAutomationSignalEvaluatorAssertions();
   runTradeSuggestionExecutionPolicyValidationAssertions();
   runAutomationsScriptWiringAssertions();
