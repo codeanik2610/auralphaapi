@@ -95,6 +95,29 @@ interface EffectivePreTradeRequest {
   order: ResolvedPreTradeOrder;
 }
 
+interface PreparedPreTradeEvaluation {
+  timeZone: string;
+  snapshot: RiskSnapshot | null;
+  policyContexts: RiskSnapshotPolicyContext[];
+  request: EffectivePreTradeRequest;
+  route: ResolvedPreTradeRoute;
+  freshness: FreshnessSummary;
+  scopeImpactDrafts: ScopeImpactDraft[];
+  ruleDrafts: RuleEvaluationDraft[];
+  checkedAt: Date;
+  expiresAt: Date | null;
+  status: 'passed' | 'blocked' | 'warning' | 'stale' | 'error';
+  summary: string;
+  blocked: boolean;
+  approvalRequired: boolean;
+  blockingRuleCount: number;
+  warningRuleCount: number;
+  grossExposureDelta: number;
+  netExposureDelta: number;
+  openOrderExposureDelta: number;
+  reservedOrderMarginDelta: number;
+}
+
 interface FreshnessSummary {
   freshnessState: RiskPreTradeFreshnessState;
   snapshotLagMinutes: number | null;
@@ -200,6 +223,114 @@ export class RiskPreTradeService {
     userId: string,
     body: ValidatedRiskPreTradeCheckBody
   ): Promise<ApiSuccessResponse<RiskPreTradeCheckResult>> {
+    const evaluation = await this.preparePreTradeEvaluation(userId, body);
+
+    const createdCheck = await this.riskRequestCheckRepository.createCheck({
+      userId,
+      snapshotId: evaluation.snapshot?.id ?? null,
+      suggestedTradeId: evaluation.request.suggestedTradeId,
+      automationId: evaluation.request.automationId,
+      automationRunId: evaluation.request.automationRunId,
+      sourceType: evaluation.request.sourceType,
+      executionMode: evaluation.request.executionMode,
+      approvalMode: evaluation.request.approvalMode,
+      routeMode: evaluation.route.routeMode,
+      brokerKey: evaluation.route.brokerKey,
+      accountId: evaluation.route.accountId,
+      symbol: evaluation.request.order.symbol,
+      timeframe: evaluation.request.order.timeframe,
+      side: evaluation.request.order.side,
+      orderType: evaluation.request.order.orderType,
+      timeInForce: evaluation.request.order.timeInForce,
+      quantityMode: evaluation.request.order.quantityMode,
+      quantity: evaluation.request.order.quantity,
+      notional: evaluation.request.order.notional,
+      riskPercent: evaluation.request.order.riskPercent,
+      entryPrice: evaluation.request.order.entryPrice,
+      stopLossPrice: evaluation.request.order.stopLossPrice,
+      takeProfitTargetsJson: evaluation.request.order.takeProfitTargets,
+      leverage: evaluation.request.order.leverage,
+      reduceOnly: evaluation.request.order.reduceOnly,
+      status: evaluation.status,
+      freshnessState: evaluation.freshness.freshnessState,
+      snapshotLagMinutes: evaluation.freshness.snapshotLagMinutes,
+      checkedAt: evaluation.checkedAt,
+      expiresAt: evaluation.expiresAt,
+      allowed: !evaluation.blocked,
+      blocked: evaluation.blocked,
+      approvalRequired: evaluation.approvalRequired,
+      blockingRuleCount: evaluation.blockingRuleCount,
+      warningRuleCount: evaluation.warningRuleCount,
+      summary: evaluation.summary,
+      grossExposureDelta: evaluation.grossExposureDelta,
+      netExposureDelta: evaluation.netExposureDelta,
+      openOrderExposureDelta: evaluation.openOrderExposureDelta,
+      reservedOrderMarginDelta: evaluation.reservedOrderMarginDelta,
+    });
+
+    const scopeRows = await this.riskRequestScopeImpactRepository.createScopeImpacts(
+      userId,
+      createdCheck.id,
+      evaluation.snapshot?.id ?? null,
+      evaluation.scopeImpactDrafts
+    );
+    const ruleRows = await this.riskRequestRuleEvaluationRepository.createRuleEvaluations(
+      userId,
+      createdCheck.id,
+      evaluation.snapshot?.id ?? null,
+      evaluation.ruleDrafts
+    );
+
+    return successResponse(
+      this.mapPreTradeCheckResult(
+        createdCheck,
+        scopeRows,
+        ruleRows,
+        evaluation.snapshot,
+        evaluation.policyContexts,
+        evaluation.timeZone
+      )
+    );
+  }
+
+  async previewPreTradeCheck(
+    userId: string,
+    body: ValidatedRiskPreTradeCheckBody
+  ): Promise<ApiSuccessResponse<RiskPreTradeCheckResult>> {
+    const evaluation = await this.preparePreTradeEvaluation(userId, body);
+    return successResponse(this.mapPreviewPreTradeCheckResult(evaluation));
+  }
+
+  async getPreTradeCheck(
+    userId: string,
+    checkId: string
+  ): Promise<ApiSuccessResponse<RiskPreTradeCheckResult>> {
+    const check = await this.riskRequestCheckRepository.getById(userId, checkId);
+    if (!check) {
+      throw new NotFoundAppError('Pre-trade check not found');
+    }
+
+    const [timeZone, snapshot, scopeRows, ruleRows, policyContexts] = await Promise.all([
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+      check.snapshotId
+        ? this.riskRepository.getSnapshotById(userId, check.snapshotId)
+        : Promise.resolve(null),
+      this.riskRequestScopeImpactRepository.listByCheckId(check.id),
+      this.riskRequestRuleEvaluationRepository.listByCheckId(check.id),
+      check.snapshotId
+        ? this.riskSnapshotPolicyContextRepository.listBySnapshotId(check.snapshotId)
+        : Promise.resolve([]),
+    ]);
+
+    return successResponse(
+      this.mapPreTradeCheckResult(check, scopeRows, ruleRows, snapshot, policyContexts, timeZone)
+    );
+  }
+
+  private async preparePreTradeEvaluation(
+    userId: string,
+    body: ValidatedRiskPreTradeCheckBody
+  ): Promise<PreparedPreTradeEvaluation> {
     const suggestedTrade = body.suggestedTradeId
       ? await this.loadSuggestedTrade(userId, body.suggestedTradeId)
       : null;
@@ -208,18 +339,40 @@ export class RiskPreTradeService {
     const route = await this.resolveRoute(userId, request.route);
     request.route = route;
 
-    const [timeZone, accountSnapshots, brokerSnapshots, assetSnapshots, brokerAssetSnapshots, policyContexts, sourceCoverage] =
-      await Promise.all([
-        this.userTimeZoneService.resolveUserTimeZone(userId),
-        snapshot ? this.riskAccountSnapshotRepository.listBySnapshotId(snapshot.id) : Promise.resolve([]),
-        snapshot ? this.riskBrokerSnapshotRepository.listBySnapshotId(snapshot.id) : Promise.resolve([]),
-        snapshot ? this.riskAssetSnapshotRepository.listBySnapshotId(snapshot.id) : Promise.resolve([]),
-        snapshot ? this.riskBrokerAssetSnapshotRepository.listBySnapshotId(snapshot.id) : Promise.resolve([]),
-        snapshot ? this.riskSnapshotPolicyContextRepository.listBySnapshotId(snapshot.id) : Promise.resolve([]),
-        snapshot ? this.riskSnapshotSourceCoverageRepository.listBySnapshotId(snapshot.id) : Promise.resolve([]),
-      ]);
+    const [
+      timeZone,
+      accountSnapshots,
+      brokerSnapshots,
+      assetSnapshots,
+      brokerAssetSnapshots,
+      policyContexts,
+      sourceCoverage,
+    ] = await Promise.all([
+      this.userTimeZoneService.resolveUserTimeZone(userId),
+      snapshot
+        ? this.riskAccountSnapshotRepository.listBySnapshotId(snapshot.id)
+        : Promise.resolve([]),
+      snapshot
+        ? this.riskBrokerSnapshotRepository.listBySnapshotId(snapshot.id)
+        : Promise.resolve([]),
+      snapshot
+        ? this.riskAssetSnapshotRepository.listBySnapshotId(snapshot.id)
+        : Promise.resolve([]),
+      snapshot
+        ? this.riskBrokerAssetSnapshotRepository.listBySnapshotId(snapshot.id)
+        : Promise.resolve([]),
+      snapshot
+        ? this.riskSnapshotPolicyContextRepository.listBySnapshotId(snapshot.id)
+        : Promise.resolve([]),
+      snapshot
+        ? this.riskSnapshotSourceCoverageRepository.listBySnapshotId(snapshot.id)
+        : Promise.resolve([]),
+    ]);
 
-    const activePolicy = await this.riskPolicyRepository.getEffectivePolicy(userId, route.brokerKey);
+    const activePolicy = await this.riskPolicyRepository.getEffectivePolicy(
+      userId,
+      route.brokerKey
+    );
     const fallbackThresholds = this.buildThresholdProfile(activePolicy);
     const globalThresholds = this.buildGlobalThresholdProfile(policyContexts, fallbackThresholds);
     const routePolicyContext = this.resolvePolicyContext(policyContexts, route.brokerKey);
@@ -232,17 +385,14 @@ export class RiskPreTradeService {
       : null;
     const assetSnapshot =
       assetSnapshots.find((item) => item.symbol === request.order.symbol) || null;
-    const brokerAssetSnapshot =
-      route.brokerKey
-        ? brokerAssetSnapshots.find(
-            (item) =>
-              item.brokerKey === route.brokerKey && item.symbol === request.order.symbol
-          ) || null
-        : null;
-    const coverage =
-      route.accountId
-        ? sourceCoverage.find((item) => item.accountId === route.accountId) || null
-        : null;
+    const brokerAssetSnapshot = route.brokerKey
+      ? brokerAssetSnapshots.find(
+          (item) => item.brokerKey === route.brokerKey && item.symbol === request.order.symbol
+        ) || null
+      : null;
+    const coverage = route.accountId
+      ? sourceCoverage.find((item) => item.accountId === route.accountId) || null
+      : null;
 
     const notional = this.resolveRequestedNotional(request.order, snapshot);
     const grossExposureDelta = notional;
@@ -309,96 +459,28 @@ export class RiskPreTradeService {
         ? new Date(checkedAt.getTime() + 30 * 60 * 1000)
         : null;
 
-    const createdCheck = await this.riskRequestCheckRepository.createCheck({
-      userId,
-      snapshotId: snapshot?.id ?? null,
-      suggestedTradeId: request.suggestedTradeId,
-      automationId: request.automationId,
-      automationRunId: request.automationRunId,
-      sourceType: request.sourceType,
-      executionMode: request.executionMode,
-      approvalMode: request.approvalMode,
-      routeMode: route.routeMode,
-      brokerKey: route.brokerKey,
-      accountId: route.accountId,
-      symbol: request.order.symbol,
-      timeframe: request.order.timeframe,
-      side: request.order.side,
-      orderType: request.order.orderType,
-      timeInForce: request.order.timeInForce,
-      quantityMode: request.order.quantityMode,
-      quantity: request.order.quantity,
-      notional: request.order.notional,
-      riskPercent: request.order.riskPercent,
-      entryPrice: request.order.entryPrice,
-      stopLossPrice: request.order.stopLossPrice,
-      takeProfitTargetsJson: request.order.takeProfitTargets,
-      leverage: request.order.leverage,
-      reduceOnly: request.order.reduceOnly,
-      status,
-      freshnessState: freshness.freshnessState,
-      snapshotLagMinutes: freshness.snapshotLagMinutes,
+    return {
+      timeZone,
+      snapshot,
+      policyContexts,
+      request,
+      route,
+      freshness,
+      scopeImpactDrafts,
+      ruleDrafts,
       checkedAt,
       expiresAt,
-      allowed: !blocked,
+      status,
+      summary,
       blocked,
       approvalRequired,
       blockingRuleCount,
       warningRuleCount,
-      summary,
       grossExposureDelta,
       netExposureDelta,
       openOrderExposureDelta,
       reservedOrderMarginDelta,
-    });
-
-    const scopeRows = await this.riskRequestScopeImpactRepository.createScopeImpacts(
-      userId,
-      createdCheck.id,
-      snapshot?.id ?? null,
-      scopeImpactDrafts
-    );
-    const ruleRows = await this.riskRequestRuleEvaluationRepository.createRuleEvaluations(
-      userId,
-      createdCheck.id,
-      snapshot?.id ?? null,
-      ruleDrafts
-    );
-
-    return successResponse(
-      this.mapPreTradeCheckResult(
-        createdCheck,
-        scopeRows,
-        ruleRows,
-        snapshot,
-        policyContexts,
-        timeZone
-      )
-    );
-  }
-
-  async getPreTradeCheck(
-    userId: string,
-    checkId: string
-  ): Promise<ApiSuccessResponse<RiskPreTradeCheckResult>> {
-    const check = await this.riskRequestCheckRepository.getById(userId, checkId);
-    if (!check) {
-      throw new NotFoundAppError('Pre-trade check not found');
-    }
-
-    const [timeZone, snapshot, scopeRows, ruleRows, policyContexts] = await Promise.all([
-      this.userTimeZoneService.resolveUserTimeZone(userId),
-      check.snapshotId ? this.riskRepository.getSnapshotById(userId, check.snapshotId) : Promise.resolve(null),
-      this.riskRequestScopeImpactRepository.listByCheckId(check.id),
-      this.riskRequestRuleEvaluationRepository.listByCheckId(check.id),
-      check.snapshotId
-        ? this.riskSnapshotPolicyContextRepository.listBySnapshotId(check.snapshotId)
-        : Promise.resolve([]),
-    ]);
-
-    return successResponse(
-      this.mapPreTradeCheckResult(check, scopeRows, ruleRows, snapshot, policyContexts, timeZone)
-    );
+    };
   }
 
   private async loadSuggestedTrade(
@@ -440,7 +522,9 @@ export class RiskPreTradeService {
       .trim()
       .toUpperCase();
     if (!symbol) {
-      throw new BadRequestAppError('order.symbol is required when suggestedTradeId is not provided');
+      throw new BadRequestAppError(
+        'order.symbol is required when suggestedTradeId is not provided'
+      );
     }
 
     const side = this.resolveOrderSide(body.order.side, suggestedTrade?.side);
@@ -510,8 +594,16 @@ export class RiskPreTradeService {
   ): 'BUY' | 'SELL' {
     const normalized =
       side ||
-      (String(suggestedTradeSide || '').trim().toUpperCase() === 'SELL' ? 'SELL' : undefined) ||
-      (String(suggestedTradeSide || '').trim().toUpperCase() === 'BUY' ? 'BUY' : undefined);
+      (String(suggestedTradeSide || '')
+        .trim()
+        .toUpperCase() === 'SELL'
+        ? 'SELL'
+        : undefined) ||
+      (String(suggestedTradeSide || '')
+        .trim()
+        .toUpperCase() === 'BUY'
+        ? 'BUY'
+        : undefined);
     if (!normalized) {
       throw new BadRequestAppError(
         'order.side is required when suggestedTradeId does not provide a side'
@@ -524,7 +616,10 @@ export class RiskPreTradeService {
     userId: string,
     route: ResolvedPreTradeRoute
   ): Promise<ResolvedPreTradeRoute> {
-    const requestedBrokerKey = String(route.brokerKey || '').trim().toLowerCase() || null;
+    const requestedBrokerKey =
+      String(route.brokerKey || '')
+        .trim()
+        .toLowerCase() || null;
     const requestedAccountId = String(route.accountId || '').trim() || null;
 
     if (requestedAccountId) {
@@ -535,24 +630,35 @@ export class RiskPreTradeService {
       if (!account) {
         throw new NotFoundAppError('Broker account not found');
       }
-      if (requestedBrokerKey && requestedBrokerKey !== String(account.brokerKey || '').trim().toLowerCase()) {
+      if (
+        requestedBrokerKey &&
+        requestedBrokerKey !==
+          String(account.brokerKey || '')
+            .trim()
+            .toLowerCase()
+      ) {
         throw new BadRequestAppError(
           'Selected broker account does not belong to the requested broker'
         );
       }
       return {
         routeMode: route.routeMode,
-        brokerKey: String(account.brokerKey || '').trim().toLowerCase() || null,
+        brokerKey:
+          String(account.brokerKey || '')
+            .trim()
+            .toLowerCase() || null,
         accountId: account.id,
-        accountName: String(account.accountName || account.accountKey || account.id || '').trim() || null,
+        accountName:
+          String(account.accountName || account.accountKey || account.id || '').trim() || null,
       };
     }
 
     if (requestedBrokerKey) {
-      const preferredAccount = await this.brokerAccountRepository.getPreferredBrokerAccountByBrokerKey(
-        userId,
-        requestedBrokerKey
-      );
+      const preferredAccount =
+        await this.brokerAccountRepository.getPreferredBrokerAccountByBrokerKey(
+          userId,
+          requestedBrokerKey
+        );
       return {
         routeMode: route.routeMode,
         brokerKey: requestedBrokerKey,
@@ -572,7 +678,9 @@ export class RiskPreTradeService {
     return {
       routeMode: route.routeMode,
       brokerKey: preferredAccount
-        ? String(preferredAccount.brokerKey || '').trim().toLowerCase() || null
+        ? String(preferredAccount.brokerKey || '')
+            .trim()
+            .toLowerCase() || null
         : null,
       accountId: preferredAccount?.id || null,
       accountName:
@@ -626,66 +734,63 @@ export class RiskPreTradeService {
       return fallback;
     }
 
-    return rows.reduce<ThresholdProfile>(
-      (accumulator, row) => {
-        const next = this.buildThresholdProfile(row);
-        return {
-          marginUsageWarnPct: Math.min(accumulator.marginUsageWarnPct, next.marginUsageWarnPct),
-          marginUsageCriticalPct: Math.min(
-            accumulator.marginUsageCriticalPct,
-            next.marginUsageCriticalPct
-          ),
-          concentrationWarnPct: Math.min(
-            accumulator.concentrationWarnPct,
-            next.concentrationWarnPct
-          ),
-          concentrationCriticalPct: Math.min(
-            accumulator.concentrationCriticalPct,
-            next.concentrationCriticalPct
-          ),
-          dailyLossLimitPct: Math.min(accumulator.dailyLossLimitPct, next.dailyLossLimitPct),
-          weeklyLossLimitPct: Math.min(accumulator.weeklyLossLimitPct, next.weeklyLossLimitPct),
-          monthlyLossLimitPct: Math.min(
-            accumulator.monthlyLossLimitPct,
-            next.monthlyLossLimitPct
-          ),
-          minLeverage:
-            accumulator.minLeverage === null
-              ? next.minLeverage
-              : next.minLeverage === null
-                ? accumulator.minLeverage
-                : Math.max(accumulator.minLeverage, next.minLeverage),
-          maxLeverage: Math.min(accumulator.maxLeverage, next.maxLeverage),
-          minNotionalPerTrade:
-            accumulator.minNotionalPerTrade === null
-              ? next.minNotionalPerTrade
-              : next.minNotionalPerTrade === null
-                ? accumulator.minNotionalPerTrade
-                : Math.max(accumulator.minNotionalPerTrade, next.minNotionalPerTrade),
-          maxOrderAllocation:
-            accumulator.maxOrderAllocation === null
-              ? next.maxOrderAllocation
-              : next.maxOrderAllocation === null
-                ? accumulator.maxOrderAllocation
-                : Math.min(accumulator.maxOrderAllocation, next.maxOrderAllocation),
-          maxTotalAllocation: Math.min(accumulator.maxTotalAllocation, next.maxTotalAllocation),
-          maxAvgLeverage: Math.min(accumulator.maxAvgLeverage, next.maxAvgLeverage),
-        };
-      },
-      fallback
-    );
+    return rows.reduce<ThresholdProfile>((accumulator, row) => {
+      const next = this.buildThresholdProfile(row);
+      return {
+        marginUsageWarnPct: Math.min(accumulator.marginUsageWarnPct, next.marginUsageWarnPct),
+        marginUsageCriticalPct: Math.min(
+          accumulator.marginUsageCriticalPct,
+          next.marginUsageCriticalPct
+        ),
+        concentrationWarnPct: Math.min(accumulator.concentrationWarnPct, next.concentrationWarnPct),
+        concentrationCriticalPct: Math.min(
+          accumulator.concentrationCriticalPct,
+          next.concentrationCriticalPct
+        ),
+        dailyLossLimitPct: Math.min(accumulator.dailyLossLimitPct, next.dailyLossLimitPct),
+        weeklyLossLimitPct: Math.min(accumulator.weeklyLossLimitPct, next.weeklyLossLimitPct),
+        monthlyLossLimitPct: Math.min(accumulator.monthlyLossLimitPct, next.monthlyLossLimitPct),
+        minLeverage:
+          accumulator.minLeverage === null
+            ? next.minLeverage
+            : next.minLeverage === null
+              ? accumulator.minLeverage
+              : Math.max(accumulator.minLeverage, next.minLeverage),
+        maxLeverage: Math.min(accumulator.maxLeverage, next.maxLeverage),
+        minNotionalPerTrade:
+          accumulator.minNotionalPerTrade === null
+            ? next.minNotionalPerTrade
+            : next.minNotionalPerTrade === null
+              ? accumulator.minNotionalPerTrade
+              : Math.max(accumulator.minNotionalPerTrade, next.minNotionalPerTrade),
+        maxOrderAllocation:
+          accumulator.maxOrderAllocation === null
+            ? next.maxOrderAllocation
+            : next.maxOrderAllocation === null
+              ? accumulator.maxOrderAllocation
+              : Math.min(accumulator.maxOrderAllocation, next.maxOrderAllocation),
+        maxTotalAllocation: Math.min(accumulator.maxTotalAllocation, next.maxTotalAllocation),
+        maxAvgLeverage: Math.min(accumulator.maxAvgLeverage, next.maxAvgLeverage),
+      };
+    }, fallback);
   }
 
   private resolvePolicyContext(
     rows: RiskSnapshotPolicyContext[],
     brokerKey?: string | null
   ): RiskSnapshotPolicyContext | null {
-    const normalizedBrokerKey = String(brokerKey || '').trim().toLowerCase();
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
     if (normalizedBrokerKey) {
       const brokerPolicy = rows.find(
         (row) =>
-          String(row.policyScope || '').trim().toLowerCase() === 'broker' &&
-          String(row.policyTargetKey || '').trim().toLowerCase() === normalizedBrokerKey
+          String(row.policyScope || '')
+            .trim()
+            .toLowerCase() === 'broker' &&
+          String(row.policyTargetKey || '')
+            .trim()
+            .toLowerCase() === normalizedBrokerKey
       );
       if (brokerPolicy) {
         return brokerPolicy;
@@ -693,7 +798,12 @@ export class RiskPreTradeService {
     }
 
     return (
-      rows.find((row) => String(row.policyScope || '').trim().toLowerCase() === 'user') || null
+      rows.find(
+        (row) =>
+          String(row.policyScope || '')
+            .trim()
+            .toLowerCase() === 'user'
+      ) || null
     );
   }
 
@@ -855,7 +965,8 @@ export class RiskPreTradeService {
         2
       ),
       afterOpenOrderExposure: this.roundNumber(
-        (this.toFiniteNumber(input.snapshot?.openOrderExposure, 0) ?? 0) + input.openOrderExposureDelta,
+        (this.toFiniteNumber(input.snapshot?.openOrderExposure, 0) ?? 0) +
+          input.openOrderExposureDelta,
         2
       ),
       afterReservedOrderMargin: this.roundNumber(
@@ -872,8 +983,7 @@ export class RiskPreTradeService {
         : null,
       afterAllocationPct: portfolioEquity
         ? this.toRatioPct(
-            (this.toFiniteNumber(input.snapshot?.grossExposure, 0) ?? 0) +
-              input.grossExposureDelta,
+            (this.toFiniteNumber(input.snapshot?.grossExposure, 0) ?? 0) + input.grossExposureDelta,
             portfolioEquity
           )
         : null,
@@ -899,11 +1009,11 @@ export class RiskPreTradeService {
           input.brokerSnapshot?.reservedOrderMargin,
           0
         ),
-        beforeMarginUsagePct: this.toRatioPct(input.brokerSnapshot?.reservedOrderMargin, trackedBalance),
-        beforeAllocationPct: this.toRatioPct(
-          input.brokerSnapshot?.grossExposure,
-          portfolioEquity
+        beforeMarginUsagePct: this.toRatioPct(
+          input.brokerSnapshot?.reservedOrderMargin,
+          trackedBalance
         ),
+        beforeAllocationPct: this.toRatioPct(input.brokerSnapshot?.grossExposure, portfolioEquity),
         beforeRiskScore: this.toFiniteNumber(input.brokerSnapshot?.riskScore, null),
         beforeRiskState: this.normalizeRiskState(input.brokerSnapshot?.riskState),
         deltaGrossExposure: input.grossExposureDelta,
@@ -916,8 +1026,7 @@ export class RiskPreTradeService {
           2
         ),
         afterNetExposure: this.roundNumber(
-          (this.toFiniteNumber(input.brokerSnapshot?.netExposure, 0) ?? 0) +
-            input.netExposureDelta,
+          (this.toFiniteNumber(input.brokerSnapshot?.netExposure, 0) ?? 0) + input.netExposureDelta,
           2
         ),
         afterOpenOrderExposure: this.roundNumber(
@@ -961,7 +1070,10 @@ export class RiskPreTradeService {
           input.accountSnapshot?.reservedOrderMargin,
           0
         ),
-        beforeMarginUsagePct: this.toRatioPct(input.accountSnapshot?.reservedOrderMargin, trackedBalance),
+        beforeMarginUsagePct: this.toRatioPct(
+          input.accountSnapshot?.reservedOrderMargin,
+          trackedBalance
+        ),
         beforeAllocationPct: this.toFiniteNumber(
           input.accountSnapshot?.portfolioConcentrationPct,
           null
@@ -1157,7 +1269,10 @@ export class RiskPreTradeService {
       sortOrder += 1;
     };
 
-    if (input.freshness.freshnessState === 'unavailable' || input.freshness.freshnessState === 'partial') {
+    if (
+      input.freshness.freshnessState === 'unavailable' ||
+      input.freshness.freshnessState === 'partial'
+    ) {
       pushRule({
         scopeType: input.route.accountId ? 'account' : 'portfolio',
         scopeKey: input.route.accountId || 'portfolio',
@@ -1215,8 +1330,7 @@ export class RiskPreTradeService {
         warnThresholdValue: input.globalThresholds.marginUsageWarnPct,
         criticalThresholdValue: input.globalThresholds.marginUsageCriticalPct,
         status,
-        blocking:
-          status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
+        blocking: status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
         message:
           status === 'critical'
             ? 'Projected portfolio margin usage exceeds the configured critical threshold.'
@@ -1252,8 +1366,7 @@ export class RiskPreTradeService {
           warnThresholdValue: input.routeThresholds.concentrationWarnPct,
           criticalThresholdValue: brokerCriticalLimit,
           status,
-          blocking:
-            status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
+          blocking: status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
           message:
             status === 'critical'
               ? `Projected ${input.route.brokerKey} allocation exceeds the configured critical threshold.`
@@ -1291,8 +1404,7 @@ export class RiskPreTradeService {
           warnThresholdValue: input.routeThresholds.marginUsageWarnPct,
           criticalThresholdValue: input.routeThresholds.marginUsageCriticalPct,
           status,
-          blocking:
-            status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
+          blocking: status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
           message:
             status === 'critical'
               ? 'Projected account margin usage exceeds the configured critical threshold.'
@@ -1302,7 +1414,11 @@ export class RiskPreTradeService {
         });
       }
 
-      if (trackedBalance && trackedBalance > 0 && input.routeThresholds.maxOrderAllocation !== null) {
+      if (
+        trackedBalance &&
+        trackedBalance > 0 &&
+        input.routeThresholds.maxOrderAllocation !== null
+      ) {
         const orderAllocationPct = this.toRatioPct(input.reservedOrderMarginDelta, trackedBalance);
         if (orderAllocationPct !== null) {
           const warnThresholdValue = this.roundNumber(
@@ -1328,8 +1444,7 @@ export class RiskPreTradeService {
             warnThresholdValue,
             criticalThresholdValue: input.routeThresholds.maxOrderAllocation,
             status,
-            blocking:
-              status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
+            blocking: status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
             message:
               status === 'critical'
                 ? 'Requested order margin allocation exceeds the configured maximum for this account.'
@@ -1342,8 +1457,7 @@ export class RiskPreTradeService {
     }
 
     if (input.routeThresholds.minNotionalPerTrade !== null) {
-      const status =
-        input.notional < input.routeThresholds.minNotionalPerTrade ? 'critical' : 'ok';
+      const status = input.notional < input.routeThresholds.minNotionalPerTrade ? 'critical' : 'ok';
       pushRule({
         scopeType: input.route.accountId
           ? 'account'
@@ -1475,8 +1589,7 @@ export class RiskPreTradeService {
           warnThresholdValue: null,
           criticalThresholdValue: input.routeThresholds.minLeverage,
           status: minStatus,
-          blocking:
-            minStatus === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
+          blocking: minStatus === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
           message:
             minStatus === 'critical'
               ? 'Requested leverage is below the configured minimum.'
@@ -1604,13 +1717,11 @@ export class RiskPreTradeService {
     const ruleItems = ruleRows.map((item) => this.mapRuleEvaluationItem(item, timeZone));
     const appliedPolicies = this.mapAppliedPolicies(policyContexts, ruleRows);
 
-    return {
+    return this.buildPreTradeCheckResult({
       checkId: check.id,
       status: this.normalizeCheckStatus(check.status),
-      checkedAt: formatApiDisplayTime(check.checkedAt, timeZone) || check.checkedAt.toISOString(),
-      checkedAtIso: formatApiRawIso(check.checkedAt) || undefined,
-      expiresAt: formatApiDisplayTime(check.expiresAt, timeZone) || null,
-      expiresAtIso: formatApiRawIso(check.expiresAt) || undefined,
+      checkedAt: check.checkedAt,
+      expiresAt: check.expiresAt,
       request: {
         suggestedTradeId: check.suggestedTradeId,
         automationId: check.automationId,
@@ -1640,39 +1751,181 @@ export class RiskPreTradeService {
           reduceOnly: check.reduceOnly,
         },
       },
+      snapshot,
+      freshnessState: this.normalizeFreshnessState(check.freshnessState),
+      snapshotLagMinutes: check.snapshotLagMinutes,
+      allowed: check.allowed,
+      blocked: check.blocked,
+      approvalRequired: check.approvalRequired,
+      blockingRuleCount: check.blockingRuleCount,
+      warningRuleCount: check.warningRuleCount,
+      summary: check.summary,
+      grossExposureDelta: check.grossExposureDelta,
+      netExposureDelta: check.netExposureDelta,
+      openOrderExposureDelta: check.openOrderExposureDelta,
+      reservedOrderMarginDelta: check.reservedOrderMarginDelta,
+      scopeItems,
+      ruleItems,
+      appliedPolicies,
+      timeZone,
+    });
+  }
+
+  private mapPreviewPreTradeCheckResult(
+    evaluation: PreparedPreTradeEvaluation
+  ): RiskPreTradeCheckResult {
+    const checkId = `preview:${evaluation.route.brokerKey || 'unrouted'}:${evaluation.route.accountId || 'no-account'}`;
+    const scopeItems = evaluation.scopeImpactDrafts.map((item, index) =>
+      this.mapScopeImpactDraftItem(
+        item,
+        index,
+        checkId,
+        evaluation.snapshot?.id ?? null,
+        evaluation.checkedAt,
+        evaluation.timeZone
+      )
+    );
+    const ruleItems = evaluation.ruleDrafts.map((item, index) =>
+      this.mapRuleEvaluationDraftItem(
+        item,
+        index,
+        checkId,
+        evaluation.snapshot?.id ?? null,
+        evaluation.checkedAt,
+        evaluation.timeZone
+      )
+    );
+    const appliedPolicies = this.mapAppliedPolicies(
+      evaluation.policyContexts,
+      evaluation.ruleDrafts
+    );
+
+    return this.buildPreTradeCheckResult({
+      checkId,
+      status: evaluation.status,
+      checkedAt: evaluation.checkedAt,
+      expiresAt: evaluation.expiresAt,
+      request: {
+        suggestedTradeId: evaluation.request.suggestedTradeId,
+        automationId: evaluation.request.automationId,
+        automationRunId: evaluation.request.automationRunId,
+        sourceType: evaluation.request.sourceType,
+        executionMode: evaluation.request.executionMode,
+        approvalMode: evaluation.request.approvalMode,
+        routing: {
+          routeMode: evaluation.route.routeMode,
+          brokerKey: evaluation.route.brokerKey,
+          accountId: evaluation.route.accountId,
+        },
+        order: {
+          symbol: evaluation.request.order.symbol,
+          timeframe: evaluation.request.order.timeframe,
+          side: evaluation.request.order.side,
+          orderType: evaluation.request.order.orderType,
+          timeInForce: evaluation.request.order.timeInForce,
+          quantityMode: evaluation.request.order.quantityMode,
+          quantity: evaluation.request.order.quantity,
+          notional: evaluation.request.order.notional,
+          riskPercent: evaluation.request.order.riskPercent,
+          entryPrice: evaluation.request.order.entryPrice,
+          stopLossPrice: evaluation.request.order.stopLossPrice,
+          takeProfitTargets: evaluation.request.order.takeProfitTargets,
+          leverage: evaluation.request.order.leverage,
+          reduceOnly: evaluation.request.order.reduceOnly,
+        },
+      },
+      snapshot: evaluation.snapshot,
+      freshnessState: evaluation.freshness.freshnessState,
+      snapshotLagMinutes: evaluation.freshness.snapshotLagMinutes,
+      allowed: !evaluation.blocked,
+      blocked: evaluation.blocked,
+      approvalRequired: evaluation.approvalRequired,
+      blockingRuleCount: evaluation.blockingRuleCount,
+      warningRuleCount: evaluation.warningRuleCount,
+      summary: evaluation.summary,
+      grossExposureDelta: evaluation.grossExposureDelta,
+      netExposureDelta: evaluation.netExposureDelta,
+      openOrderExposureDelta: evaluation.openOrderExposureDelta,
+      reservedOrderMarginDelta: evaluation.reservedOrderMarginDelta,
+      scopeItems,
+      ruleItems,
+      appliedPolicies,
+      timeZone: evaluation.timeZone,
+    });
+  }
+
+  private buildPreTradeCheckResult(input: {
+    checkId: string;
+    status: RiskPreTradeCheckResult['status'];
+    checkedAt: Date;
+    expiresAt: Date | null;
+    request: RiskPreTradeCheckResult['request'];
+    snapshot: RiskSnapshot | null;
+    freshnessState: RiskPreTradeFreshnessState;
+    snapshotLagMinutes: number | null;
+    allowed: boolean;
+    blocked: boolean;
+    approvalRequired: boolean;
+    blockingRuleCount: number;
+    warningRuleCount: number;
+    summary: string;
+    grossExposureDelta: number | null;
+    netExposureDelta: number | null;
+    openOrderExposureDelta: number | null;
+    reservedOrderMarginDelta: number | null;
+    scopeItems: RiskPreTradeScopeImpactItem[];
+    ruleItems: RiskPreTradeRuleResult[];
+    appliedPolicies: RiskPreTradeAppliedPolicyItem[];
+    timeZone: string;
+  }): RiskPreTradeCheckResult {
+    const scopeItems = input.scopeItems;
+    const ruleItems = input.ruleItems;
+
+    return {
+      checkId: input.checkId,
+      status: input.status,
+      checkedAt:
+        formatApiDisplayTime(input.checkedAt, input.timeZone) || input.checkedAt.toISOString(),
+      checkedAtIso: formatApiRawIso(input.checkedAt) || undefined,
+      expiresAt: formatApiDisplayTime(input.expiresAt, input.timeZone) || null,
+      expiresAtIso: formatApiRawIso(input.expiresAt) || undefined,
+      request: input.request,
       snapshot: {
-        snapshotId: check.snapshotId,
-        freshnessState: this.normalizeFreshnessState(check.freshnessState),
-        snapshotLagMinutes: check.snapshotLagMinutes,
-        latestRiskSnapshotAt: formatApiDisplayTime(snapshot?.createdAt, timeZone) || null,
-        latestRiskSnapshotAtIso: formatApiRawIso(snapshot?.createdAt) || undefined,
+        snapshotId: input.snapshot?.id ?? null,
+        freshnessState: input.freshnessState,
+        snapshotLagMinutes: input.snapshotLagMinutes,
+        latestRiskSnapshotAt:
+          formatApiDisplayTime(input.snapshot?.createdAt, input.timeZone) || null,
+        latestRiskSnapshotAtIso: formatApiRawIso(input.snapshot?.createdAt) || undefined,
       },
       decision: {
-        allowed: check.allowed,
-        blocked: check.blocked,
-        approvalRequired: check.approvalRequired,
-        blockingRuleCount: check.blockingRuleCount,
-        warningRuleCount: check.warningRuleCount,
-        summary: check.summary,
+        allowed: input.allowed,
+        blocked: input.blocked,
+        approvalRequired: input.approvalRequired,
+        blockingRuleCount: input.blockingRuleCount,
+        warningRuleCount: input.warningRuleCount,
+        summary: input.summary,
       },
       before: {
         portfolio:
-          scopeItems.find((item) => item.scopeType === 'portfolio' && item.scopeKey === 'portfolio') ||
-          null,
+          scopeItems.find(
+            (item) => item.scopeType === 'portfolio' && item.scopeKey === 'portfolio'
+          ) || null,
         brokers: scopeItems.filter((item) => item.scopeType === 'broker'),
         assets: scopeItems.filter((item) => item.scopeType === 'asset'),
         brokerAssets: scopeItems.filter((item) => item.scopeType === 'broker_asset'),
       },
       delta: {
-        grossExposureDelta: check.grossExposureDelta,
-        netExposureDelta: check.netExposureDelta,
-        openOrderExposureDelta: check.openOrderExposureDelta,
-        reservedOrderMarginDelta: check.reservedOrderMarginDelta,
+        grossExposureDelta: input.grossExposureDelta,
+        netExposureDelta: input.netExposureDelta,
+        openOrderExposureDelta: input.openOrderExposureDelta,
+        reservedOrderMarginDelta: input.reservedOrderMarginDelta,
       },
       after: {
         portfolio:
-          scopeItems.find((item) => item.scopeType === 'portfolio' && item.scopeKey === 'portfolio') ||
-          null,
+          scopeItems.find(
+            (item) => item.scopeType === 'portfolio' && item.scopeKey === 'portfolio'
+          ) || null,
         brokers: scopeItems.filter((item) => item.scopeType === 'broker'),
         assets: scopeItems.filter((item) => item.scopeType === 'asset'),
         brokerAssets: scopeItems.filter((item) => item.scopeType === 'broker_asset'),
@@ -1681,8 +1934,8 @@ export class RiskPreTradeService {
       blockingRules: ruleItems.filter((item) => item.blocking),
       warningRules: ruleItems.filter((item) => !item.blocking && item.status !== 'ok'),
       evaluatedRules: ruleItems,
-      appliedPolicies,
-      time: buildApiTimeContract(timeZone),
+      appliedPolicies: input.appliedPolicies,
+      time: buildApiTimeContract(input.timeZone),
     };
   }
 
@@ -1726,6 +1979,50 @@ export class RiskPreTradeService {
     };
   }
 
+  private mapScopeImpactDraftItem(
+    item: ScopeImpactDraft,
+    index: number,
+    checkId: string,
+    snapshotId: string | null,
+    createdAt: Date,
+    timeZone: string
+  ): RiskPreTradeScopeImpactItem {
+    return {
+      id: `preview-scope-${index + 1}`,
+      checkId,
+      snapshotId,
+      scopeType: item.scopeType,
+      scopeKey: item.scopeKey,
+      scopeLabel: item.scopeLabel ?? null,
+      brokerKey: item.brokerKey ?? null,
+      accountId: item.accountId ?? null,
+      symbol: item.symbol ?? null,
+      beforeGrossExposure: item.beforeGrossExposure ?? null,
+      beforeNetExposure: item.beforeNetExposure ?? null,
+      beforeOpenOrderExposure: item.beforeOpenOrderExposure ?? null,
+      beforeReservedOrderMargin: item.beforeReservedOrderMargin ?? null,
+      beforeMarginUsagePct: item.beforeMarginUsagePct ?? null,
+      beforeAllocationPct: item.beforeAllocationPct ?? null,
+      beforeRiskScore: item.beforeRiskScore ?? null,
+      beforeRiskState: item.beforeRiskState ?? null,
+      deltaGrossExposure: item.deltaGrossExposure ?? null,
+      deltaNetExposure: item.deltaNetExposure ?? null,
+      deltaOpenOrderExposure: item.deltaOpenOrderExposure ?? null,
+      deltaReservedOrderMargin: item.deltaReservedOrderMargin ?? null,
+      afterGrossExposure: item.afterGrossExposure ?? null,
+      afterNetExposure: item.afterNetExposure ?? null,
+      afterOpenOrderExposure: item.afterOpenOrderExposure ?? null,
+      afterReservedOrderMargin: item.afterReservedOrderMargin ?? null,
+      afterMarginUsagePct: item.afterMarginUsagePct ?? null,
+      afterAllocationPct: item.afterAllocationPct ?? null,
+      afterRiskScore: item.afterRiskScore ?? null,
+      afterRiskState: item.afterRiskState ?? null,
+      sortOrder: item.sortOrder,
+      createdAt: formatApiDisplayTime(createdAt, timeZone) || createdAt.toISOString(),
+      createdAtIso: formatApiRawIso(createdAt) || undefined,
+    };
+  }
+
   private mapRuleEvaluationItem(
     item: RiskRequestRuleEvaluation,
     timeZone: string
@@ -1756,14 +2053,46 @@ export class RiskPreTradeService {
     };
   }
 
+  private mapRuleEvaluationDraftItem(
+    item: RuleEvaluationDraft,
+    index: number,
+    checkId: string,
+    snapshotId: string | null,
+    createdAt: Date,
+    timeZone: string
+  ): RiskPreTradeRuleResult {
+    return {
+      id: `preview-rule-${index + 1}`,
+      checkId,
+      snapshotId,
+      policyContextId: item.policyContextId ?? null,
+      scopeType: item.scopeType,
+      scopeKey: item.scopeKey,
+      scopeLabel: item.scopeLabel ?? null,
+      brokerKey: item.brokerKey ?? null,
+      accountId: item.accountId ?? null,
+      symbol: item.symbol ?? null,
+      ruleCode: item.ruleCode,
+      metricName: item.metricName ?? null,
+      actualValue: item.actualValue ?? null,
+      basisValue: item.basisValue ?? null,
+      warnThresholdValue: item.warnThresholdValue ?? null,
+      criticalThresholdValue: item.criticalThresholdValue ?? null,
+      status: this.normalizeRuleStatus(item.status),
+      blocking: item.blocking,
+      message: item.message,
+      sortOrder: item.sortOrder,
+      createdAt: formatApiDisplayTime(createdAt, timeZone) || createdAt.toISOString(),
+      createdAtIso: formatApiRawIso(createdAt) || undefined,
+    };
+  }
+
   private mapAppliedPolicies(
     policyContexts: RiskSnapshotPolicyContext[],
-    ruleRows: RiskRequestRuleEvaluation[]
+    ruleRows: Array<{ policyContextId?: string | null }>
   ): RiskPreTradeAppliedPolicyItem[] {
     const referencedIds = new Set(
-      ruleRows
-        .map((item) => String(item.policyContextId || '').trim())
-        .filter(Boolean)
+      ruleRows.map((item) => String(item.policyContextId || '').trim()).filter(Boolean)
     );
 
     return policyContexts
@@ -1786,7 +2115,9 @@ export class RiskPreTradeService {
   }
 
   private normalizeRiskState(value: unknown): 'ok' | 'watch' | 'critical' | null {
-    const normalized = String(value || '').trim().toLowerCase();
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
     if (!normalized) {
       return null;
     }
@@ -1802,8 +2133,12 @@ export class RiskPreTradeService {
     return 'ok';
   }
 
-  private normalizeCheckStatus(value: unknown): 'passed' | 'blocked' | 'warning' | 'stale' | 'error' {
-    const normalized = String(value || '').trim().toLowerCase();
+  private normalizeCheckStatus(
+    value: unknown
+  ): 'passed' | 'blocked' | 'warning' | 'stale' | 'error' {
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
     if (
       normalized === 'passed' ||
       normalized === 'blocked' ||
@@ -1817,7 +2152,9 @@ export class RiskPreTradeService {
   }
 
   private normalizeFreshnessState(value: unknown): RiskPreTradeFreshnessState {
-    const normalized = String(value || '').trim().toLowerCase();
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
     if (
       normalized === 'fresh' ||
       normalized === 'lagging' ||
@@ -1830,7 +2167,9 @@ export class RiskPreTradeService {
   }
 
   private normalizeRuleStatus(value: unknown): 'ok' | 'warning' | 'critical' {
-    const normalized = String(value || '').trim().toLowerCase();
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
     if (normalized === 'critical') {
       return 'critical';
     }
@@ -1871,10 +2210,7 @@ export class RiskPreTradeService {
     return null;
   }
 
-  private toRatioPct(
-    numerator: unknown,
-    denominator: unknown
-  ): number | null {
+  private toRatioPct(numerator: unknown, denominator: unknown): number | null {
     const normalizedNumerator = this.toFiniteNumber(numerator, null);
     const normalizedDenominator = this.toFiniteNumber(denominator, null);
     if (

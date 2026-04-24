@@ -135,11 +135,19 @@ async function runSuggestedTradesControllerAssertions(): Promise<void> {
     'st-1',
   ]);
   assert.deepEqual(
-    (await controller.reviewSuggestedTrade(authReq, 'st-1', { note: 'reviewed' })).data.args,
+    (
+      await controller.reviewSuggestedTrade(authReq, 'st-1', {
+        note: 'reviewed',
+      })
+    ).data.args,
     ['user-1', 'st-1', { note: 'reviewed' }]
   );
   assert.deepEqual(
-    (await controller.acceptSuggestedTrade(authReq, 'st-2', { note: 'accepted' })).data.args,
+    (
+      await controller.acceptSuggestedTrade(authReq, 'st-2', {
+        note: 'accepted',
+      })
+    ).data.args,
     ['user-1', 'st-2', { note: 'accepted' }]
   );
   assert.deepEqual(
@@ -155,17 +163,19 @@ async function runSuggestedTradesControllerAssertions(): Promise<void> {
     ).data.args,
     ['user-1', 'st-4', { executionMode: 'paper', paperOrderId: 'paper-1' }]
   );
-  assert.deepEqual(
-    (await controller.reconcileSuggestedTradeExecution(authReq, 'st-4')).data.args,
-    ['user-1', 'st-4']
-  );
+  assert.deepEqual((await controller.reconcileSuggestedTradeExecution(authReq, 'st-4')).data.args, [
+    'user-1',
+    'st-4',
+  ]);
 
   env.suggestedTrades.rolloutEnabled = false;
   await assert.rejects(
-    () => controller.reconcileSuggestedTradesExecution(authReq, { staleOnly: true }),
+    () =>
+      controller.reconcileSuggestedTradesExecution(authReq, {
+        staleOnly: true,
+      }),
     (error: unknown) =>
-      error instanceof Error &&
-      error.message === 'Suggested trades rollout controls are disabled'
+      error instanceof Error && error.message === 'Suggested trades rollout controls are disabled'
   );
   env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
 }
@@ -215,15 +225,14 @@ async function runSuggestedTradesOverviewControllerAssertions(): Promise<void> {
   await assert.rejects(
     () => controller.getOverview(authReq),
     (error: unknown) =>
-      error instanceof Error &&
-      error.message === 'Suggested trades overview rollout is disabled'
+      error instanceof Error && error.message === 'Suggested trades overview rollout is disabled'
   );
   env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
 }
 
 function runSuggestedTradeExecutionEntitySchemaAssertions(): void {
-  const suggestedTradeIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === SuggestedTrade)
+  const suggestedTradeIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === SuggestedTrade)
     .map((entry) => entry.name);
 
   for (const indexName of [
@@ -236,8 +245,8 @@ function runSuggestedTradeExecutionEntitySchemaAssertions(): void {
     );
   }
 
-  const executionIndexes = getMetadataArgsStorage().indices
-    .filter((entry) => entry.target === SuggestedTradeExecution)
+  const executionIndexes = getMetadataArgsStorage()
+    .indices.filter((entry) => entry.target === SuggestedTradeExecution)
     .map((entry) => entry.name);
 
   for (const indexName of [
@@ -359,10 +368,7 @@ async function runSuggestedTradeExecutionStorageMigrationAssertions(): Promise<v
   } as any);
 
   assert.deepEqual(createdTables, ['suggested_trade_executions']);
-  assert.equal(
-    createdIndexes.includes('idx_suggested_trade_executions_user_order_lookup'),
-    true
-  );
+  assert.equal(createdIndexes.includes('idx_suggested_trade_executions_user_order_lookup'), true);
   assert.equal(
     createdIndexes.includes('idx_suggested_trades_user_automation_status_signal_time'),
     true
@@ -598,10 +604,7 @@ async function runSuggestedTradeTransitionAssertions(): Promise<void> {
 
     const savedMeta = savedTrade?.['meta'] as Record<string, unknown> | undefined;
     assert.equal(savedTrade?.['status'], 'Accepted');
-    assert.equal(
-      (savedMeta?.review as Record<string, unknown> | undefined)?.status,
-      'Accepted'
-    );
+    assert.equal((savedMeta?.review as Record<string, unknown> | undefined)?.status, 'Accepted');
     assert.equal(response.data.suggestedTrade.status, 'Accepted');
   }
 
@@ -644,7 +647,10 @@ async function runSuggestedTradeTransitionAssertions(): Promise<void> {
     };
 
     await assert.rejects(
-      () => service.reviewSuggestedTrade('user-1', 'st-accepted', { note: 'back to review' }),
+      () =>
+        service.reviewSuggestedTrade('user-1', 'st-accepted', {
+          note: 'back to review',
+        }),
       /Only open suggested trades can be marked as reviewed/
     );
   }
@@ -693,7 +699,10 @@ async function runSuggestedTradeTransitionAssertions(): Promise<void> {
     };
 
     await assert.rejects(
-      () => service.dismissSuggestedTrade('user-1', 'st-linked', { note: 'cancel it' }),
+      () =>
+        service.dismissSuggestedTrade('user-1', 'st-linked', {
+          note: 'cancel it',
+        }),
       /linked execution cannot be dismissed/
     );
   }
@@ -994,7 +1003,10 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
       ready: true,
     };
   };
-  service.persistExecutionState = async (_trade: Record<string, unknown>, execution: Record<string, unknown>) => {
+  service.persistExecutionState = async (
+    _trade: Record<string, unknown>,
+    execution: Record<string, unknown>
+  ) => {
     persistedExecution = { ...execution };
   };
   service.operationalEventService = {
@@ -1021,15 +1033,11 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST = 'user-1';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = 'mudrex';
 
-    const disabled = await service.attemptAutoLiveExecutionForAutomation(
-      'user-1',
-      'st-live-auto',
-      {
-        async createOrder() {
-          throw new Error('disabled path should not create orders');
-        },
-      }
-    );
+    const disabled = await service.attemptAutoLiveExecutionForAutomation('user-1', 'st-live-auto', {
+      async createOrder() {
+        throw new Error('disabled path should not create orders');
+      },
+    });
     assert.equal(disabled.outcome, 'disabled');
     assert.equal(preTradeGateCalls, 0);
 
@@ -1038,15 +1046,11 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     process.env.SUGGESTED_TRADES_LIVE_AUTO_ENABLED = 'true';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST = '';
 
-    const blocked = await service.attemptAutoLiveExecutionForAutomation(
-      'user-1',
-      'st-live-auto',
-      {
-        async createOrder() {
-          throw new Error('blocked path should not create orders');
-        },
-      }
-    );
+    const blocked = await service.attemptAutoLiveExecutionForAutomation('user-1', 'st-live-auto', {
+      async createOrder() {
+        throw new Error('blocked path should not create orders');
+      },
+    });
     assert.equal(blocked.outcome, 'blocked');
     assert.equal(blocked.message, 'Live auto rollout is enabled but no users are allowlisted yet');
     assert.equal(preTradeGateCalls, 0);
@@ -1058,15 +1062,11 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = 'mudrex';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'false';
 
-    const ready = await service.attemptAutoLiveExecutionForAutomation(
-      'user-1',
-      'st-live-auto',
-      {
-        async createOrder() {
-          throw new Error('ready path should not create orders when execution is disabled');
-        },
-      }
-    );
+    const ready = await service.attemptAutoLiveExecutionForAutomation('user-1', 'st-live-auto', {
+      async createOrder() {
+        throw new Error('ready path should not create orders when execution is disabled');
+      },
+    });
     assert.equal(ready.outcome, 'ready');
     assert.equal(ready.preTradeCheckId, 'check-live-1');
     assert.equal(ready.brokerKey, 'mudrex');
@@ -1080,44 +1080,34 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     env.suggestedTrades.liveAuto.executionEnabled = true;
     process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'true';
 
-    const placed = await service.attemptAutoLiveExecutionForAutomation(
-      'user-1',
-      'st-live-auto',
-      {
-        async createOrder(
-          assetId: string,
-          body: Record<string, unknown>,
-          context?: { suggestedTradeId?: string | null }
-        ) {
-          assert.equal(assetId, 'mudrex-asset-1');
-          assert.equal(body.execution_mode, 'live');
-          assert.equal(body.symbol, 'BTCUSDT');
-          assert.equal(body.accountId, 'acc-1');
-          assert.equal(body.brokerKey, 'mudrex');
-          assert.equal(context?.suggestedTradeId, 'st-live-auto');
-          return {
-            success: true,
-            data: {
-              order_id: 'live-order-1',
-              status: 'OPEN',
-            },
-          };
-        },
-      }
-    );
+    const placed = await service.attemptAutoLiveExecutionForAutomation('user-1', 'st-live-auto', {
+      async createOrder(
+        assetId: string,
+        body: Record<string, unknown>,
+        context?: { suggestedTradeId?: string | null }
+      ) {
+        assert.equal(assetId, 'mudrex-asset-1');
+        assert.equal(body.execution_mode, 'live');
+        assert.equal(body.symbol, 'BTCUSDT');
+        assert.equal(body.accountId, 'acc-1');
+        assert.equal(body.brokerKey, 'mudrex');
+        assert.equal(context?.suggestedTradeId, 'st-live-auto');
+        return {
+          success: true,
+          data: {
+            order_id: 'live-order-1',
+            status: 'OPEN',
+          },
+        };
+      },
+    });
     assert.equal(placed.outcome, 'placed');
     assert.equal(placed.preTradeCheckId, 'check-live-1');
     assert.equal(placed.orderId, 'live-order-1');
     assert.equal(placed.brokerKey, 'mudrex');
     assert.equal(placed.accountId, 'acc-1');
-    assert.equal(
-      (persistedExecution?.['orderId'] as string | undefined) ?? null,
-      'live-order-1'
-    );
-    assert.equal(
-      (persistedExecution?.['executionState'] as string | undefined) ?? null,
-      'linked'
-    );
+    assert.equal((persistedExecution?.['orderId'] as string | undefined) ?? null, 'live-order-1');
+    assert.equal((persistedExecution?.['executionState'] as string | undefined) ?? null, 'linked');
     assert.ok(loggedActivities.includes('Live auto rollout blocked: BTCUSDT'));
     assert.ok(loggedActivities.includes('Live auto rollout ready: BTCUSDT'));
     assert.ok(loggedActivities.includes('Live auto order created: BTCUSDT'));
@@ -1167,19 +1157,430 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     env.suggestedTrades.liveAuto.brokerAllowlist = [...originalLiveAuto.brokerAllowlist];
     restoreEnv('SUGGESTED_TRADES_ROLLOUT_ENABLED', originalEnvFlags.rolloutEnabled);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', originalEnvFlags.enabled);
-    restoreEnv(
-      'SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED',
-      originalEnvFlags.executionEnabled
-    );
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED', originalEnvFlags.executionEnabled);
     restoreEnv(
       'SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING',
       originalEnvFlags.requireFixedRouting
     );
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST', originalEnvFlags.userAllowlist);
-    restoreEnv(
-      'SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST',
-      originalEnvFlags.brokerAllowlist
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST', originalEnvFlags.brokerAllowlist);
+  }
+}
+
+async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void> {
+  const service = new SuggestedTradesService() as any;
+  const originalRolloutEnabled = env.suggestedTrades.rolloutEnabled;
+  const originalEnvFlags = {
+    rolloutEnabled: process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED,
+    enabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_ENABLED,
+    executionEnabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED,
+    requireFixedRouting: process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING,
+    userAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST,
+    brokerAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST,
+  };
+  const originalLiveAuto = {
+    enabled: env.suggestedTrades.liveAuto.enabled,
+    executionEnabled: env.suggestedTrades.liveAuto.executionEnabled,
+    requireFixedRouting: env.suggestedTrades.liveAuto.requireFixedRouting,
+    userAllowlist: [...env.suggestedTrades.liveAuto.userAllowlist],
+    brokerAllowlist: [...env.suggestedTrades.liveAuto.brokerAllowlist],
+  };
+
+  let currentTrade = {
+    id: 'st-live-auto-risk-1',
+    automationId: 'auto-live-risk',
+    automationRunId: 'run-live-risk',
+    userId: 'user-1',
+    symbol: 'BTCUSDT',
+    timeframe: '1h',
+    side: 'BUY',
+    signalTime: new Date('2026-04-18T05:00:00.000Z'),
+    status: 'Open',
+    confidence: 0.91,
+    score: 95,
+    entryPrice: '100',
+    stopLossPrice: '95',
+    takeProfitTargets: ['108'],
+    entryRule: 'breakout',
+    exitRule: 'trail',
+    rationale: 'Adaptive route selection',
+    dedupeKey: 'dedupe-live-auto-risk',
+    meta: null,
+    createdAt: new Date('2026-04-18T05:00:30.000Z'),
+    updatedAt: new Date('2026-04-18T05:01:00.000Z'),
+  };
+
+  const createCheckRoutes: string[] = [];
+  const placedRoutes: string[] = [];
+
+  function buildPreTradeResult(body: Record<string, any>, checkId: string) {
+    const brokerKey = String(body.routing?.brokerKey || '')
+      .trim()
+      .toLowerCase();
+    const accountId = String(body.routing?.accountId || '').trim();
+    const accountMarginUsagePct = brokerKey === 'delta_exchange' ? 8 : 18;
+    const brokerAllocationPct = brokerKey === 'delta_exchange' ? 20 : 32;
+    const brokerAssetAllocationPct = brokerKey === 'delta_exchange' ? 6 : 11;
+
+    return {
+      checkId,
+      status: 'passed',
+      checkedAt: 'Apr 18, 2026, 5:02 AM',
+      checkedAtIso: '2026-04-18T05:02:00.000Z',
+      expiresAt: 'Apr 18, 2026, 5:32 AM',
+      expiresAtIso: '2026-04-18T05:32:00.000Z',
+      request: {
+        suggestedTradeId: body.suggestedTradeId,
+        automationId: body.automationId,
+        automationRunId: body.automationRunId,
+        sourceType: body.sourceType,
+        executionMode: body.executionMode,
+        approvalMode: body.approvalMode,
+        routing: {
+          routeMode: body.routing?.routeMode ?? 'fixed',
+          brokerKey,
+          accountId,
+        },
+        order: {
+          ...body.order,
+          leverage: body.order?.leverage ?? 5,
+          entryPrice: body.order?.entryPrice ?? 100,
+          stopLossPrice: body.order?.stopLossPrice ?? 95,
+          takeProfitTargets: body.order?.takeProfitTargets ?? [108],
+        },
+      },
+      snapshot: {
+        snapshotId: 'snapshot-1',
+        freshnessState: 'fresh',
+        snapshotLagMinutes: 1,
+        latestRiskSnapshotAt: 'Apr 18, 2026, 5:00 AM',
+        latestRiskSnapshotAtIso: '2026-04-18T05:00:00.000Z',
+      },
+      decision: {
+        allowed: true,
+        blocked: false,
+        approvalRequired: false,
+        blockingRuleCount: 0,
+        warningRuleCount: 0,
+        summary: 'All clear',
+      },
+      before: {
+        portfolio: null,
+        brokers: [],
+        assets: [],
+        brokerAssets: [],
+      },
+      delta: {
+        grossExposureDelta: 100,
+        netExposureDelta: 100,
+        openOrderExposureDelta: 100,
+        reservedOrderMarginDelta: 20,
+      },
+      after: {
+        portfolio: null,
+        brokers: [],
+        assets: [],
+        brokerAssets: [],
+      },
+      scopeImpacts: [
+        {
+          id: `scope-account-${accountId}`,
+          checkId,
+          snapshotId: 'snapshot-1',
+          scopeType: 'account',
+          scopeKey: accountId,
+          scopeLabel: accountId,
+          brokerKey,
+          accountId,
+          symbol: null,
+          beforeGrossExposure: 1000,
+          beforeNetExposure: 1000,
+          beforeOpenOrderExposure: 100,
+          beforeReservedOrderMargin: 100,
+          beforeMarginUsagePct: 10,
+          beforeAllocationPct: 10,
+          beforeRiskScore: null,
+          beforeRiskState: null,
+          deltaGrossExposure: 100,
+          deltaNetExposure: 100,
+          deltaOpenOrderExposure: 100,
+          deltaReservedOrderMargin: 20,
+          afterGrossExposure: 1100,
+          afterNetExposure: 1100,
+          afterOpenOrderExposure: 200,
+          afterReservedOrderMargin: 120,
+          afterMarginUsagePct: accountMarginUsagePct,
+          afterAllocationPct: accountMarginUsagePct,
+          afterRiskScore: null,
+          afterRiskState: null,
+          sortOrder: 1,
+          createdAt: 'Apr 18, 2026, 5:02 AM',
+          createdAtIso: '2026-04-18T05:02:00.000Z',
+        },
+        {
+          id: `scope-broker-${brokerKey}`,
+          checkId,
+          snapshotId: 'snapshot-1',
+          scopeType: 'broker',
+          scopeKey: brokerKey,
+          scopeLabel: brokerKey,
+          brokerKey,
+          accountId: null,
+          symbol: null,
+          beforeGrossExposure: 1000,
+          beforeNetExposure: 1000,
+          beforeOpenOrderExposure: 100,
+          beforeReservedOrderMargin: 100,
+          beforeMarginUsagePct: 10,
+          beforeAllocationPct: 10,
+          beforeRiskScore: 8,
+          beforeRiskState: 'ok',
+          deltaGrossExposure: 100,
+          deltaNetExposure: 100,
+          deltaOpenOrderExposure: 100,
+          deltaReservedOrderMargin: 20,
+          afterGrossExposure: 1100,
+          afterNetExposure: 1100,
+          afterOpenOrderExposure: 200,
+          afterReservedOrderMargin: 120,
+          afterMarginUsagePct: accountMarginUsagePct,
+          afterAllocationPct: brokerAllocationPct,
+          afterRiskScore: 8,
+          afterRiskState: 'ok',
+          sortOrder: 2,
+          createdAt: 'Apr 18, 2026, 5:02 AM',
+          createdAtIso: '2026-04-18T05:02:00.000Z',
+        },
+        {
+          id: `scope-broker-asset-${brokerKey}`,
+          checkId,
+          snapshotId: 'snapshot-1',
+          scopeType: 'broker_asset',
+          scopeKey: `${brokerKey}|BTCUSDT`,
+          scopeLabel: `${brokerKey} / BTCUSDT`,
+          brokerKey,
+          accountId: null,
+          symbol: 'BTCUSDT',
+          beforeGrossExposure: 400,
+          beforeNetExposure: 400,
+          beforeOpenOrderExposure: 50,
+          beforeReservedOrderMargin: 40,
+          beforeMarginUsagePct: 4,
+          beforeAllocationPct: 4,
+          beforeRiskScore: 5,
+          beforeRiskState: 'ok',
+          deltaGrossExposure: 100,
+          deltaNetExposure: 100,
+          deltaOpenOrderExposure: 100,
+          deltaReservedOrderMargin: 20,
+          afterGrossExposure: 500,
+          afterNetExposure: 500,
+          afterOpenOrderExposure: 150,
+          afterReservedOrderMargin: 60,
+          afterMarginUsagePct: 6,
+          afterAllocationPct: brokerAssetAllocationPct,
+          afterRiskScore: 5,
+          afterRiskState: 'ok',
+          sortOrder: 3,
+          createdAt: 'Apr 18, 2026, 5:02 AM',
+          createdAtIso: '2026-04-18T05:02:00.000Z',
+        },
+      ],
+      blockingRules: [],
+      warningRules: [],
+      evaluatedRules: [],
+      appliedPolicies: [],
+    };
+  }
+
+  service.suggestedTradeRepository = {
+    async getSuggestedTradeById() {
+      return { ...currentTrade };
+    },
+    async countSystemAcceptedExecutionsSince() {
+      return 0;
+    },
+    async countActiveExecutionsForAutomation() {
+      return 0;
+    },
+    async saveSuggestedTrade(trade: Record<string, unknown>) {
+      return {
+        ...trade,
+        updatedAt: new Date('2026-04-18T05:03:00.000Z'),
+      };
+    },
+  };
+  service.persistExecutionState = async () => undefined;
+  service.operationalEventService = {
+    async logActivity() {
+      return undefined;
+    },
+    async emitFailureAlert() {
+      return undefined;
+    },
+  };
+  service.brokerAccountRepository = {
+    async getConnectedBrokerAccounts() {
+      return [
+        {
+          id: 'delta-acc-1',
+          brokerKey: 'delta_exchange',
+          accountName: 'Delta Production',
+          accountKey: 'delta-primary',
+          isDefault: true,
+        },
+        {
+          id: 'acc-1',
+          brokerKey: 'mudrex',
+          accountName: 'Mudrex Prod',
+          accountKey: 'mudrex-primary',
+          isDefault: true,
+        },
+      ];
+    },
+  };
+  service.riskPreTradeService = {
+    async previewPreTradeCheck(_userId: string, body: Record<string, any>) {
+      return createSuccess(
+        buildPreTradeResult(body, `preview:${body.routing?.brokerKey}:${body.routing?.accountId}`)
+      );
+    },
+    async createPreTradeCheck(_userId: string, body: Record<string, any>) {
+      createCheckRoutes.push(
+        `${String(body.routing?.brokerKey || '')
+          .trim()
+          .toLowerCase()}:${String(body.routing?.accountId || '').trim()}`
+      );
+      return createSuccess(
+        buildPreTradeResult(body, `check:${body.routing?.brokerKey}:${body.routing?.accountId}`)
+      );
+    },
+  };
+  service.exchangeAssetRepository = {
+    async getSystemAssetBySourceAndSymbol(source: string) {
+      return {
+        externalId: source === 'delta_exchange' ? 'delta-asset-1' : 'mudrex-asset-1',
+      };
+    },
+  };
+  service.brokerReferenceDataService = {
+    async getFuturesAssetDetailBySymbol() {
+      return {
+        data: {
+          id: 'remote-asset-1',
+        },
+      };
+    },
+  };
+  service.loadTradeSuggestionExecutionPolicy = async () => ({
+    executionMode: 'live_trade_auto',
+    approvalMode: 'auto_if_safe',
+    routeMode: 'strategy_default',
+    brokerKey: null,
+    accountId: null,
+    liveConsentEnabled: true,
+    orderType: 'market',
+    timeInForce: null,
+    quantityMode: 'notional',
+    quantity: null,
+    notional: 100,
+    riskPercent: null,
+    leverage: 5,
+    reduceOnly: false,
+    maxOrdersPerRun: 2,
+    maxOrdersPerDay: 3,
+    maxConcurrentOpenTrades: 1,
+    maxNotionalPerTrade: null,
+    maxNotionalPerDay: null,
+  });
+
+  try {
+    env.suggestedTrades.rolloutEnabled = true;
+    env.suggestedTrades.liveAuto.enabled = true;
+    env.suggestedTrades.liveAuto.executionEnabled = true;
+    env.suggestedTrades.liveAuto.requireFixedRouting = true;
+    env.suggestedTrades.liveAuto.userAllowlist = ['user-1'];
+    env.suggestedTrades.liveAuto.brokerAllowlist = ['mudrex', 'delta_exchange'];
+    process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_ENABLED = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST = 'user-1';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = 'mudrex,delta_exchange';
+
+    const deltaPreferred = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto-risk-1',
+      {
+        async createOrder(assetId: string, body: Record<string, unknown>) {
+          placedRoutes.push(`${String(body.brokerKey)}:${String(body.accountId)}`);
+          assert.equal(assetId, 'delta-asset-1');
+          assert.equal(body.brokerKey, 'delta_exchange');
+          assert.equal(body.accountId, 'delta-acc-1');
+          return {
+            success: true,
+            data: {
+              order_id: 'delta-live-order-risk-1',
+              status: 'OPEN',
+            },
+          };
+        },
+      }
     );
+
+    assert.equal(deltaPreferred.outcome, 'placed');
+    assert.equal(deltaPreferred.brokerKey, 'delta_exchange');
+    assert.equal(deltaPreferred.accountId, 'delta-acc-1');
+    assert.equal(createCheckRoutes[0], 'delta_exchange:delta-acc-1');
+    assert.equal(placedRoutes[0], 'delta_exchange:delta-acc-1');
+
+    currentTrade = {
+      ...currentTrade,
+      id: 'st-live-auto-risk-2',
+      stopLossPrice: '101',
+    };
+
+    const mudrexFallback = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto-risk-2',
+      {
+        async createOrder(assetId: string, body: Record<string, unknown>) {
+          placedRoutes.push(`${String(body.brokerKey)}:${String(body.accountId)}`);
+          assert.equal(assetId, 'mudrex-asset-1');
+          assert.equal(body.brokerKey, 'mudrex');
+          assert.equal(body.accountId, 'acc-1');
+          return {
+            success: true,
+            data: {
+              order_id: 'mudrex-live-order-risk-2',
+              status: 'OPEN',
+            },
+          };
+        },
+      }
+    );
+
+    assert.equal(mudrexFallback.outcome, 'placed');
+    assert.equal(mudrexFallback.brokerKey, 'mudrex');
+    assert.equal(mudrexFallback.accountId, 'acc-1');
+    assert.equal(createCheckRoutes[1], 'mudrex:acc-1');
+    assert.equal(placedRoutes[1], 'mudrex:acc-1');
+  } finally {
+    env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
+    env.suggestedTrades.liveAuto.enabled = originalLiveAuto.enabled;
+    env.suggestedTrades.liveAuto.executionEnabled = originalLiveAuto.executionEnabled;
+    env.suggestedTrades.liveAuto.requireFixedRouting = originalLiveAuto.requireFixedRouting;
+    env.suggestedTrades.liveAuto.userAllowlist = [...originalLiveAuto.userAllowlist];
+    env.suggestedTrades.liveAuto.brokerAllowlist = [...originalLiveAuto.brokerAllowlist];
+    restoreEnv('SUGGESTED_TRADES_ROLLOUT_ENABLED', originalEnvFlags.rolloutEnabled);
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', originalEnvFlags.enabled);
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED', originalEnvFlags.executionEnabled);
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING',
+      originalEnvFlags.requireFixedRouting
+    );
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST', originalEnvFlags.userAllowlist);
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST', originalEnvFlags.brokerAllowlist);
   }
 }
 
@@ -1771,7 +2172,9 @@ async function runSuggestedTradesHealthServiceAssertions(): Promise<void> {
 
 function runSuggestedTradesScriptWiringAssertions(): void {
   const packageSource = read('package.json');
-  const packageJson = JSON.parse(packageSource) as { scripts?: Record<string, string> };
+  const packageJson = JSON.parse(packageSource) as {
+    scripts?: Record<string, string>;
+  };
   const packageScripts = packageJson.scripts || {};
   const runPackageSuiteSource = read('scripts/_support/run-package-suite.ts');
   const proofSource = read('scripts/proofs/proof-suggested-trades-live.ts');
@@ -1808,12 +2211,12 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   );
 
   assert.equal(
-    proofSource.includes("scripts/smokes/smoke-suggested-trades-lifecycle.ts"),
+    proofSource.includes('scripts/smokes/smoke-suggested-trades-lifecycle.ts'),
     true,
     'suggested trades live proof must run lifecycle smoke'
   );
   assert.equal(
-    proofSource.includes("scripts/checks/check-suggested-trades-health.ts"),
+    proofSource.includes('scripts/checks/check-suggested-trades-health.ts'),
     true,
     'suggested trades live proof must run health check'
   );
@@ -1910,6 +2313,7 @@ async function main(): Promise<void> {
   await runSuggestedTradeTransitionAssertions();
   await runSuggestedTradeExecutionPersistenceAssertions();
   await runSuggestedTradeLiveAutoRolloutAssertions();
+  await runSuggestedTradeAdaptiveRouteSelectionAssertions();
   await runSuggestedTradeReconcileAssertions();
   await runSuggestedTradesBulkReconcileAssertions();
   await runSuggestedTradeExecutionSyncServiceAssertions();
