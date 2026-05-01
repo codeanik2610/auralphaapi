@@ -265,6 +265,9 @@ async function run(): Promise<void> {
       current_price: '69000',
       status: 'open',
       leverage: '10',
+      requested_leverage: '10',
+      confirmed_order_leverage: '10',
+      leverage_source: 'confirmed_order_submission',
       stoploss_order_id: 'sl-1',
       takeprofit_order_id: 'tp-1',
       trigger_type: 'mark_price',
@@ -283,6 +286,42 @@ async function run(): Promise<void> {
   assert.equal(upsert?.quantity, 0.5);
   assert.equal(upsert?.stoplossOrderId, 'sl-1');
   assert.equal(upsert?.takeprofitOrderId, 'tp-1');
+
+  const nestedProtectionUpsert = buildPositionReadModelUpsert({
+    userId: 'user-1',
+    accountId: 'acc-1',
+    brokerKey: 'mudrex',
+    externalId: 'pos-2',
+    payload: {
+      symbol: 'ETHUSDT',
+      position_type: 'long',
+      quantity: '1.25',
+      entry_price: '2200',
+      current_price: '2210',
+      status: 'open',
+      leverage: '12',
+      stoploss: {
+        order_id: 'nested-sl-1',
+        price: '2145.5',
+      },
+      takeprofit: {
+        order_id: 'nested-tp-1',
+        price: '2310.75',
+      },
+      created_at: '2026-04-09T09:10:00.000Z',
+      updated_at: '2026-04-09T10:10:00.000Z',
+    },
+    payloadHash: 'hash-2',
+    statusRank: 1,
+    firstSeenAt: '2026-04-09T09:10:00.000Z',
+    lastSeenAt: '2026-04-09T10:10:00.000Z',
+  });
+
+  assert.ok(nestedProtectionUpsert, 'nested Mudrex protection payload should hydrate');
+  assert.equal(nestedProtectionUpsert?.stoplossOrderId, 'nested-sl-1');
+  assert.equal(nestedProtectionUpsert?.takeprofitOrderId, 'nested-tp-1');
+  assert.equal(nestedProtectionUpsert?.stoplossPrice, 2145.5);
+  assert.equal(nestedProtectionUpsert?.takeprofitPrice, 2310.75);
 
   const record = buildPositionRecordFromReadModelRow({
     userId: upsert?.userId,
@@ -323,6 +362,9 @@ async function run(): Promise<void> {
   assert.equal(record.id, 'pos-1');
   assert.equal(record.side, 'Short');
   assert.equal(record.quantity, 0.5);
+  assert.equal(record.requested_leverage, 10);
+  assert.equal(record.confirmed_order_leverage, 10);
+  assert.equal(record.leverage_source, 'confirmed_order_submission');
   assert.equal(record.stoploss_order_id, 'sl-1');
   assert.equal(
     (record.rawPayload as { symbol?: string } | undefined)?.symbol,
@@ -1089,6 +1131,43 @@ async function run(): Promise<void> {
     assert.equal(lifecycle.freshness?.account?.state, 'critical');
     assert.match(lifecycle.freshness?.warning || '', /materially behind the broker route/i);
 
+    const syncedFlatFreshness = service.buildAccountFreshness(
+      {
+        accountName: 'Delta Production',
+        accountKey: 'delta_primary_account',
+      },
+      {
+        accountId: 'acc-flat',
+        observedAt: new Date('2026-04-09T08:00:00.000Z'),
+        checkpointAt: new Date('2026-04-09T11:58:30.000Z'),
+        openPositions: 0,
+        totalRows: 26,
+      }
+    );
+    assert.equal(syncedFlatFreshness?.account?.state, 'fresh');
+    assert.equal(
+      syncedFlatFreshness?.account?.source,
+      'sync_checkpoint_no_open_positions'
+    );
+    assert.equal(syncedFlatFreshness?.warning, null);
+
+    const syncedFlatSummary = service.summarizeGroupedFreshness([
+      {
+        accountId: 'acc-flat',
+        accountName: 'Delta Production',
+        accountKey: 'delta_primary_account',
+        brokerKey: 'delta_exchange',
+        status: 'Connected',
+        totalPositions: 0,
+        data: [],
+        positions: [],
+        freshness: syncedFlatFreshness,
+      },
+    ]);
+    assert.equal(syncedFlatSummary?.freshAccounts, 1);
+    assert.equal(syncedFlatSummary?.criticalAccounts, 0);
+    assert.equal(syncedFlatSummary?.warning, null);
+
     console.log('Positions phase 6 assertions passed.');
   } finally {
     Date.now = originalNow;
@@ -1569,6 +1648,21 @@ async function run(): Promise<void> {
         meta: { after: null },
       };
     },
+    async signedGet() {
+      return [
+        {
+          product_id: '123',
+          product_symbol: 'BTCUSD',
+          size: '1',
+          entry_price: '100',
+          mark_price: '110',
+          liquidation_price: '50',
+          leverage: undefined,
+          created_at: '2026-04-10T00:00:00.000Z',
+          updated_at: '2026-04-10T00:05:00.000Z',
+        },
+      ];
+    },
   };
 
   const history = await adapter.getPositionHistory(
@@ -1617,6 +1711,53 @@ async function run(): Promise<void> {
     Date.parse('2026-04-14T23:59:59.999Z') * 1000
   );
   assert.equal(capturedQueries[1].query.after, 'cursor-2');
+
+  const positions = await adapter.getPositions(
+    {} as any,
+    {
+      userId: 'user-1',
+      accountId: 'account-1',
+      brokerKey: 'delta_exchange',
+    }
+  );
+
+  assert.equal(Array.isArray(positions), true);
+  assert.equal(positions.length, 1);
+  assert.equal(positions[0].symbol, 'BTCUSD');
+  assert.equal(positions[0].leverage, null);
+
+  adapter.deltaHttpClient = {
+    ...adapter.deltaHttpClient,
+    async signedGet() {
+      return [
+        {
+          product_id: '123',
+          product_symbol: 'BTCUSD',
+          size: '1',
+          entry_price: '100',
+          mark_price: '110',
+          liquidation_price: '50',
+          leverage: '12',
+          created_at: '2026-04-10T00:00:00.000Z',
+          updated_at: '2026-04-10T00:05:00.000Z',
+        },
+      ];
+    },
+  };
+
+  const leveragedPositions = await adapter.getPositions(
+    {} as any,
+    {
+      userId: 'user-1',
+      accountId: 'account-1',
+      brokerKey: 'delta_exchange',
+    }
+  );
+
+  assert.equal(leveragedPositions[0].leverage, '12');
+  assert.equal(leveragedPositions[0].position_leverage, '12');
+  assert.equal(leveragedPositions[0].observed_position_leverage, '12');
+  assert.equal(leveragedPositions[0].leverage_source, 'broker_position');
 
   console.log('Positions phase 10 assertions passed.');
 }

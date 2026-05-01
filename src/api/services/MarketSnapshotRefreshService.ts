@@ -5,6 +5,7 @@ import { AssetRepository } from '../../database/repositories/AssetRepository';
 import { MarketSymbolSnapshotRepository } from '../../database/repositories/MarketSymbolSnapshotRepository';
 import { MarketMetric, MarketMetricsService } from './MarketMetricsService';
 import { MarketSymbolSnapshot } from '../../database/entities/MarketSymbolSnapshot';
+import { Logger } from '../../lib/logger';
 
 interface RefreshMarketSnapshotsOptions {
   symbols?: string[];
@@ -28,6 +29,17 @@ export interface MarketSnapshotRefreshResult {
 }
 
 const DEFAULT_ASSET_SCAN_LIMIT = 5000;
+const DEFAULT_REFRESH_BATCH_SIZE = 200;
+const log = new Logger('MarketSnapshotRefreshService');
+
+const chunkValues = <T>(values: T[], size: number): T[][] => {
+  const normalizedSize = Math.max(1, Math.trunc(size) || 1);
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += normalizedSize) {
+    chunks.push(values.slice(index, index + normalizedSize));
+  }
+  return chunks;
+};
 
 const toNullableNumber = (value: unknown): number | null => {
   if (value === null || value === undefined || value === '') {
@@ -59,6 +71,8 @@ const getLiquidityTier = (volume24h: number | null): string | null => {
 
 @Service()
 export class MarketSnapshotRefreshService {
+  protected refreshBatchSize = DEFAULT_REFRESH_BATCH_SIZE;
+
   @Inject(() => AssetRepository)
   private assetRepository!: AssetRepository;
 
@@ -71,6 +85,7 @@ export class MarketSnapshotRefreshService {
   async refreshSnapshots(
     options: RefreshMarketSnapshotsOptions = {}
   ): Promise<ApiSuccessResponse<MarketSnapshotRefreshResult>> {
+    const startedAt = Date.now();
     const assets = await this.loadAssets(options.symbols);
     const snapshotMoment = new Date();
 
@@ -86,48 +101,59 @@ export class MarketSnapshotRefreshService {
       });
     }
 
-    const symbols = assets.map((asset) => asset.symbol);
-    const [metricsBySymbol, existingSnapshots] = await Promise.all([
-      this.marketMetricsService.getMetricsForSymbols(symbols),
-      this.marketSymbolSnapshotRepository.getBySymbols(symbols),
-    ]);
-
-    const snapshotsBySymbol = new Map(
-      existingSnapshots.map((snapshot) => [snapshot.symbol.toUpperCase(), snapshot])
-    );
-
-    const payload = [] as Parameters<MarketSymbolSnapshotRepository['upsertSnapshots']>[0];
+    const assetChunks = chunkValues(assets, this.refreshBatchSize);
+    let refreshedSnapshots = 0;
     let insertedSnapshots = 0;
     let updatedSnapshots = 0;
     let skippedSymbols = 0;
 
-    for (const asset of assets) {
-      const symbol = asset.symbol;
-      const metric = metricsBySymbol.get(symbol);
-      const existingSnapshot = snapshotsBySymbol.get(symbol) || null;
-      const nextSnapshot = this.buildSnapshotPayload(asset, metric, existingSnapshot, snapshotMoment);
+    for (const assetChunk of assetChunks) {
+      const symbols = assetChunk.map((asset) => asset.symbol);
+      const [metricsBySymbol, existingSnapshots] = await Promise.all([
+        this.marketMetricsService.getMetricsForSymbols(symbols),
+        this.marketSymbolSnapshotRepository.getBySymbols(symbols),
+      ]);
 
-      if (!nextSnapshot) {
-        skippedSymbols += 1;
-        continue;
+      const snapshotsBySymbol = new Map(
+        existingSnapshots.map((snapshot) => [snapshot.symbol.toUpperCase(), snapshot])
+      );
+
+      const payload = [] as Parameters<MarketSymbolSnapshotRepository['upsertSnapshots']>[0];
+
+      for (const asset of assetChunk) {
+        const symbol = asset.symbol;
+        const metric = metricsBySymbol.get(symbol);
+        const existingSnapshot = snapshotsBySymbol.get(symbol) || null;
+        const nextSnapshot = this.buildSnapshotPayload(asset, metric, existingSnapshot, snapshotMoment);
+
+        if (!nextSnapshot) {
+          skippedSymbols += 1;
+          continue;
+        }
+
+        payload.push(nextSnapshot);
+        if (existingSnapshot) {
+          updatedSnapshots += 1;
+        } else {
+          insertedSnapshots += 1;
+        }
       }
 
-      payload.push(nextSnapshot);
-      if (existingSnapshot) {
-        updatedSnapshots += 1;
-      } else {
-        insertedSnapshots += 1;
+      if (payload.length > 0) {
+        await this.marketSymbolSnapshotRepository.upsertSnapshots(payload);
+        refreshedSnapshots += payload.length;
       }
     }
 
-    if (payload.length > 0) {
-      await this.marketSymbolSnapshotRepository.upsertSnapshots(payload);
-    }
+    const durationMs = Date.now() - startedAt;
+    log.info(
+      `Market snapshot refresh completed in ${durationMs}ms for ${assets.length} symbol(s) across ${assetChunks.length} batch(es) (${refreshedSnapshots} refreshed, ${insertedSnapshots} inserted, ${updatedSnapshots} updated, ${skippedSymbols} skipped)`
+    );
 
     return successResponse({
       message: 'Market snapshots refreshed',
       processedSymbols: assets.length,
-      refreshedSnapshots: payload.length,
+      refreshedSnapshots,
       insertedSnapshots,
       updatedSnapshots,
       skippedSymbols,

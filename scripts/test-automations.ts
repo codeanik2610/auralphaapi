@@ -8,6 +8,8 @@ import { SignalsAutomationController } from '../src/api/controllers/SignalsAutom
 import { AutomationsService } from '../src/api/services/AutomationsService';
 import { AutomationExecutionService } from '../src/api/services/AutomationExecutionService';
 import { AutomationSignalEvaluatorService } from '../src/api/services/AutomationSignalEvaluatorService';
+import { WhatsappNotificationsService } from '../src/api/services/WhatsappNotificationsService';
+import { env } from '../src/env';
 import {
   validateAutomationCreateBody,
   validateAutomationUpdateBody,
@@ -44,6 +46,39 @@ async function assertAuthRequired(
   );
 }
 
+async function assertTradeSuggestionRuntimeContract(
+  config: Record<string, unknown>,
+  expectations: { templateId: string; symbols: string[]; timeframe: string }
+): Promise<void> {
+  const executionService = new AutomationExecutionService() as any;
+  executionService.strategyTemplateRepository = {
+    getStrategyTemplateById: async (_userId: string, templateId: string) => {
+      assert.equal(templateId, expectations.templateId);
+      return {
+        id: templateId,
+        config: {
+          market: 'crypto-futures',
+          entryLogic: 'ema(20) > ema(50)',
+          exitLogic: 'ema(20) < ema(50)',
+          risk: {
+            stopLossPct: 2,
+            takeProfitTargetsPct: [4],
+          },
+          parameters: {
+            signalThreshold: '0.81',
+          },
+        },
+      };
+    },
+  };
+
+  const resolved = await executionService.resolveTradeSuggestionProfile('user-1', config);
+  assert.equal(resolved.sourceTemplateId, expectations.templateId);
+  assert.equal(resolved.profile.automationReady, true);
+  assert.deepEqual(executionService.resolveTradeSuggestionSymbols(config), expectations.symbols);
+  assert.equal(executionService.resolveTradeSuggestionTimeframe(config), expectations.timeframe);
+}
+
 async function runAutomationsControllerAssertions(): Promise<void> {
   const controller: any = new AutomationsController();
 
@@ -58,9 +93,7 @@ async function runAutomationsControllerAssertions(): Promise<void> {
   };
 
   assert.deepEqual(
-    (
-      await controller.getAutomations(authReq, undefined, undefined, 'Running', 'BTC')
-    ).data.args,
+    (await controller.getAutomations(authReq, undefined, undefined, 'Running', 'BTC')).data.args,
     ['user-1', { limit: undefined, offset: undefined, status: 'Running', search: 'BTC' }]
   );
   assert.deepEqual((await controller.getAutomationsSummary(authReq)).data, { ok: true });
@@ -81,8 +114,7 @@ async function runAutomationsControllerAssertions(): Promise<void> {
     ['user-1', 'bot-2', { reason: 'resume' }]
   );
   assert.deepEqual(
-    (await controller.reconcileAutomationState(authReq, 'bot-3', { reason: 'repair' })).data
-      .args,
+    (await controller.reconcileAutomationState(authReq, 'bot-3', { reason: 'repair' })).data.args,
     ['user-1', 'bot-3', { reason: 'repair' }]
   );
 }
@@ -169,7 +201,8 @@ async function runAutomationScopeLookupAssertions(): Promise<void> {
     assert.deepEqual(capturedWhereClauses, [
       { clause: 'automation.userId = :userId', params: { userId: 'user-1' } },
       {
-        clause: '(automation.automationType IN (:...automationTypes) OR automation.automationType IS NULL)',
+        clause:
+          '(automation.automationType IN (:...automationTypes) OR automation.automationType IS NULL)',
         params: { automationTypes: ['trade-suggestion', 'strategy'] },
       },
       {
@@ -261,6 +294,34 @@ async function runAutomationRepositoryIndexingAssertions(): Promise<void> {
       savedPayloads.push({ ...payload });
       return payload;
     },
+    find: async () => [
+      {
+        id: 'automation-legacy-1',
+        userId: 'user-1',
+        name: 'Legacy Alert Confirm',
+        strategy: 'Alert Confirm',
+        broker: 'paper',
+        market: 'crypto-futures',
+        trigger: 'every 15m',
+        status: 'Running',
+        automationType: 'strategy',
+        timeZone: 'UTC',
+        config: {
+          backtestId: 'backtest-legacy',
+          symbol: 'ldousdt',
+          timeframe: '15M',
+          config: {
+            templateId: 'template-legacy',
+            sourceTemplateId: 'template-legacy',
+          },
+        },
+        searchText: null,
+        sourceBacktestId: null,
+        scopeSymbol: null,
+        scopeTimeframe: null,
+        sourceTemplateId: null,
+      },
+    ],
   });
 
   try {
@@ -324,6 +385,20 @@ async function runAutomationRepositoryIndexingAssertions(): Promise<void> {
     assert.equal(automation.scopeTimeframe, '4h');
     assert.equal(automation.sourceTemplateId, 'template-44');
     assert.match(String(automation.searchText || ''), /ETHUSDT/);
+
+    const backfill = await repository.backfillTradeSuggestionAutomationContracts();
+    assert.deepEqual(backfill, { inspected: 1, updated: 1 });
+    assert.equal(savedPayloads.length, 3);
+    assert.equal(savedPayloads[2].automationType, 'trade-suggestion');
+    assert.equal(savedPayloads[2].sourceBacktestId, 'backtest-legacy');
+    assert.equal(savedPayloads[2].scopeSymbol, 'LDOUSDT');
+    assert.equal(savedPayloads[2].scopeTimeframe, '15m');
+    assert.equal(savedPayloads[2].sourceTemplateId, 'template-legacy');
+    assert.equal(
+      ((savedPayloads[2].config as Record<string, unknown>)?.templateId as string | undefined) ??
+        null,
+      'template-legacy'
+    );
   } finally {
     (coreDataSource as any).getRepository = originalGetRepository;
   }
@@ -582,8 +657,14 @@ async function runAutomationReconcileAssertions(): Promise<void> {
   assert.equal(statusUpdates[0].automationId, 'automation-1');
   assert.equal(statusUpdates[0].status, 'Running');
   assert.ok(statusUpdates[0].nextRun instanceof Date);
-  assert.equal(events.some((event) => event.type === 'Run reconciled'), true);
-  assert.equal(events.some((event) => event.type === 'State reconciled'), true);
+  assert.equal(
+    events.some((event) => event.type === 'Run reconciled'),
+    true
+  );
+  assert.equal(
+    events.some((event) => event.type === 'State reconciled'),
+    true
+  );
   assert.equal(activities.length > 0, true);
   assert.deepEqual(backtestSyncCalls, []);
 }
@@ -850,11 +931,26 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
     _config: Record<string, unknown>,
     fields: Record<string, unknown>
   ) => fields;
-  service.resolveAutomationTimeZone = async (
-    _userId: string,
-    automationTimeZone?: string | null
-  ) => automationTimeZone || 'UTC';
+  service.resolveAutomationTimeZone = async (_userId: string, automationTimeZone?: string | null) =>
+    automationTimeZone || 'Asia/Kolkata';
   service.mapAutomation = (automation: Record<string, unknown>) => automation;
+  service.strategyTemplateRepository = {
+    getStrategyTemplateById: async (_userId: string, templateId: string) => ({
+      id: templateId,
+      config: {
+        market: 'crypto-futures',
+        entryLogic: 'ema(20) > ema(50)',
+        exitLogic: 'ema(20) < ema(50)',
+        risk: {
+          stopLossPct: 2,
+          takeProfitTargetsPct: [4],
+        },
+        parameters: {
+          signalThreshold: '0.81',
+        },
+      },
+    }),
+  };
   service.requireAutomation = async () => ({
     id: 'automation-1',
     userId: 'user-1',
@@ -934,6 +1030,26 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
   assert.equal(savedAutomations.length, 1);
   assert.ok(savedAutomations[0].nextRun instanceof Date);
 
+  const fallbackCreateResponse = await service.createAutomation('user-1', {
+    name: 'Fallback Timezone Momentum',
+    status: 'Draft',
+    automationType: 'trade-suggestion',
+    schedule: {
+      runAt: '09:30',
+      weekdays: [1],
+    },
+    trigger: 'weekly Mon 09:30',
+    config: {
+      symbol: 'ETHUSDT',
+      timeframe: '15m',
+      sourceTemplateId: 'template-2',
+    },
+  });
+
+  assert.equal(createdPayloads.length, 2);
+  assert.equal(createdPayloads[1].timeZone, 'Asia/Kolkata');
+  assert.equal(fallbackCreateResponse.data.timeZone, 'Asia/Kolkata');
+
   savedAutomations.length = 0;
   await service.updateAutomation('user-1', 'automation-1', {
     status: 'Running',
@@ -956,6 +1072,347 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
     intervalDays: 1,
   });
   assert.ok(savedAutomations[0].nextRun instanceof Date);
+}
+
+async function runTradeSuggestionExecutabilityValidationAssertions(): Promise<void> {
+  const createService = () => {
+    const service = new AutomationsService() as any;
+    service.resolveAutomationTimeZone = async () => 'UTC';
+    service.mapAutomation = (automation: Record<string, unknown>) => automation;
+    service.deriveAutomationCoreFields = (
+      _automationType: string,
+      _config: Record<string, unknown>,
+      fields: Record<string, unknown>
+    ) => fields;
+    service.automationRepository = {
+      createAutomation: async (payload: Record<string, unknown>) => ({
+        id: 'automation-new',
+        ...payload,
+        accounts: 0,
+        events: [],
+        alerts: [],
+        lastRun: null,
+        nextRun: null,
+        updatedAt: new Date('2026-03-08T00:00:00.000Z'),
+      }),
+      saveAutomation: async (automation: Record<string, unknown>) => automation,
+      createAutomationEvent: async () => undefined,
+    };
+    return service;
+  };
+
+  {
+    const service = createService();
+    service.backtestRepository = {
+      getBacktestById: async () => ({
+        id: 'backtest-1',
+        strategy: 'Alert Confirm',
+        result: {
+          config: {
+            market: 'crypto-futures',
+          },
+        },
+      }),
+    };
+    service.strategyTemplateRepository = {
+      getStrategyTemplateById: async () => null,
+    };
+
+    await assert.rejects(
+      () =>
+        service.createAutomation('user-1', {
+          name: 'Broken top setup',
+          status: 'Draft',
+          automationType: 'trade-suggestion',
+          config: {
+            symbol: 'BTCUSDT',
+            timeframe: '1h',
+            backtestId: 'backtest-1',
+          },
+        }),
+      /must resolve a source template before it can be saved/i
+    );
+  }
+
+  {
+    const service = createService();
+    service.backtestRepository = {
+      getBacktestById: async () => null,
+    };
+    service.strategyTemplateRepository = {
+      getStrategyTemplateById: async () => null,
+    };
+    service.requireAutomation = async () => ({
+      id: 'automation-1',
+      userId: 'user-1',
+      name: 'Momentum Bot',
+      strategy: 'Momentum',
+      broker: 'paper',
+      market: 'crypto-futures',
+      trigger: 'every 15m',
+      status: 'Draft',
+      automationType: 'trade-suggestion',
+      timeZone: 'UTC',
+      schedule: null,
+      riskMode: null,
+      config: {
+        symbol: 'BTCUSDT',
+        timeframe: '1h',
+        sourceTemplateId: 'template-existing',
+      },
+      updatedAt: new Date('2026-03-08T00:00:00.000Z'),
+    });
+
+    await assert.rejects(
+      () =>
+        service.updateAutomation('user-1', 'automation-1', {
+          config: {
+            symbol: 'BTCUSDT',
+            timeframe: '1h',
+            sourceTemplateId: 'template-missing',
+          },
+        }),
+      /Strategy template not found for trade-suggestion automation/i
+    );
+  }
+
+  {
+    const service = createService();
+    service.backtestRepository = {
+      getBacktestById: async () => null,
+    };
+    service.strategyTemplateRepository = {
+      getStrategyTemplateById: async (_userId: string, templateId: string) => ({
+        id: templateId,
+        config: {
+          market: 'crypto-futures',
+          parameters: {
+            signalThreshold: '0.81',
+          },
+        },
+      }),
+    };
+
+    await assert.rejects(
+      () =>
+        service.createAutomation('user-1', {
+          name: 'Not ready template',
+          status: 'Draft',
+          automationType: 'trade-suggestion',
+          config: {
+            symbol: 'BTCUSDT',
+            timeframe: '1h',
+            sourceTemplateId: 'template-not-ready',
+          },
+        }),
+      /Template is not automation-ready/i
+    );
+  }
+}
+
+async function runTradeSuggestionTemplateContractAssertions(): Promise<void> {
+  const automationsService = new AutomationsService() as any;
+  automationsService.backtestRepository = {
+    getBacktestById: async (userId: string, backtestId: string) => {
+      assert.equal(userId, 'user-1');
+      assert.equal(backtestId, 'backtest-1');
+      return {
+        id: backtestId,
+        strategy: 'Alert Confirm',
+        name: 'Alert Confirm Backtest',
+        result: {
+          config: {
+            market: 'crypto-futures',
+            config: {
+              templateId: 'template-legacy',
+              sourceTemplateId: 'template-legacy',
+              sourceTemplateName: 'Alert Confirm Template',
+              sourceTemplateVersion: 7,
+              inputSnapshot: {
+                template: {
+                  id: 'template-legacy',
+                  name: 'Alert Confirm Template',
+                  sourceTemplateVersion: 7,
+                },
+              },
+            },
+          },
+        },
+      };
+    },
+  };
+
+  const prepared = await automationsService.prepareTradeSuggestionConfig('user-1', {
+    source: 'top-setup',
+    backtestId: 'backtest-1',
+    config: {
+      config: {
+        templateId: 'template-legacy',
+      },
+    },
+    tradeSuggestion: {
+      execution: {
+        executionMode: 'suggestion_only',
+      },
+    },
+  });
+
+  assert.equal(prepared?.templateId, 'template-legacy');
+  assert.equal(prepared?.sourceTemplateId, 'template-legacy');
+  assert.equal(
+    ((prepared?.tradeSuggestion as Record<string, unknown> | undefined)?.sourceTemplateId as
+      | string
+      | undefined) ?? null,
+    'template-legacy'
+  );
+
+  const executionService = new AutomationExecutionService() as any;
+  executionService.strategyTemplateRepository = {
+    getStrategyTemplateById: async (userId: string, templateId: string) => {
+      assert.equal(userId, 'user-1');
+      return {
+        id: templateId,
+        config: {
+          market: 'crypto-futures',
+          entryLogic: 'ema(20) > ema(50)',
+          exitLogic: 'ema(20) < ema(50)',
+          risk: {
+            stopLossPct: 2,
+            takeProfitTargetsPct: [4],
+          },
+          parameters: {
+            signalThreshold: '0.81',
+          },
+        },
+      };
+    },
+  };
+
+  const resolved = await executionService.resolveTradeSuggestionProfile('user-1', {
+    config: {
+      config: {
+        templateId: 'template-legacy',
+      },
+    },
+  });
+
+  assert.equal(resolved.sourceTemplateId, 'template-legacy');
+  assert.equal(resolved.profile.automationReady, true);
+  assert.equal(resolved.profile.tradePlan.long?.enabled, true);
+
+  const embeddedFallbackResolved = await executionService.resolveTradeSuggestionProfile('user-1', {
+    sourceTemplateId: 'template-legacy',
+    inputSnapshot: {
+      template: {
+        id: 'template-legacy',
+        config: {
+          market: 'crypto-futures',
+        },
+      },
+    },
+  });
+
+  assert.equal(embeddedFallbackResolved.sourceTemplateId, 'template-legacy');
+  assert.equal(embeddedFallbackResolved.profile.automationReady, true);
+  assert.equal(embeddedFallbackResolved.profile.tradePlan.long?.enabled, true);
+}
+
+async function runTradeSuggestionCreationWorkflowContractAssertions(): Promise<void> {
+  const service = new AutomationsService() as any;
+  const createdPayloads: Array<Record<string, unknown>> = [];
+
+  service.resolveAutomationTimeZone = async () => 'Asia/Kolkata';
+  service.mapAutomation = (automation: Record<string, unknown>) => automation;
+  service.deriveAutomationCoreFields = (
+    _automationType: string,
+    _config: Record<string, unknown>,
+    fields: Record<string, unknown>
+  ) => fields;
+  service.backtestRepository = {
+    getBacktestById: async () => null,
+  };
+  service.strategyTemplateRepository = {
+    getStrategyTemplateById: async (_userId: string, templateId: string) => ({
+      id: templateId,
+      config: {
+        market: 'crypto-futures',
+        entryLogic: 'ema(20) > ema(50)',
+        exitLogic: 'ema(20) < ema(50)',
+        risk: {
+          stopLossPct: 2,
+          takeProfitTargetsPct: [4],
+        },
+        parameters: {
+          signalThreshold: '0.81',
+        },
+      },
+    }),
+  };
+  service.automationRepository = {
+    createAutomation: async (payload: Record<string, unknown>) => {
+      createdPayloads.push(payload);
+      return {
+        id: 'automation-created-1',
+        ...payload,
+        accounts: 0,
+        events: [],
+        alerts: [],
+        lastRun: null,
+        nextRun: null,
+        updatedAt: new Date('2026-04-06T00:00:00.000Z'),
+      };
+    },
+    saveAutomation: async (automation: Record<string, unknown>) => automation,
+    createAutomationEvent: async () => undefined,
+  };
+
+  const response = await service.createAutomation('user-1', {
+    name: 'Legacy nested template contract',
+    status: 'Draft',
+    automationType: 'trade-suggestion',
+    config: {
+      source: 'manual',
+      symbol: 'BTCUSDT',
+      timeframe: '1h',
+      market: 'crypto-futures',
+      templateId: 'template-legacy',
+      sourceTemplateId: 'template-legacy',
+      config: {
+        templateId: 'template-legacy',
+        sourceTemplateId: 'template-legacy',
+        inputSnapshot: {
+          template: {
+            id: 'template-legacy',
+            name: 'Alert Confirm Template',
+            sourceTemplateVersion: 7,
+          },
+        },
+      },
+      tradeSuggestion: {
+        execution: {
+          executionMode: 'suggestion_only',
+        },
+      },
+    },
+  });
+
+  assert.equal(response.data.automationType, 'trade-suggestion');
+  assert.equal(createdPayloads.length, 1);
+  assert.equal(createdPayloads[0].timeZone, 'Asia/Kolkata');
+
+  const persistedConfig = createdPayloads[0].config as Record<string, unknown>;
+  assert.equal(persistedConfig.templateId, 'template-legacy');
+  assert.equal(persistedConfig.sourceTemplateId, 'template-legacy');
+
+  const tradeSuggestion = persistedConfig.tradeSuggestion as Record<string, unknown>;
+  assert.equal(tradeSuggestion.templateId, 'template-legacy');
+  assert.equal(tradeSuggestion.sourceTemplateId, 'template-legacy');
+
+  await assertTradeSuggestionRuntimeContract(persistedConfig, {
+    templateId: 'template-legacy',
+    symbols: ['BTCUSDT'],
+    timeframe: '1h',
+  });
 }
 
 async function runAutomationExecutionHardeningAssertions(): Promise<void> {
@@ -1014,6 +1471,12 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
     };
     service.automationSignalEvaluatorService = {
       evaluateLatestSignals: async () => ({ items: [] }),
+    };
+    service.whatsappNotificationsService = {
+      queueLiveTradeSuggestionReadyNotification: async () => ({
+        outcome: 'skipped',
+        reason: 'whatsapp-disabled',
+      }),
     };
 
     return { service, events };
@@ -1167,6 +1630,598 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
     }
 
     {
+      const { service } = createService();
+      const outputs: Array<Record<string, unknown>> = [];
+      const whatsappCalls: Array<Record<string, unknown>> = [];
+      const notificationCalls: Array<Record<string, unknown>> = [];
+      const evaluatorCalls: Array<Record<string, unknown>> = [];
+      const automationTradeSuggestion = {
+        ...automation,
+        automationType: 'trade-suggestion',
+      };
+
+      service.resolveTradeSuggestionProfile = async () => ({
+        sourceTemplateId: 'template-1',
+        templateConfig: {},
+        profile: {
+          automationReady: true,
+          readinessReasons: [],
+          contractVersion: 'v1',
+          market: 'crypto-futures',
+          signalThreshold: 0.81,
+          tradePlan: {
+            long: {
+              enabled: true,
+              side: 'long',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Trend continuation',
+              entryRule: 'Break above range high',
+              exitRule: 'Stop at invalidation',
+            },
+            short: {
+              enabled: false,
+              side: 'short',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Disabled',
+              entryRule: 'Disabled',
+              exitRule: 'Disabled',
+            },
+          },
+        },
+      });
+      service.automationCursorRepository = {
+        listByAutomationAndScope: async () => [],
+        upsertCursor: async () => undefined,
+      };
+      service.automationSignalEvaluatorService = {
+        evaluateLatestSignals: async (payload: Record<string, unknown>) => {
+          evaluatorCalls.push(payload);
+          return {
+            evaluatedSymbols: 1,
+            items: [
+              {
+                symbol: 'BTCUSDT',
+                status: 'ok',
+                latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+                signals: [
+                  {
+                    side: 'long',
+                    signalTime: '2026-04-04T10:00:00.000Z',
+                    entryPrice: 100,
+                  },
+                ],
+              },
+            ],
+          };
+        },
+      };
+      service.suggestedTradeRepository = {
+        createSuggestedTrade: async () => ({
+          duplicate: false,
+          item: { id: 'st-1' },
+        }),
+      };
+      service.suggestedTradesService = {
+        attemptAutoLiveExecutionForAutomation: async () => ({
+          outcome: 'ready',
+          message: 'Ready for live handling',
+          brokerKey: 'mudrex',
+          accountId: 'account-1',
+          preTradeCheckId: 'check-1',
+        }),
+      };
+      service.automationRunOutputRepository = {
+        createOutput: async (payload: Record<string, unknown>) => {
+          outputs.push(payload);
+          return payload;
+        },
+      };
+      service.whatsappNotificationsService = {
+        queueLiveTradeSuggestionReadyNotification: async (payload: Record<string, unknown>) => {
+          whatsappCalls.push(payload);
+          return {
+            outcome: 'queued',
+            reason: 'queued',
+            deliveryId: 'wa-1',
+          };
+        },
+      };
+      service.operationalEventService = {
+        logActivity: async () => undefined,
+        emitNotificationAlert: async (_userId: string, payload: Record<string, unknown>) => {
+          notificationCalls.push(payload);
+          return null;
+        },
+      };
+
+      const result = await service.generateTradeSuggestions(
+        automationTradeSuggestion,
+        'run-trade-1',
+        {
+          symbol: 'BTCUSDT',
+          timeframe: '1h',
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'live_trade_auto',
+              approvalMode: 'auto_if_safe',
+            },
+          },
+        },
+        new Date('2026-04-04T10:05:00.000Z')
+      );
+
+      assert.equal(result.inserted, 1);
+      assert.equal(evaluatorCalls[0]?.signalSelectionMode, 'latest_closed_only');
+      assert.equal(result.autoLiveReady, 1);
+      assert.equal(outputs.length, 2);
+      assert.equal(outputs[1]?.outputType, 'trade-suggestion.live-auto');
+      assert.equal(whatsappCalls.length, 1);
+      assert.equal(notificationCalls.length, 2);
+      assert.equal(notificationCalls[0]?.source, 'trade-suggestion.created:st-1');
+      assert.equal(notificationCalls[0]?.message, 'New trade idea created for BTCUSDT 1h LONG.');
+      assert.equal(notificationCalls[1]?.source, 'trade-suggestion.live-auto.ready:st-1');
+      assert.equal(whatsappCalls[0]?.suggestedTradeId, 'st-1');
+      assert.equal(whatsappCalls[0]?.brokerKey, 'mudrex');
+      assert.equal(whatsappCalls[0]?.accountId, 'account-1');
+      assert.equal(whatsappCalls[0]?.automationName, 'Momentum Deployment');
+    }
+
+    {
+      const { service } = createService();
+      const createdSuggestions: Array<Record<string, unknown>> = [];
+      const cursorUpdates: Array<Record<string, unknown>> = [];
+      const automationTradeSuggestion = {
+        ...automation,
+        automationType: 'trade-suggestion',
+      };
+
+      service.resolveTradeSuggestionProfile = async () => ({
+        sourceTemplateId: 'template-1',
+        templateConfig: {},
+        profile: {
+          automationReady: true,
+          readinessReasons: [],
+          contractVersion: 'v1',
+          market: 'crypto-futures',
+          signalThreshold: 0.81,
+          tradePlan: {
+            long: {
+              enabled: true,
+              side: 'long',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Trend continuation',
+              entryRule: 'Break above range high',
+              exitRule: 'Stop at invalidation',
+            },
+            short: {
+              enabled: false,
+              side: 'short',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Disabled',
+              entryRule: 'Disabled',
+              exitRule: 'Disabled',
+            },
+          },
+        },
+      });
+      service.automationCursorRepository = {
+        listByAutomationAndScope: async () => [
+          {
+            symbol: 'BTCUSDT',
+            lastEvaluatedSignalTime: new Date('2026-04-04T09:00:00.000Z'),
+            lastTriggeredSignalTime: null,
+          },
+        ],
+        upsertCursor: async (payload: Record<string, unknown>) => {
+          cursorUpdates.push(payload);
+          return payload;
+        },
+      };
+      service.automationSignalEvaluatorService = {
+        evaluateLatestSignals: async (payload: Record<string, unknown>) => {
+          assert.equal(payload.signalSelectionMode, 'latest_closed_only');
+          return {
+            evaluatedSymbols: 1,
+            items: [
+              {
+                symbol: 'BTCUSDT',
+                status: 'ok',
+                latestClosedSignalTime: '2026-04-04T11:00:00.000Z',
+                signals: [
+                  {
+                    side: 'long',
+                    signalTime: '2026-04-04T10:00:00.000Z',
+                    entryPrice: 100,
+                  },
+                  {
+                    side: 'long',
+                    signalTime: '2026-04-04T11:00:00.000Z',
+                    entryPrice: 110,
+                  },
+                ],
+              },
+            ],
+          };
+        },
+      };
+      service.suggestedTradeRepository = {
+        createSuggestedTrade: async (payload: Record<string, unknown>) => {
+          createdSuggestions.push(payload);
+          return {
+            duplicate: false,
+            item: { id: `st-${createdSuggestions.length}` },
+          };
+        },
+      };
+      service.suggestedTradesService = {};
+      service.automationRunOutputRepository = {
+        createOutput: async () => undefined,
+      };
+      service.operationalEventService = {
+        logActivity: async () => undefined,
+        emitNotificationAlert: async () => null,
+      };
+
+      const result = await service.generateTradeSuggestions(
+        automationTradeSuggestion,
+        'run-trade-latest-only',
+        {
+          symbol: 'BTCUSDT',
+          timeframe: '1h',
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'suggestion_only',
+            },
+          },
+        },
+        new Date('2026-04-04T11:05:00.000Z')
+      );
+
+      assert.equal(result.signalsDetected, 1);
+      assert.equal(result.inserted, 1);
+      assert.equal(createdSuggestions.length, 1);
+      assert.equal(
+        (createdSuggestions[0]?.signalTime as Date).toISOString(),
+        '2026-04-04T11:00:00.000Z'
+      );
+      assert.equal(createdSuggestions[0]?.entryPrice, 110);
+      assert.equal(cursorUpdates.at(-1)?.lastStatus, 'signal');
+      assert.deepEqual(cursorUpdates.at(-1)?.meta, {
+        latestClosedSignalTime: '2026-04-04T11:00:00.000Z',
+        evaluationMode: 'latest-closed-candle',
+        signalSelectionMode: 'latest_closed_only',
+        signalCount: 1,
+        skippedHistoricalSignalCount: 1,
+      });
+    }
+
+    {
+      const { service } = createService();
+      const createdSuggestions: Array<Record<string, unknown>> = [];
+      const cursorUpdates: Array<Record<string, unknown>> = [];
+      const automationTradeSuggestion = {
+        ...automation,
+        automationType: 'trade-suggestion',
+      };
+
+      service.resolveTradeSuggestionProfile = async () => ({
+        sourceTemplateId: 'template-1',
+        templateConfig: {},
+        profile: {
+          automationReady: true,
+          readinessReasons: [],
+          contractVersion: 'v1',
+          market: 'crypto-futures',
+          signalThreshold: 0.81,
+          tradePlan: {
+            long: {
+              enabled: true,
+              side: 'long',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Trend continuation',
+              entryRule: 'Break above range high',
+              exitRule: 'Stop at invalidation',
+            },
+            short: {
+              enabled: false,
+              side: 'short',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Disabled',
+              entryRule: 'Disabled',
+              exitRule: 'Disabled',
+            },
+          },
+        },
+      });
+      service.automationCursorRepository = {
+        listByAutomationAndScope: async () => [
+          {
+            symbol: 'BTCUSDT',
+            lastEvaluatedSignalTime: new Date('2026-04-04T09:00:00.000Z'),
+            lastTriggeredSignalTime: null,
+          },
+        ],
+        upsertCursor: async (payload: Record<string, unknown>) => {
+          cursorUpdates.push(payload);
+          return payload;
+        },
+      };
+      service.automationSignalEvaluatorService = {
+        evaluateLatestSignals: async (payload: Record<string, unknown>) => {
+          assert.equal(payload.signalSelectionMode, 'cursor_gap');
+          return {
+            evaluatedSymbols: 1,
+            items: [
+              {
+                symbol: 'BTCUSDT',
+                status: 'ok',
+                latestClosedSignalTime: '2026-04-04T11:00:00.000Z',
+                signals: [
+                  {
+                    side: 'long',
+                    signalTime: '2026-04-04T10:00:00.000Z',
+                    entryPrice: 100,
+                  },
+                  {
+                    side: 'long',
+                    signalTime: '2026-04-04T11:00:00.000Z',
+                    entryPrice: 110,
+                  },
+                ],
+              },
+            ],
+          };
+        },
+      };
+      service.suggestedTradeRepository = {
+        createSuggestedTrade: async (payload: Record<string, unknown>) => {
+          createdSuggestions.push(payload);
+          return {
+            duplicate: false,
+            item: { id: `st-gap-${createdSuggestions.length}` },
+          };
+        },
+      };
+      service.suggestedTradesService = {};
+      service.automationRunOutputRepository = {
+        createOutput: async () => undefined,
+      };
+      service.operationalEventService = {
+        logActivity: async () => undefined,
+        emitNotificationAlert: async () => null,
+      };
+
+      const result = await service.generateTradeSuggestions(
+        automationTradeSuggestion,
+        'run-trade-cursor-gap',
+        {
+          symbol: 'BTCUSDT',
+          timeframe: '1h',
+          signalSelectionMode: 'cursor_gap',
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'suggestion_only',
+            },
+          },
+        },
+        new Date('2026-04-04T11:05:00.000Z')
+      );
+
+      assert.equal(result.signalsDetected, 2);
+      assert.equal(result.inserted, 2);
+      assert.equal(createdSuggestions.length, 2);
+      assert.equal(
+        (createdSuggestions[0]?.signalTime as Date).toISOString(),
+        '2026-04-04T10:00:00.000Z'
+      );
+      assert.equal(
+        (createdSuggestions[1]?.signalTime as Date).toISOString(),
+        '2026-04-04T11:00:00.000Z'
+      );
+      assert.equal(cursorUpdates.at(-1)?.lastStatus, 'signal');
+      assert.deepEqual(cursorUpdates.at(-1)?.meta, {
+        latestClosedSignalTime: '2026-04-04T11:00:00.000Z',
+        evaluationMode: 'latest-closed-candle',
+        signalSelectionMode: 'cursor_gap',
+        signalCount: 2,
+        skippedHistoricalSignalCount: 0,
+      });
+    }
+
+    {
+      const { service } = createService();
+      const whatsappCalls: Array<Record<string, unknown>> = [];
+      const notificationCalls: Array<Record<string, unknown>> = [];
+
+      service.resolveTradeSuggestionProfile = async () => ({
+        sourceTemplateId: 'template-1',
+        templateConfig: {},
+        profile: {
+          automationReady: true,
+          readinessReasons: [],
+          contractVersion: 'v1',
+          market: 'crypto-futures',
+          signalThreshold: 0.81,
+          tradePlan: {
+            long: {
+              enabled: true,
+              side: 'long',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Trend continuation',
+              entryRule: 'Break above range high',
+              exitRule: 'Stop at invalidation',
+            },
+            short: {
+              enabled: false,
+              side: 'short',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Disabled',
+              entryRule: 'Disabled',
+              exitRule: 'Disabled',
+            },
+          },
+        },
+      });
+      service.automationCursorRepository = {
+        listByAutomationAndScope: async () => [],
+        upsertCursor: async () => undefined,
+      };
+      service.automationSignalEvaluatorService = {
+        evaluateLatestSignals: async () => ({
+          evaluatedSymbols: 1,
+          items: [
+            {
+              symbol: 'ETHUSDT',
+              status: 'ok',
+              latestClosedSignalTime: '2026-04-04T11:00:00.000Z',
+              signals: [
+                {
+                  side: 'long',
+                  signalTime: '2026-04-04T11:00:00.000Z',
+                  entryPrice: 200,
+                },
+              ],
+            },
+          ],
+        }),
+      };
+      service.suggestedTradeRepository = {
+        createSuggestedTrade: async () => ({
+          duplicate: false,
+          item: { id: 'st-2' },
+        }),
+      };
+      service.suggestedTradesService = {
+        attemptAutoLiveExecutionForAutomation: async () => ({
+          outcome: 'placed',
+          message: 'Order placed',
+          brokerKey: 'mudrex',
+          accountId: 'account-1',
+          preTradeCheckId: 'check-2',
+          orderId: 'order-1',
+        }),
+      };
+      service.automationRunOutputRepository = {
+        createOutput: async () => undefined,
+      };
+      service.whatsappNotificationsService = {
+        queueLiveTradeSuggestionReadyNotification: async (payload: Record<string, unknown>) => {
+          whatsappCalls.push(payload);
+          return {
+            outcome: 'queued',
+            reason: 'queued',
+          };
+        },
+      };
+      service.operationalEventService = {
+        logActivity: async () => undefined,
+        emitNotificationAlert: async (_userId: string, payload: Record<string, unknown>) => {
+          notificationCalls.push(payload);
+          return null;
+        },
+      };
+
+      await service.generateTradeSuggestions(
+        automation,
+        'run-trade-2',
+        {
+          symbol: 'ETHUSDT',
+          timeframe: '15m',
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'live_trade_auto',
+              approvalMode: 'auto_if_safe',
+            },
+          },
+        },
+        new Date('2026-04-04T11:05:00.000Z')
+      );
+
+      assert.equal(whatsappCalls.length, 0);
+      assert.equal(notificationCalls.length, 1);
+      assert.equal(notificationCalls[0]?.source, 'trade-suggestion.created:st-2');
+      assert.equal(notificationCalls[0]?.message, 'New trade idea created for ETHUSDT 15m LONG.');
+    }
+
+    {
+      const { service } = createService();
+      const statusUpdates: Array<Record<string, unknown>> = [];
+      const automationTradeSuggestion = {
+        ...automation,
+        automationType: 'trade-suggestion',
+      };
+
+      service.automationRepository = {
+        createAutomationEvent: async () => undefined,
+        createAutomationAlert: async () => undefined,
+        getAutomationCoreById: async () => null,
+        updateAutomationStatus: async (
+          userId: string,
+          automationId: string,
+          status: string,
+          nextRun: Date | null | undefined
+        ) => {
+          statusUpdates.push({ userId, automationId, status, nextRun });
+        },
+      };
+      service.generateTradeSuggestions = async () => {
+        throw new Error('trade-suggestion automation is missing a source template');
+      };
+
+      coreDataSource.createQueryRunner = () =>
+        ({
+          connect: async () => undefined,
+          startTransaction: async () => undefined,
+          commitTransaction: async () => undefined,
+          rollbackTransaction: async () => undefined,
+          release: async () => undefined,
+          manager: {
+            findOne: async () => automationTradeSuggestion,
+            createQueryBuilder: () => ({
+              setLock() {
+                return this;
+              },
+              where() {
+                return this;
+              },
+              andWhere() {
+                return this;
+              },
+              orderBy() {
+                return this;
+              },
+              getOne: async () => null,
+            }),
+            insert: async () => undefined,
+            save: async () => undefined,
+          },
+        }) as any;
+
+      const result = await service.execute({
+        automationId: automationTradeSuggestion.id,
+        actorUserId: automationTradeSuggestion.userId,
+        trigger: 'manual',
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(statusUpdates.length, 1);
+      assert.deepEqual(statusUpdates[0], {
+        userId: 'user-1',
+        automationId: 'automation-1',
+        status: 'Failed',
+        nextRun: null,
+      });
+    }
+
+    {
       const { service, events } = createService();
       const runUpdates: Array<{ id: string; payload: Record<string, unknown> }> = [];
       const outputs: Array<Record<string, unknown>> = [];
@@ -1279,9 +2334,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         }),
       };
 
-      const syncResult = await service.syncBacktestRunnerLifecycleByBacktestId(
-        'child-backtest-1'
-      );
+      const syncResult = await service.syncBacktestRunnerLifecycleByBacktestId('child-backtest-1');
 
       assert.equal(syncResult.synced, true);
       assert.equal(runUpdates.length, 1);
@@ -1297,11 +2350,15 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         'Completed'
       );
       assert.equal(
-        ((runUpdates[0]?.payload.meta as Record<string, unknown> | undefined)
-          ?.backtestLifecycle as string | undefined) ?? null,
+        ((runUpdates[0]?.payload.meta as Record<string, unknown> | undefined)?.backtestLifecycle as
+          | string
+          | undefined) ?? null,
         'finalized'
       );
-      assert.equal(events.some((item) => item.type === 'Run completed'), true);
+      assert.equal(
+        events.some((item) => item.type === 'Run completed'),
+        true
+      );
       assert.equal(outputs.length, 1);
       assert.equal(outputs[0]?.outputType, 'backtest-runner.summary');
       assert.equal(outputs[0]?.status, 'Created');
@@ -1463,12 +2520,9 @@ async function runAutomationsOperationalAssertions(): Promise<void> {
     },
   };
 
-  await assert.rejects(
-    async () => {
-      await failingSvc.pauseAutomation('user-1', 'bot-1', { reason: 'maintenance' });
-    },
-    /db unavailable/
-  );
+  await assert.rejects(async () => {
+    await failingSvc.pauseAutomation('user-1', 'bot-1', { reason: 'maintenance' });
+  }, /db unavailable/);
   assert.equal(failingOperational.activityCalls.length, 1);
   assert.equal(failingOperational.alertCalls.length, 1);
   assert.equal(failingOperational.activityCalls[0].payload.title, 'Automation pause failed');
@@ -1522,6 +2576,7 @@ function runAutomationSignalEvaluatorAssertions(): void {
         side: 'long',
         signalTime: '2026-04-13T00:15:00.000Z',
         entryPrice: 123.45,
+        tradePlan: null,
       },
     ],
   });
@@ -1538,7 +2593,6 @@ function runAutomationSignalEvaluatorAssertions(): void {
   });
   assert.equal(fallback.status, 'failed');
 }
-
 
 async function runAutomationRuntimeStaleCandidateAssertions(): Promise<void> {
   const { AutomationsService } = await import('../src/api/services/AutomationsService');
@@ -1601,7 +2655,10 @@ async function runAutomationRuntimeStaleCandidateAssertions(): Promise<void> {
   assert.deepEqual(captured.statuses, ['Queued', 'Running']);
 
   const cutoffDeltaMs = Math.abs(captured.olderThan!.getTime() - (now - staleThresholdMs));
-  assert.ok(cutoffDeltaMs < 15_000, `expected stale cutoff near 20 minutes, got ${cutoffDeltaMs}ms drift`);
+  assert.ok(
+    cutoffDeltaMs < 15_000,
+    `expected stale cutoff near 20 minutes, got ${cutoffDeltaMs}ms drift`
+  );
 
   assert.equal(items.length, 1);
   assert.equal(items[0].id, 'run-stale');
@@ -1629,12 +2686,12 @@ function runAutomationsScriptWiringAssertions(): void {
   assert.equal(runPackageSuiteSource.includes("'test:automations'"), true);
 
   assert.equal(
-    proofSource.includes("scripts/smokes/smoke-automations-lifecycle.ts"),
+    proofSource.includes('scripts/smokes/smoke-automations-lifecycle.ts'),
     true,
     'automations live proof must run lifecycle smoke'
   );
   assert.equal(
-    proofSource.includes("scripts/checks/check-automations-health.ts"),
+    proofSource.includes('scripts/checks/check-automations-health.ts'),
     true,
     'automations live proof must run health check'
   );
@@ -1664,7 +2721,10 @@ function runAutomationsScriptWiringAssertions(): void {
     'automations signoff must require schedule audit verification'
   );
   assert.equal(
-    evaluatorSource.includes("path.resolve(process.cwd(), 'scripts', '_runtime', 'automation_signal_eval.py')"),
+    evaluatorSource.includes('path.resolve(') &&
+      evaluatorSource.includes("'scripts'") &&
+      evaluatorSource.includes("'_runtime'") &&
+      evaluatorSource.includes("'automation_signal_eval.py'"),
     true,
     'automation signal evaluator must use scripts/_runtime automation runner'
   );
@@ -1673,6 +2733,189 @@ function runAutomationsScriptWiringAssertions(): void {
     true,
     'live auto order placement must forward suggested-trade context into the order ledger'
   );
+  assert.equal(
+    executionSource.includes('queueLiveTradeSuggestionReadyNotification'),
+    true,
+    'live auto ready outputs must queue WhatsApp notifications through the notification service'
+  );
+}
+
+async function runWhatsappNotificationQueueAssertions(): Promise<void> {
+  const service = new WhatsappNotificationsService() as any;
+  const deliveries: Array<Record<string, unknown>> = [];
+  const originalWhatsappEnv = {
+    enabled: env.whatsapp.enabled,
+    provider: env.whatsapp.provider,
+    twilio: {
+      accountSid: env.whatsapp.twilio.accountSid,
+      authToken: env.whatsapp.twilio.authToken,
+      from: env.whatsapp.twilio.from,
+    },
+  };
+
+  try {
+    service.appSettingsRepository = {
+      getSettings: async (userId: string) => {
+        if (userId === 'user-disabled') {
+          return {
+            notifyWhatsapp: false,
+            whatsappLiveTradeSuggestions: false,
+            whatsappNumber: null,
+            whatsappVerifiedAt: null,
+          };
+        }
+
+        if (userId === 'user-unverified') {
+          return {
+            notifyWhatsapp: true,
+            whatsappLiveTradeSuggestions: true,
+            whatsappNumber: '+14155550123',
+            whatsappVerifiedAt: null,
+          };
+        }
+
+        return {
+          notifyWhatsapp: true,
+          whatsappLiveTradeSuggestions: true,
+          whatsappNumber: '+14155550123',
+          whatsappVerifiedAt: new Date('2026-04-04T09:00:00.000Z'),
+        };
+      },
+    };
+    service.suggestedTradeRepository = {
+      getSuggestedTradeById: async (_userId: string, suggestedTradeId: string) => {
+        if (suggestedTradeId === 'missing') {
+          return null;
+        }
+
+        return {
+          id: suggestedTradeId,
+          symbol: 'BTCUSDT',
+          timeframe: '1h',
+          side: 'BUY',
+          entryPrice: '101.25',
+          stopLossPrice: '98.75',
+          takeProfitTargets: ['109.5'],
+        };
+      },
+    };
+    service.brokerAccountRepository = {
+      getBrokerAccountById: async (_userId: string, accountId: string) =>
+        accountId === 'account-1'
+          ? {
+              accountName: 'Mudrex Prod',
+              accountKey: 'mudrex_prod',
+              brokerKey: 'mudrex',
+            }
+          : null,
+    };
+    service.whatsappDeliveryRepository = {
+      findByDedupeKey: async (dedupeKey: string) =>
+        dedupeKey.includes(':duplicate:')
+          ? {
+              id: 'wa-existing',
+            }
+          : null,
+      queueDelivery: async (payload: Record<string, unknown>) => {
+        deliveries.push(payload);
+        return {
+          id: 'wa-1',
+        };
+      },
+    };
+
+    env.whatsapp.enabled = false;
+    const runtimeDisabled = await service.queueLiveTradeSuggestionReadyNotification({
+      userId: 'user-1',
+      suggestedTradeId: 'trade-disabled-by-env',
+      automationId: 'automation-1',
+      automationRunId: 'run-1',
+    });
+    assert.equal(runtimeDisabled.outcome, 'skipped');
+    assert.equal(runtimeDisabled.reason, 'runtime-disabled');
+    assert.equal(deliveries.length, 0);
+
+    env.whatsapp.enabled = true;
+    env.whatsapp.twilio.accountSid = '';
+    env.whatsapp.twilio.authToken = '';
+    env.whatsapp.twilio.from = '';
+    const providerUnconfigured = await service.queueLiveTradeSuggestionReadyNotification({
+      userId: 'user-1',
+      suggestedTradeId: 'trade-unconfigured',
+      automationId: 'automation-1',
+      automationRunId: 'run-1',
+    });
+    assert.equal(providerUnconfigured.outcome, 'skipped');
+    assert.equal(providerUnconfigured.reason, 'provider-unconfigured');
+    assert.equal(deliveries.length, 0);
+
+    env.whatsapp.twilio.accountSid = 'AC123';
+    env.whatsapp.twilio.authToken = 'secret';
+    env.whatsapp.twilio.from = 'whatsapp:+14155238886';
+
+    const queued = await service.queueLiveTradeSuggestionReadyNotification({
+      userId: 'user-1',
+      suggestedTradeId: 'trade-1',
+      automationId: 'automation-1',
+      automationRunId: 'run-1',
+      automationName: 'Momentum Deployment',
+      brokerKey: 'mudrex',
+      accountId: 'account-1',
+    });
+
+    assert.equal(queued.outcome, 'queued');
+    assert.equal(queued.reason, 'queued');
+    assert.equal(queued.deliveryId, 'wa-1');
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0]?.recipientPhone, '+14155550123');
+    assert.equal(deliveries[0]?.dedupeKey, 'live-suggestion:user-1:trade-1:ready');
+    assert.equal(deliveries[0]?.templateKey, 'live_trade_suggestion_ready_v1');
+    assert.equal(deliveries[0]?.source, 'trade-suggestion.live-auto');
+    assert.match(String(deliveries[0]?.body || ''), /BTCUSDT \| 1h \| Long/);
+    assert.match(String(deliveries[0]?.body || ''), /Route: mudrex \/ Mudrex Prod/);
+
+    const disabled = await service.queueLiveTradeSuggestionReadyNotification({
+      userId: 'user-disabled',
+      suggestedTradeId: 'trade-2',
+      automationId: 'automation-1',
+      automationRunId: 'run-1',
+    });
+    assert.equal(disabled.outcome, 'skipped');
+    assert.equal(disabled.reason, 'whatsapp-disabled');
+
+    const unverified = await service.queueLiveTradeSuggestionReadyNotification({
+      userId: 'user-unverified',
+      suggestedTradeId: 'trade-3',
+      automationId: 'automation-1',
+      automationRunId: 'run-1',
+    });
+    assert.equal(unverified.outcome, 'skipped');
+    assert.equal(unverified.reason, 'unverified-number');
+
+    const duplicate = await service.queueLiveTradeSuggestionReadyNotification({
+      userId: 'user-1',
+      suggestedTradeId: 'duplicate',
+      automationId: 'automation-1',
+      automationRunId: 'run-1',
+    });
+    assert.equal(duplicate.outcome, 'skipped');
+    assert.equal(duplicate.reason, 'duplicate');
+
+    const missingTrade = await service.queueLiveTradeSuggestionReadyNotification({
+      userId: 'user-1',
+      suggestedTradeId: 'missing',
+      automationId: 'automation-1',
+      automationRunId: 'run-1',
+    });
+    assert.equal(missingTrade.outcome, 'skipped');
+    assert.equal(missingTrade.reason, 'suggested-trade-missing');
+  } finally {
+    env.whatsapp.enabled = originalWhatsappEnv.enabled;
+    env.whatsapp.provider = originalWhatsappEnv.provider;
+    env.whatsapp.twilio.accountSid = originalWhatsappEnv.twilio.accountSid;
+    env.whatsapp.twilio.authToken = originalWhatsappEnv.twilio.authToken;
+    env.whatsapp.twilio.from = originalWhatsappEnv.twilio.from;
+  }
 }
 
 async function main(): Promise<void> {
@@ -1688,10 +2931,14 @@ async function main(): Promise<void> {
   runAutomationTimeZoneValidationAssertions();
   runAutomationScheduleAuditAssertions();
   await runAutomationSchedulePersistenceAssertions();
+  await runTradeSuggestionExecutabilityValidationAssertions();
+  await runTradeSuggestionTemplateContractAssertions();
+  await runTradeSuggestionCreationWorkflowContractAssertions();
   await runAutomationExecutionHardeningAssertions();
   await runAutomationOperationalSnapshotAssertions();
   await runAutomationsOperationalAssertions();
   await runAutomationRuntimeStaleCandidateAssertions();
+  await runWhatsappNotificationQueueAssertions();
   runAutomationSignalEvaluatorAssertions();
   runTradeSuggestionExecutionPolicyValidationAssertions();
   runAutomationsScriptWiringAssertions();

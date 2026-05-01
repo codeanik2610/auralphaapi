@@ -37,10 +37,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       'ActivityExportStorageService.ts',
     ],
     tests: [script('test:activity', 'scripts/test-activity.ts')],
-    checks: [
-      script('check:activity-health', 'scripts/checks/check-activity-health.ts'),
+    checks: [script('check:activity-health', 'scripts/checks/check-activity-health.ts')],
+    releaseGates: [
+      script('release-gate:activity', 'scripts/release-gates/release-gate-activity.ts'),
     ],
-    releaseGates: [script('release-gate:activity', 'scripts/release-gates/release-gate-activity.ts')],
     signoffs: [script('signoff:activity', 'scripts/signoffs/signoff-activity.ts')],
   },
   {
@@ -65,10 +65,17 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     controllers: ['AssetPriceSchedulerController.ts'],
     services: ['AssetPriceSchedulerService.ts'],
     tests: [script('test:asset-price-sync', 'scripts/test-asset-price-sync.ts')],
-    checks: [script('check:asset-price-sync-health', 'scripts/checks/check-asset-price-sync-health.ts')],
-    proofs: [script('proof:asset-price-sync-live', 'scripts/proofs/proof-asset-price-sync-live.ts')],
+    checks: [
+      script('check:asset-price-sync-health', 'scripts/checks/check-asset-price-sync-health.ts'),
+    ],
+    proofs: [
+      script('proof:asset-price-sync-live', 'scripts/proofs/proof-asset-price-sync-live.ts'),
+    ],
     releaseGates: [
-      script('release-gate:asset-price-sync', 'scripts/release-gates/release-gate-asset-price-sync.ts'),
+      script(
+        'release-gate:asset-price-sync',
+        'scripts/release-gates/release-gate-asset-price-sync.ts'
+      ),
     ],
     signoffs: [script('signoff:asset-price-sync', 'scripts/signoffs/signoff-asset-price-sync.ts')],
     captures: [
@@ -125,13 +132,15 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       script('test:automations', 'scripts/test-automations.ts'),
       script('test:automation-type', 'scripts/test-automation-type-utils.ts'),
     ],
-    checks: [
-      script('check:automations-health', 'scripts/checks/check-automations-health.ts'),
-    ],
+    checks: [script('check:automations-health', 'scripts/checks/check-automations-health.ts')],
     proofs: [script('proof:automations-live', 'scripts/proofs/proof-automations-live.ts')],
-    releaseGates: [script('release-gate:automations', 'scripts/release-gates/release-gate-automations.ts')],
+    releaseGates: [
+      script('release-gate:automations', 'scripts/release-gates/release-gate-automations.ts'),
+    ],
     signoffs: [script('signoff:automations', 'scripts/signoffs/signoff-automations.ts')],
-    smokes: [script('smoke:automations-lifecycle', 'scripts/smokes/smoke-automations-lifecycle.ts')],
+    smokes: [
+      script('smoke:automations-lifecycle', 'scripts/smokes/smoke-automations-lifecycle.ts'),
+    ],
   },
   {
     key: 'backtests',
@@ -150,7 +159,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     tests: [script('test:backtests', 'scripts/test-backtests.ts')],
     checks: [script('check:backtests-health', 'scripts/checks/check-backtests-health.ts')],
     proofs: [script('proof:backtests-live', 'scripts/proofs/proof-backtests-live.ts')],
-    releaseGates: [script('release-gate:backtests', 'scripts/release-gates/release-gate-backtests.ts')],
+    releaseGates: [
+      script('release-gate:backtests', 'scripts/release-gates/release-gate-backtests.ts'),
+    ],
     signoffs: [script('signoff:backtests', 'scripts/signoffs/signoff-backtests.ts')],
     smokes: [script('smoke:backtests-lifecycle', 'scripts/smokes/smoke-backtests-lifecycle.ts')],
   },
@@ -185,7 +196,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     tests: [script('test:broker-assets', 'scripts/test-broker-assets.ts')],
     checks: [script('check:broker-assets-health', 'scripts/checks/check-broker-assets-health.ts')],
     proofs: [script('proof:broker-assets-live', 'scripts/proofs/proof-broker-assets-live.ts')],
-    releaseGates: [script('release-gate:broker-assets', 'scripts/release-gates/release-gate-broker-assets.ts')],
+    releaseGates: [
+      script('release-gate:broker-assets', 'scripts/release-gates/release-gate-broker-assets.ts'),
+    ],
     signoffs: [script('signoff:broker-assets', 'scripts/signoffs/signoff-broker-assets.ts')],
     captures: [
       script('capture:broker-assets-evidence', 'scripts/capture/capture-broker-assets-evidence.ts'),
@@ -199,7 +212,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     services: ['ConnectionsService.ts'],
     tests: [script('test:connections', 'scripts/test-connections.ts')],
     checks: [script('check:connections-health', 'scripts/checks/check-connections-health.ts')],
-    releaseGates: [script('release-gate:connections', 'scripts/release-gates/release-gate-connections.ts')],
+    releaseGates: [
+      script('release-gate:connections', 'scripts/release-gates/release-gate-connections.ts'),
+    ],
     signoffs: [script('signoff:connections', 'scripts/signoffs/signoff-connections.ts')],
   },
   {
@@ -207,9 +222,15 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     label: 'Discovery',
     lane: 'baseline',
     controllers: ['DiscoveryController.ts'],
-    services: ['DiscoveryDependencyService.ts', 'DiscoveryFeedService.ts', 'DiscoverySummaryService.ts'],
+    services: [
+      'DiscoveryDependencyService.ts',
+      'DiscoveryFeedService.ts',
+      'DiscoverySummaryService.ts',
+    ],
     tests: [script('test:discovery', 'scripts/test-discovery.ts')],
-    releaseGates: [script('release-gate:discovery', 'scripts/release-gates/release-gate-discovery.ts')],
+    releaseGates: [
+      script('release-gate:discovery', 'scripts/release-gates/release-gate-discovery.ts'),
+    ],
     smokes: [
       script('smoke:discovery-contract', 'scripts/smokes/smoke-discovery-contract.ts'),
       script('smoke:discovery-dependency', 'scripts/smokes/smoke-discovery-dependency.ts'),
@@ -230,7 +251,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     controllers: ['FundsSchedulerController.ts', 'InternalFundsSchedulerController.ts'],
     services: ['FundsSchedulerService.ts'],
     tests: [script('test:funds-scheduler', 'scripts/test-funds-scheduler.ts')],
-    checks: [script('check:funds-scheduler-health', 'scripts/checks/check-funds-scheduler-health.ts')],
+    checks: [
+      script('check:funds-scheduler-health', 'scripts/checks/check-funds-scheduler-health.ts'),
+    ],
     proofs: [
       script('proof:funds-scheduler-live', 'scripts/proofs/proof-funds-scheduler-live.ts'),
       script(
@@ -302,7 +325,11 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     key: 'markets',
     label: 'Markets',
     lane: 'baseline',
-    controllers: ['InternalMarketsSnapshotController.ts', 'MarketController.ts', 'MarketsOverviewController.ts'],
+    controllers: [
+      'InternalMarketsSnapshotController.ts',
+      'MarketController.ts',
+      'MarketsOverviewController.ts',
+    ],
     services: [
       'BrokerMarketFacadeService.ts',
       'MarketMetricsService.ts',
@@ -324,6 +351,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       script('test:operational-events', 'scripts/test-operational-events.ts'),
       script('test:operational-audit', 'scripts/test-operational-audit.ts'),
       script('test:runtime-recovery', 'scripts/test-runtime-recovery.ts'),
+      script('test:runtime-whatsapp', 'scripts/test-runtime-whatsapp.ts'),
     ],
     checks: [script('check:runtime-health', 'scripts/checks/check-runtime-health.ts')],
     releaseGates: [
@@ -350,7 +378,11 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     label: 'Orders',
     lane: 'baseline',
     controllers: ['OrdersController.ts', 'OrdersOverviewController.ts'],
-    services: ['BrokerOrdersFacadeService.ts', 'OrdersOverviewService.ts', 'PaperOrderExecutionService.ts'],
+    services: [
+      'BrokerOrdersFacadeService.ts',
+      'OrdersOverviewService.ts',
+      'PaperOrderExecutionService.ts',
+    ],
     tests: [
       script('test:orders', 'scripts/test-orders.ts'),
       script('test:orders-contract', 'scripts/test-orders-contract.ts'),
@@ -403,7 +435,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       script('test:overview-resilience', 'scripts/test-overview-resilience.ts'),
     ],
     checks: [script('check:overview-health', 'scripts/checks/check-overview-health.ts')],
-    releaseGates: [script('release-gate:overview', 'scripts/release-gates/release-gate-overview.ts')],
+    releaseGates: [
+      script('release-gate:overview', 'scripts/release-gates/release-gate-overview.ts'),
+    ],
     signoffs: [script('signoff:overview', 'scripts/signoffs/signoff-overview.ts')],
   },
   {
@@ -415,7 +449,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     tests: [script('test:portfolio', 'scripts/test-portfolio.ts')],
     checks: [script('check:portfolio-health', 'scripts/checks/check-portfolio-health.ts')],
     proofs: [script('proof:portfolio-live', 'scripts/proofs/proof-portfolio-live.ts')],
-    releaseGates: [script('release-gate:portfolio', 'scripts/release-gates/release-gate-portfolio.ts')],
+    releaseGates: [
+      script('release-gate:portfolio', 'scripts/release-gates/release-gate-portfolio.ts'),
+    ],
     signoffs: [script('signoff:portfolio', 'scripts/signoffs/signoff-portfolio.ts')],
   },
   {
@@ -426,7 +462,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     services: ['BrokerPositionsFacadeService.ts', 'PaperTradingWorkspaceService.ts'],
     tests: [script('test:positions', 'scripts/test-positions.ts')],
     checks: [script('check:positions-health', 'scripts/checks/check-positions-health.ts')],
-    releaseGates: [script('release-gate:positions', 'scripts/release-gates/release-gate-positions.ts')],
+    releaseGates: [
+      script('release-gate:positions', 'scripts/release-gates/release-gate-positions.ts'),
+    ],
     signoffs: [script('signoff:positions', 'scripts/signoffs/signoff-positions.ts')],
   },
   {
@@ -445,7 +483,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     services: ['PositionsSchedulerService.ts'],
     tests: [script('test:positions-scheduler', 'scripts/test-positions-scheduler.ts')],
     checks: [
-      script('check:positions-scheduler-health', 'scripts/checks/check-positions-scheduler-health.ts'),
+      script(
+        'check:positions-scheduler-health',
+        'scripts/checks/check-positions-scheduler-health.ts'
+      ),
     ],
     proofs: [
       script('proof:positions-scheduler-live', 'scripts/proofs/proof-positions-scheduler-live.ts'),
@@ -465,7 +506,12 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     label: 'Risk Center',
     lane: 'cross-cutting',
     controllers: ['RiskController.ts', 'RiskOverviewController.ts'],
-    services: ['RiskService.ts', 'RiskOverviewService.ts', 'RiskPreTradeService.ts'],
+    services: [
+      'RiskService.ts',
+      'RiskOverviewService.ts',
+      'RiskPreTradeService.ts',
+      'RiskKillSwitchService.ts',
+    ],
     tests: [
       script('test:risk-center', 'scripts/test-risk-center.ts'),
       script('test:risk-center-contract', 'scripts/test-risk-center-contract.ts'),
@@ -483,7 +529,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     controllers: ['InternalRiskSchedulerController.ts', 'RiskSchedulerController.ts'],
     services: ['RiskSchedulerService.ts'],
     tests: [script('test:risk-scheduler', 'scripts/test-risk-scheduler.ts')],
-    checks: [script('check:risk-scheduler-health', 'scripts/checks/check-risk-scheduler-health.ts')],
+    checks: [
+      script('check:risk-scheduler-health', 'scripts/checks/check-risk-scheduler-health.ts'),
+    ],
     releaseGates: [
       script('release-gate:risk-scheduler', 'scripts/release-gates/release-gate-risk-scheduler.ts'),
     ],
@@ -497,10 +545,16 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     services: [],
     tests: [script('test:scheduler-account-scope', 'scripts/test-scheduler-account-scope.ts')],
     checks: [
-      script('check:scheduler-account-scope-live', 'scripts/checks/check-scheduler-account-scope-live.ts'),
+      script(
+        'check:scheduler-account-scope-live',
+        'scripts/checks/check-scheduler-account-scope-live.ts'
+      ),
     ],
     proofs: [
-      script('proof:scheduler-account-scope-live', 'scripts/proofs/proof-scheduler-account-scope-live.ts'),
+      script(
+        'proof:scheduler-account-scope-live',
+        'scripts/proofs/proof-scheduler-account-scope-live.ts'
+      ),
     ],
     releaseGates: [
       script(
@@ -509,7 +563,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       ),
     ],
     signoffs: [
-      script('signoff:scheduler-account-scope', 'scripts/signoffs/signoff-scheduler-account-scope.ts'),
+      script(
+        'signoff:scheduler-account-scope',
+        'scripts/signoffs/signoff-scheduler-account-scope.ts'
+      ),
     ],
   },
   {
@@ -520,7 +577,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     services: ['SettingsService.ts'],
     tests: [script('test:settings', 'scripts/test-settings.ts')],
     checks: [script('check:settings-health', 'scripts/checks/check-settings-health.ts')],
-    releaseGates: [script('release-gate:settings', 'scripts/release-gates/release-gate-settings.ts')],
+    releaseGates: [
+      script('release-gate:settings', 'scripts/release-gates/release-gate-settings.ts'),
+    ],
     signoffs: [script('signoff:settings', 'scripts/signoffs/signoff-settings.ts')],
   },
   {
@@ -533,7 +592,12 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       'SignalsController.ts',
       'SignalsOverviewController.ts',
     ],
-    services: ['SignalScanService.ts', 'SignalsOverviewService.ts', 'SignalsSchedulerService.ts', 'SignalsService.ts'],
+    services: [
+      'SignalScanService.ts',
+      'SignalsOverviewService.ts',
+      'SignalsSchedulerService.ts',
+      'SignalsService.ts',
+    ],
     tests: [script('test:signals', 'scripts/test-signals.ts')],
     checks: [script('check:signals-health', 'scripts/checks/check-signals-health.ts')],
     releaseGates: [script('release-gate:signals', 'scripts/release-gates/release-gate-signals.ts')],
@@ -558,7 +622,13 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       'StrategyTemplatesController.ts',
     ],
     services: ['StrategyLabService.ts', 'StrategyLibraryService.ts', 'StrategyTemplatesService.ts'],
-    tests: [script('test:strategy-library', 'scripts/test-strategy-library.ts')],
+    tests: [
+      script('test:strategy-library', 'scripts/test-strategy-library.ts'),
+      script(
+        'test:strategy-template-automation-profile',
+        'scripts/test-strategy-template-automation-profile.ts'
+      ),
+    ],
     releaseGates: [
       script(
         'release-gate:strategy-library',
@@ -566,10 +636,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       ),
     ],
     smokes: [
-      script(
-        'smoke:strategy-library-lineage',
-        'scripts/smokes/smoke-strategy-library-lineage.ts'
-      ),
+      script('smoke:strategy-library-lineage', 'scripts/smokes/smoke-strategy-library-lineage.ts'),
     ],
   },
   {
@@ -583,6 +650,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       'SuggestedTradesHealthService.ts',
       'SuggestedTradeExecutionSyncService.ts',
       'BrokerCanaryProtectionMonitorService.ts',
+      'WhatsappNotificationsService.ts',
     ],
     tests: [
       script('test:suggested-trades', 'scripts/test-suggested-trades.ts'),

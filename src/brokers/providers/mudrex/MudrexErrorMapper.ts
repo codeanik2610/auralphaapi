@@ -8,6 +8,21 @@ import {
 } from '../../../api';
 import { MudrexApiError, MudrexConfigurationError } from './MudrexHttpClient';
 
+const attachMudrexBrokerContext = <T extends Error>(
+  target: T,
+  error: MudrexApiError
+): T => {
+  Object.assign(target, {
+    broker: error.broker,
+    brokerStatusCode: error.brokerStatusCode,
+    brokerRoutePath: error.brokerRoutePath,
+    brokerErrorCode: error.brokerErrorCode,
+    brokerErrorMessage: error.brokerErrorMessage ?? error.message,
+    brokerErrorPayload: error.brokerErrorPayload,
+  });
+  return target;
+};
+
 export const rethrowMudrexError = (error: unknown, serviceName: string): never => {
   if (error instanceof MudrexConfigurationError) {
     throw new ServiceUnavailableAppError(`${serviceName} is not configured`);
@@ -15,26 +30,26 @@ export const rethrowMudrexError = (error: unknown, serviceName: string): never =
 
   if (error instanceof MudrexApiError) {
     if (error.statusCode === 401 || error.statusCode === 403) {
-      throw new UnauthorizedAppError(error.message);
+      throw attachMudrexBrokerContext(new UnauthorizedAppError(error.message), error);
     }
 
     if (error.statusCode === 400) {
-      throw new BadRequestAppError(error.message);
+      throw attachMudrexBrokerContext(new BadRequestAppError(error.message), error);
     }
 
     if (error.statusCode === 429) {
-      throw new RateLimitAppError(error.message);
+      throw attachMudrexBrokerContext(new RateLimitAppError(error.message), error);
     }
 
     if (error.statusCode === 404) {
-      throw new NotFoundAppError(error.message);
+      throw attachMudrexBrokerContext(new NotFoundAppError(error.message), error);
     }
 
     if (error.statusCode === 502) {
-      throw new BadGatewayAppError(error.message);
+      throw attachMudrexBrokerContext(new BadGatewayAppError(error.message), error);
     }
 
-    throw new ServiceUnavailableAppError(error.message);
+    throw attachMudrexBrokerContext(new ServiceUnavailableAppError(error.message), error);
   }
 
   throw error;

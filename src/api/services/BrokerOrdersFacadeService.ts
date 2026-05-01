@@ -21,6 +21,7 @@ import {
   OrderSubmissionAttemptsResponse,
   OrderSubmissionLifecycleEvent,
   OrderSubmissionOperatorState,
+  OrderSubmissionProtectionState,
   OrderSubmissionMatchedSnapshot,
   OrderSubmissionReconciliationResult,
   OrderSubmissionReconciliationSweepResponse,
@@ -28,6 +29,7 @@ import {
   OrdersSyncStatusItem,
   OrdersSyncStatusResponse,
 } from '../contracts/Orders';
+import { RiskPreTradeCheckResult } from '../contracts/Risk';
 import {
   CreateOrderBody,
   OrderSubmissionAttemptsQuery,
@@ -46,8 +48,14 @@ import {
   validateOrdersRefreshBody,
   validateOrdersSyncStatusQuery,
 } from '../validators/orders.validator';
+import {
+  ValidatedRiskPreTradeCheckBody,
+  validateRiskPreTradeCheckBody,
+} from '../validators/risk.validator';
 import { OperationalEventService } from './OperationalEventService';
 import { RiskService } from './RiskService';
+import { RiskKillSwitchService } from './RiskKillSwitchService';
+import { RiskPreTradeService } from './RiskPreTradeService';
 import {
   AppError,
   BadGatewayAppError,
@@ -76,8 +84,48 @@ import { OrdersSyncDiagnosticsService } from './OrdersSyncDiagnosticsService';
 
 const log = new Logger(__filename);
 
+interface SnapshotProtectionDisplayContext {
+  brokerKey: string;
+  accountId: string;
+  symbol: string;
+  side: string;
+  positionQuantity: number | null;
+  quantityContracts: number | null;
+  contractValue: number | null;
+  relation: 'stoploss' | 'takeprofit' | null;
+}
+
+interface SnapshotProtectionDisplayContextMap {
+  byOrderId: Map<string, SnapshotProtectionDisplayContext>;
+  byPositionKey: Map<string, SnapshotProtectionDisplayContext | null>;
+}
+
 interface CreateFuturesOrderOptions {
   suggestedTradeId?: string | null;
+}
+
+interface LiveOrderProtectionAudit {
+  expected: boolean;
+  attached: boolean;
+  status: OrderSubmissionProtectionState['status'];
+  brokerStatus: string | null;
+  stopLossOrderId: string | null;
+  takeProfitOrderId: string | null;
+  protectiveOrderCount: number;
+  summary: string;
+}
+
+interface OrderSubmissionReconciliationSyncAttempt {
+  attempted: boolean;
+  succeeded: boolean;
+  message: string;
+  processedAccounts?: number;
+  failedAccounts?: number;
+  fetchedRecords?: number;
+  insertedRecords?: number;
+  updatedRecords?: number;
+  skippedRecords?: number;
+  error?: string;
 }
 
 @Service()
@@ -102,6 +150,12 @@ export class BrokerOrdersFacadeService {
 
   @Inject(() => RiskService)
   private riskService!: RiskService;
+
+  @Inject(() => RiskKillSwitchService)
+  private riskKillSwitchService!: RiskKillSwitchService;
+
+  @Inject(() => RiskPreTradeService)
+  private riskPreTradeService!: RiskPreTradeService;
 
   @Inject(() => UserTimeZoneService)
   private userTimeZoneService!: UserTimeZoneService;
@@ -190,6 +244,143 @@ export class BrokerOrdersFacadeService {
     return [];
   }
 
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private readBooleanLike(value: unknown): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return value !== 0;
+    }
+    if (typeof value === 'string') {
+      return ['true', '1', 'yes'].includes(value.trim().toLowerCase());
+    }
+    return false;
+  }
+
+  private unwrapSubmissionResponsePayload(value: unknown): Record<string, unknown> {
+    const response = this.asRecord(value) || {};
+    return this.asRecord(response.data) || response;
+  }
+
+  private findSubmissionProtectionLifecycleDetails(
+    submission: OrderSubmissionRequest
+  ): Record<string, unknown> | null {
+    const events = this.normalizeLifecycleEvents(submission.lifecyclePayload);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.type !== 'broker_order_accepted' && event?.type !== 'broker_order_without_id') {
+        continue;
+      }
+      const details = this.asRecord(event.details);
+      if (details) {
+        return details;
+      }
+    }
+    return null;
+  }
+
+  private buildOrderSubmissionProtectionState(
+    submission: OrderSubmissionRequest
+  ): OrderSubmissionProtectionState {
+    const requestPayload = this.asRecord(submission.requestPayload);
+    const orderPayload = this.asRecord(requestPayload?.order);
+    const executionMode = String(submission.executionMode || orderPayload?.executionMode || '')
+      .trim()
+      .toLowerCase();
+    const reduceOnly = this.readBooleanLike(
+      orderPayload?.reduceOnly ?? orderPayload?.reduce_only
+    );
+    const stopLossPrice = this.toNumberOrNull(
+      orderPayload?.stopLossPrice ?? orderPayload?.stoplossPrice ?? orderPayload?.stop_loss_price
+    );
+    const takeProfitPrice = this.toNumberOrNull(
+      orderPayload?.takeProfitPrice ??
+        orderPayload?.takeprofitPrice ??
+        orderPayload?.take_profit_price
+    );
+    const expected =
+      executionMode === 'live' &&
+      !reduceOnly &&
+      Boolean(stopLossPrice && stopLossPrice > 0 && takeProfitPrice && takeProfitPrice > 0);
+
+    if (!expected) {
+      return {
+        expected: false,
+        status: 'not_required',
+        attached: false,
+        summary: 'Native SL/TP protection was not required for this submission.',
+        brokerStatus: null,
+        stopLossOrderId: null,
+        takeProfitOrderId: null,
+        protectiveOrderCount: 0,
+      };
+    }
+
+    const responsePayload = this.unwrapSubmissionResponsePayload(submission.responsePayload);
+    const lifecycleDetails = this.findSubmissionProtectionLifecycleDetails(submission);
+    const brokerStatus = String(
+      responsePayload.protection_status ??
+        responsePayload.protectionStatus ??
+        lifecycleDetails?.protectionBrokerStatus ??
+        lifecycleDetails?.brokerProtectionStatus ??
+        lifecycleDetails?.protectionStatus ??
+        ''
+    )
+      .trim()
+      .toLowerCase();
+    const protectiveOrders = Array.isArray(responsePayload.protective_orders)
+      ? responsePayload.protective_orders
+      : Array.isArray(responsePayload.protectiveOrders)
+        ? responsePayload.protectiveOrders
+        : Array.isArray(lifecycleDetails?.protectiveOrders)
+          ? (lifecycleDetails?.protectiveOrders as unknown[])
+          : [];
+    const stopLossOrderId =
+      String(
+        responsePayload.stop_loss_order_id ??
+          responsePayload.stopLossOrderId ??
+          lifecycleDetails?.stopLossOrderId ??
+          ''
+      ).trim() || null;
+    const takeProfitOrderId =
+      String(
+        responsePayload.take_profit_order_id ??
+          responsePayload.takeProfitOrderId ??
+          lifecycleDetails?.takeProfitOrderId ??
+          ''
+      ).trim() || null;
+    const protectiveOrderCount =
+      this.toNumberOrNull(lifecycleDetails?.protectiveOrderCount) ?? protectiveOrders.length;
+    const attached = brokerStatus === 'attached' || Boolean(stopLossOrderId && takeProfitOrderId);
+    const status: OrderSubmissionProtectionState['status'] = attached
+      ? 'attached'
+      : brokerStatus
+        ? 'missing'
+        : 'unknown';
+
+    return {
+      expected: true,
+      status,
+      attached,
+      summary:
+        status === 'attached'
+          ? 'Native SL/TP protection was reported by the broker response.'
+          : status === 'missing'
+            ? 'Native SL/TP protection was expected but the broker response did not report both protective legs.'
+            : 'Native SL/TP protection was expected but has not been verified from the broker response yet.',
+      brokerStatus: brokerStatus || null,
+      stopLossOrderId,
+      takeProfitOrderId,
+      protectiveOrderCount,
+    };
+  }
+
   private buildOrderSubmissionOperatorState(
     submission: OrderSubmissionRequest
   ): OrderSubmissionOperatorState {
@@ -223,12 +414,29 @@ export class BrokerOrdersFacadeService {
       };
     }
 
+    const protectionState = this.buildOrderSubmissionProtectionState(submission);
+    if (protectionState.status === 'missing') {
+      return {
+        label: 'Protection missing',
+        tone: 'danger',
+        summary: protectionState.summary,
+        recommendedAction: 'verify_protection',
+      };
+    }
+    if (protectionState.status === 'unknown') {
+      return {
+        label: 'Protection unverified',
+        tone: 'warning',
+        summary: protectionState.summary,
+        recommendedAction: 'verify_protection',
+      };
+    }
+
     if (submission.reconciliationState === 'pending') {
       return {
         label: 'Pending reconciliation',
         tone: 'warning',
-        summary:
-          'Broker accepted the order, but the scheduler snapshot has not confirmed it yet.',
+        summary: 'Broker accepted the order, but the scheduler snapshot has not confirmed it yet.',
         recommendedAction: 'reconcile_execution',
       };
     }
@@ -269,9 +477,7 @@ export class BrokerOrdersFacadeService {
     };
   }
 
-  private mapOrderSubmissionAttempt(
-    submission: OrderSubmissionRequest
-  ): OrderSubmissionAttempt {
+  private mapOrderSubmissionAttempt(submission: OrderSubmissionRequest): OrderSubmissionAttempt {
     return {
       id: submission.id,
       userId: submission.userId,
@@ -292,6 +498,7 @@ export class BrokerOrdersFacadeService {
       completedAt: this.toOptionalIsoString(submission.completedAt),
       failedAt: this.toOptionalIsoString(submission.failedAt),
       lifecycle: this.normalizeLifecycleEvents(submission.lifecyclePayload),
+      protectionState: this.buildOrderSubmissionProtectionState(submission),
       operatorState: this.buildOrderSubmissionOperatorState(submission),
     };
   }
@@ -314,9 +521,7 @@ export class BrokerOrdersFacadeService {
       ...(filters.suggestedTradeId ? { suggestedTradeId: filters.suggestedTradeId } : {}),
       ...(filters.status ? { status: filters.status } : {}),
       ...(filters.placementState ? { placementState: filters.placementState } : {}),
-      ...(filters.reconciliationState
-        ? { reconciliationState: filters.reconciliationState }
-        : {}),
+      ...(filters.reconciliationState ? { reconciliationState: filters.reconciliationState } : {}),
       ...(filters.brokerKey ? { brokerKey: filters.brokerKey } : {}),
       ...(filters.accountId ? { accountId: filters.accountId } : {}),
     };
@@ -358,9 +563,7 @@ export class BrokerOrdersFacadeService {
     };
   }
 
-  private getOrderSubmissionReconciliationReferenceAt(
-    submission: OrderSubmissionRequest
-  ): Date {
+  private getOrderSubmissionReconciliationReferenceAt(submission: OrderSubmissionRequest): Date {
     const candidates = [submission.completedAt, submission.updatedAt, submission.createdAt];
     for (const candidate of candidates) {
       if (candidate instanceof Date && !Number.isNaN(candidate.getTime())) {
@@ -376,9 +579,7 @@ export class BrokerOrdersFacadeService {
     return new Date();
   }
 
-  private getOrderSubmissionMissingEligibleAt(
-    submission: OrderSubmissionRequest
-  ): Date {
+  private getOrderSubmissionMissingEligibleAt(submission: OrderSubmissionRequest): Date {
     return new Date(
       this.getOrderSubmissionReconciliationReferenceAt(submission).getTime() +
         this.orderSubmissionReconciliationMissingAfterMs
@@ -398,8 +599,368 @@ export class BrokerOrdersFacadeService {
     };
   }
 
+  private async triggerOrderSubmissionReconciliationSync(
+    userId: string,
+    submission: OrderSubmissionRequest,
+    context: {
+      brokerKey: string;
+      accountId: string;
+      brokerOrderId: string;
+    }
+  ): Promise<{
+    submission: OrderSubmissionRequest;
+    attempt: OrderSubmissionReconciliationSyncAttempt;
+  }> {
+    if (!this.internalOrdersSyncService?.runBatch) {
+      return {
+        submission,
+        attempt: {
+          attempted: false,
+          succeeded: false,
+          message: 'Targeted orders sync was not available for this reconciliation attempt.',
+        },
+      };
+    }
+
+    try {
+      const result = await this.internalOrdersSyncService.runBatch(
+        buildProductOwnedOrdersSyncRequest(userId, {
+          targetUserIds: [userId],
+          brokerKeys: [context.brokerKey],
+          accountIds: [context.accountId],
+        })
+      );
+      const failedAccounts = Math.max(0, Number(result.failedAccounts || 0));
+      const attempt: OrderSubmissionReconciliationSyncAttempt = {
+        attempted: true,
+        succeeded: failedAccounts === 0,
+        message:
+          failedAccounts === 0
+            ? 'Targeted orders sync completed before submission reconciliation.'
+            : 'Targeted orders sync completed with account-level failures before submission reconciliation.',
+        processedAccounts: Math.max(0, Number(result.processedAccounts || 0)),
+        failedAccounts,
+        fetchedRecords: Math.max(0, Number(result.fetchedRecords || 0)),
+        insertedRecords: Math.max(0, Number(result.insertedRecords || 0)),
+        updatedRecords: Math.max(0, Number(result.updatedRecords || 0)),
+        skippedRecords: Math.max(0, Number(result.skippedRecords || 0)),
+      };
+      const updatedSubmission = this.orderSubmissionRequestRepository.recordLifecycleEvent
+        ? await this.orderSubmissionRequestRepository.recordLifecycleEvent(submission, {
+            type: 'broker_order_reconciliation_sync_requested',
+            message: attempt.message,
+            details: {
+              brokerKey: context.brokerKey,
+              accountId: context.accountId,
+              brokerOrderId: context.brokerOrderId,
+              processedAccounts: attempt.processedAccounts,
+              failedAccounts: attempt.failedAccounts,
+              fetchedRecords: attempt.fetchedRecords,
+              insertedRecords: attempt.insertedRecords,
+              updatedRecords: attempt.updatedRecords,
+              skippedRecords: attempt.skippedRecords,
+            },
+          })
+        : submission;
+
+      return {
+        submission: updatedSubmission,
+        attempt,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const attempt: OrderSubmissionReconciliationSyncAttempt = {
+        attempted: true,
+        succeeded: false,
+        message: `Targeted orders sync failed before submission reconciliation: ${message}`,
+        error: message,
+      };
+      const updatedSubmission = this.orderSubmissionRequestRepository.recordLifecycleEvent
+        ? await this.orderSubmissionRequestRepository.recordLifecycleEvent(submission, {
+            type: 'broker_order_reconciliation_sync_failed',
+            message: attempt.message,
+            details: {
+              brokerKey: context.brokerKey,
+              accountId: context.accountId,
+              brokerOrderId: context.brokerOrderId,
+              error: message,
+            },
+          })
+        : submission;
+
+      await this.operationalEventService?.emitFailureAlert?.(userId, {
+        channel: 'Trading',
+        source: context.brokerKey || 'orders',
+        message: attempt.message,
+        route: 'Orders reconciliation',
+        severity: 'High',
+      });
+
+      return {
+        submission: updatedSubmission,
+        attempt,
+      };
+    }
+  }
+
   private readString(value: unknown): string {
     return String(value ?? '').trim();
+  }
+
+  private normalizeSymbol(value: unknown): string {
+    return this.readString(value).toUpperCase();
+  }
+
+  private toNumberOrNull(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  private buildPositionContextKey(brokerKey: unknown, accountId: unknown, symbol: unknown): string {
+    return [
+      this.readString(brokerKey).toLowerCase(),
+      this.readString(accountId),
+      this.normalizeSymbol(symbol),
+    ].join('::');
+  }
+
+  private readObjectValue(record: Record<string, unknown> | null, keys: string[]): unknown {
+    if (!record) {
+      return undefined;
+    }
+    for (const key of keys) {
+      const value = record[key];
+      if (value !== undefined && value !== null && value !== '') {
+        return value;
+      }
+    }
+    return undefined;
+  }
+
+  private isSnapshotProtectionOrder(order: Record<string, unknown>): boolean {
+    const orderType = this.readString(order.order_type ?? order.orderType).toLowerCase();
+    const stopOrderType = this.readString(
+      order.stop_order_type ?? order.stopOrderType
+    ).toLowerCase();
+
+    if (order.is_stoploss === true || order.is_takeprofit === true || order.reduce_only === true) {
+      return true;
+    }
+
+    return (
+      orderType.includes('stoploss') ||
+      orderType.includes('takeprofit') ||
+      stopOrderType.includes('stop_loss') ||
+      stopOrderType.includes('take_profit')
+    );
+  }
+
+  private quantitiesMatch(left: number | null, right: number | null): boolean {
+    if (!(Number.isFinite(left) && Number.isFinite(right))) {
+      return false;
+    }
+    return Math.abs((left as number) - (right as number)) <= 1e-9;
+  }
+
+  private async loadSnapshotProtectionDisplayContext(
+    userId: string,
+    accountIds: string[]
+  ): Promise<SnapshotProtectionDisplayContextMap> {
+    const empty: SnapshotProtectionDisplayContextMap = {
+      byOrderId: new Map<string, SnapshotProtectionDisplayContext>(),
+      byPositionKey: new Map<string, SnapshotProtectionDisplayContext | null>(),
+    };
+    const normalizedAccountIds = Array.from(
+      new Set(accountIds.map((value) => this.readString(value)).filter(Boolean))
+    );
+    if (!userId || !normalizedAccountIds.length) {
+      return empty;
+    }
+
+    try {
+      const rows = (await coreDataSource.query(
+        `SELECT account_id AS accountId,
+                broker_key AS brokerKey,
+                symbol,
+                side,
+                quantity,
+                stoploss_order_id AS stoplossOrderId,
+                takeprofit_order_id AS takeprofitOrderId,
+                payload_json AS payloadJson
+         FROM position_read_models
+         WHERE user_id = ?
+           AND account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})
+           AND status_rank > 0
+           AND status_rank <= 2`,
+        [userId, ...normalizedAccountIds]
+      )) as Array<{
+        accountId?: unknown;
+        brokerKey?: unknown;
+        symbol?: unknown;
+        side?: unknown;
+        quantity?: unknown;
+        stoplossOrderId?: unknown;
+        takeprofitOrderId?: unknown;
+        payloadJson?: unknown;
+      }>;
+
+      rows.forEach((row) => {
+        const brokerKey = this.readString(row.brokerKey).toLowerCase();
+        const accountId = this.readString(row.accountId);
+        const symbol = this.normalizeSymbol(row.symbol);
+        if (!brokerKey || !accountId || !symbol) {
+          return;
+        }
+
+        const payload = this.parsePayloadJson(row.payloadJson) as Record<string, unknown>;
+        const payloadRecord =
+          payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : null;
+        const positionQuantity =
+          this.toNumberOrNull(row.quantity) ??
+          this.toNumberOrNull(
+            this.readObjectValue(payloadRecord, [
+              'quantity',
+              'size',
+              'qty',
+              'position_size',
+              'net_quantity',
+            ])
+          );
+        const quantityContracts = this.toNumberOrNull(
+          this.readObjectValue(payloadRecord, ['quantity_contracts', 'quantityContracts'])
+        );
+        const contractValue = this.toNumberOrNull(
+          this.readObjectValue(payloadRecord, ['contract_value', 'contractValue'])
+        );
+        const side = this.readString(row.side);
+        const baseContext: SnapshotProtectionDisplayContext = {
+          brokerKey,
+          accountId,
+          symbol,
+          side,
+          positionQuantity,
+          quantityContracts,
+          contractValue,
+          relation: null,
+        };
+
+        const positionKey = this.buildPositionContextKey(brokerKey, accountId, symbol);
+        if (!empty.byPositionKey.has(positionKey)) {
+          empty.byPositionKey.set(positionKey, baseContext);
+        } else {
+          empty.byPositionKey.set(positionKey, null);
+        }
+
+        const register = (orderId: unknown, relation: 'stoploss' | 'takeprofit') => {
+          const normalizedOrderId = this.readString(orderId);
+          if (!normalizedOrderId) {
+            return;
+          }
+          empty.byOrderId.set(normalizedOrderId, {
+            ...baseContext,
+            relation,
+          });
+        };
+
+        register(row.stoplossOrderId, 'stoploss');
+        register(row.takeprofitOrderId, 'takeprofit');
+      });
+    } catch (error) {
+      log.warn('Failed to load position-backed order display context.', {
+        userId,
+        accountIds: normalizedAccountIds,
+        error,
+      });
+      return empty;
+    }
+
+    return empty;
+  }
+
+  private resolveSnapshotProtectionDisplayContext(
+    order: Record<string, unknown>,
+    contextMap: SnapshotProtectionDisplayContextMap | null
+  ): SnapshotProtectionDisplayContext | null {
+    if (!contextMap) {
+      return null;
+    }
+
+    const orderId = this.readString(
+      order.id ?? order.order_id ?? order.orderId ?? order.external_id ?? order.externalId
+    );
+    if (orderId) {
+      const exact = contextMap.byOrderId.get(orderId);
+      if (exact) {
+        return exact;
+      }
+    }
+
+    if (!this.isSnapshotProtectionOrder(order)) {
+      return null;
+    }
+
+    const positionKey = this.buildPositionContextKey(
+      order.brokerKey ?? order.broker_key,
+      order.accountId ?? order.account_id,
+      order.symbol
+    );
+    return contextMap.byPositionKey.get(positionKey) || null;
+  }
+
+  private enrichSnapshotOrderWithDisplayFields(
+    value: unknown,
+    contextMap: SnapshotProtectionDisplayContextMap | null
+  ): unknown {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || !contextMap) {
+      return value;
+    }
+
+    const order = { ...(value as Record<string, unknown>) };
+    const context = this.resolveSnapshotProtectionDisplayContext(order, contextMap);
+    if (!context) {
+      return order;
+    }
+
+    const orderBrokerKey = this.readString(order.brokerKey ?? order.broker_key).toLowerCase();
+    const orderAccountId = this.readString(order.accountId ?? order.account_id);
+    if (
+      (context.brokerKey && orderBrokerKey && context.brokerKey !== orderBrokerKey) ||
+      (context.accountId && orderAccountId && context.accountId !== orderAccountId)
+    ) {
+      return order;
+    }
+
+    const orderQuantity = this.toNumberOrNull(
+      order.quantity ?? order.size ?? order.qty ?? order.filled_quantity
+    );
+    const shouldPromotePositionQuantity =
+      context.positionQuantity !== null &&
+      (orderQuantity === null ||
+        this.quantitiesMatch(orderQuantity, 0) ||
+        (context.quantityContracts !== null &&
+          this.quantitiesMatch(orderQuantity, context.quantityContracts) &&
+          !this.quantitiesMatch(context.positionQuantity, context.quantityContracts)));
+
+    if (context.side) {
+      order.display_side = context.side;
+    }
+    if (shouldPromotePositionQuantity) {
+      order.display_quantity = context.positionQuantity;
+    }
+    if (context.relation === 'stoploss' && order.is_stoploss === undefined) {
+      order.is_stoploss = true;
+    }
+    if (context.relation === 'takeprofit' && order.is_takeprofit === undefined) {
+      order.is_takeprofit = true;
+    }
+    if (this.isSnapshotProtectionOrder(order) && order.reduce_only === undefined) {
+      order.reduce_only = true;
+    }
+
+    return order;
   }
 
   private localizeShallowOrderRecord(value: unknown, timeZone: string): unknown {
@@ -488,8 +1049,7 @@ export class BrokerOrdersFacadeService {
   ): OrdersFreshnessIndicator {
     const observedIso = this.normalizeSnapshotTimestamp(observedAt);
     const observedMs = observedIso ? this.toTimestamp(observedIso) : null;
-    const freshnessMs =
-      observedMs !== null ? Math.max(0, Date.now() - observedMs) : null;
+    const freshnessMs = observedMs !== null ? Math.max(0, Date.now() - observedMs) : null;
     const state =
       freshnessMs === null
         ? 'unknown'
@@ -550,10 +1110,7 @@ export class BrokerOrdersFacadeService {
     } else if (latestSnapshot.state === 'stale') {
       const age = this.formatRelativeAge(latestSnapshot.freshnessMs) || 'recently';
       warning = `Live orders snapshot for ${accountLabel} was last observed ${age}. Recent broker writes can still be catching up.`;
-    } else if (
-      latestSnapshot.state === 'unknown' &&
-      checkpoint.state !== 'unknown'
-    ) {
+    } else if (latestSnapshot.state === 'unknown' && checkpoint.state !== 'unknown') {
       const age = this.formatRelativeAge(checkpoint.freshnessMs) || 'recently';
       warning = `No visible orders snapshot timestamp is available for ${accountLabel} yet. The latest sync checkpoint was ${age}.`;
     }
@@ -676,7 +1233,8 @@ export class BrokerOrdersFacadeService {
     return {
       state: 'healthy',
       label: 'Healthy',
-      summary: 'Connected broker routes are aligned with the latest visible order snapshots and checkpoints.',
+      summary:
+        'Connected broker routes are aligned with the latest visible order snapshots and checkpoints.',
     };
   }
 
@@ -684,9 +1242,7 @@ export class BrokerOrdersFacadeService {
     brokerKey?: string | null,
     accountId?: string | null
   ): string | null {
-    const parts = [String(brokerKey || '').trim(), String(accountId || '').trim()].filter(
-      Boolean
-    );
+    const parts = [String(brokerKey || '').trim(), String(accountId || '').trim()].filter(Boolean);
 
     return parts.length ? parts.join(' · ') : null;
   }
@@ -710,9 +1266,7 @@ export class BrokerOrdersFacadeService {
       return Object.keys(value as Record<string, unknown>)
         .sort()
         .reduce<Record<string, unknown>>((accumulator, key) => {
-          accumulator[key] = this.sortForStableHash(
-            (value as Record<string, unknown>)[key]
-          );
+          accumulator[key] = this.sortForStableHash((value as Record<string, unknown>)[key]);
           return accumulator;
         }, {});
     }
@@ -845,10 +1399,7 @@ export class BrokerOrdersFacadeService {
     }
 
     return {
-      request: await this.orderSubmissionRequestRepository.markInProgress(
-        request,
-        requestHash
-      ),
+      request: await this.orderSubmissionRequestRepository.markInProgress(request, requestHash),
     };
   }
 
@@ -885,10 +1436,7 @@ export class BrokerOrdersFacadeService {
     );
 
     if (existing) {
-      const reconciled = await this.reconcileOrderSubmissionRequest(
-        existing,
-        requestHash
-      );
+      const reconciled = await this.reconcileOrderSubmissionRequest(existing, requestHash);
       return {
         ...reconciled,
         requestHash,
@@ -930,10 +1478,7 @@ export class BrokerOrdersFacadeService {
         throw error;
       }
 
-      const reconciled = await this.reconcileOrderSubmissionRequest(
-        racedRequest,
-        requestHash
-      );
+      const reconciled = await this.reconcileOrderSubmissionRequest(racedRequest, requestHash);
       return {
         ...reconciled,
         requestHash,
@@ -1000,9 +1545,7 @@ export class BrokerOrdersFacadeService {
 
     if (
       lowerMessage.includes('insufficient') &&
-      ['margin', 'balance', 'fund', 'collateral'].some((token) =>
-        lowerMessage.includes(token)
-      )
+      ['margin', 'balance', 'fund', 'collateral'].some((token) => lowerMessage.includes(token))
     ) {
       return this.withBrokerErrorContext(
         new BadRequestAppError(
@@ -1029,9 +1572,7 @@ export class BrokerOrdersFacadeService {
     }
 
     if (
-      ['quantity', 'size', 'contract', 'notional'].some((token) =>
-        lowerMessage.includes(token)
-      ) &&
+      ['quantity', 'size', 'contract', 'notional'].some((token) => lowerMessage.includes(token)) &&
       ['invalid', 'minimum', 'maximum', 'step', 'precision', 'small'].some((token) =>
         lowerMessage.includes(token)
       )
@@ -1134,8 +1675,12 @@ export class BrokerOrdersFacadeService {
 
   private isBrokerAuthorizationOrderError(error: unknown, lowerMessage: string): boolean {
     const brokerError = this.extractBrokerErrorContext(error);
-    const brokerErrorCode = String(brokerError?.code || '').trim().toLowerCase();
-    const brokerErrorMessage = String(brokerError?.message || '').trim().toLowerCase();
+    const brokerErrorCode = String(brokerError?.code || '')
+      .trim()
+      .toLowerCase();
+    const brokerErrorMessage = String(brokerError?.message || '')
+      .trim()
+      .toLowerCase();
     return (
       error instanceof UnauthorizedAppError ||
       error instanceof ForbiddenAppError ||
@@ -1171,9 +1716,7 @@ export class BrokerOrdersFacadeService {
 
     return {
       ...(raw.broker ? { broker: raw.broker } : {}),
-      ...(typeof raw.brokerStatusCode === 'number'
-        ? { statusCode: raw.brokerStatusCode }
-        : {}),
+      ...(typeof raw.brokerStatusCode === 'number' ? { statusCode: raw.brokerStatusCode } : {}),
       ...(raw.brokerRoutePath ? { routePath: raw.brokerRoutePath } : {}),
       ...(raw.brokerErrorCode ? { code: raw.brokerErrorCode } : {}),
       ...(raw.brokerErrorMessage ? { message: raw.brokerErrorMessage } : {}),
@@ -1181,16 +1724,14 @@ export class BrokerOrdersFacadeService {
     };
   }
 
-  private extractRawBrokerErrorContext(error: unknown):
-    | {
-        broker?: string;
-        brokerStatusCode?: number;
-        brokerRoutePath?: string;
-        brokerErrorCode?: string;
-        brokerErrorMessage?: string;
-        brokerErrorPayload?: unknown;
-      }
-    | null {
+  private extractRawBrokerErrorContext(error: unknown): {
+    broker?: string;
+    brokerStatusCode?: number;
+    brokerRoutePath?: string;
+    brokerErrorCode?: string;
+    brokerErrorMessage?: string;
+    brokerErrorPayload?: unknown;
+  } | null {
     if (!error || typeof error !== 'object') {
       return null;
     }
@@ -1355,7 +1896,9 @@ export class BrokerOrdersFacadeService {
     };
   }
 
-  private buildPaperExecutionHistory(events: Array<Record<string, unknown> | null>): Array<Record<string, unknown>> {
+  private buildPaperExecutionHistory(
+    events: Array<Record<string, unknown> | null>
+  ): Array<Record<string, unknown>> {
     return events
       .filter((event): event is Record<string, unknown> => Boolean(event))
       .sort((left, right) => {
@@ -1378,7 +1921,9 @@ export class BrokerOrdersFacadeService {
     status: string,
     executionState: string | null
   ): 'open_order' | 'open_position' | 'closed_position' | 'cancelled_order' {
-    const normalizedStatus = String(status || '').trim().toUpperCase();
+    const normalizedStatus = String(status || '')
+      .trim()
+      .toUpperCase();
     const normalizedExecutionState = String(executionState || '')
       .trim()
       .toLowerCase();
@@ -1395,28 +1940,31 @@ export class BrokerOrdersFacadeService {
     return 'open_order';
   }
 
-  private mapPaperOrder(item: {
-    id: string;
-    suggestedTradeId: string | null;
-    assetId: string;
-    brokerKey: string;
-    accountId: string;
-    symbol: string | null;
-    side: string | null;
-    orderType: string | null;
-    triggerType: string | null;
-    status: string;
-    leverage: number | null;
-    quantity: string | null;
-    orderPrice: string | null;
-    stoplossPrice: string | null;
-    takeprofitPrice: string | null;
-    reduceOnly: boolean;
-    canceledAt: Date | null;
-    createdAt: Date;
-    updatedAt: Date;
-    payload: Record<string, unknown> | null;
-  }, timeZone: string): Record<string, unknown> {
+  private mapPaperOrder(
+    item: {
+      id: string;
+      suggestedTradeId: string | null;
+      assetId: string;
+      brokerKey: string;
+      accountId: string;
+      symbol: string | null;
+      side: string | null;
+      orderType: string | null;
+      triggerType: string | null;
+      status: string;
+      leverage: number | null;
+      quantity: string | null;
+      orderPrice: string | null;
+      stoplossPrice: string | null;
+      takeprofitPrice: string | null;
+      reduceOnly: boolean;
+      canceledAt: Date | null;
+      createdAt: Date;
+      updatedAt: Date;
+      payload: Record<string, unknown> | null;
+    },
+    timeZone: string
+  ): Record<string, unknown> {
     const payload =
       item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
         ? item.payload
@@ -1429,14 +1977,11 @@ export class BrokerOrdersFacadeService {
         : {};
     const executionState =
       simulation.executionState === undefined ? null : String(simulation.executionState);
-    const lastPrice =
-      simulation.lastPrice === undefined ? null : simulation.lastPrice;
+    const lastPrice = simulation.lastPrice === undefined ? null : simulation.lastPrice;
     const lastPriceSeenAt =
       simulation.lastPriceSeenAt === undefined ? null : simulation.lastPriceSeenAt;
-    const filledAt =
-      simulation.filledAt === undefined ? null : simulation.filledAt;
-    const filledPrice =
-      simulation.filledPrice === undefined ? null : simulation.filledPrice;
+    const filledAt = simulation.filledAt === undefined ? null : simulation.filledAt;
+    const filledPrice = simulation.filledPrice === undefined ? null : simulation.filledPrice;
     const filledQuantity =
       simulation.filledQuantity === undefined ? null : simulation.filledQuantity;
     const remainingQuantity =
@@ -1445,28 +1990,17 @@ export class BrokerOrdersFacadeService {
       simulation.positionOpenedAt === undefined ? null : simulation.positionOpenedAt;
     const positionClosedAt =
       simulation.positionClosedAt === undefined ? null : simulation.positionClosedAt;
-    const closedAt =
-      simulation.closedAt === undefined ? positionClosedAt : simulation.closedAt;
-    const exitPrice =
-      simulation.exitPrice === undefined ? null : simulation.exitPrice;
-    const realizedPnl =
-      simulation.realizedPnl === undefined ? null : simulation.realizedPnl;
-    const outcome =
-      simulation.outcome === undefined ? null : simulation.outcome;
-    const positionId =
-      simulation.positionId === undefined ? null : simulation.positionId;
+    const closedAt = simulation.closedAt === undefined ? positionClosedAt : simulation.closedAt;
+    const exitPrice = simulation.exitPrice === undefined ? null : simulation.exitPrice;
+    const realizedPnl = simulation.realizedPnl === undefined ? null : simulation.realizedPnl;
+    const outcome = simulation.outcome === undefined ? null : simulation.outcome;
+    const positionId = simulation.positionId === undefined ? null : simulation.positionId;
     const positionStatus =
       simulation.positionStatus === undefined ? null : simulation.positionStatus;
-    const closeReason =
-      simulation.closeReason === undefined ? null : simulation.closeReason;
+    const closeReason = simulation.closeReason === undefined ? null : simulation.closeReason;
     const lastObservationSource =
-      simulation.lastObservationSource === undefined
-        ? null
-        : simulation.lastObservationSource;
-    const lifecycleStage = this.derivePaperLifecycleStage(
-      item.status,
-      executionState
-    );
+      simulation.lastObservationSource === undefined ? null : simulation.lastObservationSource;
+    const lifecycleStage = this.derivePaperLifecycleStage(item.status, executionState);
     const createdAtIso = this.formatRawIso(item.createdAt);
     const updatedAtIso = this.formatRawIso(item.updatedAt);
     const canceledAtIso = this.formatRawIso(item.canceledAt);
@@ -1520,7 +2054,9 @@ export class BrokerOrdersFacadeService {
           atIso: createdAtIso,
         };
     const canCancel = ['OPEN', 'PENDING', 'CREATED'].includes(
-      String(item.status || '').trim().toUpperCase()
+      String(item.status || '')
+        .trim()
+        .toUpperCase()
     );
 
     return {
@@ -1555,9 +2091,7 @@ export class BrokerOrdersFacadeService {
       close_reason: closeReason,
       last_observation_source: lastObservationSource,
       lifecycle_stage: lifecycleStage,
-      lifecycle_terminal: ['closed_position', 'cancelled_order'].includes(
-        lifecycleStage
-      ),
+      lifecycle_terminal: ['closed_position', 'cancelled_order'].includes(lifecycleStage),
       lifecycle_can_cancel: canCancel,
       lifecycle_last_transition_type: String(lastTransition.type || 'created'),
       lifecycle_last_transition_at: String(
@@ -1627,16 +2161,17 @@ export class BrokerOrdersFacadeService {
       endDate?: string;
     }
   ): Promise<unknown[]> {
-    const limit = opts.limit && Number.isFinite(opts.limit) ? Math.max(1, Math.floor(opts.limit)) : 100;
+    const limit =
+      opts.limit && Number.isFinite(opts.limit) ? Math.max(1, Math.floor(opts.limit)) : 100;
     const openOnly = Boolean(opts.openOnly);
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
-    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(opts.startDate, opts.endDate, timeZone);
+    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(
+      opts.startDate,
+      opts.endDate,
+      timeZone
+    );
 
-    const where: string[] = [
-      'user_id = ?',
-      'account_id = ?',
-      'LOWER(broker_key) = ?',
-    ];
+    const where: string[] = ['user_id = ?', 'account_id = ?', 'LOWER(broker_key) = ?'];
     const params: Array<unknown> = [userId, accountId, brokerKey.toLowerCase()];
 
     if (startUtc && Number.isFinite(startUtc.getTime())) {
@@ -1660,7 +2195,19 @@ export class BrokerOrdersFacadeService {
       [...params, limit]
     )) as Array<{ payload?: unknown }>;
 
-    const parsed = rows.map((row) => this.parsePayloadJson(row.payload));
+    const displayContext = await this.loadSnapshotProtectionDisplayContext(userId, [accountId]);
+    const parsed = rows.map((row) => {
+      const rawPayload = this.parsePayloadJson(row.payload);
+      const payload =
+        rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
+          ? { ...(rawPayload as Record<string, unknown>) }
+          : {};
+      payload.brokerKey ??= brokerKey;
+      payload.broker_key ??= brokerKey;
+      payload.accountId ??= accountId;
+      payload.account_id ??= accountId;
+      return this.enrichSnapshotOrderWithDisplayFields(payload, displayContext);
+    });
     // Keep the existing date filtering semantics (created_at/updated_at) on the payload itself.
     return this.applyDateRangeFilter(parsed, startUtc, endUtc).map((item) =>
       this.localizeShallowOrderRecord(item, timeZone)
@@ -1705,22 +2252,42 @@ export class BrokerOrdersFacadeService {
       return {};
     }
 
-    return this.decorateLiveSnapshotOrder(this.parsePayloadJson(row.payload), {
-      brokerKey,
-      accountId,
-      accountName: routeContext.accountName,
-      accountKey: routeContext.accountKey,
-      accountStatus: routeContext.accountStatus,
-      externalId: String(row.externalId || '').trim() || externalId,
-      firstSeenAt: this.normalizeSnapshotTimestamp(row.firstSeenAt),
-      lastSeenAt: this.normalizeSnapshotTimestamp(row.lastSeenAt),
-      statusRank: Number(row.statusRank || 0),
-    }, timeZone || 'UTC');
+    const displayContext = await this.loadSnapshotProtectionDisplayContext(userId, [accountId]);
+    const rawPayload = this.parsePayloadJson(row.payload);
+    const detailPayload =
+      rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
+        ? { ...(rawPayload as Record<string, unknown>) }
+        : {};
+    detailPayload.brokerKey ??= brokerKey;
+    detailPayload.broker_key ??= brokerKey;
+    detailPayload.accountId ??= accountId;
+    detailPayload.account_id ??= accountId;
+
+    return this.decorateLiveSnapshotOrder(
+      this.enrichSnapshotOrderWithDisplayFields(detailPayload, displayContext),
+      {
+        brokerKey,
+        accountId,
+        accountName: routeContext.accountName,
+        accountKey: routeContext.accountKey,
+        accountStatus: routeContext.accountStatus,
+        externalId: String(row.externalId || '').trim() || externalId,
+        firstSeenAt: this.normalizeSnapshotTimestamp(row.firstSeenAt),
+        lastSeenAt: this.normalizeSnapshotTimestamp(row.lastSeenAt),
+        statusRank: Number(row.statusRank || 0),
+      },
+      timeZone || 'UTC'
+    );
   }
 
   async getFuturesOrders(userId: string, query: OrdersQuery): Promise<unknown> {
     const params = validateOrdersQuery(query);
-    const route = await this.brokerAccountRoutingService.resolve(userId, params.brokerKey, params.accountId, 'mudrex');
+    const route = await this.brokerAccountRoutingService.resolve(
+      userId,
+      params.brokerKey,
+      params.accountId,
+      'mudrex'
+    );
     const resolvedBrokerKey = String(route.brokerKey || '').trim() || 'mudrex';
     const resolvedAccountId = String(route.accountId || '').trim();
     return this.listOrderSnapshots(userId, resolvedBrokerKey, resolvedAccountId, {
@@ -1760,7 +2327,8 @@ export class BrokerOrdersFacadeService {
         accountId: filters.accountId,
         requestedAt: this.formatDisplayTime(requestedAtIso, timeZone) || requestedAtIso,
         requestedAtIso,
-        summary: 'No connected or idle broker routes are available for orders refresh on this desk.',
+        summary:
+          'No connected or idle broker routes are available for orders refresh on this desk.',
         processedAccounts: 0,
         failedAccounts: 0,
         fetchedRecords: 0,
@@ -1859,22 +2427,26 @@ export class BrokerOrdersFacadeService {
         freshnessByAccountId.get(account.id) || null,
         timeZone
       );
-      const pendingState =
-        pendingStateByAccountId.get(account.id) || {
-          pendingRecords: 0,
-          failedRecords: 0,
-          resolvedRecords: 0,
-          nextRetryAt: null,
-          lastPendingUpdateAt: null,
-        };
+      const pendingState = pendingStateByAccountId.get(account.id) || {
+        pendingRecords: 0,
+        failedRecords: 0,
+        resolvedRecords: 0,
+        nextRetryAt: null,
+        lastPendingUpdateAt: null,
+      };
 
       pendingRecords += pendingState.pendingRecords;
       failedRecords += pendingState.failedRecords;
       resolvedRecords += pendingState.resolvedRecords;
 
-      const checkpointAt = freshness?.checkpoint?.observedAtIso || freshness?.checkpoint?.observedAt || null;
+      const checkpointAt =
+        freshness?.checkpoint?.observedAtIso || freshness?.checkpoint?.observedAt || null;
       const checkpointTimestamp = checkpointAt ? this.toTimestamp(checkpointAt) : null;
-      if (checkpointAt && checkpointTimestamp !== null && checkpointTimestamp > latestCheckpointTimestamp) {
+      if (
+        checkpointAt &&
+        checkpointTimestamp !== null &&
+        checkpointTimestamp > latestCheckpointTimestamp
+      ) {
         latestCheckpointTimestamp = checkpointTimestamp;
         latestCheckpointAt = checkpointAt;
       }
@@ -1970,18 +2542,17 @@ export class BrokerOrdersFacadeService {
   ): Promise<OrderSubmissionAttemptsResponse> {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
     const filters = validateOrderSubmissionAttemptsQuery(query);
-    const { items, total } =
-      await this.orderSubmissionRequestRepository.listSubmissionAttempts({
-        userId,
-        limit: filters.limit,
-        offset: filters.offset,
-        suggestedTradeId: filters.suggestedTradeId,
-        status: filters.status,
-        placementState: filters.placementState,
-        reconciliationState: filters.reconciliationState,
-        brokerKey: filters.brokerKey,
-        accountId: filters.accountId,
-      });
+    const { items, total } = await this.orderSubmissionRequestRepository.listSubmissionAttempts({
+      userId,
+      limit: filters.limit,
+      offset: filters.offset,
+      suggestedTradeId: filters.suggestedTradeId,
+      status: filters.status,
+      placementState: filters.placementState,
+      reconciliationState: filters.reconciliationState,
+      brokerKey: filters.brokerKey,
+      accountId: filters.accountId,
+    });
 
     return {
       items: items.map((item) => this.mapOrderSubmissionAttempt(item)),
@@ -2017,10 +2588,12 @@ export class BrokerOrdersFacadeService {
     submission: OrderSubmissionRequest,
     timeZone: string
   ): Promise<OrderSubmissionReconciliationResult> {
+    let currentSubmission = submission;
+    let syncAttempt: OrderSubmissionReconciliationSyncAttempt | null = null;
     const baseResult = (
       decision: OrderSubmissionReconciliationResult['decision'],
       message: string,
-      nextSubmission: OrderSubmissionRequest = submission,
+      nextSubmission: OrderSubmissionRequest = currentSubmission,
       matchedSnapshot: OrderSnapshotSourceRow | null = null
     ): OrderSubmissionReconciliationResult => ({
       decision,
@@ -2107,10 +2680,10 @@ export class BrokerOrdersFacadeService {
 
     if (snapshot) {
       const updated =
-        submission.reconciliationState === 'matched'
-          ? submission
+        currentSubmission.reconciliationState === 'matched'
+          ? currentSubmission
           : await this.orderSubmissionRequestRepository.markReconciliationMatched(
-              submission,
+              currentSubmission,
               {
                 brokerOrderStatus: snapshot.orderStatus,
                 lifecycleEvent: {
@@ -2137,31 +2710,94 @@ export class BrokerOrdersFacadeService {
       );
     }
 
-    if (!this.isOrderSubmissionMissingEligible(submission)) {
+    if (this.isOrderSubmissionMissingEligible(currentSubmission)) {
+      const syncResult = await this.triggerOrderSubmissionReconciliationSync(
+        submission.userId,
+        currentSubmission,
+        {
+          brokerKey,
+          accountId,
+          brokerOrderId,
+        }
+      );
+      currentSubmission = syncResult.submission;
+      syncAttempt = syncResult.attempt;
+
+      const refreshedSnapshot = await this.ordersSnapshotSourceRepository.findOrderByExternalId(
+        submission.userId,
+        brokerKey,
+        accountId,
+        brokerOrderId
+      );
+
+      if (refreshedSnapshot) {
+        const updated =
+          currentSubmission.reconciliationState === 'matched'
+            ? currentSubmission
+            : await this.orderSubmissionRequestRepository.markReconciliationMatched(
+                currentSubmission,
+                {
+                  brokerOrderStatus: refreshedSnapshot.orderStatus,
+                  lifecycleEvent: {
+                    type: 'broker_order_snapshot_matched',
+                    message: syncAttempt.succeeded
+                      ? 'Broker order was found after targeted orders sync.'
+                      : 'Broker order was found in scheduler order snapshots.',
+                    details: {
+                      brokerKey,
+                      accountId,
+                      brokerOrderId,
+                      orderStatus: refreshedSnapshot.orderStatus,
+                      statusRank: refreshedSnapshot.statusRank,
+                      firstSeenAt: this.toOptionalIsoString(refreshedSnapshot.firstSeenAt),
+                      lastSeenAt: this.toOptionalIsoString(refreshedSnapshot.lastSeenAt),
+                      reconciliationSync: syncAttempt,
+                    },
+                  },
+                }
+              );
+
+        return baseResult(
+          'matched',
+          syncAttempt.attempted
+            ? 'Broker order was confirmed after a targeted orders sync.'
+            : 'Broker order was confirmed in scheduler order snapshots.',
+          updated,
+          refreshedSnapshot
+        );
+      }
+    }
+
+    if (!this.isOrderSubmissionMissingEligible(currentSubmission)) {
       return baseResult(
         'pending',
         'Broker order is not visible in snapshots yet; waiting for the safe reconciliation threshold before marking missing.'
       );
     }
 
-    if (submission.reconciliationState === 'missing') {
+    if (currentSubmission.reconciliationState === 'missing') {
       return baseResult(
         'missing',
-        'Broker order is still missing from scheduler snapshots after the safe threshold.'
+        syncAttempt?.attempted
+          ? 'Broker order is still missing from scheduler snapshots after a targeted orders sync.'
+          : 'Broker order is still missing from scheduler snapshots after the safe threshold.'
       );
     }
 
     const updated = await this.orderSubmissionRequestRepository.markReconciliationMissing(
-      submission,
+      currentSubmission,
       {
         lifecycleEvent: {
           type: 'broker_order_snapshot_missing',
-          message: 'Broker order was not found in scheduler snapshots after the safe threshold.',
+          message: syncAttempt?.attempted
+            ? 'Broker order was not found after the safe threshold and targeted orders sync.'
+            : 'Broker order was not found in scheduler snapshots after the safe threshold.',
           details: {
             brokerKey,
             accountId,
             brokerOrderId,
             staleAfterMs: this.orderSubmissionReconciliationMissingAfterMs,
+            reconciliationSync: syncAttempt,
           },
         },
       }
@@ -2169,7 +2805,9 @@ export class BrokerOrdersFacadeService {
 
     return baseResult(
       'missing',
-      'Broker order was not found in scheduler snapshots after the safe threshold.',
+      syncAttempt?.attempted
+        ? 'Broker order was not found after the safe threshold and targeted orders sync.'
+        : 'Broker order was not found in scheduler snapshots after the safe threshold.',
       updated
     );
   }
@@ -2201,13 +2839,12 @@ export class BrokerOrdersFacadeService {
   ): Promise<OrderSubmissionReconciliationSweepResponse> {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
     const filters = validateOrderSubmissionReconcileQuery(query);
-    const candidates =
-      await this.orderSubmissionRequestRepository.listReconciliationCandidates({
-        userId,
-        limit: filters.limit,
-        brokerKey: filters.brokerKey,
-        accountId: filters.accountId,
-      });
+    const candidates = await this.orderSubmissionRequestRepository.listReconciliationCandidates({
+      userId,
+      limit: filters.limit,
+      brokerKey: filters.brokerKey,
+      accountId: filters.accountId,
+    });
     const items: OrderSubmissionReconciliationResult[] = [];
 
     for (const candidate of candidates) {
@@ -2228,6 +2865,194 @@ export class BrokerOrdersFacadeService {
     };
   }
 
+  private normalizeLivePreTradeOrderType(orderType: string): 'market' | 'limit' {
+    const normalized = String(orderType || '')
+      .trim()
+      .toLowerCase();
+    return normalized.includes('limit') ? 'limit' : 'market';
+  }
+
+  private buildLiveOrderPreTradeCheckBody(
+    assetId: string,
+    brokerKey: string,
+    accountId: string,
+    body: ValidatedCreateOrderBody,
+    suggestedTradeId?: string | null
+  ): ValidatedRiskPreTradeCheckBody {
+    const normalizedSuggestedTradeId =
+      String(suggestedTradeId || body.suggested_trade_id || '').trim() || undefined;
+    const bodySymbol = String(body.symbol || '')
+      .trim()
+      .toUpperCase();
+    const fallbackSymbol = normalizedSuggestedTradeId
+      ? undefined
+      : String(assetId || '')
+          .trim()
+          .toUpperCase();
+
+    return validateRiskPreTradeCheckBody({
+      suggestedTradeId: normalizedSuggestedTradeId,
+      sourceType: normalizedSuggestedTradeId ? 'suggested_trade_order' : 'direct_live_order',
+      executionMode: 'live',
+      approvalMode: 'auto_if_safe',
+      routing: {
+        routeMode: 'fixed',
+        brokerKey,
+        accountId,
+      },
+      order: {
+        symbol: bodySymbol || fallbackSymbol,
+        side: body.side === 'short' ? 'SELL' : 'BUY',
+        orderType: this.normalizeLivePreTradeOrderType(body.order_type),
+        timeInForce: null,
+        quantityMode: 'quantity',
+        quantity: body.quantity,
+        entryPrice: body.order_price,
+        stopLossPrice: body.stoploss_price,
+        takeProfitTargets: [body.takeprofit_price],
+        leverage: body.leverage,
+        reduceOnly: body.reduce_only,
+      },
+    });
+  }
+
+  private async createLiveOrderPreTradeCheck(
+    userId: string,
+    assetId: string,
+    brokerKey: string,
+    accountId: string,
+    body: ValidatedCreateOrderBody,
+    suggestedTradeId?: string | null
+  ): Promise<RiskPreTradeCheckResult> {
+    if (!this.riskPreTradeService?.createPreTradeCheck) {
+      throw new ServiceUnavailableAppError('Risk pre-trade service is unavailable');
+    }
+
+    const response = await this.riskPreTradeService.createPreTradeCheck(
+      userId,
+      this.buildLiveOrderPreTradeCheckBody(assetId, brokerKey, accountId, body, suggestedTradeId)
+    );
+    return response.data;
+  }
+
+  private isLiveOrderPreTradeBlocked(result: RiskPreTradeCheckResult): boolean {
+    return (
+      result.decision.blocked ||
+      result.status === 'blocked' ||
+      result.status === 'stale' ||
+      result.status === 'error'
+    );
+  }
+
+  private buildLiveOrderPreTradeBlockedMessage(result: RiskPreTradeCheckResult): string {
+    return (
+      String(result.decision.summary || '').trim() ||
+      'Live order blocked by pre-trade risk controls'
+    );
+  }
+
+  private buildLiveOrderProtectionAudit(
+    body: ValidatedCreateOrderBody,
+    createdOrder: Record<string, unknown>
+  ): LiveOrderProtectionAudit {
+    const expected =
+      !body.reduce_only &&
+      body.execution_mode === 'live' &&
+      body.stoploss_price > 0 &&
+      body.takeprofit_price > 0;
+    const brokerStatus = String(
+      createdOrder.protection_status ?? createdOrder.protectionStatus ?? ''
+    )
+      .trim()
+      .toLowerCase();
+    const protectiveOrders = Array.isArray(createdOrder.protective_orders)
+      ? createdOrder.protective_orders
+      : Array.isArray(createdOrder.protectiveOrders)
+        ? createdOrder.protectiveOrders
+        : [];
+    const stopLossOrderId =
+      String(createdOrder.stop_loss_order_id ?? createdOrder.stopLossOrderId ?? '').trim() ||
+      null;
+    const takeProfitOrderId =
+      String(createdOrder.take_profit_order_id ?? createdOrder.takeProfitOrderId ?? '').trim() ||
+      null;
+
+    if (!expected) {
+      return {
+        expected: false,
+        attached: false,
+        status: 'not_required',
+        brokerStatus: brokerStatus || null,
+        stopLossOrderId,
+        takeProfitOrderId,
+        protectiveOrderCount: protectiveOrders.length,
+        summary: 'Native SL/TP protection was not required for this live order.',
+      };
+    }
+
+    const attached = brokerStatus === 'attached' || Boolean(stopLossOrderId && takeProfitOrderId);
+    const status: LiveOrderProtectionAudit['status'] = attached
+      ? 'attached'
+      : brokerStatus
+        ? 'missing'
+        : 'unknown';
+
+    return {
+      expected: true,
+      attached,
+      status,
+      brokerStatus: brokerStatus || null,
+      stopLossOrderId,
+      takeProfitOrderId,
+      protectiveOrderCount: protectiveOrders.length,
+      summary:
+        status === 'attached'
+          ? 'Broker reported native SL/TP protection for the live order.'
+          : status === 'missing'
+            ? 'Broker accepted the live order but did not report attached SL/TP protection.'
+            : 'Broker accepted the live order, but native SL/TP protection could not be verified from the response.',
+    };
+  }
+
+  private async escalateLiveOrderProtectionGap(
+    userId: string,
+    audit: LiveOrderProtectionAudit,
+    context: {
+      brokerKey: string;
+      accountId: string;
+      activityRouteTarget: string | null;
+      assetId: string;
+      brokerOrderId?: string | null;
+    }
+  ): Promise<void> {
+    if (!audit.expected || audit.status === 'attached') {
+      return;
+    }
+
+    const title =
+      audit.status === 'missing'
+        ? 'Live order missing native protection'
+        : 'Live order protection unverified';
+    await this.operationalEventService.logActivity(userId, {
+      type: 'Order protection',
+      title,
+      status: audit.status === 'missing' ? 'Failed' : 'Warning',
+      route: 'Orders',
+      stream: 'Execution',
+      related: context.activityRouteTarget || context.accountId || context.brokerKey,
+      referenceId: context.brokerOrderId || context.assetId,
+      correlationId: context.brokerOrderId || context.accountId,
+      description: audit.summary,
+    });
+    await this.operationalEventService.emitFailureAlert(userId, {
+      channel: 'Trading',
+      source: context.brokerKey || 'orders',
+      message: `${title}: ${audit.summary}`,
+      route: 'Protection review',
+      severity: audit.status === 'missing' ? 'Critical' : 'High',
+    });
+  }
+
   async createFuturesOrder(
     userId: string,
     assetId: string,
@@ -2244,9 +3069,19 @@ export class BrokerOrdersFacadeService {
     try {
       const validatedBody = validateCreateOrderBody(body);
       const placementSuggestedTradeId =
-        String(options.suggestedTradeId || validatedBody.suggested_trade_id || '').trim() ||
-        null;
-      const route = await this.brokerAccountRoutingService.resolve(userId, validatedBody.brokerKey, validatedBody.accountId, 'mudrex');
+        String(options.suggestedTradeId || validatedBody.suggested_trade_id || '').trim() || null;
+      if (validatedBody.execution_mode === 'live' && placementSuggestedTradeId) {
+        await this.suggestedTradesService.assertLiveOrderFreshnessForSuggestedTrade(
+          userId,
+          placementSuggestedTradeId
+        );
+      }
+      const route = await this.brokerAccountRoutingService.resolve(
+        userId,
+        validatedBody.brokerKey,
+        validatedBody.accountId,
+        'mudrex'
+      );
       const resolvedBrokerKey = String(route.brokerKey || '').trim();
       const resolvedAccountId = String(route.accountId || '').trim();
       const activityRouteTarget = this.buildActivityRouteTarget(
@@ -2257,6 +3092,13 @@ export class BrokerOrdersFacadeService {
       alertSource = resolvedBrokerKey || alertSource;
       if (!resolvedBrokerKey || !resolvedAccountId) {
         throw new BadRequestAppError('A broker route is required to create an order');
+      }
+
+      if (validatedBody.execution_mode === 'live') {
+        await this.riskKillSwitchService?.assertLiveTradingAllowed(userId, {
+          brokerKey: resolvedBrokerKey,
+          accountId: resolvedAccountId,
+        });
       }
 
       const submission = await this.beginCreateOrderSubmission(
@@ -2273,11 +3115,60 @@ export class BrokerOrdersFacadeService {
       }
       activeSubmissionRequest = submission.request;
 
+      const livePreTradeCheck =
+        validatedBody.execution_mode === 'live'
+          ? await this.createLiveOrderPreTradeCheck(
+              userId,
+              assetId,
+              resolvedBrokerKey,
+              resolvedAccountId,
+              validatedBody,
+              placementSuggestedTradeId
+            )
+          : null;
+
+      if (livePreTradeCheck && this.isLiveOrderPreTradeBlocked(livePreTradeCheck)) {
+        const message = this.buildLiveOrderPreTradeBlockedMessage(livePreTradeCheck);
+        await this.operationalEventService.logActivity(userId, {
+          type: 'Risk pre-trade',
+          title: 'Live order blocked by pre-trade check',
+          status: 'Blocked',
+          route: 'Risk',
+          stream: 'Pre-trade',
+          related: activityRouteTarget || resolvedAccountId || route.brokerKey,
+          referenceId: livePreTradeCheck.checkId,
+          correlationId: livePreTradeCheck.checkId,
+          description: message,
+        });
+        await this.operationalEventService.emitFailureAlert(userId, {
+          channel: 'Risk',
+          source: route.brokerKey || 'orders',
+          message,
+          route: 'Pre-trade review',
+          severity: 'Critical',
+        });
+        throw new BadRequestAppError(message);
+      }
+
+      if (livePreTradeCheck && livePreTradeCheck.decision.warningRuleCount > 0) {
+        await this.operationalEventService.logActivity(userId, {
+          type: 'Risk pre-trade',
+          title: 'Live order cleared with pre-trade warnings',
+          status: 'Warning',
+          route: 'Risk',
+          stream: 'Pre-trade',
+          related: activityRouteTarget || resolvedAccountId || route.brokerKey,
+          referenceId: livePreTradeCheck.checkId,
+          correlationId: livePreTradeCheck.checkId,
+          description: livePreTradeCheck.decision.summary,
+        });
+      }
+
       const riskCheck = await this.riskService.evaluatePreTradeOrder(userId, route, {
         assetId,
         quantity: validatedBody.quantity,
         orderPrice: validatedBody.order_price,
-        leverage: validatedBody.leverage
+        leverage: validatedBody.leverage,
       });
 
       if (riskCheck.blocked) {
@@ -2333,6 +3224,9 @@ export class BrokerOrdersFacadeService {
               accountId: resolvedAccountId,
               suggestedTradeId: placementSuggestedTradeId,
               riskWarningCount: riskCheck.breaches.length,
+              preTradeCheckId: livePreTradeCheck?.checkId ?? null,
+              preTradeStatus: livePreTradeCheck?.status ?? null,
+              preTradeWarningCount: livePreTradeCheck?.decision.warningRuleCount ?? 0,
             },
           }
         );
@@ -2369,10 +3263,12 @@ export class BrokerOrdersFacadeService {
         let simulatedOrderIds: string[] = [];
 
         try {
-          const simulationResult =
-            await this.paperOrderExecutionService.simulateUserPaperOrders(userId, {
+          const simulationResult = await this.paperOrderExecutionService.simulateUserPaperOrders(
+            userId,
+            {
               paperOrderIds: [paperOrder.id],
-            });
+            }
+          );
           simulatedOrderIds = simulationResult.updatedOrderIds;
           refreshedPaperOrder =
             (await this.paperOrderRepository.getPaperOrderById(userId, paperOrder.id)) ||
@@ -2388,7 +3284,10 @@ export class BrokerOrdersFacadeService {
         }
 
         const response = successResponse({
-          ...this.mapPaperOrder(refreshedPaperOrder, await this.userTimeZoneService.resolveUserTimeZone(userId)),
+          ...this.mapPaperOrder(
+            refreshedPaperOrder,
+            await this.userTimeZoneService.resolveUserTimeZone(userId)
+          ),
           message: 'Paper order created',
         });
 
@@ -2413,10 +3312,10 @@ export class BrokerOrdersFacadeService {
         }
 
         try {
-          if (validatedBody.suggested_trade_id) {
+          if (placementSuggestedTradeId) {
             await this.suggestedTradesService.linkSuggestedTradeOrder(
               userId,
-              validatedBody.suggested_trade_id,
+              placementSuggestedTradeId,
               {
                 executionMode: 'paper',
                 paperOrderId: paperOrder.id,
@@ -2468,7 +3367,11 @@ export class BrokerOrdersFacadeService {
 
       const result = await this.brokerRuntimeRegistry
         .getOrdersAdapter(route.brokerKey)
-        .createOrder(assetId, { ...validatedBody, brokerKey: route.brokerKey, accountId: route.accountId }, route);
+        .createOrder(
+          assetId,
+          { ...validatedBody, brokerKey: route.brokerKey, accountId: route.accountId },
+          route
+        );
 
       const createdOrder = this.unwrapSuccessData(result);
       const createdOrderId =
@@ -2479,14 +3382,13 @@ export class BrokerOrdersFacadeService {
           : typeof createdOrder.order_status === 'string'
             ? String(createdOrder.order_status)
             : undefined;
-      const protectionStatus =
-        typeof createdOrder.protection_status === 'string'
-          ? String(createdOrder.protection_status)
-          : undefined;
       const protectiveOrders = Array.isArray(createdOrder.protective_orders)
         ? createdOrder.protective_orders
-        : [];
-      const protectionAttached = protectionStatus === 'attached';
+        : Array.isArray(createdOrder.protectiveOrders)
+          ? createdOrder.protectiveOrders
+          : [];
+      const protectionAudit = this.buildLiveOrderProtectionAudit(validatedBody, createdOrder);
+      const protectionAttached = protectionAudit.attached;
 
       if (activeSubmissionRequest) {
         await this.orderSubmissionRequestRepository.markCompleted(
@@ -2507,20 +3409,37 @@ export class BrokerOrdersFacadeService {
                 accountId: resolvedAccountId,
                 brokerOrderId: createdOrderId ?? null,
                 brokerOrderStatus: createdOrderStatus ?? null,
-                protectionStatus: protectionStatus ?? null,
+                protectionExpected: protectionAudit.expected,
+                protectionAttached: protectionAudit.attached,
+                protectionStatus: protectionAudit.status,
+                protectionBrokerStatus: protectionAudit.brokerStatus,
+                protectionSummary: protectionAudit.summary,
+                stopLossOrderId: protectionAudit.stopLossOrderId,
+                takeProfitOrderId: protectionAudit.takeProfitOrderId,
+                protectiveOrderCount: protectionAudit.protectiveOrderCount,
                 protectiveOrders,
                 suggestedTradeId: placementSuggestedTradeId,
+                preTradeCheckId: livePreTradeCheck?.checkId ?? null,
+                preTradeStatus: livePreTradeCheck?.status ?? null,
               },
             },
           }
         );
       }
 
+      await this.escalateLiveOrderProtectionGap(userId, protectionAudit, {
+        brokerKey: resolvedBrokerKey,
+        accountId: resolvedAccountId,
+        activityRouteTarget,
+        assetId,
+        brokerOrderId: createdOrderId,
+      });
+
       try {
-        if (validatedBody.suggested_trade_id) {
+        if (placementSuggestedTradeId) {
           await this.suggestedTradesService.linkSuggestedTradeOrder(
             userId,
-            validatedBody.suggested_trade_id,
+            placementSuggestedTradeId,
             {
               executionMode: 'live',
               orderId: createdOrderId,
@@ -2619,17 +3538,13 @@ export class BrokerOrdersFacadeService {
           String((body as { accountId?: string | null })?.accountId || '').trim() ||
           undefined,
         description:
-          normalizedError instanceof Error
-            ? normalizedError.message
-            : String(normalizedError),
+          normalizedError instanceof Error ? normalizedError.message : String(normalizedError),
       });
       await this.operationalEventService.emitFailureAlert(userId, {
         channel: 'Trading',
         source: alertSource || 'orders',
         message: `Order create failed: ${
-          normalizedError instanceof Error
-            ? normalizedError.message
-            : String(normalizedError)
+          normalizedError instanceof Error ? normalizedError.message : String(normalizedError)
         }`,
         route: 'Risk review',
       });
@@ -2660,14 +3575,11 @@ export class BrokerOrdersFacadeService {
       accountId = route.accountId;
     }
 
-    const simulationResult = await this.paperOrderExecutionService.simulateUserPaperOrders(
-      userId,
-      {
-        brokerKey,
-        accountId,
-        limit: params.limit,
-      }
-    );
+    const simulationResult = await this.paperOrderExecutionService.simulateUserPaperOrders(userId, {
+      brokerKey,
+      accountId,
+      limit: params.limit,
+    });
     if (simulationResult.updatedOrderIds.length) {
       await this.suggestedTradesService.syncExecutionForPaperOrderUpdates(
         userId,
@@ -2688,28 +3600,33 @@ export class BrokerOrdersFacadeService {
 
   async getPaperOrder(userId: string, paperOrderId: string): Promise<unknown> {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
-    const simulationResult = await this.paperOrderExecutionService.simulateUserPaperOrders(
-      userId,
-      {
-        paperOrderIds: [paperOrderId],
-      }
-    );
+    const simulationResult = await this.paperOrderExecutionService.simulateUserPaperOrders(userId, {
+      paperOrderIds: [paperOrderId],
+    });
     if (simulationResult.updatedOrderIds.length) {
       await this.suggestedTradesService.syncExecutionForPaperOrderUpdates(
         userId,
         simulationResult.updatedOrderIds
       );
     }
-    const item = await this.paperOrderRepository.getPaperOrderById(userId, validateOrderId(paperOrderId));
+    const item = await this.paperOrderRepository.getPaperOrderById(
+      userId,
+      validateOrderId(paperOrderId)
+    );
     if (!item) {
       throw new BadRequestAppError('Paper order not found');
     }
-    return successResponse(this.decoratePaperOrderDetail(this.mapPaperOrder(item, timeZone), timeZone));
+    return successResponse(
+      this.decoratePaperOrderDetail(this.mapPaperOrder(item, timeZone), timeZone)
+    );
   }
 
   async cancelPaperOrder(userId: string, paperOrderId: string): Promise<unknown> {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
-    const item = await this.paperOrderRepository.cancelPaperOrder(userId, validateOrderId(paperOrderId));
+    const item = await this.paperOrderRepository.cancelPaperOrder(
+      userId,
+      validateOrderId(paperOrderId)
+    );
     if (!item) {
       throw new BadRequestAppError('Paper order not found');
     }
@@ -2738,11 +3655,20 @@ export class BrokerOrdersFacadeService {
     });
   }
 
-  async getFuturesOrder(userId: string, orderId: string, query: OrdersQuery = {}): Promise<unknown> {
+  async getFuturesOrder(
+    userId: string,
+    orderId: string,
+    query: OrdersQuery = {}
+  ): Promise<unknown> {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
     const validatedOrderId = validateOrderId(orderId);
     const params = validateOrdersQuery(query);
-    const route = await this.brokerAccountRoutingService.resolve(userId, params.brokerKey, params.accountId, 'mudrex');
+    const route = await this.brokerAccountRoutingService.resolve(
+      userId,
+      params.brokerKey,
+      params.accountId,
+      'mudrex'
+    );
     const resolvedBrokerKey = String(route.brokerKey || '').trim() || 'mudrex';
     const resolvedAccountId = String(route.accountId || '').trim();
     const account = resolvedAccountId
@@ -2770,7 +3696,12 @@ export class BrokerOrdersFacadeService {
 
   async getFuturesOrderHistory(userId: string, query: OrdersQuery): Promise<unknown> {
     const params = validateOrdersQuery(query);
-    const route = await this.brokerAccountRoutingService.resolve(userId, params.brokerKey, params.accountId, 'mudrex');
+    const route = await this.brokerAccountRoutingService.resolve(
+      userId,
+      params.brokerKey,
+      params.accountId,
+      'mudrex'
+    );
     const resolvedBrokerKey = String(route.brokerKey || '').trim() || 'mudrex';
     const resolvedAccountId = String(route.accountId || '').trim();
     return this.listOrderSnapshots(userId, resolvedBrokerKey, resolvedAccountId, {
@@ -2781,23 +3712,26 @@ export class BrokerOrdersFacadeService {
     });
   }
 
-  async cancelFuturesOrder(userId: string, orderId: string, query: OrdersQuery = {}): Promise<unknown> {
+  async cancelFuturesOrder(
+    userId: string,
+    orderId: string,
+    query: OrdersQuery = {}
+  ): Promise<unknown> {
     const validatedOrderId = validateOrderId(orderId);
     let resolvedBrokerKey = String(query?.brokerKey || '').trim();
     let resolvedAccountId = String(query?.accountId || '').trim();
-    let activityRouteTarget = this.buildActivityRouteTarget(
-      resolvedBrokerKey,
-      resolvedAccountId
-    );
+    let activityRouteTarget = this.buildActivityRouteTarget(resolvedBrokerKey, resolvedAccountId);
     try {
       const params = validateOrdersQuery(query);
-      const route = await this.brokerAccountRoutingService.resolve(userId, params.brokerKey, params.accountId, 'mudrex');
+      const route = await this.brokerAccountRoutingService.resolve(
+        userId,
+        params.brokerKey,
+        params.accountId,
+        'mudrex'
+      );
       resolvedBrokerKey = String(route.brokerKey || '').trim() || 'mudrex';
       resolvedAccountId = String(route.accountId || '').trim();
-      activityRouteTarget = this.buildActivityRouteTarget(
-        resolvedBrokerKey,
-        resolvedAccountId
-      );
+      activityRouteTarget = this.buildActivityRouteTarget(resolvedBrokerKey, resolvedAccountId);
 
       // Idempotency: if we already know the order is terminal from snapshots, don't call broker cancel.
       try {
@@ -2808,7 +3742,10 @@ export class BrokerOrdersFacadeService {
           validatedOrderId
         );
         if (snapshot && typeof snapshot === 'object' && this.isClosedSnapshotOrder(0, snapshot)) {
-          const snapshotStatus = String((snapshot as { status?: string }).status || 'CLOSED').trim().toUpperCase() || 'CLOSED';
+          const snapshotStatus =
+            String((snapshot as { status?: string }).status || 'CLOSED')
+              .trim()
+              .toUpperCase() || 'CLOSED';
           await this.operationalEventService.logActivity(userId, {
             type: 'Order',
             title: `Order already terminal: ${validatedOrderId}`,
@@ -2830,7 +3767,9 @@ export class BrokerOrdersFacadeService {
         // If snapshot lookup fails/misses, continue with broker cancel attempt.
       }
 
-      const result = await this.brokerRuntimeRegistry.getOrdersAdapter(route.brokerKey).cancelOrder(validatedOrderId, route);
+      const result = await this.brokerRuntimeRegistry
+        .getOrdersAdapter(route.brokerKey)
+        .cancelOrder(validatedOrderId, route);
       await this.operationalEventService.logActivity(userId, {
         type: 'Order',
         title: `Order cancelled: ${validatedOrderId}`,
@@ -2878,24 +3817,29 @@ export class BrokerOrdersFacadeService {
       await this.operationalEventService.emitFailureAlert(userId, {
         channel: 'Trading',
         source: resolvedBrokerKey || 'orders',
-        message: `Order cancel failed (${validatedOrderId}): ${
-          message
-        }`,
+        message: `Order cancel failed (${validatedOrderId}): ${message}`,
         route: 'Risk review',
       });
       throw error;
     }
   }
 
-  async getFuturesOrderHistoryForActiveAccounts(userId: string, query: OrdersQuery): Promise<unknown> {
+  async getFuturesOrderHistoryForActiveAccounts(
+    userId: string,
+    query: OrdersQuery
+  ): Promise<unknown> {
     const params = validateOrdersQuery(query);
     const activeAccounts = await this.brokerAccountRepository.getActiveBrokerAccounts(
       userId,
       params.brokerKey
     );
-    return this.getFuturesOrdersForActiveAccountsFromSnapshot(userId, activeAccounts, params, false);
+    return this.getFuturesOrdersForActiveAccountsFromSnapshot(
+      userId,
+      activeAccounts,
+      params,
+      false
+    );
   }
-
 
   async getFuturesOrdersForActiveAccounts(userId: string, query: OrdersQuery): Promise<unknown> {
     const params = validateOrdersQuery(query);
@@ -2905,7 +3849,6 @@ export class BrokerOrdersFacadeService {
     );
     return this.getFuturesOrdersForActiveAccountsFromSnapshot(userId, activeAccounts, params, true);
   }
-
 
   private applyDateRangeFilter(data: unknown, startUtc?: Date, endUtc?: Date): unknown[] {
     const list = Array.isArray(data)
@@ -2959,8 +3902,13 @@ export class BrokerOrdersFacadeService {
       };
     }
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
-    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(params.startDate, params.endDate, timeZone);
+    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(
+      params.startDate,
+      params.endDate,
+      timeZone
+    );
     const accountIds = activeAccounts.map((item) => item.id);
+    const displayContext = await this.loadSnapshotProtectionDisplayContext(userId, accountIds);
     const rows = await coreDataSource.query(
       `SELECT account_id AS accountId,
               external_id AS externalId,
@@ -3025,10 +3973,14 @@ export class BrokerOrdersFacadeService {
           payload.external_id ??= item.externalId;
           payload.first_seen_at ??= item.firstSeenAt;
           payload.last_seen_at ??= item.lastSeenAt;
+          payload.brokerKey ??= account.brokerKey;
+          payload.broker_key ??= account.brokerKey;
+          payload.accountId ??= account.id;
+          payload.account_id ??= account.id;
           payload.snapshot_source ??= 'scheduler_orders_snapshots';
           payload.snapshot_status_rank ??= item.statusRank;
           payload.snapshot_state ??= openOnly ? 'open' : 'history';
-          return payload;
+          return this.enrichSnapshotOrderWithDisplayFields(payload, displayContext);
         });
       const orders = this.applyDateRangeFilter(filtered, startUtc, endUtc);
       return {
@@ -3056,11 +4008,23 @@ export class BrokerOrdersFacadeService {
       return statusRank <= 2;
     }
     const row = payload as { status?: string };
-    const status = String(row?.status || '').trim().toUpperCase();
+    const status = String(row?.status || '')
+      .trim()
+      .toUpperCase();
     if (!status) {
       return false;
     }
-    return !['FILLED', 'COMPLETED', 'EXECUTED', 'CLOSED', 'CANCELLED', 'CANCELED', 'REJECTED', 'FAILED', 'EXPIRED'].includes(status);
+    return ![
+      'FILLED',
+      'COMPLETED',
+      'EXECUTED',
+      'CLOSED',
+      'CANCELLED',
+      'CANCELED',
+      'REJECTED',
+      'FAILED',
+      'EXPIRED',
+    ].includes(status);
   }
 
   private isClosedSnapshotOrder(statusRank: number, payload: unknown): boolean {
@@ -3068,13 +4032,24 @@ export class BrokerOrdersFacadeService {
       return statusRank >= 3;
     }
     const row = payload as { status?: string };
-    const status = String(row?.status || '').trim().toUpperCase();
+    const status = String(row?.status || '')
+      .trim()
+      .toUpperCase();
     if (!status) {
       return false;
     }
-    return ['FILLED', 'COMPLETED', 'EXECUTED', 'CLOSED', 'CANCELLED', 'CANCELED', 'REJECTED', 'FAILED', 'EXPIRED'].includes(status);
+    return [
+      'FILLED',
+      'COMPLETED',
+      'EXECUTED',
+      'CLOSED',
+      'CANCELLED',
+      'CANCELED',
+      'REJECTED',
+      'FAILED',
+      'EXPIRED',
+    ].includes(status);
   }
 
   // parsePayloadJson moved above to support both single-account and active-account snapshot reads.
-
 }

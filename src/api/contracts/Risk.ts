@@ -124,6 +124,10 @@ export interface RiskPositionItem {
   unrealizedPnl?: number | null;
   realizedPnl?: number | null;
   leverage?: number | null;
+  requestedLeverage?: number | null;
+  confirmedOrderLeverage?: number | null;
+  observedPositionLeverage?: number | null;
+  leverageSource?: string | null;
   liquidationPrice?: number | null;
   liquidationDistancePct?: number | null;
   concentrationPct?: number | null;
@@ -366,6 +370,7 @@ export interface RiskPolicyContextItem {
   monthlyLossLimitPct: number;
   minLeverage?: number | null;
   maxLeverage?: number | null;
+  tradeSizePctOfBalance?: number | null;
   minNotionalPerTrade?: number | null;
   maxOrderAllocation?: number | null;
   maxTotalAllocation?: number | null;
@@ -665,14 +670,44 @@ export interface RiskPreTradeCheckResult {
 
 export interface RiskKillSwitchBody {
   scope?: string;
+  brokerKey?: string | null;
+  accountId?: string | null;
   reason?: string;
+}
+
+export interface RiskKillSwitchStateItem {
+  id: string;
+  active: boolean;
+  scope: string;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  reason: string;
+  triggeredBy: string;
+  triggeredAt: string;
+  triggeredAtIso?: string;
+  clearedBy?: string | null;
+  clearedAt?: string | null;
+  clearedAtIso?: string | null;
+}
+
+export interface RiskKillSwitchStatusResult {
+  active: boolean;
+  message: string;
+  items: RiskKillSwitchStateItem[];
+  time?: ApiTimeContract;
 }
 
 export interface RiskKillSwitchResult {
   message: string;
+  active?: boolean;
   triggeredAt: string;
   triggeredAtIso?: string;
   scope: string;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  reason?: string;
+  clearedCount?: number;
+  state?: RiskKillSwitchStateItem;
   time?: ApiTimeContract;
 }
 
@@ -808,6 +843,7 @@ export interface RiskPolicy {
   monthlyLossLimitPct?: number;
   minLeverage?: number;
   maxLeverage?: number;
+  tradeSizePctOfBalance?: number;
   minNotionalPerTrade?: number;
   maxOrderAllocation?: number;
   maxTotalAllocation?: number;
@@ -884,6 +920,7 @@ export interface UpsertRiskPolicyBody {
   monthlyLossLimitPct?: number;
   minLeverage?: number;
   maxLeverage?: number;
+  tradeSizePctOfBalance?: number;
   minNotionalPerTrade?: number;
   maxOrderAllocation?: number;
   maxTotalAllocation?: number;

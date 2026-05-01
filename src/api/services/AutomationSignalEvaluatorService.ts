@@ -12,6 +12,7 @@ export interface EvaluatedAutomationSignalEvent {
   side: 'long' | 'short';
   signalTime: string;
   entryPrice: number | null;
+  tradePlan: Record<string, unknown> | null;
 }
 
 export interface EvaluatedAutomationSignalItem {
@@ -44,6 +45,7 @@ export interface EvaluateAutomationSignalsPayload {
   candlesSchema?: string | null;
   candlesMaxRows?: number | null;
   cursorBySymbol?: Record<string, string | Date | null> | null;
+  signalSelectionMode?: 'latest_closed_only' | 'cursor_gap' | string | null;
 }
 
 export interface EvaluateAutomationSignalsResult {
@@ -66,7 +68,11 @@ export class AutomationSignalEvaluatorService {
     const symbols = Array.from(
       new Set(
         (Array.isArray(payload.symbols) ? payload.symbols : [])
-          .map((value) => String(value || '').trim().toUpperCase())
+          .map((value) =>
+            String(value || '')
+              .trim()
+              .toUpperCase()
+          )
           .filter(Boolean)
       )
     );
@@ -79,7 +85,12 @@ export class AutomationSignalEvaluatorService {
       };
     }
 
-    const scriptPath = path.resolve(process.cwd(), 'scripts', '_runtime', 'automation_signal_eval.py');
+    const scriptPath = path.resolve(
+      process.cwd(),
+      'scripts',
+      '_runtime',
+      'automation_signal_eval.py'
+    );
     if (!existsSync(scriptPath)) {
       throw new ServiceUnavailableAppError(
         `Automation signal evaluator script was not found at ${scriptPath}`
@@ -119,6 +130,7 @@ export class AutomationSignalEvaluatorService {
           ? Math.max(10, Math.round(payload.warmupBars))
           : undefined,
       cursorBySymbol: payload.cursorBySymbol || undefined,
+      signalSelectionMode: this.normalizeSignalSelectionMode(payload.signalSelectionMode),
     });
 
     let parsed: Record<string, unknown>;
@@ -162,7 +174,9 @@ export class AutomationSignalEvaluatorService {
       .trim()
       .toUpperCase();
     const timeframe = String(item.timeframe || '').trim();
-    const status = String(item.status || '').trim().toLowerCase();
+    const status = String(item.status || '')
+      .trim()
+      .toLowerCase();
 
     if (!symbol || !timeframe) {
       return null;
@@ -204,7 +218,9 @@ export class AutomationSignalEvaluatorService {
         }
 
         const record = item as Record<string, unknown>;
-        const side = String(record.side || '').trim().toLowerCase();
+        const side = String(record.side || '')
+          .trim()
+          .toLowerCase();
         const signalTime = String(record.signalTime || '').trim();
         if ((side !== 'long' && side !== 'short') || !signalTime) {
           return null;
@@ -214,9 +230,17 @@ export class AutomationSignalEvaluatorService {
           side: side as 'long' | 'short',
           signalTime,
           entryPrice: this.readNumber(record.entryPrice),
+          tradePlan: this.parseRecord(record.tradePlan),
         };
       })
       .filter((item): item is EvaluatedAutomationSignalEvent => Boolean(item));
+  }
+
+  private parseRecord(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, unknown>;
   }
 
   private readNumber(value: unknown): number | null {
@@ -230,6 +254,16 @@ export class AutomationSignalEvaluatorService {
       }
     }
     return null;
+  }
+
+  private normalizeSignalSelectionMode(
+    value: EvaluateAutomationSignalsPayload['signalSelectionMode']
+  ): 'latest_closed_only' | 'cursor_gap' {
+    return String(value || '')
+      .trim()
+      .toLowerCase() === 'cursor_gap'
+      ? 'cursor_gap'
+      : 'latest_closed_only';
   }
 
   private buildPostgresUrl(): string {
@@ -248,6 +282,9 @@ export class AutomationSignalEvaluatorService {
     payload: Record<string, unknown>
   ): Promise<string> {
     return new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      const symbolCount = Array.isArray(payload.symbols) ? payload.symbols.length : 0;
+      const timeframe = String(payload.timeframe || '').trim() || 'unknown';
       const child = spawn(pythonBin, ['-B', scriptPath], {
         cwd: process.cwd(),
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -263,6 +300,10 @@ export class AutomationSignalEvaluatorService {
         }
         settled = true;
         child.kill('SIGKILL');
+        const durationMs = Date.now() - startedAt;
+        log.warn(
+          `Automation signal evaluation timed out after ${durationMs}ms for ${symbolCount} symbol(s) on ${timeframe}`
+        );
         reject(
           new ServiceUnavailableAppError(
             `Automation signal evaluation timed out after ${env.automationSignals.timeoutMs}ms`
@@ -300,6 +341,10 @@ export class AutomationSignalEvaluatorService {
         clearTimeout(timeout);
 
         if (code !== 0) {
+          const durationMs = Date.now() - startedAt;
+          log.error(
+            `Automation signal evaluation failed in ${durationMs}ms for ${symbolCount} symbol(s) on ${timeframe}: ${stderr.trim() || stdout.trim() || 'Unknown error'}`
+          );
           reject(
             new ServiceUnavailableAppError(
               `Automation signal evaluation failed (${code}): ${stderr.trim() || stdout.trim() || 'Unknown error'}`
@@ -308,6 +353,10 @@ export class AutomationSignalEvaluatorService {
           return;
         }
 
+        const durationMs = Date.now() - startedAt;
+        log.info(
+          `Automation signal evaluation completed in ${durationMs}ms for ${symbolCount} symbol(s) on ${timeframe}`
+        );
         resolve(stdout.trim());
       });
 

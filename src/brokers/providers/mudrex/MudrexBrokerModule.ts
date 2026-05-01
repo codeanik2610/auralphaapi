@@ -13,7 +13,8 @@ export class MudrexBrokerModule implements BrokerModule {
 
   readonly profile = {
     purpose: 'Orders, positions, balances, strategy execution',
-    capabilities: 'Create order, cancel order, view positions, close position, balances, portfolio',
+    capabilities:
+      'Create order, cancel order, view positions, close position, balances, portfolio, leverage metadata',
     authMode: 'API key authentication',
     limitations: 'REST-first workflow with lighter market-depth coverage than an exchange-native API.',
     environment: 'Production',
@@ -24,7 +25,7 @@ export class MudrexBrokerModule implements BrokerModule {
     orders: true,
     positions: true,
     balances: true,
-    leverage: false,
+    leverage: true,
     risk: true,
     streaming: false,
   };

@@ -277,6 +277,14 @@ export class OrderSubmissionRequestRepository {
     return this.repository.save(request);
   }
 
+  async recordLifecycleEvent(
+    request: OrderSubmissionRequest,
+    event: OrderSubmissionLifecycleEvent
+  ): Promise<OrderSubmissionRequest> {
+    request.lifecyclePayload = this.appendLifecycleEvent(request.lifecyclePayload, event);
+    return this.repository.save(request);
+  }
+
   async markCompleted(
     request: OrderSubmissionRequest,
     responsePayload: Record<string, unknown>,

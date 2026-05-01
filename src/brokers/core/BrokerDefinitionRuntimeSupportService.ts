@@ -150,7 +150,7 @@ export class BrokerDefinitionRuntimeSupportService {
   }
 
   private supportsLeverageCapability(brokerKey: string): boolean {
-    return brokerKey === 'mudrex';
+    return brokerKey === 'mudrex' || brokerKey === 'delta_exchange';
   }
 
   private normalizeKey(value: string): string {

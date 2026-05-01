@@ -1,8 +1,5 @@
 import { BadRequestAppError } from '../errors/AppError';
-import {
-  UpdateSettingsBody,
-  UpdateSettingsRequestBody,
-} from '../contracts/Settings';
+import { UpdateSettingsBody, UpdateSettingsRequestBody } from '../contracts/Settings';
 import { isValidIanaTimeZone, normalizeTimeZone } from '../utils/timezone';
 import {
   resolveBacktestPromotionRules,
@@ -19,6 +16,31 @@ export interface ValidatedSettingsAuditQuery {
   offset: number;
 }
 
+const WHATSAPP_E164_PATTERN = /^\+[1-9]\d{7,14}$/;
+
+function normalizeWhatsappNumber(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value !== 'string') {
+    throw new BadRequestAppError('whatsappNumber must be a string or null');
+  }
+
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (!WHATSAPP_E164_PATTERN.test(normalized)) {
+    throw new BadRequestAppError(
+      'whatsappNumber must be a valid E.164 phone number (for example, +14155550123)'
+    );
+  }
+
+  return normalized;
+}
+
 export const validateUpdateSettingsBody = (
   body: UpdateSettingsRequestBody = {},
   defaults: Partial<UpdateSettingsBody> = {}
@@ -27,6 +49,9 @@ export const validateUpdateSettingsBody = (
     'timezone',
     'notifyEmail',
     'notifyInApp',
+    'notifyWhatsapp',
+    'whatsappLiveTradeSuggestions',
+    'whatsappNumber',
     'confirmDestructive',
     'notificationChannel',
     'notificationSeverity',
@@ -40,9 +65,7 @@ export const validateUpdateSettingsBody = (
   const unexpectedFields = Object.keys(body || {}).filter((key) => !allowedFields.has(key));
 
   if (unexpectedFields.length > 0) {
-    throw new BadRequestAppError(
-      `Unknown settings fields: ${unexpectedFields.sort().join(', ')}`
-    );
+    throw new BadRequestAppError(`Unknown settings fields: ${unexpectedFields.sort().join(', ')}`);
   }
 
   const defaultPromotionRules = resolveBacktestPromotionRules(defaults.backtestPromotionRules);
@@ -50,21 +73,33 @@ export const validateUpdateSettingsBody = (
     timezone: body.timezone ?? defaults.timezone ?? 'UTC',
     notifyEmail: body.notifyEmail ?? defaults.notifyEmail ?? true,
     notifyInApp: body.notifyInApp ?? defaults.notifyInApp ?? true,
+    notifyWhatsapp: body.notifyWhatsapp ?? defaults.notifyWhatsapp ?? false,
+    whatsappLiveTradeSuggestions:
+      body.whatsappLiveTradeSuggestions ?? defaults.whatsappLiveTradeSuggestions ?? false,
+    whatsappNumber:
+      body.whatsappNumber === undefined
+        ? (defaults.whatsappNumber ?? null)
+        : normalizeWhatsappNumber(body.whatsappNumber),
     confirmDestructive: body.confirmDestructive ?? defaults.confirmDestructive ?? true,
-    notificationChannel:
-      body.notificationChannel ?? defaults.notificationChannel ?? 'both',
-    notificationSeverity:
-      body.notificationSeverity ?? defaults.notificationSeverity ?? 'all',
+    notificationChannel: body.notificationChannel ?? defaults.notificationChannel ?? 'both',
+    notificationSeverity: body.notificationSeverity ?? defaults.notificationSeverity ?? 'all',
     escalationRoute: body.escalationRoute ?? defaults.escalationRoute ?? 'risk-review',
     escalationSlaMinutes: body.escalationSlaMinutes ?? defaults.escalationSlaMinutes ?? 15,
     backtestPromotionRules:
       body.backtestPromotionRules === undefined
         ? defaultPromotionRules
-        : validateBacktestPromotionRulesInput(
-            body.backtestPromotionRules,
-            defaultPromotionRules
-          ),
+        : validateBacktestPromotionRulesInput(body.backtestPromotionRules, defaultPromotionRules),
   };
+
+  if (candidate.whatsappLiveTradeSuggestions && !candidate.notifyWhatsapp) {
+    if (body.whatsappLiveTradeSuggestions === undefined) {
+      candidate.whatsappLiveTradeSuggestions = false;
+    } else {
+      throw new BadRequestAppError(
+        'notifyWhatsapp must be enabled when whatsappLiveTradeSuggestions is enabled'
+      );
+    }
+  }
 
   if (typeof candidate.timezone !== 'string' || !isValidIanaTimeZone(candidate.timezone)) {
     throw new BadRequestAppError('timezone must be a valid IANA timezone');
@@ -78,8 +113,25 @@ export const validateUpdateSettingsBody = (
     throw new BadRequestAppError('notifyInApp must be a boolean');
   }
 
+  if (typeof candidate.notifyWhatsapp !== 'boolean') {
+    throw new BadRequestAppError('notifyWhatsapp must be a boolean');
+  }
+
+  if (typeof candidate.whatsappLiveTradeSuggestions !== 'boolean') {
+    throw new BadRequestAppError('whatsappLiveTradeSuggestions must be a boolean');
+  }
+
   if (typeof candidate.confirmDestructive !== 'boolean') {
     throw new BadRequestAppError('confirmDestructive must be a boolean');
+  }
+
+  if (
+    (candidate.notifyWhatsapp || candidate.whatsappLiveTradeSuggestions) &&
+    !candidate.whatsappNumber
+  ) {
+    throw new BadRequestAppError(
+      'whatsappNumber is required when WhatsApp notifications are enabled'
+    );
   }
 
   if (
@@ -104,9 +156,7 @@ export const validateUpdateSettingsBody = (
     typeof candidate.escalationRoute !== 'string' ||
     !allowedEscalationRoutes.has(candidate.escalationRoute)
   ) {
-    throw new BadRequestAppError(
-      'escalationRoute must be one of: risk-review, on-call, manual'
-    );
+    throw new BadRequestAppError('escalationRoute must be one of: risk-review, on-call, manual');
   }
 
   if (
@@ -122,6 +172,9 @@ export const validateUpdateSettingsBody = (
     timezone: normalizeTimeZone(candidate.timezone),
     notifyEmail: candidate.notifyEmail,
     notifyInApp: candidate.notifyInApp,
+    notifyWhatsapp: candidate.notifyWhatsapp,
+    whatsappLiveTradeSuggestions: candidate.whatsappLiveTradeSuggestions,
+    whatsappNumber: candidate.whatsappNumber,
     confirmDestructive: candidate.confirmDestructive,
     notificationChannel: candidate.notificationChannel,
     notificationSeverity: candidate.notificationSeverity,

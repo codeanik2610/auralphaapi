@@ -11,6 +11,8 @@ import { Automation } from './Automation';
 
 @Entity({ name: 'automation_events' })
 @Index('idx_automation_events_automation_created_at', ['automationId', 'createdAt'])
+@Index('idx_automation_events_type_created_at', ['type', 'createdAt'])
+@Index('idx_automation_events_automation_type_created_at', ['automationId', 'type', 'createdAt'])
 export class AutomationEvent {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

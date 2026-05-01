@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 WITH_EMAIL=false
+WITH_WHATSAPP=false
 SKIP_SMOKE=false
 SKIP_POST_BOOTSTRAP=false
 FORCE_ENV=false
@@ -17,6 +18,7 @@ Usage:
 
 Options:
   --with-email             Start the optional email worker.
+  --with-whatsapp          Start the optional WhatsApp worker.
   --skip-smoke             Skip public smoke checks.
   --skip-post-bootstrap    Skip post-bootstrap rebuilds.
   --force-env              Overwrite existing env files instead of backing them up.
@@ -44,6 +46,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --with-email)
       WITH_EMAIL=true
+      shift
+      ;;
+    --with-whatsapp)
+      WITH_WHATSAPP=true
       shift
       ;;
     --skip-smoke)
@@ -98,6 +104,9 @@ echo "[4/6] Building, migrating, and starting the stack..."
 launch_args=()
 if [[ "${WITH_EMAIL}" == "true" ]]; then
   launch_args+=(--with-email)
+fi
+if [[ "${WITH_WHATSAPP}" == "true" ]]; then
+  launch_args+=(--with-whatsapp)
 fi
 if [[ "${SKIP_SMOKE}" == "true" ]]; then
   launch_args+=(--skip-smoke)

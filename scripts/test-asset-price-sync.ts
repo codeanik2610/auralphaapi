@@ -301,7 +301,12 @@ async function runPhase2Assertions(): Promise<void> {
   const dataSource = read('src/database/data-source.ts');
   ensureMarkers(
     dataSource,
-    ["import { AssetPrice } from './entities/AssetPrice';", 'AssetPrice, Asset, ExchangeAsset'],
+    [
+      "import { AssetPrice } from './entities/AssetPrice';",
+      'AssetPrice,',
+      'Asset,',
+      'ExchangeAsset,',
+    ],
     findings,
     'data-source.ts'
   );

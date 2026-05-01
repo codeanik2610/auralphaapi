@@ -8,6 +8,9 @@ export interface AppSettingsPayload {
   timezone: string;
   notifyEmail: boolean;
   notifyInApp: boolean;
+  notifyWhatsapp: boolean;
+  whatsappLiveTradeSuggestions: boolean;
+  whatsappNumber: string | null;
   confirmDestructive: boolean;
   notificationChannel: 'both' | 'in-app' | 'email' | 'disabled';
   notificationSeverity: 'all' | 'medium' | 'high' | 'critical';

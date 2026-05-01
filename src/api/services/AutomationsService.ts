@@ -23,6 +23,7 @@ import {
   normalizeAutomationType,
   normalizeTradeSuggestionExecutionPolicy,
 } from '../utils/automationType';
+import { buildStrategyTemplateAutomationProfile } from '../utils/strategyTemplateAutomation';
 import {
   AutomationActionBody,
   AutomationsQuery,
@@ -50,6 +51,7 @@ import { AutomationExecutionService, ExecuteAutomationResult } from './Automatio
 import { env } from '../../env';
 import { RedisClient } from '../../lib/RedisClient';
 import { Logger } from '../../lib/logger';
+import { StrategyTemplateRepository } from '../../database/repositories/StrategyTemplateRepository';
 
 const log = new Logger(__filename);
 
@@ -81,6 +83,9 @@ export class AutomationsService {
 
   @Inject(() => AutomationCursorRepository)
   private automationCursorRepository!: AutomationCursorRepository;
+
+  @Inject(() => StrategyTemplateRepository)
+  private strategyTemplateRepository!: StrategyTemplateRepository;
 
   async getAutomations(
     userId: string,
@@ -817,6 +822,7 @@ export class AutomationsService {
       validated.automationType,
       validated.config
     );
+    await this.assertAutomationConfigExecutable(userId, validated.automationType, normalizedConfig);
     const scheduleCandidate = resolveAutomationSchedule(validated.schedule ?? null, validated.trigger);
     const resolvedFields = this.deriveAutomationCoreFields(validated.automationType, normalizedConfig, {
       name: validated.name,
@@ -849,7 +855,7 @@ export class AutomationsService {
       trigger: resolvedFields.trigger,
       status: validated.status,
       automationType: validated.automationType,
-      timeZone: validated.timeZone,
+      timeZone,
       schedule: normalizedSchedule,
       riskMode: validated.riskMode ?? null,
       config: normalizedConfig,
@@ -882,6 +888,7 @@ export class AutomationsService {
       normalizeAutomationType(automation.automationType, automation.config);
     const nextConfigInput = validated.config === undefined ? automation.config : validated.config;
     const nextConfig = await this.prepareAutomationConfig(userId, nextAutomationType, nextConfigInput);
+    await this.assertAutomationConfigExecutable(userId, nextAutomationType, nextConfig);
     const nextSchedule =
       validated.schedule === undefined ? automation.schedule : validated.schedule;
     const nextTimeZone =
@@ -1570,6 +1577,8 @@ export class AutomationsService {
     const normalized = normalizeAutomationConfig('trade-suggestion', rawConfig);
     const root = this.parseRecord(normalized) ?? {};
     const tradeSuggestion = this.parseRecord(root.tradeSuggestion) ?? {};
+    const executionConfig = this.parseRecord(root.config) ?? {};
+    const nestedExecutionConfig = this.parseRecord(executionConfig.config) ?? {};
     const executionPolicy = this.finalizeTradeSuggestionExecutionPolicy(
       userId,
       tradeSuggestion.execution ?? root.config ?? null
@@ -1596,8 +1605,15 @@ export class AutomationsService {
     }
 
     const sourceConfig = this.parseRecord(sourceBacktest.result?.config) ?? {};
+    const nestedSourceConfig = this.parseRecord(sourceConfig.config) ?? {};
     const inputSnapshot = this.parseRecord(sourceConfig.inputSnapshot) ?? {};
-    const template = this.parseRecord(inputSnapshot.template) ?? this.parseRecord(sourceConfig.template) ?? {};
+    const nestedInputSnapshot = this.parseRecord(nestedSourceConfig.inputSnapshot) ?? {};
+    const template =
+      this.parseRecord(inputSnapshot.template) ??
+      this.parseRecord(nestedInputSnapshot.template) ??
+      this.parseRecord(sourceConfig.template) ??
+      this.parseRecord(nestedSourceConfig.template) ??
+      {};
     const hydratedSetupScope =
       setupScope ?? this.findBacktestSetupScope(sourceConfig, symbol, timeframe);
     const sourceTemplateId = this.readString(
@@ -1605,17 +1621,49 @@ export class AutomationsService {
       root.templateId,
       tradeSuggestion.sourceTemplateId,
       tradeSuggestion.templateId,
+      executionConfig.sourceTemplateId,
+      executionConfig.templateId,
+      nestedExecutionConfig.sourceTemplateId,
+      nestedExecutionConfig.templateId,
       inputSnapshot.sourceTemplateId,
       inputSnapshot.templateId,
+      nestedInputSnapshot.sourceTemplateId,
+      nestedInputSnapshot.templateId,
       sourceConfig.sourceTemplateId,
       sourceConfig.templateId,
+      nestedSourceConfig.sourceTemplateId,
+      nestedSourceConfig.templateId,
+      template.id
+    );
+    const templateId = this.readString(
+      root.templateId,
+      root.sourceTemplateId,
+      tradeSuggestion.templateId,
+      tradeSuggestion.sourceTemplateId,
+      executionConfig.templateId,
+      executionConfig.sourceTemplateId,
+      nestedExecutionConfig.templateId,
+      nestedExecutionConfig.sourceTemplateId,
+      inputSnapshot.templateId,
+      inputSnapshot.sourceTemplateId,
+      nestedInputSnapshot.templateId,
+      nestedInputSnapshot.sourceTemplateId,
+      sourceConfig.templateId,
+      sourceConfig.sourceTemplateId,
+      nestedSourceConfig.templateId,
+      nestedSourceConfig.sourceTemplateId,
+      template.templateId,
       template.id
     );
     const sourceTemplateName = this.readString(
       root.sourceTemplateName,
       tradeSuggestion.sourceTemplateName,
+      executionConfig.sourceTemplateName,
+      nestedExecutionConfig.sourceTemplateName,
       inputSnapshot.sourceTemplateName,
+      nestedInputSnapshot.sourceTemplateName,
       sourceConfig.sourceTemplateName,
+      nestedSourceConfig.sourceTemplateName,
       sourceConfig.templateName,
       template.sourceTemplateName,
       template.name
@@ -1623,8 +1671,12 @@ export class AutomationsService {
     const sourceTemplateVersion = this.readNumber(
       root.sourceTemplateVersion,
       tradeSuggestion.sourceTemplateVersion,
+      executionConfig.sourceTemplateVersion,
+      nestedExecutionConfig.sourceTemplateVersion,
       inputSnapshot.sourceTemplateVersion,
+      nestedInputSnapshot.sourceTemplateVersion,
       sourceConfig.sourceTemplateVersion,
+      nestedSourceConfig.sourceTemplateVersion,
       sourceConfig.templateVersion,
       template.sourceTemplateVersion,
       template.templateVersion
@@ -1649,6 +1701,7 @@ export class AutomationsService {
       timeframe,
       market,
       strategy,
+      ...(templateId ? { templateId } : {}),
       ...(sourceTemplateId ? { sourceTemplateId } : {}),
       ...(sourceTemplateName ? { sourceTemplateName } : {}),
       ...(sourceTemplateVersion !== null ? { sourceTemplateVersion } : {}),
@@ -1663,6 +1716,7 @@ export class AutomationsService {
         timeframe,
         market,
         strategy,
+        ...(templateId ? { templateId } : {}),
         ...(sourceTemplateId ? { sourceTemplateId } : {}),
         ...(sourceTemplateName ? { sourceTemplateName } : {}),
         ...(sourceTemplateVersion !== null ? { sourceTemplateVersion } : {}),
@@ -1670,6 +1724,87 @@ export class AutomationsService {
         execution: executionPolicy,
       },
     });
+  }
+
+  private async assertAutomationConfigExecutable(
+    userId: string,
+    automationType: string,
+    config: Record<string, unknown> | null
+  ): Promise<void> {
+    if (automationType !== 'trade-suggestion') {
+      return;
+    }
+
+    const root = this.parseRecord(config) ?? {};
+    const tradeSuggestion = this.parseRecord(root.tradeSuggestion) ?? {};
+    const executionConfig = this.parseRecord(root.config) ?? {};
+    const nestedExecutionConfig = this.parseRecord(executionConfig.config) ?? {};
+    const inputSnapshot =
+      this.parseRecord(root.inputSnapshot) ?? this.parseRecord(executionConfig.inputSnapshot) ?? {};
+    const nestedInputSnapshot = this.parseRecord(nestedExecutionConfig.inputSnapshot) ?? {};
+    const tradeSuggestionExecution = this.parseRecord(tradeSuggestion.execution) ?? {};
+    const nestedTradeSuggestionExecution = this.parseRecord(tradeSuggestionExecution.config) ?? {};
+    const tradeSuggestionInputSnapshot =
+      this.parseRecord(tradeSuggestionExecution.inputSnapshot) ??
+      this.parseRecord(nestedTradeSuggestionExecution.inputSnapshot) ??
+      {};
+
+    const embeddedTemplate =
+      this.parseRecord(root.template) ??
+      this.parseRecord(inputSnapshot.template) ??
+      this.parseRecord(executionConfig.template) ??
+      this.parseRecord(nestedExecutionConfig.template) ??
+      this.parseRecord(nestedInputSnapshot.template) ??
+      this.parseRecord(tradeSuggestion.template) ??
+      this.parseRecord(tradeSuggestionExecution.template) ??
+      this.parseRecord(nestedTradeSuggestionExecution.template) ??
+      this.parseRecord(tradeSuggestionInputSnapshot.template);
+
+    const embeddedTemplateConfig =
+      this.parseRecord(embeddedTemplate?.config) ?? this.parseRecord(embeddedTemplate);
+
+    let templateConfig = embeddedTemplateConfig;
+    if (!templateConfig) {
+      const templateId = this.readString(
+        root.sourceTemplateId,
+        root.templateId,
+        tradeSuggestion.sourceTemplateId,
+        tradeSuggestion.templateId,
+        executionConfig.sourceTemplateId,
+        executionConfig.templateId,
+        nestedExecutionConfig.sourceTemplateId,
+        nestedExecutionConfig.templateId,
+        inputSnapshot.sourceTemplateId,
+        inputSnapshot.templateId,
+        nestedInputSnapshot.sourceTemplateId,
+        nestedInputSnapshot.templateId,
+        tradeSuggestionExecution.sourceTemplateId,
+        tradeSuggestionExecution.templateId,
+        nestedTradeSuggestionExecution.sourceTemplateId,
+        nestedTradeSuggestionExecution.templateId,
+        tradeSuggestionInputSnapshot.sourceTemplateId,
+        tradeSuggestionInputSnapshot.templateId
+      );
+
+      if (!templateId) {
+        throw new BadRequestAppError(
+          'trade-suggestion automation must resolve a source template before it can be saved'
+        );
+      }
+
+      const template = await this.strategyTemplateRepository.getStrategyTemplateById(userId, templateId);
+      if (!template) {
+        throw new NotFoundAppError('Strategy template not found for trade-suggestion automation');
+      }
+      templateConfig = this.parseRecord(template.config) ?? {};
+    }
+
+    const profile = buildStrategyTemplateAutomationProfile(templateConfig);
+    if (!profile.automationReady) {
+      throw new BadRequestAppError(
+        `Template is not automation-ready: ${profile.readinessReasons.join(', ')}`
+      );
+    }
   }
 
   private finalizeTradeSuggestionExecutionPolicy(

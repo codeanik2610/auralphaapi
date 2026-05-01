@@ -529,6 +529,7 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     const direction = isLong ? 1 : -1;
     const unrealizedPnl = direction * (markPrice - entryPrice) * quantity;
     const realizedPnl = this.toNumber(item.realized_pnl);
+    const leverage = this.toPositiveNumericString(item.leverage);
     return {
       created_at: item.created_at ?? '',
       updated_at: item.updated_at ?? item.created_at ?? '',
@@ -541,7 +542,14 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
       base_quantity: baseQuantity !== null ? String(baseQuantity) : null,
       contract_value: contractValue ? String(contractValue) : null,
       contract_unit_currency: product?.contract_unit_currency ?? null,
-      leverage: String(item.leverage ?? '1'),
+      leverage,
+      ...(leverage
+        ? {
+            position_leverage: leverage,
+            observed_position_leverage: leverage,
+            leverage_source: 'broker_position',
+          }
+        : {}),
       liquidation_price: String(item.liquidation_price ?? '0'),
       order_type: isLong ? 'buy' : 'sell',
       side: isLong ? 'Long' : 'Short',
@@ -554,6 +562,14 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
       unrealized_pnl: unrealizedPnl,
       realized: realizedPnl,
     };
+  }
+
+  private toPositiveNumericString(value: string | number | null | undefined): string | null {
+    const numeric = this.toNumber(value);
+    if (!(numeric > 0)) {
+      return null;
+    }
+    return String(numeric);
   }
 
   /** @deprecated No longer used — position history is derived via stale-close + getClosingFills. */

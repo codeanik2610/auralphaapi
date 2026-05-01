@@ -29,6 +29,7 @@ import { successResponse } from '../utils/response';
 import { UserTimeZoneService } from './UserTimeZoneService';
 import { PaperOrderExecutionService } from './PaperOrderExecutionService';
 import { SuggestedTradesService } from './SuggestedTradesService';
+import { OperationalEventService } from './OperationalEventService';
 import {
   PositionsHistoryQuery,
   PositionsQuery,
@@ -105,6 +106,9 @@ export class PaperTradingWorkspaceService {
   @Inject(() => UserTimeZoneService)
   private userTimeZoneService!: UserTimeZoneService;
 
+  @Inject(() => OperationalEventService)
+  private operationalEventService!: OperationalEventService;
+
   async syncUserReadModel(
     userId: string,
     options: {
@@ -117,13 +121,10 @@ export class PaperTradingWorkspaceService {
       ? {
           updatedOrderIds: [],
         }
-      : await this.paperOrderExecutionService.simulateUserPaperOrders(
-          userId,
-          {
-            brokerKey: options.brokerKey,
-            accountId: options.accountId,
-          }
-        );
+      : await this.paperOrderExecutionService.simulateUserPaperOrders(userId, {
+          brokerKey: options.brokerKey,
+          accountId: options.accountId,
+        });
 
     if (simulation.updatedOrderIds.length) {
       await this.suggestedTradesService.syncExecutionForPaperOrderUpdates(
@@ -158,11 +159,7 @@ export class PaperTradingWorkspaceService {
       previousResetAtByAccountId
     );
     const positions = this.buildPaperPositionRows(paperOrders, accountCatalog);
-    const accounts = this.buildPaperAccountRows(
-      userId,
-      accountCatalog,
-      positions
-    );
+    const accounts = this.buildPaperAccountRows(userId, accountCatalog, positions);
     const events = this.buildPaperPositionEvents(positions);
 
     await this.paperTradingReadModelRepository.replaceUserReadModel(userId, {
@@ -219,7 +216,8 @@ export class PaperTradingWorkspaceService {
         accountRows,
         positionRows,
         preferredKey: 'positions',
-        definition: 'Open paper positions grouped by broker route from the paper position read model.',
+        definition:
+          'Open paper positions grouped by broker route from the paper position read model.',
       })
     );
   }
@@ -260,15 +258,13 @@ export class PaperTradingWorkspaceService {
         accountRows,
         positionRows,
         preferredKey: 'history',
-        definition: 'Closed paper positions grouped by broker route from the paper position read model.',
+        definition:
+          'Closed paper positions grouped by broker route from the paper position read model.',
       })
     );
   }
 
-  async getPaperPositionLifecycle(
-    userId: string,
-    positionId: string
-  ): Promise<unknown> {
+  async getPaperPositionLifecycle(userId: string, positionId: string): Promise<unknown> {
     const validatedPositionId = validatePositionId(positionId);
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
 
@@ -287,16 +283,10 @@ export class PaperTradingWorkspaceService {
         userId,
         position.linkedAccountId
       ),
-      this.paperTradingReadModelRepository.listEventsByPositionId(
-        userId,
-        validatedPositionId
-      ),
+      this.paperTradingReadModelRepository.listEventsByPositionId(userId, validatedPositionId),
       this.paperOrderRepository.getPaperOrderById(userId, position.paperOrderId),
       position.suggestedTradeId
-        ? this.suggestedTradeRepository.getSuggestedTradeById(
-            userId,
-            position.suggestedTradeId
-          )
+        ? this.suggestedTradeRepository.getSuggestedTradeById(userId, position.suggestedTradeId)
         : Promise.resolve(null),
     ]);
 
@@ -344,8 +334,7 @@ export class PaperTradingWorkspaceService {
               side: suggestedTrade.side,
               status: suggestedTrade.status,
               signalTime:
-                formatApiRawIso(suggestedTrade.signalTime) ||
-                String(suggestedTrade.signalTime),
+                formatApiRawIso(suggestedTrade.signalTime) || String(suggestedTrade.signalTime),
               confidence: this.toNumber(suggestedTrade.confidence),
               score: this.toNumber(suggestedTrade.score),
               executionMode: 'paper' as const,
@@ -438,21 +427,22 @@ export class PaperTradingWorkspaceService {
     const items = (await this.paperTradingReadModelRepository.listAccounts(userId))
       .filter((item) =>
         params.brokerKey
-          ? String(item.brokerKey || '').trim().toLowerCase() ===
-            String(params.brokerKey || '').trim().toLowerCase()
+          ? String(item.brokerKey || '')
+              .trim()
+              .toLowerCase() ===
+            String(params.brokerKey || '')
+              .trim()
+              .toLowerCase()
           : true
       )
       .filter((item) =>
         params.accountId
-          ? String(item.linkedAccountId || '').trim() ===
-            String(params.accountId || '').trim()
+          ? String(item.linkedAccountId || '').trim() === String(params.accountId || '').trim()
           : true
       )
       .map((item) => this.mapPaperAccountWorkspaceItem(item, timeZone));
 
-    const observedAtIso = this.pickLatestTimestamp(
-      items.map((item) => item.observedAtIso)
-    );
+    const observedAtIso = this.pickLatestTimestamp(items.map((item) => item.observedAtIso));
 
     return successResponse({
       source: 'paper_accounts',
@@ -494,13 +484,19 @@ export class PaperTradingWorkspaceService {
       throw new NotFoundAppError('Paper account not found');
     }
 
-    await this.paperTradingReadModelRepository.updateAccountSettings(
-      userId,
-      validatedAccountId,
-      {
+    try {
+      await this.paperTradingReadModelRepository.updateAccountSettings(userId, validatedAccountId, {
         startingBalance: payload.startingBalance,
-      }
-    );
+      });
+    } catch (error) {
+      await this.emitPaperWorkspaceFailureAlert(
+        userId,
+        'update-paper-account',
+        error,
+        validatedAccountId
+      );
+      throw error;
+    }
 
     await this.syncUserReadModel(userId, {
       brokerKey: existing.brokerKey,
@@ -515,6 +511,13 @@ export class PaperTradingWorkspaceService {
     if (!updated) {
       throw new NotFoundAppError('Paper account not found after update');
     }
+
+    await this.logPaperWorkspaceActivity(userId, {
+      title: `Paper account updated: ${updated.accountName || updated.linkedAccountId}`,
+      related: `${updated.brokerKey} · ${updated.linkedAccountId}`,
+      referenceId: updated.linkedAccountId,
+      description: `Paper account starting balance set to ${payload.startingBalance}`,
+    });
 
     return successResponse({
       message: 'Paper account updated',
@@ -550,17 +553,23 @@ export class PaperTradingWorkspaceService {
       throw new NotFoundAppError('Paper account not found');
     }
 
-    await this.paperTradingReadModelRepository.updateAccountSettings(
-      userId,
-      validatedAccountId,
-      {
+    try {
+      await this.paperTradingReadModelRepository.updateAccountSettings(userId, validatedAccountId, {
         startingBalance:
           payload.startingBalance ??
           this.toNumber(existing.startingBalance) ??
           DEFAULT_PAPER_STARTING_BALANCE,
         resetAt: new Date(),
-      }
-    );
+      });
+    } catch (error) {
+      await this.emitPaperWorkspaceFailureAlert(
+        userId,
+        'reset-paper-account',
+        error,
+        validatedAccountId
+      );
+      throw error;
+    }
 
     await this.syncUserReadModel(userId, {
       brokerKey: existing.brokerKey,
@@ -576,6 +585,13 @@ export class PaperTradingWorkspaceService {
       throw new NotFoundAppError('Paper account not found after reset');
     }
 
+    await this.logPaperWorkspaceActivity(userId, {
+      title: `Paper account reset: ${updated.accountName || updated.linkedAccountId}`,
+      related: `${updated.brokerKey} · ${updated.linkedAccountId}`,
+      referenceId: updated.linkedAccountId,
+      description: 'Paper account reset and read model refreshed.',
+    });
+
     return successResponse({
       message: 'Paper account reset',
       account: this.mapPaperAccountWorkspaceItem(updated, timeZone),
@@ -590,25 +606,40 @@ export class PaperTradingWorkspaceService {
     } = {}
   ): Promise<unknown> {
     const params = validatePositionsRefreshBody(body);
-    const simulation = await this.paperOrderExecutionService.simulateUserPaperOrders(
-      userId,
-      {
+    let simulation: Awaited<ReturnType<PaperOrderExecutionService['simulateUserPaperOrders']>>;
+    try {
+      simulation = await this.paperOrderExecutionService.simulateUserPaperOrders(userId, {
         brokerKey: params.brokerKey,
         accountId: params.accountId,
-      }
-    );
+      });
 
-    if (simulation.updatedOrderIds.length) {
-      await this.suggestedTradesService.syncExecutionForPaperOrderUpdates(
+      if (simulation.updatedOrderIds.length) {
+        await this.suggestedTradesService.syncExecutionForPaperOrderUpdates(
+          userId,
+          simulation.updatedOrderIds
+        );
+      }
+
+      await this.syncUserReadModel(userId, {
+        brokerKey: params.brokerKey,
+        accountId: params.accountId,
+        skipSimulation: true,
+      });
+    } catch (error) {
+      await this.emitPaperWorkspaceFailureAlert(
         userId,
-        simulation.updatedOrderIds
+        'run-paper-simulation',
+        error,
+        params.accountId || params.brokerKey || undefined
       );
+      throw error;
     }
 
-    await this.syncUserReadModel(userId, {
-      brokerKey: params.brokerKey,
-      accountId: params.accountId,
-      skipSimulation: true,
+    await this.logPaperWorkspaceActivity(userId, {
+      title: 'Paper simulation refreshed',
+      related: [params.brokerKey, params.accountId].filter(Boolean).join(' · ') || undefined,
+      referenceId: params.accountId || undefined,
+      description: `${simulation.updatedOrderIds.length} paper order update(s) applied.`,
     });
 
     return successResponse({
@@ -625,10 +656,7 @@ export class PaperTradingWorkspaceService {
     });
   }
 
-  async closePaperPosition(
-    userId: string,
-    positionId: string
-  ): Promise<unknown> {
+  async closePaperPosition(userId: string, positionId: string): Promise<unknown> {
     const validatedPositionId = validatePositionId(positionId);
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
 
@@ -647,19 +675,26 @@ export class PaperTradingWorkspaceService {
       throw new BadRequestAppError('Only open paper positions can be closed');
     }
 
-    await this.paperOrderExecutionService.closePaperOrderAtMarket(
-      userId,
-      position.paperOrderId
-    );
-    await this.suggestedTradesService.syncExecutionForPaperOrderUpdates(userId, [
-      position.paperOrderId,
-    ]);
+    try {
+      await this.paperOrderExecutionService.closePaperOrderAtMarket(userId, position.paperOrderId);
+      await this.suggestedTradesService.syncExecutionForPaperOrderUpdates(userId, [
+        position.paperOrderId,
+      ]);
 
-    await this.syncUserReadModel(userId, {
-      brokerKey: position.brokerKey,
-      accountId: position.linkedAccountId,
-      skipSimulation: true,
-    });
+      await this.syncUserReadModel(userId, {
+        brokerKey: position.brokerKey,
+        accountId: position.linkedAccountId,
+        skipSimulation: true,
+      });
+    } catch (error) {
+      await this.emitPaperWorkspaceFailureAlert(
+        userId,
+        'close-paper-position',
+        error,
+        validatedPositionId
+      );
+      throw error;
+    }
 
     const updated = await this.paperTradingReadModelRepository.getPositionById(
       userId,
@@ -668,6 +703,13 @@ export class PaperTradingWorkspaceService {
     if (!updated) {
       throw new NotFoundAppError('Paper position not found after close');
     }
+
+    await this.logPaperWorkspaceActivity(userId, {
+      title: `Paper position closed: ${updated.symbol}`,
+      related: `${updated.brokerKey} · ${updated.linkedAccountId}`,
+      referenceId: updated.paperOrderId,
+      description: `Paper position ${validatedPositionId} closed from workspace.`,
+    });
 
     return successResponse({
       message: 'Paper position closed',
@@ -695,11 +737,7 @@ export class PaperTradingWorkspaceService {
       }),
     ]);
 
-    const futuresSummary = this.buildPortfolioFuturesSummary(
-      accountRows,
-      openPositions,
-      timeZone
-    );
+    const futuresSummary = this.buildPortfolioFuturesSummary(accountRows, openPositions, timeZone);
     const positions = this.buildPortfolioPositionsSlice(
       openPositions,
       params.holdingsLimit,
@@ -712,12 +750,7 @@ export class PaperTradingWorkspaceService {
       params.timeframe,
       timeZone
     );
-    const summary = this.buildPortfolioSummaryAlias(
-      futuresSummary,
-      positions,
-      activity,
-      timeZone
-    );
+    const summary = this.buildPortfolioSummaryAlias(futuresSummary, positions, activity, timeZone);
 
     const generatedAtIso = new Date().toISOString();
     const observedAtIso = this.pickLatestTimestamp([
@@ -812,6 +845,54 @@ export class PaperTradingWorkspaceService {
     });
   }
 
+  private async logPaperWorkspaceActivity(
+    userId: string,
+    payload: {
+      title: string;
+      related?: string;
+      referenceId?: string;
+      description?: string;
+    }
+  ): Promise<void> {
+    if (!this.operationalEventService) {
+      return;
+    }
+    await this.operationalEventService.logActivity(userId, {
+      type: 'Paper workspace',
+      title: payload.title,
+      status: 'Success',
+      route: 'Positions',
+      stream: 'Paper trading',
+      related: payload.related,
+      referenceId: payload.referenceId,
+      correlationId: payload.referenceId,
+      description: payload.description,
+    });
+  }
+
+  private async emitPaperWorkspaceFailureAlert(
+    userId: string,
+    action: string,
+    error: unknown,
+    referenceId?: string
+  ): Promise<void> {
+    if (!this.operationalEventService) {
+      return;
+    }
+    await this.operationalEventService.emitFailureAlert(userId, {
+      channel: 'paper-workspace',
+      source: `paper-workspace.${action}${referenceId ? `.${referenceId}` : ''}`,
+      message: `Paper workspace operation failed: ${this.readErrorMessage(error)}`,
+      route: 'Positions',
+      severity: 'High',
+      urgency: 'Review paper account and position read-model state.',
+    });
+  }
+
+  private readErrorMessage(error: unknown): string {
+    return error instanceof Error && error.message ? error.message : 'Unknown error';
+  }
+
   private buildAccountCatalog(
     paperOrders: PaperOrder[],
     activeAccounts: BrokerAccount[],
@@ -836,8 +917,7 @@ export class PaperTradingWorkspaceService {
           ? `${account.accountName} Paper`
           : `${account.accountKey || accountId} Paper`,
         startingBalance:
-          previousStartingBalanceByAccountId.get(accountId) ??
-          DEFAULT_PAPER_STARTING_BALANCE,
+          previousStartingBalanceByAccountId.get(accountId) ?? DEFAULT_PAPER_STARTING_BALANCE,
         resetAt: previousResetAtByAccountId.get(accountId) ?? null,
       });
     });
@@ -856,8 +936,7 @@ export class PaperTradingWorkspaceService {
         accountStatus: 'Disconnected',
         label: `${accountId} Paper`,
         startingBalance:
-          previousStartingBalanceByAccountId.get(accountId) ??
-          DEFAULT_PAPER_STARTING_BALANCE,
+          previousStartingBalanceByAccountId.get(accountId) ?? DEFAULT_PAPER_STARTING_BALANCE,
         resetAt: previousResetAtByAccountId.get(accountId) ?? null,
       });
     });
@@ -903,48 +982,31 @@ export class PaperTradingWorkspaceService {
     const account = accountCatalog.get(String(order.accountId || '').trim());
     const side = this.normalizeSide(order.side);
     const quantity = this.toNumber(order.quantity) ?? 0;
-    const entryPrice =
-      this.toNumber(simulation.filledPrice) ??
-      this.toNumber(order.orderPrice);
+    const entryPrice = this.toNumber(simulation.filledPrice) ?? this.toNumber(order.orderPrice);
     const currentPrice =
       lifecycleStage === 'open_position'
-        ? this.toNumber(simulation.lastPrice) ?? entryPrice
+        ? (this.toNumber(simulation.lastPrice) ?? entryPrice)
         : null;
     const exitPrice =
-      lifecycleStage === 'closed_position'
-        ? this.toNumber(simulation.exitPrice)
-        : null;
+      lifecycleStage === 'closed_position' ? this.toNumber(simulation.exitPrice) : null;
     const leverage = this.toNumber(order.leverage);
     const exposure = this.computeExposure(
       quantity,
-      lifecycleStage === 'open_position'
-        ? currentPrice ?? entryPrice
-        : exitPrice ?? entryPrice
+      lifecycleStage === 'open_position' ? (currentPrice ?? entryPrice) : (exitPrice ?? entryPrice)
     );
     const unrealizedPnl =
       lifecycleStage === 'open_position'
         ? this.computeUnrealizedPnl(side.key, entryPrice, currentPrice, quantity)
         : null;
     const realizedPnl =
-      lifecycleStage === 'closed_position'
-        ? this.toNumber(simulation.realizedPnl)
-        : null;
+      lifecycleStage === 'closed_position' ? this.toNumber(simulation.realizedPnl) : null;
     const createdAt = this.toDate(order.createdAt) || new Date();
     const openedAt =
-      this.toDate(simulation.positionOpenedAt) ||
-      this.toDate(simulation.filledAt) ||
-      createdAt;
+      this.toDate(simulation.positionOpenedAt) || this.toDate(simulation.filledAt) || createdAt;
     const updatedAt =
-      this.toDate(order.updatedAt) ||
-      this.toDate(simulation.lastPriceSeenAt) ||
-      openedAt;
-    const closedAt =
-      this.toDate(simulation.positionClosedAt) ||
-      this.toDate(simulation.closedAt);
-    const lastSeenAt =
-      this.toDate(simulation.lastPriceSeenAt) ||
-      updatedAt ||
-      openedAt;
+      this.toDate(order.updatedAt) || this.toDate(simulation.lastPriceSeenAt) || openedAt;
+    const closedAt = this.toDate(simulation.positionClosedAt) || this.toDate(simulation.closedAt);
+    const lastSeenAt = this.toDate(simulation.lastPriceSeenAt) || updatedAt || openedAt;
 
     return {
       id: order.id,
@@ -957,7 +1019,9 @@ export class PaperTradingWorkspaceService {
       accountName: account?.accountName || null,
       accountKey: account?.accountKey || String(order.accountId || '').trim(),
       accountStatus: account?.accountStatus || 'Paper',
-      symbol: String(order.symbol || order.assetId || '').trim().toUpperCase(),
+      symbol: String(order.symbol || order.assetId || '')
+        .trim()
+        .toUpperCase(),
       side: side.label,
       sideKey: side.key,
       status: lifecycleStage === 'open_position' ? 'Open' : 'Closed',
@@ -1003,12 +1067,8 @@ export class PaperTradingWorkspaceService {
 
     return Array.from(accountCatalog.values()).map((account) => {
       const accountPositions = positionsByAccountId.get(account.id) || [];
-      const openPositions = accountPositions.filter(
-        (item) => item.statusKey === 'open'
-      );
-      const closedPositions = accountPositions.filter(
-        (item) => item.statusKey === 'closed'
-      );
+      const openPositions = accountPositions.filter((item) => item.statusKey === 'open');
+      const closedPositions = accountPositions.filter((item) => item.statusKey === 'closed');
       const realizedPnl = closedPositions.reduce(
         (sum, item) => sum + (this.toNumber(item.realizedPnl) ?? 0),
         0
@@ -1155,9 +1215,7 @@ export class PaperTradingWorkspaceService {
       if (!groupedByAccountId.has(accountId)) {
         groupedByAccountId.set(accountId, []);
       }
-      groupedByAccountId.get(accountId)?.push(
-        this.mapPositionRowToRecord(row, input.timeZone)
-      );
+      groupedByAccountId.get(accountId)?.push(this.mapPositionRowToRecord(row, input.timeZone));
     });
 
     const accountIds = Array.from(
@@ -1177,11 +1235,7 @@ export class PaperTradingWorkspaceService {
 
       return {
         accountId,
-        accountName:
-          account?.accountName ||
-          account?.label ||
-          account?.accountKey ||
-          accountId,
+        accountName: account?.accountName || account?.label || account?.accountKey || accountId,
         accountKey: account?.accountKey || accountId,
         brokerKey: account?.brokerKey || rows[0]?.brokerKey || '',
         status: account?.accountStatus || 'Paper',
@@ -1214,10 +1268,7 @@ export class PaperTradingWorkspaceService {
     account: PaperAccountReadModelRow | null,
     observedAt: Date | string | null
   ): PositionsAccountFreshness | null {
-    const indicator = this.buildFreshnessIndicator(
-      observedAt,
-      'paper_position_read_models'
-    );
+    const indicator = this.buildFreshnessIndicator(observedAt, 'paper_position_read_models');
     return {
       account: indicator,
       checkpoint: null,
@@ -1275,10 +1326,7 @@ export class PaperTradingWorkspaceService {
     };
   }
 
-  private mapPositionRowToRecord(
-    row: PaperPositionReadModelRow,
-    timeZone: string
-  ): PositionRecord {
+  private mapPositionRowToRecord(row: PaperPositionReadModelRow, timeZone: string): PositionRecord {
     return {
       id: row.id,
       external_id: row.paperOrderId,
@@ -1338,10 +1386,7 @@ export class PaperTradingWorkspaceService {
     };
   }
 
-  private mapPaperAccountWorkspaceItem(
-    item: PaperAccountReadModelRow,
-    timeZone: string
-  ) {
+  private mapPaperAccountWorkspaceItem(item: PaperAccountReadModelRow, timeZone: string) {
     return {
       accountId: item.linkedAccountId,
       accountName: item.accountName || item.label || item.linkedAccountId,
@@ -1488,19 +1533,13 @@ export class PaperTradingWorkspaceService {
       latestObservedAtIso: observedAtIso,
       oldestObservedAt: formatApiDisplayTime(observedAtIso, timeZone) || null,
       oldestObservedAtIso: observedAtIso,
-      definition:
-        'Open simulated paper positions normalized from the paper position read model.',
+      definition: 'Open simulated paper positions normalized from the paper position read model.',
       time: buildApiTimeContract(timeZone),
     };
   }
 
-  private buildPortfolioCapitalOverview(
-    accounts: PaperAccountReadModelRow[],
-    timeZone: string
-  ) {
-    const items = accounts.map((item) =>
-      this.mapPaperAccountWorkspaceItem(item, timeZone)
-    );
+  private buildPortfolioCapitalOverview(accounts: PaperAccountReadModelRow[], timeZone: string) {
+    const items = accounts.map((item) => this.mapPaperAccountWorkspaceItem(item, timeZone));
     const totalVisibleCapital = items.reduce(
       (sum, item) => sum + (this.toNumber(item.funds.balance) ?? 0),
       0
@@ -1624,10 +1663,8 @@ export class PaperTradingWorkspaceService {
 
     const allBuckets = this.generateBucketKeys(bucketLabel, startDateKey, endDateKey);
     const startingEquity =
-      accounts.reduce(
-        (sum, item) => sum + (this.toNumber(item.startingBalance) ?? 0),
-        0
-      ) || DEFAULT_PAPER_STARTING_BALANCE;
+      accounts.reduce((sum, item) => sum + (this.toNumber(item.startingBalance) ?? 0), 0) ||
+      DEFAULT_PAPER_STARTING_BALANCE;
     let rollingEquity = startingEquity;
     const points = allBuckets.map((bucket) => {
       const totals = bucketTotals.get(bucket) || {
@@ -1690,9 +1727,7 @@ export class PaperTradingWorkspaceService {
         bucketLabel,
         points,
         summary: {
-          totalEquity: points.length
-            ? points[points.length - 1].equity
-            : startingEquity,
+          totalEquity: points.length ? points[points.length - 1].equity : startingEquity,
           totalPnl,
           totalProfit,
           totalLoss,
@@ -1762,10 +1797,7 @@ export class PaperTradingWorkspaceService {
     definition: string,
     note: string
   ) {
-    const freshness = this.buildFreshnessIndicator(
-      observedAtIso || null,
-      source
-    );
+    const freshness = this.buildFreshnessIndicator(observedAtIso || null, source);
     return {
       source,
       sourceLabel,
@@ -1790,8 +1822,7 @@ export class PaperTradingWorkspaceService {
   ): PositionsFreshnessIndicator {
     const observedAtIso = formatApiRawIso(observedAt) || null;
     const observedMs = observedAtIso ? new Date(observedAtIso).getTime() : null;
-    const freshnessMs =
-      observedMs !== null ? Math.max(0, Date.now() - observedMs) : null;
+    const freshnessMs = observedMs !== null ? Math.max(0, Date.now() - observedMs) : null;
     const staleAfterMs = Math.max(60_000, env.paperOrders.pollIntervalMs * 2);
     const criticalAfterMs = Math.max(5 * 60_000, env.paperOrders.pollIntervalMs * 10);
     let state: PositionsFreshnessState = 'unknown';
@@ -1825,11 +1856,7 @@ export class PaperTradingWorkspaceService {
   ): number {
     const endKey = this.toDateKeyInTimeZone(new Date(), timeZone);
     const startKey = this.shiftDateKey(endKey, -(days - 1));
-    const { startUtc, endUtc } = this.getUtcWindowForLocalDateRange(
-      startKey,
-      endKey,
-      timeZone
-    );
+    const { startUtc, endUtc } = this.getUtcWindowForLocalDateRange(startKey, endKey, timeZone);
 
     return positions.reduce((sum, item) => {
       const closedAt = this.toDate(item.closedAt);
@@ -1844,7 +1871,9 @@ export class PaperTradingWorkspaceService {
     status: string,
     executionState: string | null
   ): 'open_order' | 'open_position' | 'closed_position' | 'cancelled_order' {
-    const normalizedStatus = String(status || '').trim().toUpperCase();
+    const normalizedStatus = String(status || '')
+      .trim()
+      .toUpperCase();
     const normalizedExecutionState = String(executionState || '')
       .trim()
       .toLowerCase();
@@ -1873,7 +1902,9 @@ export class PaperTradingWorkspaceService {
     key: 'long' | 'short';
     label: 'Long' | 'Short';
   } {
-    const normalized = String(side || '').trim().toUpperCase();
+    const normalized = String(side || '')
+      .trim()
+      .toUpperCase();
     return normalized === 'SELL' || normalized === 'SHORT'
       ? { key: 'short', label: 'Short' }
       : { key: 'long', label: 'Long' };
@@ -2006,7 +2037,10 @@ export class PaperTradingWorkspaceService {
     return base.toISOString().slice(0, 10);
   }
 
-  private getUtcWindowForLocalDate(dateKey: string, timezone: string): {
+  private getUtcWindowForLocalDate(
+    dateKey: string,
+    timezone: string
+  ): {
     startUtc: Date;
     endUtc: Date;
   } {

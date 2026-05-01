@@ -82,6 +82,9 @@ function createService(
   options: {
     openAlertBySource?: Record<string, unknown> | null;
     updatedAlerts?: Array<Record<string, unknown>>;
+    cancelledOrders?: Array<Record<string, unknown>>;
+    killSwitchTriggers?: Array<Record<string, unknown>>;
+    activeKillSwitch?: Record<string, unknown> | null;
   } = {}
 ) {
   const service = new BrokerCanaryProtectionMonitorService() as any;
@@ -110,6 +113,50 @@ function createService(
       }
     },
   };
+  service.riskKillSwitchService = {
+    async findActiveLiveTradingBlock(userId: string, context: Record<string, unknown>) {
+      if (!options.activeKillSwitch) {
+        return null;
+      }
+      return {
+        id: 'kill-switch-1',
+        active: true,
+        scope: 'broker',
+        brokerKey: context.brokerKey,
+        accountId: context.accountId,
+        reason: 'Existing broker route freeze',
+        triggeredBy: userId,
+        triggeredAt: '2026-04-20T07:00:00.000Z',
+        triggeredAtIso: '2026-04-20T07:00:00.000Z',
+        ...options.activeKillSwitch,
+      };
+    },
+    async trigger(userId: string, body: Record<string, unknown>) {
+      options.killSwitchTriggers?.push({ userId, body });
+      return {
+        message: 'Kill switch triggered',
+        active: true,
+        triggeredAt: '2026-04-20T07:01:00.000Z',
+        triggeredAtIso: '2026-04-20T07:01:00.000Z',
+        scope: body.scope,
+        brokerKey: body.brokerKey,
+        accountId: body.accountId,
+        reason: body.reason,
+      };
+    },
+  };
+  service.brokerOrdersFacadeService = {
+    async cancelFuturesOrder(userId: string, orderId: string, query: Record<string, unknown>) {
+      options.cancelledOrders?.push({ userId, orderId, ...query });
+      return {
+        success: true,
+        data: {
+          order_id: orderId,
+          status: 'CANCELLED',
+        },
+      };
+    },
+  };
   return service as BrokerCanaryProtectionMonitorService;
 }
 
@@ -117,36 +164,38 @@ async function testHealthyProtectedCanaryDoesNotAlert(): Promise<void> {
   const alerts: Array<Record<string, unknown>> = [];
   const service = createService(alerts);
 
-  const response = await withMockedQuery(async (sql) => {
-    if (sql.includes('FROM order_submission_requests')) {
-      return [createCandidate()];
-    }
-    if (sql.includes('FROM scheduler_orders_snapshots')) {
-      return [
-        createOrderSnapshot(),
-        createOrderSnapshot({
-          externalId: 'sl-1',
-          orderStatus: 'PENDING',
-          statusRank: 1,
-          side: 'sell',
-        }),
-        createOrderSnapshot({
-          externalId: 'tp-1',
-          orderStatus: 'PENDING',
-          statusRank: 1,
-          side: 'sell',
-        }),
-      ];
-    }
-    if (sql.includes('FROM scheduler_positions_snapshots')) {
-      return [createPositionSnapshot()];
-    }
-    throw new Error(`Unexpected query: ${sql}`);
-  }, () =>
-    service.runMonitor({
-      emitAlerts: true,
-      now: new Date('2026-04-20T07:01:00.000Z'),
-    })
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [createCandidate()];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot(),
+          createOrderSnapshot({
+            externalId: 'sl-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+          createOrderSnapshot({
+            externalId: 'tp-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [createPositionSnapshot()];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
   );
 
   assert.equal(response.status, 'ok');
@@ -161,46 +210,48 @@ async function testMudrexOpenPositionProtectionCanComeFromPositionSnapshot(): Pr
   const alerts: Array<Record<string, unknown>> = [];
   const service = createService(alerts);
 
-  const response = await withMockedQuery(async (sql) => {
-    if (sql.includes('FROM order_submission_requests')) {
-      return [
-        createCandidate({
-          brokerKey: 'mudrex',
-          brokerOrderId: 'mudrex-entry-1',
-          requestSymbol: null,
-          requestOrderSymbol: 'BTCUSDT',
-          stopLossOrderId: null,
-          takeProfitOrderId: null,
-        }),
-      ];
-    }
-    if (sql.includes('FROM scheduler_orders_snapshots')) {
-      return [
-        createOrderSnapshot({
-          externalId: 'mudrex-entry-1',
-          symbol: 'BTCUSDT',
-          assetUuid: 'mudrex-asset-1',
-        }),
-      ];
-    }
-    if (sql.includes('FROM scheduler_positions_snapshots')) {
-      return [
-        createPositionSnapshot({
-          externalId: 'mudrex:mudrex-asset-1:2026-04-20T06:12:18.000Z:LONG',
-          symbol: 'BTCUSDT',
-          stopLossOrderId: 'mudrex-sl-1',
-          stopLossPrice: '73253',
-          takeProfitOrderId: 'mudrex-tp-1',
-          takeProfitPrice: '75473',
-        }),
-      ];
-    }
-    throw new Error(`Unexpected query: ${sql}`);
-  }, () =>
-    service.runMonitor({
-      emitAlerts: true,
-      now: new Date('2026-04-20T07:01:00.000Z'),
-    })
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [
+          createCandidate({
+            brokerKey: 'mudrex',
+            brokerOrderId: 'mudrex-entry-1',
+            requestSymbol: null,
+            requestOrderSymbol: 'BTCUSDT',
+            stopLossOrderId: null,
+            takeProfitOrderId: null,
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot({
+            externalId: 'mudrex-entry-1',
+            symbol: 'BTCUSDT',
+            assetUuid: 'mudrex-asset-1',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [
+          createPositionSnapshot({
+            externalId: 'mudrex:mudrex-asset-1:2026-04-20T06:12:18.000Z:LONG',
+            symbol: 'BTCUSDT',
+            stopLossOrderId: 'mudrex-sl-1',
+            stopLossPrice: '73253',
+            takeProfitOrderId: 'mudrex-tp-1',
+            takeProfitPrice: '75473',
+          }),
+        ];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
   );
 
   assert.equal(response.status, 'ok');
@@ -215,44 +266,46 @@ async function testMudrexOpenPositionMissingTakeProfitAlerts(): Promise<void> {
   const alerts: Array<Record<string, unknown>> = [];
   const service = createService(alerts);
 
-  const response = await withMockedQuery(async (sql) => {
-    if (sql.includes('FROM order_submission_requests')) {
-      return [
-        createCandidate({
-          brokerKey: 'mudrex',
-          brokerOrderId: 'mudrex-entry-1',
-          stopLossOrderId: null,
-          takeProfitOrderId: null,
-        }),
-      ];
-    }
-    if (sql.includes('FROM scheduler_orders_snapshots')) {
-      return [
-        createOrderSnapshot({
-          externalId: 'mudrex-entry-1',
-          symbol: 'BTCUSDT',
-          assetUuid: 'mudrex-asset-1',
-        }),
-      ];
-    }
-    if (sql.includes('FROM scheduler_positions_snapshots')) {
-      return [
-        createPositionSnapshot({
-          externalId: 'mudrex:mudrex-asset-1:2026-04-20T06:12:18.000Z:LONG',
-          symbol: 'BTCUSDT',
-          stopLossOrderId: 'mudrex-sl-1',
-          stopLossPrice: '73253',
-          takeProfitOrderId: null,
-          takeProfitPrice: null,
-        }),
-      ];
-    }
-    throw new Error(`Unexpected query: ${sql}`);
-  }, () =>
-    service.runMonitor({
-      emitAlerts: true,
-      now: new Date('2026-04-20T07:01:00.000Z'),
-    })
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [
+          createCandidate({
+            brokerKey: 'mudrex',
+            brokerOrderId: 'mudrex-entry-1',
+            stopLossOrderId: null,
+            takeProfitOrderId: null,
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot({
+            externalId: 'mudrex-entry-1',
+            symbol: 'BTCUSDT',
+            assetUuid: 'mudrex-asset-1',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [
+          createPositionSnapshot({
+            externalId: 'mudrex:mudrex-asset-1:2026-04-20T06:12:18.000Z:LONG',
+            symbol: 'BTCUSDT',
+            stopLossOrderId: 'mudrex-sl-1',
+            stopLossPrice: '73253',
+            takeProfitOrderId: null,
+            takeProfitPrice: null,
+          }),
+        ];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
   );
 
   assert.equal(response.status, 'degraded');
@@ -268,30 +321,32 @@ async function testOpenCanaryMissingProtectionEmitsAlert(): Promise<void> {
   const alerts: Array<Record<string, unknown>> = [];
   const service = createService(alerts);
 
-  const response = await withMockedQuery(async (sql) => {
-    if (sql.includes('FROM order_submission_requests')) {
-      return [createCandidate()];
-    }
-    if (sql.includes('FROM scheduler_orders_snapshots')) {
-      return [
-        createOrderSnapshot(),
-        createOrderSnapshot({
-          externalId: 'tp-1',
-          orderStatus: 'PENDING',
-          statusRank: 1,
-          side: 'sell',
-        }),
-      ];
-    }
-    if (sql.includes('FROM scheduler_positions_snapshots')) {
-      return [createPositionSnapshot()];
-    }
-    throw new Error(`Unexpected query: ${sql}`);
-  }, () =>
-    service.runMonitor({
-      emitAlerts: true,
-      now: new Date('2026-04-20T07:01:00.000Z'),
-    })
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [createCandidate()];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot(),
+          createOrderSnapshot({
+            externalId: 'tp-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [createPositionSnapshot()];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
   );
 
   assert.equal(response.status, 'degraded');
@@ -302,44 +357,279 @@ async function testOpenCanaryMissingProtectionEmitsAlert(): Promise<void> {
   assert.equal(alerts[0]?.channel, 'Broker Canary');
   assert.equal(alerts[0]?.source, 'broker-canary-monitor:submission-1');
   assert.equal(alerts[0]?.severity, 'High');
-  assert.match(String(alerts[0]?.message || ''), /stop-loss protective order snapshot sl-1 is missing/i);
+  assert.match(
+    String(alerts[0]?.message || ''),
+    /stop-loss protective order snapshot sl-1 is missing/i
+  );
   assert.equal(response.items[0]?.lifecycle, 'OPEN_UNPROTECTED');
+}
+
+async function testOpenCanaryMissingProtectionAutoFreezesBrokerAccount(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const killSwitchTriggers: Array<Record<string, unknown>> = [];
+  const service = createService(alerts, { killSwitchTriggers });
+
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [
+          createCandidate({
+            brokerKey: 'mudrex',
+            brokerOrderId: 'mudrex-entry-1',
+            stopLossOrderId: null,
+            takeProfitOrderId: null,
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot({
+            externalId: 'mudrex-entry-1',
+            symbol: 'BTCUSDT',
+            assetUuid: 'mudrex-asset-1',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [
+          createPositionSnapshot({
+            externalId: 'mudrex:mudrex-asset-1:2026-04-20T06:12:18.000Z:LONG',
+            symbol: 'BTCUSDT',
+            stopLossOrderId: 'mudrex-sl-1',
+            stopLossPrice: '73253',
+            takeProfitOrderId: null,
+            takeProfitPrice: null,
+          }),
+        ];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        freezeOnCritical: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
+  );
+
+  assert.equal(response.status, 'degraded');
+  assert.equal(response.freezeOnCritical, true);
+  assert.equal(response.killSwitchTriggers, 1);
+  assert.equal(killSwitchTriggers.length, 1);
+  assert.equal(killSwitchTriggers[0]?.userId, 'user-1');
+  assert.deepEqual(killSwitchTriggers[0]?.body, {
+    scope: 'broker',
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+    reason:
+      'Auto-freeze: open live position BTCUSDT on mudrex/acct-1 has critical canary issue open_position_unprotected: Open live canary position does not have both active SL and TP protective orders. Submission submission-1.',
+  });
+  assert.equal(response.items[0]?.killSwitchTriggered, true);
+  assert.equal(response.items[0]?.killSwitchActive, true);
+  assert.equal(response.items[0]?.killSwitchIssueCode, 'open_position_unprotected');
+  assert.match(String(response.items[0]?.killSwitchReason || ''), /Auto-freeze/);
+  assert.equal(alerts.length, 1);
+}
+
+async function testOpenCanaryStaleSnapshotAutoFreezesBrokerAccount(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const killSwitchTriggers: Array<Record<string, unknown>> = [];
+  const service = createService(alerts, { killSwitchTriggers });
+
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [createCandidate()];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot({
+            lastSeenAt: new Date('2026-04-20T07:00:00.000Z'),
+            updatedAt: new Date('2026-04-20T07:00:00.000Z'),
+          }),
+          createOrderSnapshot({
+            externalId: 'sl-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+            lastSeenAt: new Date('2026-04-20T07:00:00.000Z'),
+            updatedAt: new Date('2026-04-20T07:00:00.000Z'),
+          }),
+          createOrderSnapshot({
+            externalId: 'tp-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+            lastSeenAt: new Date('2026-04-20T07:00:00.000Z'),
+            updatedAt: new Date('2026-04-20T07:00:00.000Z'),
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [
+          createPositionSnapshot({
+            lastSeenAt: new Date('2026-04-20T07:00:00.000Z'),
+            updatedAt: new Date('2026-04-20T07:00:00.000Z'),
+          }),
+        ];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        freezeOnCritical: true,
+        now: new Date('2026-04-20T07:30:01.000Z'),
+      })
+  );
+
+  assert.equal(response.status, 'degraded');
+  assert.equal(response.items[0]?.lifecycle, 'OPEN_WITH_SL_TP');
+  assert.equal(
+    response.items[0]?.issues.some((issue) => issue.code === 'open_position_unprotected'),
+    false
+  );
+  assert.equal(
+    response.items[0]?.issues.some((issue) => issue.code === 'snapshot_stale'),
+    true
+  );
+  assert.equal(response.killSwitchTriggers, 1);
+  assert.equal(killSwitchTriggers.length, 1);
+  assert.deepEqual(killSwitchTriggers[0]?.body, {
+    scope: 'broker',
+    brokerKey: 'delta_exchange',
+    accountId: 'acct-1',
+    reason:
+      'Auto-freeze: open live position BTCUSDT on delta_exchange/acct-1 has critical canary issue snapshot_stale: Order snapshot entry-1 is stale. Submission submission-1.',
+  });
+  assert.equal(response.items[0]?.killSwitchTriggered, true);
+  assert.equal(response.items[0]?.killSwitchIssueCode, 'snapshot_stale');
+  assert.equal(alerts.length, 1);
+}
+
+async function testOpenCanaryMissingProtectionDryRunDoesNotAutoFreeze(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const killSwitchTriggers: Array<Record<string, unknown>> = [];
+  const service = createService(alerts, { killSwitchTriggers });
+
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [createCandidate()];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot(),
+          createOrderSnapshot({
+            externalId: 'tp-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [createPositionSnapshot()];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: false,
+        freezeOnCritical: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
+  );
+
+  assert.equal(response.status, 'degraded');
+  assert.equal(response.freezeOnCritical, true);
+  assert.equal(response.killSwitchTriggers, 0);
+  assert.equal(response.items[0]?.killSwitchTriggered, false);
+  assert.equal(response.items[0]?.killSwitchActive, false);
+  assert.equal(killSwitchTriggers.length, 0);
+  assert.equal(alerts.length, 0);
+}
+
+async function testOpenCanaryMissingProtectionReusesActiveKillSwitch(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const killSwitchTriggers: Array<Record<string, unknown>> = [];
+  const service = createService(alerts, {
+    killSwitchTriggers,
+    activeKillSwitch: {
+      reason: 'Existing workspace freeze',
+      scope: 'workspace',
+      brokerKey: null,
+      accountId: null,
+    },
+  });
+
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [createCandidate()];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [createOrderSnapshot()];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [createPositionSnapshot()];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        freezeOnCritical: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
+  );
+
+  assert.equal(response.killSwitchTriggers, 0);
+  assert.equal(killSwitchTriggers.length, 0);
+  assert.equal(response.items[0]?.killSwitchTriggered, false);
+  assert.equal(response.items[0]?.killSwitchActive, true);
+  assert.equal(response.items[0]?.killSwitchReason, 'Existing workspace freeze');
+  assert.equal(alerts.length, 1);
 }
 
 async function testClosedCanaryWithActiveProtectionAlertsAsOrphan(): Promise<void> {
   const alerts: Array<Record<string, unknown>> = [];
-  const service = createService(alerts);
+  const killSwitchTriggers: Array<Record<string, unknown>> = [];
+  const service = createService(alerts, { killSwitchTriggers });
 
-  const response = await withMockedQuery(async (sql) => {
-    if (sql.includes('FROM order_submission_requests')) {
-      return [createCandidate()];
-    }
-    if (sql.includes('FROM scheduler_orders_snapshots')) {
-      return [
-        createOrderSnapshot(),
-        createOrderSnapshot({
-          externalId: 'sl-1',
-          orderStatus: 'PENDING',
-          statusRank: 1,
-          side: 'sell',
-        }),
-        createOrderSnapshot({
-          externalId: 'tp-1',
-          orderStatus: 'PENDING',
-          statusRank: 1,
-          side: 'sell',
-        }),
-      ];
-    }
-    if (sql.includes('FROM scheduler_positions_snapshots')) {
-      return [];
-    }
-    throw new Error(`Unexpected query: ${sql}`);
-  }, () =>
-    service.runMonitor({
-      emitAlerts: true,
-      now: new Date('2026-04-20T07:01:00.000Z'),
-    })
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [createCandidate()];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot(),
+          createOrderSnapshot({
+            externalId: 'sl-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+          createOrderSnapshot({
+            externalId: 'tp-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        freezeOnCritical: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
   );
 
   assert.equal(response.status, 'degraded');
@@ -348,49 +638,164 @@ async function testClosedCanaryWithActiveProtectionAlertsAsOrphan(): Promise<voi
     response.items[0]?.issues.some((issue) => issue.code === 'orphan_active_protection'),
     true
   );
-  assert.equal(alerts.length, 1);
+  assert.equal(alerts.length, 0);
+  assert.equal(response.killSwitchTriggers, 0);
+  assert.equal(killSwitchTriggers.length, 0);
+}
+
+async function testClosedCanaryWithActiveProtectionAutoCancelsSiblingOrders(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const cancelledOrders: Array<Record<string, unknown>> = [];
+  const service = createService(alerts, { cancelledOrders });
+
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [createCandidate()];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot(),
+          createOrderSnapshot({
+            externalId: 'sl-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+          createOrderSnapshot({
+            externalId: 'tp-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
+  );
+
+  assert.equal(response.items[0]?.lifecycle, 'CLOSED_WITH_ACTIVE_PROTECTION');
+  assert.deepEqual(response.items[0]?.autoCancelledOrderIds, ['sl-1', 'tp-1']);
+  assert.deepEqual(
+    cancelledOrders.map((item) => item.orderId),
+    ['sl-1', 'tp-1']
+  );
+  assert.equal(alerts.length, 0);
+}
+
+async function testFilledProtectiveLegTreatsNettedSymbolAsClosedAndCancelsSibling(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const cancelledOrders: Array<Record<string, unknown>> = [];
+  const service = createService(alerts, { cancelledOrders });
+
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [createCandidate()];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot(),
+          createOrderSnapshot({
+            externalId: 'sl-1',
+            orderStatus: 'CLOSED',
+            statusRank: 4,
+            side: 'sell',
+          }),
+          createOrderSnapshot({
+            externalId: 'tp-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [
+          createPositionSnapshot({
+            status: 'OPEN',
+            statusRank: 1,
+            quantityContracts: '3',
+          }),
+        ];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
+  );
+
+  assert.equal(response.items[0]?.positionOpen, false);
+  assert.equal(response.items[0]?.lifecycle, 'CLOSED_WITH_ACTIVE_PROTECTION');
+  assert.equal(
+    response.items[0]?.issues.some((issue) => issue.code === 'open_position_unprotected'),
+    false
+  );
+  assert.equal(
+    response.items[0]?.issues.some((issue) => issue.code === 'orphan_active_protection'),
+    true
+  );
+  assert.deepEqual(response.items[0]?.autoCancelledOrderIds, ['tp-1']);
+  assert.deepEqual(
+    cancelledOrders.map((item) => item.orderId),
+    ['tp-1']
+  );
+  assert.equal(alerts.length, 0);
 }
 
 async function testClosedPositionRankThreeIsNotTreatedAsOpen(): Promise<void> {
   const alerts: Array<Record<string, unknown>> = [];
   const service = createService(alerts);
 
-  const response = await withMockedQuery(async (sql) => {
-    if (sql.includes('FROM order_submission_requests')) {
-      return [createCandidate()];
-    }
-    if (sql.includes('FROM scheduler_orders_snapshots')) {
-      return [
-        createOrderSnapshot(),
-        createOrderSnapshot({
-          externalId: 'sl-1',
-          orderStatus: 'PENDING',
-          statusRank: 1,
-          side: 'sell',
-        }),
-        createOrderSnapshot({
-          externalId: 'tp-1',
-          orderStatus: 'CLOSED',
-          statusRank: 4,
-          side: 'sell',
-        }),
-      ];
-    }
-    if (sql.includes('FROM scheduler_positions_snapshots')) {
-      return [
-        createPositionSnapshot({
-          status: 'CLOSED',
-          statusRank: 3,
-          quantityContracts: '1',
-        }),
-      ];
-    }
-    throw new Error(`Unexpected query: ${sql}`);
-  }, () =>
-    service.runMonitor({
-      emitAlerts: true,
-      now: new Date('2026-04-20T07:01:00.000Z'),
-    })
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [createCandidate()];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot(),
+          createOrderSnapshot({
+            externalId: 'sl-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+          createOrderSnapshot({
+            externalId: 'tp-1',
+            orderStatus: 'CLOSED',
+            statusRank: 4,
+            side: 'sell',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [
+          createPositionSnapshot({
+            status: 'CLOSED',
+            statusRank: 3,
+            quantityContracts: '1',
+          }),
+        ];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
   );
 
   assert.equal(response.status, 'degraded');
@@ -404,7 +809,7 @@ async function testClosedPositionRankThreeIsNotTreatedAsOpen(): Promise<void> {
     response.items[0]?.issues.some((issue) => issue.code === 'orphan_active_protection'),
     true
   );
-  assert.equal(alerts.length, 1);
+  assert.equal(alerts.length, 0);
 }
 
 async function testExistingCanaryAlertIsRefreshedWhenLifecycleChanges(): Promise<void> {
@@ -418,7 +823,8 @@ async function testExistingCanaryAlertIsRefreshedWhenLifecycleChanges(): Promise
       severity: 'High',
       channel: 'Broker Canary',
       symbol: 'BTCUSDT',
-      message: 'Broker canary protection issue for BTCUSDT: Open live canary position does not have both active SL and TP protective orders.',
+      message:
+        'Broker canary protection issue for BTCUSDT: Open live canary position does not have both active SL and TP protective orders.',
       route: 'Orders',
       status: 'Open',
       source: 'broker-canary-monitor:submission-1',
@@ -426,50 +832,49 @@ async function testExistingCanaryAlertIsRefreshedWhenLifecycleChanges(): Promise
     },
   });
 
-  const response = await withMockedQuery(async (sql) => {
-    if (sql.includes('FROM order_submission_requests')) {
-      return [createCandidate()];
-    }
-    if (sql.includes('FROM scheduler_orders_snapshots')) {
-      return [
-        createOrderSnapshot(),
-        createOrderSnapshot({
-          externalId: 'sl-1',
-          orderStatus: 'PENDING',
-          statusRank: 1,
-          side: 'sell',
-        }),
-        createOrderSnapshot({
-          externalId: 'tp-1',
-          orderStatus: 'CLOSED',
-          statusRank: 4,
-          side: 'sell',
-        }),
-      ];
-    }
-    if (sql.includes('FROM scheduler_positions_snapshots')) {
-      return [
-        createPositionSnapshot({
-          status: 'CLOSED',
-          statusRank: 3,
-          quantityContracts: '1',
-        }),
-      ];
-    }
-    throw new Error(`Unexpected query: ${sql}`);
-  }, () =>
-    service.runMonitor({
-      emitAlerts: true,
-      now: new Date('2026-04-20T07:01:00.000Z'),
-    })
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [createCandidate()];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot(),
+          createOrderSnapshot({
+            externalId: 'sl-1',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'sell',
+          }),
+          createOrderSnapshot({
+            externalId: 'tp-1',
+            orderStatus: 'CLOSED',
+            statusRank: 4,
+            side: 'sell',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [
+          createPositionSnapshot({
+            status: 'CLOSED',
+            statusRank: 3,
+            quantityContracts: '1',
+          }),
+        ];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
   );
 
-  assert.equal(response.alertsEmitted, 1);
+  assert.equal(response.alertsEmitted, 0);
   assert.equal(alerts.length, 0);
-  assert.equal(updatedAlerts.length, 1);
-  assert.equal(updatedAlerts[0]?.alertId, 'alert-1');
-  assert.equal(updatedAlerts[0]?.urgency, 'review');
-  assert.match(String(updatedAlerts[0]?.message || ''), /protective order is still active/i);
+  assert.equal(updatedAlerts.length, 0);
 }
 
 async function testDisabledMonitorSkipsQueries(): Promise<void> {
@@ -477,9 +882,12 @@ async function testDisabledMonitorSkipsQueries(): Promise<void> {
   env.brokerCanaryMonitor.enabled = false;
   try {
     const service = createService();
-    const response = await withMockedQuery(async () => {
-      throw new Error('disabled monitor should not query database');
-    }, () => service.runMonitor({ now: new Date('2026-04-20T07:01:00.000Z') }));
+    const response = await withMockedQuery(
+      async () => {
+        throw new Error('disabled monitor should not query database');
+      },
+      () => service.runMonitor({ now: new Date('2026-04-20T07:01:00.000Z') })
+    );
 
     assert.equal(response.status, 'disabled');
     assert.equal(response.monitoredSubmissions, 0);
@@ -492,19 +900,21 @@ async function testBrokerKeyFilterIsPassedToCandidateQuery(): Promise<void> {
   const service = createService();
   let sawBrokerFilter = false;
 
-  const response = await withMockedQuery(async (sql, params) => {
-    if (sql.includes('FROM order_submission_requests')) {
-      sawBrokerFilter = sql.includes('LOWER(broker_key) = ?');
-      assert.deepEqual(params, ['mudrex']);
-      return [];
-    }
-    throw new Error(`Unexpected query: ${sql}`);
-  }, () =>
-    service.runMonitor({
-      brokerKey: ' Mudrex ',
-      emitAlerts: false,
-      now: new Date('2026-04-20T07:01:00.000Z'),
-    })
+  const response = await withMockedQuery(
+    async (sql, params) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        sawBrokerFilter = sql.includes('LOWER(broker_key) = ?');
+        assert.deepEqual(params, ['mudrex']);
+        return [];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        brokerKey: ' Mudrex ',
+        emitAlerts: false,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
   );
 
   assert.equal(response.status, 'ok');
@@ -517,7 +927,13 @@ async function main(): Promise<void> {
   await testMudrexOpenPositionProtectionCanComeFromPositionSnapshot();
   await testMudrexOpenPositionMissingTakeProfitAlerts();
   await testOpenCanaryMissingProtectionEmitsAlert();
+  await testOpenCanaryMissingProtectionAutoFreezesBrokerAccount();
+  await testOpenCanaryStaleSnapshotAutoFreezesBrokerAccount();
+  await testOpenCanaryMissingProtectionDryRunDoesNotAutoFreeze();
+  await testOpenCanaryMissingProtectionReusesActiveKillSwitch();
   await testClosedCanaryWithActiveProtectionAlertsAsOrphan();
+  await testClosedCanaryWithActiveProtectionAutoCancelsSiblingOrders();
+  await testFilledProtectiveLegTreatsNettedSymbolAsClosedAndCancelsSibling();
   await testClosedPositionRankThreeIsNotTreatedAsOpen();
   await testExistingCanaryAlertIsRefreshedWhenLifecycleChanges();
   await testDisabledMonitorSkipsQueries();

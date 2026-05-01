@@ -3,7 +3,8 @@ import { EmailDeliveryRepository } from '../database/repositories/EmailDeliveryR
 import { env } from '../env';
 import { Logger } from '../lib/logger';
 import { RedisClient } from '../lib/RedisClient';
-import { SmtpEmailTransport } from './SmtpEmailTransport';
+import { createEmailTransport } from './createEmailTransport';
+import { EmailTransport } from './EmailTransport';
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -13,7 +14,7 @@ const sleep = (ms: number): Promise<void> =>
 export class EmailDeliveryWorker {
   private readonly log = new Logger(__filename);
   private readonly emailDeliveryRepository: EmailDeliveryRepository;
-  private readonly transport: SmtpEmailTransport;
+  private readonly transport: EmailTransport;
   private readonly workerId = `${os.hostname()}:${process.pid}`;
   private stopRequested = false;
   private running = false;
@@ -37,7 +38,7 @@ export class EmailDeliveryWorker {
 
   constructor(
     emailDeliveryRepository = new EmailDeliveryRepository(),
-    transport = new SmtpEmailTransport()
+    transport: EmailTransport = createEmailTransport()
   ) {
     this.emailDeliveryRepository = emailDeliveryRepository;
     this.transport = transport;

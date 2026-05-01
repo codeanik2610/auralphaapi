@@ -19,6 +19,7 @@ export interface UpsertRiskPolicyPayload {
   monthlyLossLimitPct?: number;
   minLeverage?: number;
   maxLeverage?: number;
+  tradeSizePctOfBalance?: number;
   minNotionalPerTrade?: number;
   maxOrderAllocation?: number;
   maxTotalAllocation?: number;
@@ -69,6 +70,7 @@ export class RiskPolicyRepository {
       monthlyLossLimitPct: payload.monthlyLossLimitPct ?? undefined,
       minLeverage: payload.minLeverage ?? null,
       maxLeverage: payload.maxLeverage ?? null,
+      tradeSizePctOfBalance: payload.tradeSizePctOfBalance ?? null,
       minNotionalPerTrade: payload.minNotionalPerTrade ?? null,
       maxOrderAllocation: payload.maxOrderAllocation ?? null,
       maxTotalAllocation: payload.maxTotalAllocation ?? null,
@@ -105,6 +107,7 @@ export class RiskPolicyRepository {
         monthlyLossLimitPct: payload.monthlyLossLimitPct ?? undefined,
         minLeverage: payload.minLeverage ?? null,
         maxLeverage: payload.maxLeverage ?? null,
+        tradeSizePctOfBalance: payload.tradeSizePctOfBalance ?? null,
         minNotionalPerTrade: payload.minNotionalPerTrade ?? null,
         maxOrderAllocation: payload.maxOrderAllocation ?? null,
         maxTotalAllocation: payload.maxTotalAllocation ?? null,

@@ -13,7 +13,7 @@ export class DeltaExchangeWalletAdapter implements BrokerWalletAdapter {
   @Inject(() => DeltaExchangeHttpClient)
   private deltaHttpClient!: DeltaExchangeHttpClient;
 
-  async getWalletFunds(context?: BrokerWalletContext): Promise<unknown> {
+  async getWalletFunds(_context?: BrokerWalletContext): Promise<unknown> {
     // Delta Exchange uses a unified margin system for futures/derivatives trading.
     // There is no separate "spot wallet" - all funds are managed through the futures margin account.
     // Returning zero values here prevents double-counting the balance in both wallet and futures sections.
@@ -44,16 +44,10 @@ export class DeltaExchangeWalletAdapter implements BrokerWalletAdapter {
     };
   }
 
-  private async fetchBalances(
-    accountId?: string,
-    userId?: string
-  ): Promise<DeltaWalletBalance[]> {
-    const payload = await this.deltaHttpClient.signedGet<DeltaWalletBalance[] | { balance_details?: DeltaWalletBalance[] }>(
-      accountId,
-      '/v2/wallet/balances',
-      undefined,
-      userId
-    );
+  private async fetchBalances(accountId?: string, userId?: string): Promise<DeltaWalletBalance[]> {
+    const payload = await this.deltaHttpClient.signedGet<
+      DeltaWalletBalance[] | { balance_details?: DeltaWalletBalance[] }
+    >(accountId, '/v2/wallet/balances', undefined, userId);
 
     if (Array.isArray(payload)) {
       return payload;

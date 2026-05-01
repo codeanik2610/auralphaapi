@@ -36,9 +36,15 @@ export class StrategyTemplatesService {
   @Inject(() => OperationalEventService)
   private operationalEventService!: OperationalEventService;
 
-  async listStrategyTemplates(userId: string, query: StrategyTemplatesQuery): Promise<ApiSuccessResponse<StrategyTemplateListResponse>> {
+  async listStrategyTemplates(
+    userId: string,
+    query: StrategyTemplatesQuery
+  ): Promise<ApiSuccessResponse<StrategyTemplateListResponse>> {
     const params = validateStrategyTemplatesQuery(query);
-    const { data, total } = await this.strategyTemplateRepository.listStrategyTemplates(userId, params);
+    const { data, total } = await this.strategyTemplateRepository.listStrategyTemplates(
+      userId,
+      params
+    );
 
     return successResponse({
       items: data.map((item) => this.mapTemplate(item)),
@@ -48,9 +54,15 @@ export class StrategyTemplatesService {
     });
   }
 
-  async getStrategyTemplateById(userId: string, strategyId: string): Promise<ApiSuccessResponse<StrategyTemplateItem>> {
+  async getStrategyTemplateById(
+    userId: string,
+    strategyId: string
+  ): Promise<ApiSuccessResponse<StrategyTemplateItem>> {
     const validatedId = validateStrategyTemplateId(strategyId);
-    const strategy = await this.strategyTemplateRepository.getStrategyTemplateById(userId, validatedId);
+    const strategy = await this.strategyTemplateRepository.getStrategyTemplateById(
+      userId,
+      validatedId
+    );
 
     if (!strategy) {
       throw new NotFoundAppError('Strategy template not found');
@@ -64,7 +76,10 @@ export class StrategyTemplatesService {
     strategyId: string
   ): Promise<ApiSuccessResponse<StrategyTemplateVersionListResponse>> {
     const validatedId = validateStrategyTemplateId(strategyId);
-    const strategy = await this.strategyTemplateRepository.getStrategyTemplateById(userId, validatedId);
+    const strategy = await this.strategyTemplateRepository.getStrategyTemplateById(
+      userId,
+      validatedId
+    );
 
     if (!strategy) {
       throw new NotFoundAppError('Strategy template not found');
@@ -91,7 +106,10 @@ export class StrategyTemplatesService {
       config: this.coerceTemplateConfigToPython(validated.config, validated.name),
     };
     try {
-      const strategy = await this.strategyTemplateRepository.createStrategyTemplate(userId, normalized);
+      const strategy = await this.strategyTemplateRepository.createStrategyTemplate(
+        userId,
+        normalized
+      );
 
       await this.operationalEventService.logActivity(userId, {
         type: 'Strategy Template',
@@ -148,12 +166,17 @@ export class StrategyTemplatesService {
     const validated = validateStrategyTemplateUpdateBody(body);
     const normalized = {
       ...validated,
-      config: validated.config === undefined
-        ? undefined
-        : this.coerceTemplateConfigToPython(validated.config, validated.name),
+      config:
+        validated.config === undefined
+          ? undefined
+          : this.coerceTemplateConfigToPython(validated.config, validated.name),
     };
     try {
-      const strategy = await this.strategyTemplateRepository.updateStrategyTemplate(userId, validatedId, normalized);
+      const strategy = await this.strategyTemplateRepository.updateStrategyTemplate(
+        userId,
+        validatedId,
+        normalized
+      );
 
       if (!strategy) {
         throw new NotFoundAppError('Strategy template not found');
@@ -296,10 +319,16 @@ export class StrategyTemplatesService {
     }
   }
 
-  async deleteStrategyTemplate(userId: string, strategyId: string): Promise<ApiSuccessResponse<{ id: string }>> {
+  async deleteStrategyTemplate(
+    userId: string,
+    strategyId: string
+  ): Promise<ApiSuccessResponse<{ id: string }>> {
     const validatedId = validateStrategyTemplateId(strategyId);
     try {
-      const deleted = await this.strategyTemplateRepository.deleteStrategyTemplate(userId, validatedId);
+      const deleted = await this.strategyTemplateRepository.deleteStrategyTemplate(
+        userId,
+        validatedId
+      );
 
       if (!deleted) {
         throw new NotFoundAppError('Strategy template not found');
@@ -433,7 +462,9 @@ export class StrategyTemplatesService {
         ? (mutable.risk as Record<string, unknown>)
         : {};
     const parameters =
-      mutable.parameters && typeof mutable.parameters === 'object' && !Array.isArray(mutable.parameters)
+      mutable.parameters &&
+      typeof mutable.parameters === 'object' &&
+      !Array.isArray(mutable.parameters)
         ? (mutable.parameters as Record<string, unknown>)
         : {};
     const filters =
@@ -443,7 +474,9 @@ export class StrategyTemplatesService {
     const maxRisk = this.cleanText(risk.maxRisk ?? risk.max_per_trade);
     const sizingNotes = this.cleanText(risk.sizingNotes);
     const executionRisk = this.extractExecutionRiskFromCodeDefinition(rawCode);
-    const signalThreshold = this.cleanText(parameters.signalThreshold ?? parameters.signal_threshold);
+    const signalThreshold = this.cleanText(
+      parameters.signalThreshold ?? parameters.signal_threshold
+    );
     const notes = this.cleanText(mutable.notes);
     const description = this.cleanText(mutable.description);
     const explicitCompiledTarget = this.normalizeCodeTarget(mutable.compiledCodeTarget);
@@ -577,13 +610,16 @@ export class StrategyTemplatesService {
     const safeMarket = this.sanitizeCodeString(input.market || 'crypto-futures');
     const maxRisk = Number(input.maxRisk || '1.5') || 1.5;
     const signalThreshold = Number(input.signalThreshold || '0.82') || 0.82;
-    return `from auralpha import Strategy\n\n\nclass StrategyDraft(Strategy):\n    name = \"${safeName}\"\n    market = \"${safeMarket}\"\n\n    def entry(self, ctx):\n        return ${entryExpr || 'False'}\n\n    def exit(self, ctx):\n        return ${exitExpr || 'False'}\n\n    def entry_short(self, ctx):\n        return ${entryShortExpr || 'False'}\n\n    def exit_short(self, ctx):\n        return ${exitShortExpr || 'False'}\n\n    risk = {\n        \"max_per_trade\": ${maxRisk},\n        \"signal_threshold\": ${signalThreshold},\n    }`;
+    return `from auralpha import Strategy\n\n\nclass StrategyDraft(Strategy):\n    name = "${safeName}"\n    market = "${safeMarket}"\n\n    def entry(self, ctx):\n        return ${entryExpr || 'False'}\n\n    def exit(self, ctx):\n        return ${exitExpr || 'False'}\n\n    def entry_short(self, ctx):\n        return ${entryShortExpr || 'False'}\n\n    def exit_short(self, ctx):\n        return ${exitShortExpr || 'False'}\n\n    risk = {\n        "max_per_trade": ${maxRisk},\n        "signal_threshold": ${signalThreshold},\n    }`;
   }
 
   private convertDslExpressionToPython(expression: string): string {
     let expr = String(expression || '').trim();
     if (!expr) return '';
-    expr = expr.replace(/\bAND\b/gi, 'and').replace(/\bOR\b/gi, 'or').replace(/\bNOT\b/gi, 'not');
+    expr = expr
+      .replace(/\bAND\b/gi, 'and')
+      .replace(/\bOR\b/gi, 'or')
+      .replace(/\bNOT\b/gi, 'not');
     expr = expr.replace(/ema\((\d+)\)/gi, 'ema(ctx, $1)');
     expr = expr.replace(/rsi\((\d+)\)/gi, 'rsi(ctx, $1)');
     expr = expr.replace(/adx\((\d+)\)/gi, 'adx(ctx, $1)');
@@ -714,10 +750,7 @@ export class StrategyTemplatesService {
     return '';
   }
 
-  private extractRiskLiteralValue(
-    block: string,
-    keys: string[]
-  ): string | number | boolean | null {
+  private extractRiskLiteralValue(block: string, keys: string[]): string | number | boolean | null {
     for (const key of keys) {
       const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const patterns = [
@@ -741,7 +774,9 @@ export class StrategyTemplatesService {
   }
 
   private parseRiskLiteralValue(value: string | undefined): string | number | boolean | null {
-    const trimmed = String(value || '').trim().replace(/,$/, '');
+    const trimmed = String(value || '')
+      .trim()
+      .replace(/,$/, '');
     if (!trimmed) {
       return null;
     }
@@ -763,7 +798,9 @@ export class StrategyTemplatesService {
   }
 
   private normalizeCodeTarget(value: unknown): string {
-    const normalized = String(value || '').trim().toLowerCase();
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
     if (!normalized) return '';
     if (normalized === 'js' || normalized === 'javascript') return 'javascript';
     if (normalized === 'py' || normalized === 'python') return 'python';
@@ -772,7 +809,9 @@ export class StrategyTemplatesService {
   }
 
   private sanitizeCodeString(value: string): string {
-    return String(value || '').trim().replace(/"/g, '\\"');
+    return String(value || '')
+      .trim()
+      .replace(/"/g, '\\"');
   }
 
   private cleanText(value: unknown): string {

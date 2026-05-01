@@ -1,6 +1,18 @@
 export type SettingsNotificationChannel = 'both' | 'in-app' | 'email' | 'disabled';
 export type SettingsNotificationSeverity = 'all' | 'medium' | 'high' | 'critical';
 export type SettingsEscalationRoute = 'risk-review' | 'on-call' | 'manual';
+export type SettingsWhatsappDeliveryRolloutStatus =
+  | 'ready'
+  | 'disabled'
+  | 'misconfigured';
+
+export interface SettingsWhatsappDeliveryRollout {
+  status: SettingsWhatsappDeliveryRolloutStatus;
+  allowsLiveTradeSuggestions: boolean;
+  provider: string;
+  providerConfigured: boolean;
+  detail?: string | null;
+}
 export interface BacktestPromotionRules {
   minScore: number;
   minTrades: number;
@@ -27,6 +39,11 @@ export interface SettingsResponse {
   timezone: string;
   notifyEmail: boolean;
   notifyInApp: boolean;
+  notifyWhatsapp: boolean;
+  whatsappLiveTradeSuggestions: boolean;
+  whatsappNumber: string | null;
+  whatsappVerifiedAt: string | null;
+  whatsappDeliveryRollout: SettingsWhatsappDeliveryRollout;
   confirmDestructive: boolean;
   notificationChannel: SettingsNotificationChannel;
   notificationSeverity: SettingsNotificationSeverity;
@@ -41,6 +58,9 @@ export interface UpdateSettingsBody {
   timezone: string;
   notifyEmail: boolean;
   notifyInApp: boolean;
+  notifyWhatsapp: boolean;
+  whatsappLiveTradeSuggestions: boolean;
+  whatsappNumber: string | null;
   confirmDestructive: boolean;
   notificationChannel: SettingsNotificationChannel;
   notificationSeverity: SettingsNotificationSeverity;
@@ -49,8 +69,10 @@ export interface UpdateSettingsBody {
   backtestPromotionRules: BacktestPromotionRules;
 }
 
-export interface UpdateSettingsRequestBody
-  extends Omit<Partial<UpdateSettingsBody>, 'backtestPromotionRules'> {
+export interface UpdateSettingsRequestBody extends Omit<
+  Partial<UpdateSettingsBody>,
+  'backtestPromotionRules'
+> {
   backtestPromotionRules?: BacktestPromotionRulesInput;
   expectedUpdatedAt?: string;
 }

@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { RiskAlertsOverviewController } from '../src/api/controllers/RiskAlertsOverviewController';
 import { RiskOverviewController } from '../src/api/controllers/RiskOverviewController';
 import { RiskAlertsOverviewService } from '../src/api/services/RiskAlertsOverviewService';
+import { RiskKillSwitchService } from '../src/api/services/RiskKillSwitchService';
 import { RiskOverviewService } from '../src/api/services/RiskOverviewService';
-import { validateUpsertRiskPolicyBody } from '../src/api/validators/risk.validator';
 import {
-  buildApiTimeContract,
-  formatApiDisplayTime,
-} from '../src/api/utils/apiTimeContract';
+  validateRiskKillSwitchBody,
+  validateRiskKillSwitchClearBody,
+  validateUpsertRiskPolicyBody,
+} from '../src/api/validators/risk.validator';
+import { buildApiTimeContract, formatApiDisplayTime } from '../src/api/utils/apiTimeContract';
 
 function createSuccess<T>(data: T) {
   return { success: true as const, data };
@@ -48,6 +50,7 @@ async function runValidatorAssertions(): Promise<void> {
       monthlyLossLimitPct: '20',
       minLeverage: '1',
       maxLeverage: '5',
+      tradeSizePctOfBalance: '2.5',
       minNotionalPerTrade: '100',
       maxOrderAllocation: '25',
       maxTotalAllocation: '70',
@@ -68,6 +71,7 @@ async function runValidatorAssertions(): Promise<void> {
       monthlyLossLimitPct: 20,
       minLeverage: 1,
       maxLeverage: 5,
+      tradeSizePctOfBalance: 2.5,
       minNotionalPerTrade: 100,
       maxOrderAllocation: 25,
       maxTotalAllocation: 70,
@@ -232,6 +236,40 @@ async function runValidatorAssertions(): Promise<void> {
         minNotionalPerTrade: 0,
       }),
     'minNotionalPerTrade must be greater than 0 when provided'
+  );
+
+  assert.deepEqual(validateRiskKillSwitchBody({ scope: 'GLOBAL', reason: ' stop all ' }), {
+    scope: 'global',
+    brokerKey: null,
+    accountId: null,
+    reason: 'stop all',
+  });
+  assert.deepEqual(
+    validateRiskKillSwitchBody({
+      scope: 'broker',
+      brokerKey: ' Mudrex ',
+      accountId: ' acct-1 ',
+    }),
+    {
+      scope: 'broker',
+      brokerKey: 'Mudrex',
+      accountId: 'acct-1',
+      reason: 'Operator initiated emergency stop',
+    }
+  );
+  assert.deepEqual(validateRiskKillSwitchClearBody({ scope: 'workspace' }), {
+    scope: 'workspace',
+    brokerKey: null,
+    accountId: null,
+    reason: 'Operator cleared emergency stop',
+  });
+  expectBadRequestSync(
+    () => validateRiskKillSwitchBody({ scope: 'broker' }),
+    'brokerKey is required for broker kill switch scope'
+  );
+  expectBadRequestSync(
+    () => validateRiskKillSwitchBody({ scope: 'desk' }),
+    'scope must be workspace, user, global, or broker'
   );
 }
 
@@ -528,7 +566,7 @@ async function runRiskOverviewServiceAssertions(): Promise<void> {
     snapshotBrokerKpis: true,
     weeklyMonthlyRiskWindowUsage: true,
     riskCapacity: false,
-    killSwitchAutomation: false,
+    killSwitchAutomation: true,
     recomputeExecutesRealCalculation: true,
     riskActivityTrailUsedByPage: true,
     riskActivityTrailFiltersUsedByPage: true,
@@ -710,6 +748,100 @@ async function runRiskOverviewServiceAssertions(): Promise<void> {
   assert.equal(response.data.policies.items[0].scope, 'user');
 }
 
+async function runRiskKillSwitchServiceAssertions(): Promise<void> {
+  const service = new RiskKillSwitchService() as any;
+  const activities: Array<{ userId: string; payload: Record<string, unknown> }> = [];
+  const alerts: Array<{ userId: string; payload: Record<string, unknown> }> = [];
+  let activeStates: any[] = [];
+  let clearCalls: Array<{ userId: string; payload: Record<string, unknown> }> = [];
+
+  service.userTimeZoneService = {
+    async resolveUserTimeZone() {
+      return 'UTC';
+    },
+  };
+  service.operationalEventService = {
+    async logActivity(userId: string, payload: Record<string, unknown>) {
+      activities.push({ userId, payload });
+    },
+    async emitFailureAlert(userId: string, payload: Record<string, unknown>) {
+      alerts.push({ userId, payload });
+    },
+  };
+  service.riskKillSwitchRepository = {
+    async trigger(userId: string, payload: Record<string, unknown>) {
+      assert.equal(userId, 'user-1');
+      const state = {
+        id: 'kill-1',
+        userId,
+        scope: payload.scope,
+        brokerKey: payload.brokerKey,
+        accountId: payload.accountId,
+        active: true,
+        reason: payload.reason,
+        triggeredBy: payload.triggeredBy,
+        triggeredAt: new Date('2026-05-01T09:30:00.000Z'),
+        clearedBy: null,
+        clearedAt: null,
+      };
+      activeStates = [state];
+      return state;
+    },
+    async listActive(userId: string) {
+      assert.equal(userId, 'user-1');
+      return activeStates;
+    },
+    async clearActive(userId: string, payload: Record<string, unknown>) {
+      clearCalls.push({ userId, payload });
+      activeStates = [];
+      return 1;
+    },
+    async findActiveBlock(userId: string) {
+      assert.equal(userId, 'user-1');
+      return activeStates[0] ?? null;
+    },
+  };
+
+  const triggered = await service.trigger('user-1', {
+    scope: 'broker',
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+    reason: 'exchange incident',
+  });
+  assert.equal(triggered.active, true);
+  assert.equal(triggered.scope, 'broker');
+  assert.equal(triggered.brokerKey, 'mudrex');
+  assert.equal(triggered.state?.id, 'kill-1');
+  assert.equal(activities[0]?.payload.title, 'Kill switch triggered');
+  assert.equal(alerts[0]?.payload.severity, 'Critical');
+
+  const status = await service.getStatus('user-1');
+  assert.equal(status.active, true);
+  assert.equal(status.items[0]?.reason, 'exchange incident');
+
+  await assert.rejects(
+    () =>
+      service.assertLiveTradingAllowed('user-1', {
+        brokerKey: 'mudrex',
+        accountId: 'acct-1',
+      }),
+    /Risk kill switch is active/
+  );
+
+  const cleared = await service.clear('user-1', {
+    scope: 'broker',
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+    reason: 'recovered',
+  });
+  assert.equal(cleared.active, false);
+  assert.equal(cleared.clearedCount, 1);
+  assert.equal(clearCalls[0]?.payload.scope, 'broker');
+
+  const inactiveStatus = await service.getStatus('user-1');
+  assert.equal(inactiveStatus.active, false);
+}
+
 async function runRiskAlertsOverviewServiceAssertions(): Promise<void> {
   const service = new RiskAlertsOverviewService() as any;
 
@@ -839,6 +971,7 @@ async function runControllerAssertions(): Promise<void> {
 
 async function main(): Promise<void> {
   await runValidatorAssertions();
+  await runRiskKillSwitchServiceAssertions();
   await runRiskOverviewServiceAssertions();
   await runRiskAlertsOverviewServiceAssertions();
   await runControllerAssertions();

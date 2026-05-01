@@ -30,6 +30,18 @@ export class AppSetting {
   @Column({ type: 'boolean', default: true })
   notifyInApp!: boolean;
 
+  @Column({ type: 'boolean', default: false })
+  notifyWhatsapp!: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  whatsappLiveTradeSuggestions!: boolean;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  whatsappNumber!: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  whatsappVerifiedAt!: Date | null;
+
   @Column({ type: 'boolean', default: true })
   confirmDestructive!: boolean;
 

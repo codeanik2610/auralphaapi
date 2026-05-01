@@ -270,6 +270,20 @@ export function buildPositionSummaryFromPayload(payload: PositionRecordLike): Po
   const leverage = toNumber(
     pickFirst(payload, ['leverage', 'position_leverage', 'leverageValue'])
   );
+  const requestedLeverage = toNumber(
+    pickFirst(payload, ['requested_leverage', 'requestedLeverage'])
+  );
+  const confirmedOrderLeverage = toNumber(
+    pickFirst(payload, ['confirmed_order_leverage', 'confirmedOrderLeverage'])
+  );
+  const observedPositionLeverage = toNumber(
+    pickFirst(payload, ['observed_position_leverage', 'observedPositionLeverage'])
+  );
+  const leverageSourceRaw = pickFirst(payload, ['leverage_source', 'leverageSource']);
+  const leverageSource =
+    leverageSourceRaw === undefined || leverageSourceRaw === null
+      ? null
+      : String(leverageSourceRaw).trim() || null;
   const liquidationPrice = toNumber(
     pickFirst(payload, ['liquidation_price', 'liq_price', 'liquidationPrice'])
   );
@@ -316,6 +330,10 @@ export function buildPositionSummaryFromPayload(payload: PositionRecordLike): Po
     unrealizedPnl,
     realizedPnl: realizedPnlExplicit ?? fallbackRealized,
     leverage,
+    requestedLeverage,
+    confirmedOrderLeverage,
+    observedPositionLeverage,
+    leverageSource,
     liquidationPrice,
     exposure,
     createdAt: createdAt || undefined,
@@ -347,6 +365,9 @@ export function buildPositionReadModelUpsert(input: {
   const payloadJson = input.payloadJson ?? JSON.stringify(payload);
   const positionUpdatedAt =
     summary.updatedAt || summary.closedAt || summary.createdAt || null;
+  const stoploss = toRecord(payload.stoploss) ?? toRecord(payload.stop_loss) ?? toRecord(payload.stopLoss);
+  const takeprofit =
+    toRecord(payload.takeprofit) ?? toRecord(payload.take_profit) ?? toRecord(payload.takeProfit);
   const resolvedStatusRank =
     typeof input.statusRank === 'number' && Number.isFinite(input.statusRank)
       ? input.statusRank
@@ -378,16 +399,22 @@ export function buildPositionReadModelUpsert(input: {
       pickFirst(payload, ['order_price', 'orderPrice', 'current_price', 'entry_price'])
     ),
     stoplossPrice: toNumber(
-      pickFirst(payload, ['stoploss_price', 'stopLossPrice'])
+      pickFirst(payload, ['stoploss_price', 'stopLossPrice']) ??
+        pickFirst(stoploss ?? {}, ['price'])
     ),
     takeprofitPrice: toNumber(
-      pickFirst(payload, ['takeprofit_price', 'takeProfitPrice'])
+      pickFirst(payload, ['takeprofit_price', 'takeProfitPrice']) ??
+        pickFirst(takeprofit ?? {}, ['price'])
     ),
     stoplossOrderId: String(
-      pickFirst(payload, ['stoploss_order_id', 'stopLossOrderId']) || ''
+      pickFirst(payload, ['stoploss_order_id', 'stopLossOrderId']) ??
+        pickFirst(stoploss ?? {}, ['order_id', 'orderId']) ??
+        ''
     ).trim() || null,
     takeprofitOrderId: String(
-      pickFirst(payload, ['takeprofit_order_id', 'takeProfitOrderId']) || ''
+      pickFirst(payload, ['takeprofit_order_id', 'takeProfitOrderId']) ??
+        pickFirst(takeprofit ?? {}, ['order_id', 'orderId']) ??
+        ''
     ).trim() || null,
     triggerType: String(
       pickFirst(payload, ['trigger_type', 'triggerType']) || ''
@@ -423,6 +450,19 @@ export function buildPositionRecordFromReadModelRow(
     unrealizedPnl: toNumber(row.unrealizedPnl),
     realizedPnl: toNumber(row.realizedPnl),
     leverage: toNumber(row.leverage),
+    requestedLeverage: toNumber(
+      pickFirst(rawPayload ?? {}, ['requested_leverage', 'requestedLeverage'])
+    ),
+    confirmedOrderLeverage: toNumber(
+      pickFirst(rawPayload ?? {}, ['confirmed_order_leverage', 'confirmedOrderLeverage'])
+    ),
+    observedPositionLeverage: toNumber(
+      pickFirst(rawPayload ?? {}, ['observed_position_leverage', 'observedPositionLeverage'])
+    ),
+    leverageSource:
+      String(
+        pickFirst(rawPayload ?? {}, ['leverage_source', 'leverageSource']) || ''
+      ).trim() || null,
     liquidationPrice: toNumber(row.liquidationPrice),
     exposure: toNumber(row.exposure),
     createdAt: toIsoString(row.positionCreatedAt) || undefined,
@@ -452,6 +492,10 @@ export function buildPositionRecordFromReadModelRow(
     realized_pnl: summary.realizedPnl,
     realized: summary.realizedPnl,
     leverage: summary.leverage,
+    requested_leverage: summary.requestedLeverage,
+    confirmed_order_leverage: summary.confirmedOrderLeverage,
+    observed_position_leverage: summary.observedPositionLeverage,
+    leverage_source: summary.leverageSource || undefined,
     liquidation_price: summary.liquidationPrice,
     exposure: summary.exposure,
     order_price: toNumber(row.orderPrice),

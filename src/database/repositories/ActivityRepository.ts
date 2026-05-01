@@ -56,6 +56,7 @@ export interface ActivitySummaryStats {
 }
 
 export interface ActivityOperationalCountQuery {
+  userId?: string | null;
   type?: string;
   titleLike?: string;
   status?: string;
@@ -144,13 +145,10 @@ export class ActivityRepository {
             .where('activity.createdAt < :cursorCreatedAt', {
               cursorCreatedAt: cursor.createdAt,
             })
-            .orWhere(
-              '(activity.createdAt = :cursorCreatedAt AND activity.id < :cursorId)',
-              {
-                cursorCreatedAt: cursor.createdAt,
-                cursorId: cursor.id,
-              }
-            );
+            .orWhere('(activity.createdAt = :cursorCreatedAt AND activity.id < :cursorId)', {
+              cursorCreatedAt: cursor.createdAt,
+              cursorId: cursor.id,
+            });
         })
       );
     }
@@ -239,37 +237,39 @@ export class ActivityRepository {
     };
   }
 
-  async countOperationalActivities(
-    query: ActivityOperationalCountQuery = {}
-  ): Promise<number> {
+  async countOperationalActivities(query: ActivityOperationalCountQuery = {}): Promise<number> {
     const builder = this.activityRepository.createQueryBuilder('activity').where('1 = 1');
 
+    if (query.userId) {
+      builder.andWhere('activity.userId = :userId', { userId: query.userId });
+    }
+
     if (query.type) {
-      builder.andWhere('LOWER(COALESCE(activity.type, \'\')) = LOWER(:type)', {
+      builder.andWhere("LOWER(COALESCE(activity.type, '')) = LOWER(:type)", {
         type: query.type,
       });
     }
 
     if (query.status) {
-      builder.andWhere('LOWER(COALESCE(activity.status, \'\')) = LOWER(:status)', {
+      builder.andWhere("LOWER(COALESCE(activity.status, '')) = LOWER(:status)", {
         status: query.status,
       });
     }
 
     if (query.stream) {
-      builder.andWhere('LOWER(COALESCE(activity.stream, \'\')) = LOWER(:stream)', {
+      builder.andWhere("LOWER(COALESCE(activity.stream, '')) = LOWER(:stream)", {
         stream: query.stream,
       });
     }
 
     if (query.route) {
-      builder.andWhere('LOWER(COALESCE(activity.route, \'\')) = LOWER(:route)', {
+      builder.andWhere("LOWER(COALESCE(activity.route, '')) = LOWER(:route)", {
         route: query.route,
       });
     }
 
     if (query.titleLike) {
-      builder.andWhere('LOWER(COALESCE(activity.title, \'\')) LIKE :titleLike', {
+      builder.andWhere("LOWER(COALESCE(activity.title, '')) LIKE :titleLike", {
         titleLike: `%${String(query.titleLike).trim().toLowerCase()}%`,
       });
     }
@@ -290,10 +290,10 @@ export class ActivityRepository {
   async getLatestEmailDeliveryCleanupActivity(): Promise<ActivityLog | null> {
     return this.activityRepository
       .createQueryBuilder('activity')
-      .where('LOWER(COALESCE(activity.route, \'\')) = :route', {
+      .where("LOWER(COALESCE(activity.route, '')) = :route", {
         route: 'email deliveries',
       })
-      .andWhere('LOWER(COALESCE(activity.related, \'\')) LIKE :related', {
+      .andWhere("LOWER(COALESCE(activity.related, '')) LIKE :related", {
         related: '%cleanup%',
       })
       .orderBy('activity.createdAt', 'DESC')
@@ -310,7 +310,10 @@ export class ActivityRepository {
   }
 
   async markActivityUnread(userId: string, activityId: string): Promise<boolean> {
-    const result = await this.activityRepository.update({ id: activityId, userId }, { readAt: null });
+    const result = await this.activityRepository.update(
+      { id: activityId, userId },
+      { readAt: null }
+    );
     return Number(result.affected || 0) > 0;
   }
 

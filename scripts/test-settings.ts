@@ -14,6 +14,7 @@ import { ActivityLog, AppSetting, SettingsAuditLog } from '../src/database';
 import { CreateAppSettingsTable1741474200000 } from './_fixtures/migrations/1741474200000-CreateAppSettingsTable';
 import { NormalizeAppSettingsPrimaryKey1765401000000 } from './_fixtures/migrations/1765401000000-NormalizeAppSettingsPrimaryKey';
 import { AddBacktestPromotionRulesToAppSettings1770715000000 } from './_fixtures/migrations/1770715000000-AddBacktestPromotionRulesToAppSettings';
+import { AddWhatsappSuggestionSettingsAndQueue1770716000000 } from './_fixtures/migrations/1770716000000-AddWhatsappSuggestionSettingsAndQueue';
 
 type MigrationColumn = {
   name: string;
@@ -88,6 +89,9 @@ function runSettingsValidationAssertions(): void {
     timezone: 'UTC',
     notifyEmail: true,
     notifyInApp: true,
+    notifyWhatsapp: false,
+    whatsappLiveTradeSuggestions: false,
+    whatsappNumber: null,
     confirmDestructive: true,
     notificationChannel: 'both' as const,
     notificationSeverity: 'all' as const,
@@ -129,6 +133,9 @@ function runSettingsValidationAssertions(): void {
   assert.deepEqual(
     validateUpdateSettingsBody(
       {
+        whatsappNumber: ' +14155550123 ',
+        notifyWhatsapp: true,
+        whatsappLiveTradeSuggestions: true,
         backtestPromotionRules: {
           minScore: 0.82,
           minTrades: 9,
@@ -136,12 +143,18 @@ function runSettingsValidationAssertions(): void {
         },
       },
       defaultSettings
-    ).backtestPromotionRules,
+    ),
     {
-      ...defaultPromotionRules,
-      minScore: 0.82,
-      minTrades: 9,
-      requireRobustness: false,
+      ...defaultSettings,
+      whatsappNumber: '+14155550123',
+      notifyWhatsapp: true,
+      whatsappLiveTradeSuggestions: true,
+      backtestPromotionRules: {
+        ...defaultPromotionRules,
+        minScore: 0.82,
+        minTrades: 9,
+        requireRobustness: false,
+      },
     }
   );
 
@@ -156,6 +169,61 @@ function runSettingsValidationAssertions(): void {
         defaultSettings
       ),
     /backtestPromotionRules.minScore must be a number between 0 and 1/
+  );
+
+  assert.throws(
+    () =>
+      validateUpdateSettingsBody(
+        {
+          notifyWhatsapp: true,
+        },
+        defaultSettings
+      ),
+    /whatsappNumber is required when WhatsApp notifications are enabled/
+  );
+
+  assert.throws(
+    () =>
+      validateUpdateSettingsBody(
+        {
+          whatsappNumber: '12345',
+        },
+        defaultSettings
+      ),
+    /whatsappNumber must be a valid E\.164 phone number/
+  );
+
+  assert.throws(
+    () =>
+      validateUpdateSettingsBody(
+        {
+          whatsappNumber: '+14155550123',
+          whatsappLiveTradeSuggestions: true,
+          notifyWhatsapp: false,
+        },
+        defaultSettings
+      ),
+    /notifyWhatsapp must be enabled when whatsappLiveTradeSuggestions is enabled/
+  );
+
+  assert.deepEqual(
+    validateUpdateSettingsBody(
+      {
+        notifyWhatsapp: false,
+      },
+      {
+        ...defaultSettings,
+        notifyWhatsapp: true,
+        whatsappLiveTradeSuggestions: true,
+        whatsappNumber: '+14155550123',
+      }
+    ),
+    {
+      ...defaultSettings,
+      notifyWhatsapp: false,
+      whatsappLiveTradeSuggestions: false,
+      whatsappNumber: '+14155550123',
+    }
   );
 }
 
@@ -279,10 +347,10 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     assert.equal(created.data.timezone, 'Asia/Kolkata');
     assert.equal(created.data.notifyEmail, false);
     assert.equal(created.data.notifyInApp, true);
-    assert.deepEqual(
-      created.data.backtestPromotionRules,
-      createDefaultBacktestPromotionRules()
-    );
+    assert.equal(created.data.whatsappDeliveryRollout.status, 'disabled');
+    assert.equal(created.data.whatsappDeliveryRollout.allowsLiveTradeSuggestions, false);
+    assert.equal(created.data.whatsappDeliveryRollout.provider, 'twilio');
+    assert.deepEqual(created.data.backtestPromotionRules, createDefaultBacktestPromotionRules());
     assert.deepEqual(
       committedSettings.get('user-1')?.backtestPromotionRules,
       createDefaultBacktestPromotionRules()
@@ -295,7 +363,9 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
       ['notifyEmail', 'timezone']
     );
     const createdTimezoneAudit = committedAudits.find((item) => item.fieldName === 'timezone');
-    const createdNotifyEmailAudit = committedAudits.find((item) => item.fieldName === 'notifyEmail');
+    const createdNotifyEmailAudit = committedAudits.find(
+      (item) => item.fieldName === 'notifyEmail'
+    );
     assert.equal(createdTimezoneAudit?.oldValueType, 'null');
     assert.equal(createdTimezoneAudit?.newValueType, 'string');
     assert.equal(createdTimezoneAudit?.newValueJson, 'Asia/Kolkata');
@@ -335,14 +405,11 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     assert.equal(customizedRules.data.backtestPromotionRules.minTrades, 9);
     assert.equal(customizedRules.data.backtestPromotionRules.requireRobustness, false);
     const customizedRulesAudits = committedAudits.filter((item) => item.userId === 'user-5');
-    assert.deepEqual(
-      customizedRulesAudits.map((item) => item.fieldName).sort(),
-      [
-        'backtestPromotionRules.minScore',
-        'backtestPromotionRules.minTrades',
-        'backtestPromotionRules.requireRobustness',
-      ]
-    );
+    assert.deepEqual(customizedRulesAudits.map((item) => item.fieldName).sort(), [
+      'backtestPromotionRules.minScore',
+      'backtestPromotionRules.minTrades',
+      'backtestPromotionRules.requireRobustness',
+    ]);
     const customizedMinScoreAudit = customizedRulesAudits.find(
       (item) => item.fieldName === 'backtestPromotionRules.minScore'
     );
@@ -353,6 +420,58 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     assert.equal(customizedMinScoreAudit?.newValueJson, 0.82);
     assert.equal(customizedRobustnessAudit?.newValueType, 'boolean');
     assert.equal(customizedRobustnessAudit?.newValueJson, false);
+
+    const whatsappSettings = await service.updateSettings('user-6', {
+      whatsappNumber: '+14155550123',
+      notifyWhatsapp: true,
+      whatsappLiveTradeSuggestions: true,
+    });
+    assert.equal(whatsappSettings.data.whatsappNumber, '+14155550123');
+    assert.equal(whatsappSettings.data.notifyWhatsapp, true);
+    assert.equal(whatsappSettings.data.whatsappLiveTradeSuggestions, false);
+    assert.equal(whatsappSettings.data.whatsappVerifiedAt, null);
+    const whatsappAudits = committedAudits.filter((item) => item.userId === 'user-6');
+    assert.deepEqual(whatsappAudits.map((item) => item.fieldName).sort(), [
+      'notifyWhatsapp',
+      'whatsappLiveTradeSuggestions',
+      'whatsappNumber',
+    ]);
+    assert.equal(committedSettings.get('user-6')?.whatsappVerifiedAt ?? null, null);
+
+    committedSettings.set('user-7', {
+      userId: 'user-7',
+      timezone: 'UTC',
+      notifyEmail: true,
+      notifyInApp: true,
+      notifyWhatsapp: true,
+      whatsappLiveTradeSuggestions: true,
+      whatsappNumber: '+14155550123',
+      whatsappVerifiedAt: new Date('2026-04-05T09:00:00.000Z'),
+      confirmDestructive: true,
+      notificationChannel: 'both',
+      notificationSeverity: 'all',
+      escalationRoute: 'risk-review',
+      escalationSlaMinutes: 15,
+      backtestPromotionRules: createDefaultBacktestPromotionRules(),
+      updatedAt: new Date('2026-04-05T09:05:00.000Z'),
+    });
+
+    const disabledWhatsappSettings = await service.updateSettings('user-7', {
+      notifyWhatsapp: false,
+    });
+    assert.equal(disabledWhatsappSettings.data.notifyWhatsapp, false);
+    assert.equal(disabledWhatsappSettings.data.whatsappLiveTradeSuggestions, false);
+    assert.equal(disabledWhatsappSettings.data.whatsappVerifiedAt, '2026-04-05T09:00:00.000Z');
+
+    const rotatedWhatsappSettings = await service.updateSettings('user-7', {
+      notifyWhatsapp: true,
+      whatsappNumber: '+14155550124',
+      whatsappLiveTradeSuggestions: true,
+    });
+    assert.equal(rotatedWhatsappSettings.data.notifyWhatsapp, true);
+    assert.equal(rotatedWhatsappSettings.data.whatsappNumber, '+14155550124');
+    assert.equal(rotatedWhatsappSettings.data.whatsappLiveTradeSuggestions, false);
+    assert.equal(rotatedWhatsappSettings.data.whatsappVerifiedAt, null);
 
     await assert.rejects(
       service.updateSettings('user-1', {
@@ -379,7 +498,10 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     );
 
     assert.equal(committedSettings.has('user-2'), false);
-    assert.equal(committedAudits.some((item) => item.userId === 'user-2'), false);
+    assert.equal(
+      committedAudits.some((item) => item.userId === 'user-2'),
+      false
+    );
     assert.equal(
       committedActivities.some(
         (item) => item.userId === 'user-2' && item.title === 'User settings updated'
@@ -398,7 +520,10 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     );
 
     assert.equal(committedSettings.has('user-3'), false);
-    assert.equal(committedAudits.some((item) => item.userId === 'user-3'), false);
+    assert.equal(
+      committedAudits.some((item) => item.userId === 'user-3'),
+      false
+    );
     assert.equal(
       committedActivities.some(
         (item) => item.userId === 'user-3' && item.title === 'User settings updated'
@@ -417,7 +542,10 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     );
 
     assert.equal(committedSettings.has('user-4'), false);
-    assert.equal(committedAudits.some((item) => item.userId === 'user-4'), false);
+    assert.equal(
+      committedAudits.some((item) => item.userId === 'user-4'),
+      false
+    );
     assert.equal(
       committedActivities.some(
         (item) => item.userId === 'user-4' && item.title === 'User settings updated'
@@ -531,8 +659,34 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
             actor: 'user-1',
             createdAt: new Date('2026-04-04T00:13:00.000Z'),
           },
+          {
+            id: 'audit-7',
+            fieldName: 'whatsappNumber',
+            oldValue: null,
+            oldValueType: 'null',
+            oldValueJson: null,
+            newValue: '+14155550123',
+            newValueType: 'string',
+            newValueJson: '+14155550123',
+            changeType: 'created',
+            actor: 'user-1',
+            createdAt: new Date('2026-04-04T00:14:00.000Z'),
+          },
+          {
+            id: 'audit-8',
+            fieldName: 'notifyWhatsapp',
+            oldValue: null,
+            oldValueType: 'null',
+            oldValueJson: null,
+            newValue: 'true',
+            newValueType: 'boolean',
+            newValueJson: true,
+            changeType: 'created',
+            actor: 'user-1',
+            createdAt: new Date('2026-04-04T00:15:00.000Z'),
+          },
         ],
-        total: 6,
+        total: 8,
       };
     },
   };
@@ -541,6 +695,16 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
   assert.equal(settingsResponse.data.hasSavedSettings, false);
   assert.equal(settingsResponse.data.versionToken, undefined);
   assert.equal(settingsResponse.data.backtestPromotionRules.minScore, 0.6);
+  assert.equal(settingsResponse.data.notifyWhatsapp, false);
+  assert.equal(settingsResponse.data.whatsappLiveTradeSuggestions, false);
+  assert.equal(settingsResponse.data.whatsappNumber, null);
+  assert.equal(settingsResponse.data.whatsappVerifiedAt, null);
+  assert.equal(settingsResponse.data.whatsappDeliveryRollout.status, 'disabled');
+  assert.equal(
+    settingsResponse.data.whatsappDeliveryRollout.allowsLiveTradeSuggestions,
+    false
+  );
+  assert.equal(settingsResponse.data.whatsappDeliveryRollout.provider, 'twilio');
 
   const defaultAuditResponse = await service.getSettingsAudit('user-1', {});
   assert.equal(defaultAuditResponse.data.limit, 20);
@@ -551,8 +715,11 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
     offset: '0',
   });
 
-  assert.deepEqual(auditQueries, [{ limit: 20, offset: 0 }, { limit: 10, offset: 0 }]);
-  assert.equal(auditResponse.data.total, 6);
+  assert.deepEqual(auditQueries, [
+    { limit: 20, offset: 0 },
+    { limit: 10, offset: 0 },
+  ]);
+  assert.equal(auditResponse.data.total, 8);
   assert.equal(auditResponse.data.items[0]?.fieldLabel, 'Email notifications');
   assert.equal(auditResponse.data.items[0]?.fieldKey, 'notifyEmail');
   assert.equal(auditResponse.data.items[0]?.oldValue, true);
@@ -582,6 +749,11 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
   assert.equal(auditResponse.data.items[5]?.newValueType, 'json');
   assert.equal((auditResponse.data.items[5]?.newValue as Record<string, unknown>)?.minScore, 0.8);
   assert.match(auditResponse.data.items[5]?.newValueDisplay || '', /score >= 0\.80/);
+  assert.equal(auditResponse.data.items[6]?.fieldLabel, 'WhatsApp number');
+  assert.equal(auditResponse.data.items[6]?.newValue, '+14155550123');
+  assert.match(auditResponse.data.items[6]?.newValueDisplay || '', /\*+/);
+  assert.equal(auditResponse.data.items[7]?.fieldLabel, 'WhatsApp notifications');
+  assert.equal(auditResponse.data.items[7]?.newValueDisplay, 'Enabled');
 }
 
 async function runSettingsSchemaNormalizationAssertions(): Promise<void> {
@@ -675,6 +847,72 @@ async function runSettingsSchemaNormalizationAssertions(): Promise<void> {
     },
   } as any);
   assert.deepEqual(droppedColumns, ['backtestPromotionRules']);
+
+  const whatsappMigration = new AddWhatsappSuggestionSettingsAndQueue1770716000000();
+  const addedWhatsappColumns: string[] = [];
+  let createdWhatsappTableName: string | null = null;
+  let createdWhatsappTableColumns: string[] = [];
+  let createdWhatsappIndices: string[] = [];
+
+  await whatsappMigration.up({
+    async hasTable(tableName: string) {
+      return tableName === 'app_settings';
+    },
+    async hasColumn() {
+      return false;
+    },
+    async addColumn(_tableName: string, column: { name: string }) {
+      addedWhatsappColumns.push(column.name);
+    },
+    async createTable(table: { name: string; columns?: Array<{ name: string }> }) {
+      createdWhatsappTableName = table.name;
+      createdWhatsappTableColumns = (table.columns || []).map((column) => column.name);
+    },
+    async createIndices(_tableName: string, indices: Array<{ name: string }>) {
+      createdWhatsappIndices = indices.map((index) => index.name);
+    },
+  } as any);
+
+  assert.deepEqual(addedWhatsappColumns, [
+    'notifyWhatsapp',
+    'whatsappLiveTradeSuggestions',
+    'whatsappNumber',
+    'whatsappVerifiedAt',
+  ]);
+  assert.equal(createdWhatsappTableName, 'whatsapp_deliveries');
+  assert.equal(createdWhatsappTableColumns.includes('recipient_phone'), true);
+  assert.equal(createdWhatsappTableColumns.includes('dedupe_key'), true);
+  assert.deepEqual(createdWhatsappIndices, [
+    'idx_whatsapp_deliveries_status_created_at',
+    'idx_whatsapp_deliveries_user_created_at',
+    'idx_whatsapp_deliveries_status_updated_at',
+    'uidx_whatsapp_deliveries_dedupe_key',
+  ]);
+
+  const droppedWhatsappColumns: string[] = [];
+  let droppedWhatsappTable = false;
+  await whatsappMigration.down({
+    async hasTable(tableName: string) {
+      return tableName === 'app_settings' || tableName === 'whatsapp_deliveries';
+    },
+    async hasColumn() {
+      return true;
+    },
+    async dropColumn(_tableName: string, columnName: string) {
+      droppedWhatsappColumns.push(columnName);
+    },
+    async dropTable(tableName: string) {
+      droppedWhatsappTable = tableName === 'whatsapp_deliveries';
+    },
+  } as any);
+
+  assert.equal(droppedWhatsappTable, true);
+  assert.deepEqual(droppedWhatsappColumns, [
+    'whatsappVerifiedAt',
+    'whatsappNumber',
+    'whatsappLiveTradeSuggestions',
+    'notifyWhatsapp',
+  ]);
 }
 
 function runSettingsScriptWiringAssertions(): void {

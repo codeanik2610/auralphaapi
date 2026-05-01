@@ -319,6 +319,8 @@ function createServiceHarness() {
   const activities: Array<Record<string, unknown>> = [];
   const alerts: Array<Record<string, unknown>> = [];
   const linkedSuggestedOrders: Array<Record<string, unknown>> = [];
+  const freshnessChecks: string[] = [];
+  const preTradeChecks: Array<Record<string, unknown>> = [];
   let adapterCalls = 0;
   let nextAdapterResult: unknown = createSuccess({
     order_id: 'live-1',
@@ -361,6 +363,27 @@ function createServiceHarness() {
         reason: '',
         policyId: null,
         breaches: [],
+      };
+    },
+  };
+
+  service.riskPreTradeService = {
+    async createPreTradeCheck(userId: string, body: Record<string, unknown>) {
+      preTradeChecks.push({ userId, body });
+      return {
+        success: true,
+        data: {
+          checkId: `pretrade-${preTradeChecks.length}`,
+          status: 'passed',
+          decision: {
+            allowed: true,
+            blocked: false,
+            approvalRequired: false,
+            blockingRuleCount: 0,
+            warningRuleCount: 0,
+            summary: 'Pre-trade check passed.',
+          },
+        },
       };
     },
   };
@@ -633,6 +656,10 @@ function createServiceHarness() {
   };
 
   service.suggestedTradesService = {
+    async assertLiveOrderFreshnessForSuggestedTrade(userId: string, suggestedTradeId: string) {
+      freshnessChecks.push(`${userId}:${suggestedTradeId}`);
+      return null;
+    },
     async linkSuggestedTradeOrder(_userId: string, _suggestedTradeId: string, payload: Record<string, unknown>) {
       linkedSuggestedOrders.push(payload);
       return null;
@@ -664,6 +691,8 @@ function createServiceHarness() {
     activities,
     alerts,
     linkedSuggestedOrders,
+    freshnessChecks,
+    preTradeChecks,
     getAdapterCalls: () => adapterCalls,
     setAdapterResult: (value: unknown) => {
       nextAdapterResult = value;
@@ -702,6 +731,38 @@ async function runReplayAssertion(): Promise<void> {
 
   assert.deepEqual(second, first);
   assert.equal(harness.getAdapterCalls(), 1);
+  assert.equal(harness.preTradeChecks.length, 1);
+  assert.deepEqual(harness.preTradeChecks[0]?.body, {
+    snapshotId: undefined,
+    suggestedTradeId: 'st-auto-1',
+    automationId: undefined,
+    automationRunId: undefined,
+    sourceType: 'suggested_trade_order',
+    executionMode: 'live',
+    approvalMode: 'auto_if_safe',
+    routing: {
+      routeMode: 'fixed',
+      brokerKey: 'mudrex',
+      accountId: 'acct-1',
+    },
+    order: {
+      symbol: 'BTCUSDT',
+      timeframe: null,
+      side: 'BUY',
+      orderType: 'market',
+      timeInForce: null,
+      quantityMode: 'quantity',
+      quantity: 1,
+      notional: null,
+      riskPercent: null,
+      entryPrice: 64000,
+      stopLossPrice: 62000,
+      takeProfitTargets: [66000],
+      leverage: 5,
+      reduceOnly: false,
+    },
+  });
+  assert.deepEqual(harness.freshnessChecks, ['user-1:st-auto-1', 'user-1:st-auto-1']);
   const stored = harness.submissions.get('user-1:order-submit-8-replay');
   assert.equal(stored?.status, 'completed');
   assert.equal(stored?.suggestedTradeId, 'st-auto-1');
@@ -718,6 +779,18 @@ async function runReplayAssertion(): Promise<void> {
       (event: Record<string, unknown>) => event.type === 'broker_order_accepted'
     )?.details?.protectionStatus,
     'attached'
+  );
+  assert.equal(
+    stored?.lifecyclePayload?.find(
+      (event: Record<string, unknown>) => event.type === 'broker_call_started'
+    )?.details?.preTradeCheckId,
+    'pretrade-1'
+  );
+  assert.equal(
+    stored?.lifecyclePayload?.find(
+      (event: Record<string, unknown>) => event.type === 'broker_order_accepted'
+    )?.details?.preTradeCheckId,
+    'pretrade-1'
   );
   assert.equal(harness.linkedSuggestedOrders.length, 1);
   assert.equal(
@@ -737,6 +810,16 @@ async function runReplayAssertion(): Promise<void> {
   });
   assert.equal(listResponse.total, 1);
   assert.equal(listResponse.items[0]?.id, stored?.id);
+  assert.deepEqual(listResponse.items[0]?.protectionState, {
+    expected: true,
+    status: 'attached',
+    attached: true,
+    summary: 'Native SL/TP protection was reported by the broker response.',
+    brokerStatus: 'attached',
+    stopLossOrderId: 'sl-1',
+    takeProfitOrderId: 'tp-1',
+    protectiveOrderCount: 2,
+  });
   assert.equal(listResponse.items[0]?.operatorState.label, 'Pending reconciliation');
   assert.equal(
     listResponse.items[0]?.operatorState.recommendedAction,
@@ -745,6 +828,7 @@ async function runReplayAssertion(): Promise<void> {
 
   const detailResponse = await harness.service.getOrderSubmissionAttempt('user-1', stored.id);
   assert.equal(detailResponse.id, stored.id);
+  assert.equal(detailResponse.protectionState.status, 'attached');
   assert.equal(detailResponse.requestPayload?.order?.suggestedTradeId, 'st-auto-1');
   assert.equal(
     ((detailResponse.responsePayload?.data as Record<string, unknown> | undefined)
@@ -816,6 +900,7 @@ async function runReplayAssertion(): Promise<void> {
     harness.submissions.get('user-1:order-submit-8-missing')?.reconciliationState,
     'missing'
   );
+  assert.equal(missingReconcile.submission.operatorState.label, 'Missing snapshot');
 
   const sweep = await harness.service.reconcileOrderSubmissionAttempts('user-1', {
     limit: '10',
@@ -824,6 +909,73 @@ async function runReplayAssertion(): Promise<void> {
   });
   assert.equal(sweep.total, 1);
   assert.equal(sweep.missing, 1);
+}
+
+async function runProtectionGapAssertion(): Promise<void> {
+  const harness = createServiceHarness();
+  harness.setAdapterResult(
+    createSuccess({
+      order_id: 'live-unprotected-1',
+      status: 'OPEN',
+      protection_status: 'not_requested',
+      message: 'Order submitted without native protection',
+    })
+  );
+
+  await harness.service.createFuturesOrder('user-1', 'asset-1', {
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+    idempotency_key: 'order-submit-8-protection-gap',
+    symbol: 'BTCUSDT',
+    side: 'long',
+    execution_mode: 'live',
+    leverage: 5,
+    quantity: 1,
+    order_price: 64000,
+    order_type: 'market',
+    trigger_type: 'immediate',
+    is_takeprofit: false,
+    is_stoploss: false,
+    stoploss_price: 62000,
+    takeprofit_price: 66000,
+    reduce_only: false,
+  });
+
+  const stored = harness.submissions.get('user-1:order-submit-8-protection-gap');
+  assert.equal(stored?.status, 'completed');
+  assert.equal(stored?.brokerOrderId, 'live-unprotected-1');
+  assert.equal(
+    stored?.lifecyclePayload?.find(
+      (event: Record<string, unknown>) => event.type === 'broker_order_accepted'
+    )?.details?.protectionStatus,
+    'missing'
+  );
+
+  const detail = await harness.service.getOrderSubmissionAttempt('user-1', stored.id);
+  assert.deepEqual(detail.protectionState, {
+    expected: true,
+    status: 'missing',
+    attached: false,
+    summary:
+      'Native SL/TP protection was expected but the broker response did not report both protective legs.',
+    brokerStatus: 'not_requested',
+    stopLossOrderId: null,
+    takeProfitOrderId: null,
+    protectiveOrderCount: 0,
+  });
+  assert.equal(detail.operatorState.label, 'Protection missing');
+  assert.equal(detail.operatorState.recommendedAction, 'verify_protection');
+
+  assert.equal(
+    harness.activities.some((item) => item.title === 'Live order missing native protection'),
+    true
+  );
+  assert.equal(
+    harness.alerts.some((item) =>
+      String(item.message || '').includes('Live order missing native protection')
+    ),
+    true
+  );
 }
 
 async function runConflictAssertion(): Promise<void> {
@@ -1111,6 +1263,7 @@ async function runAutomaticSyncReconciliationAssertion(): Promise<void> {
 
 async function main(): Promise<void> {
   await runReplayAssertion();
+  await runProtectionGapAssertion();
   await runConflictAssertion();
   await runNormalizationAssertion();
   await runAutomaticSyncReconciliationAssertion();

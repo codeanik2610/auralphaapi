@@ -21,6 +21,7 @@ import { extractAutomationLineage } from '../utils/automationLineage';
 import {
   normalizeAutomationConfig,
   normalizeAutomationType,
+  TRADE_SUGGESTION_EXECUTION_LIMIT_RULES,
   normalizeTradeSuggestionExecutionPolicy,
 } from '../utils/automationType';
 import {
@@ -34,6 +35,7 @@ import type { StrategyLibraryRunBody } from '../contracts/StrategyLibrary';
 import { AutomationSignalEvaluatorService } from './AutomationSignalEvaluatorService';
 import { BrokerOrdersFacadeService } from './BrokerOrdersFacadeService';
 import { SuggestedTradesService } from './SuggestedTradesService';
+import { WhatsappNotificationsService } from './WhatsappNotificationsService';
 
 const log = new Logger('AutomationExecutionService');
 const AUTOMATION_RUNTIME_WORKER_ID = `${os.hostname()}:${process.pid}:automation-api`;
@@ -95,6 +97,9 @@ export class AutomationExecutionService {
 
   @Inject(() => BrokerOrdersFacadeService)
   private ordersService!: BrokerOrdersFacadeService;
+
+  @Inject(() => WhatsappNotificationsService)
+  private whatsappNotificationsService!: WhatsappNotificationsService;
 
   async execute(payload: ExecuteAutomationPayload): Promise<ExecuteAutomationResult> {
     const automationId = String(payload.automationId || '').trim();
@@ -254,6 +259,10 @@ export class AutomationExecutionService {
       };
     }
 
+    log.info(
+      `Automation ${automation.id} (${automation.name}) started with trigger=${trigger}, type=${automationType}, scheduledFor=${(scheduledAt ?? scheduledFor ?? now).toISOString()}`
+    );
+
     await this.automationRepository.createAutomationEvent({
       automationId: automation.id,
       type: 'Run started',
@@ -293,7 +302,11 @@ export class AutomationExecutionService {
           );
           backtestId = response.data?.backtestId;
         } else {
-          const queuedBacktest = await this.queueStrategyBacktest(automation, runId, normalizedConfig);
+          const queuedBacktest = await this.queueStrategyBacktest(
+            automation,
+            runId,
+            normalizedConfig
+          );
           backtestId = queuedBacktest?.id;
         }
 
@@ -456,16 +469,23 @@ export class AutomationExecutionService {
                 ? 'Fresh entry signals were detected on the latest closed candle, persisted as suggested trades, and eligible paper orders were placed automatically after pre-trade clearance.'
                 : suggestionAutoLivePlaced > 0
                   ? 'Fresh entry signals were detected on the latest closed candle, persisted as suggested trades, and eligible live orders were placed automatically after pre-trade clearance.'
-                : suggestionAutoLiveReady > 0 ||
-                    suggestionAutoLiveBlocked > 0 ||
-                    suggestionAutoLiveSkipped > 0 ||
-                    suggestionAutoLiveDisabled > 0 ||
-                    suggestionAutoLiveFailed > 0
-                  ? 'Fresh entry signals were detected on the latest closed candle, persisted as suggested trades, and evaluated against the live-auto rollout guard.'
-                : 'Fresh entry signals were detected on the latest closed candle and persisted as suggested trades.'
+                  : suggestionAutoLiveReady > 0 ||
+                      suggestionAutoLiveBlocked > 0 ||
+                      suggestionAutoLiveSkipped > 0 ||
+                      suggestionAutoLiveDisabled > 0 ||
+                      suggestionAutoLiveFailed > 0
+                    ? 'Fresh entry signals were detected on the latest closed candle, persisted as suggested trades, and evaluated against the live-auto rollout guard.'
+                    : 'Fresh entry signals were detected on the latest closed candle and persisted as suggested trades.'
               : 'The automation scan completed successfully but no fresh entry signals were detected on the latest closed candle.',
         },
       });
+
+      log.info(
+        `Automation ${automation.id} (${automation.name}) completed in ${Math.max(
+          0,
+          finishedAt.getTime() - now.getTime()
+        )}ms with ${suggestedTradesInserted} new suggestion(s), ${suggestedTradesDuplicates} duplicate(s), ${suggestionSignalsDetected} signal(s), ${suggestionAutoPaperPlaced} paper auto placed, ${suggestionAutoLiveReady} live auto ready, ${suggestionAutoLivePlaced} live auto placed`
+      );
 
       return {
         status: 'started',
@@ -547,12 +567,25 @@ export class AutomationExecutionService {
         route: 'Risk review',
       });
 
-      const fatal = error instanceof BadRequestAppError || error instanceof NotFoundAppError;
+      const fatal = this.isFatalAutomationConfigError(error);
       if (fatal) {
-        await this.automationRepository.updateAutomationStatus(automation.userId, automation.id, 'Failed', null);
+        await this.automationRepository.updateAutomationStatus(
+          automation.userId,
+          automation.id,
+          'Failed',
+          null
+        );
       }
 
-      log.error(`Automation ${automation.id} run failed: ${error instanceof Error ? error.message : String(error)}`);
+      const durationMs = Math.max(0, finishedAt.getTime() - now.getTime());
+      const message = error instanceof Error ? error.message : String(error);
+      if (this.isMysqlDeadlockError(error)) {
+        log.warn(
+          `Automation ${automation.id} run hit MySQL deadlock after ${durationMs}ms: ${message}`
+        );
+      } else {
+        log.error(`Automation ${automation.id} run failed after ${durationMs}ms: ${message}`);
+      }
       return {
         status: 'failed',
         runId,
@@ -562,8 +595,33 @@ export class AutomationExecutionService {
     }
   }
 
+  private isMysqlDeadlockError(error: unknown): boolean {
+    const code =
+      typeof error === 'object' && error !== null
+        ? String((error as any).code || (error as any).driverError?.code || '')
+        : '';
+    const message = error instanceof Error ? error.message : String(error);
+    return code === 'ER_LOCK_DEADLOCK' || message.toLowerCase().includes('deadlock');
+  }
+
+  private isFatalAutomationConfigError(error: unknown): boolean {
+    if (error instanceof BadRequestAppError || error instanceof NotFoundAppError) {
+      return true;
+    }
+
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return [
+      'trade-suggestion automation is missing a source template',
+      'strategy template not found for trade-suggestion automation',
+      'template is not automation-ready',
+      'trade-suggestion automation config must include at least one symbol',
+      'trade-suggestion automation config must include a timeframe',
+      'no active trade plan legs are available for this automation',
+    ].some((needle) => message.includes(needle));
+  }
+
   async syncBacktestRunnerLifecycle(userId: string, automationId: string): Promise<void> {
-    const automation = await this.automationRepository.getAutomationById(userId, automationId);
+    const automation = await this.automationRepository.getAutomationCoreById(userId, automationId);
     if (!automation) {
       return;
     }
@@ -600,20 +658,17 @@ export class AutomationExecutionService {
 
     const config = this.parseRecord(backtest.result?.config) ?? {};
     const inputSnapshot = this.parseRecord(config.inputSnapshot) ?? {};
-    const automationId = this.readString(
-      config.automationId,
-      inputSnapshot.automationId
-    );
-    const automationRunId = this.readString(
-      config.automationRunId,
-      inputSnapshot.automationRunId
-    );
+    const automationId = this.readString(config.automationId, inputSnapshot.automationId);
+    const automationRunId = this.readString(config.automationRunId, inputSnapshot.automationRunId);
 
     if (!automationId || !automationRunId) {
       return { synced: false };
     }
 
-    const automation = await this.automationRepository.getAutomationById(backtest.userId, automationId);
+    const automation = await this.automationRepository.getAutomationCoreById(
+      backtest.userId,
+      automationId
+    );
     if (!automation) {
       return { synced: false, automationId, automationRunId };
     }
@@ -627,9 +682,10 @@ export class AutomationExecutionService {
     return { synced: true, automationId, automationRunId };
   }
 
-  private resolveLibraryRunConfig(
-    config: Record<string, unknown> | null
-  ): { libraryId: string | null; runBody: StrategyLibraryRunBody } {
+  private resolveLibraryRunConfig(config: Record<string, unknown> | null): {
+    libraryId: string | null;
+    runBody: StrategyLibraryRunBody;
+  } {
     const resolved = this.parseRecord(config);
     const nested = this.parseRecord(resolved?.config);
     const nestedSnapshot = this.parseRecord(nested?.inputSnapshot);
@@ -753,7 +809,8 @@ export class AutomationExecutionService {
     const executionPolicy = normalizeTradeSuggestionExecutionPolicy(
       this.parseRecord(tradeSuggestion.execution) ?? {}
     );
-    const setupScope = this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(config.setupScope);
+    const setupScope =
+      this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(config.setupScope);
     const profileInfo = await this.resolveTradeSuggestionProfile(automation.userId, config);
     const profile = profileInfo.profile;
 
@@ -765,14 +822,14 @@ export class AutomationExecutionService {
 
     const symbols = this.resolveTradeSuggestionSymbols(config);
     if (!symbols.length) {
-      throw new BadRequestAppError('trade-suggestion automation config must include at least one symbol');
+      throw new BadRequestAppError(
+        'trade-suggestion automation config must include at least one symbol'
+      );
     }
 
     const timeframe = this.resolveTradeSuggestionTimeframe(config);
     if (!timeframe) {
-      throw new BadRequestAppError(
-        'trade-suggestion automation config must include a timeframe'
-      );
+      throw new BadRequestAppError('trade-suggestion automation config must include a timeframe');
     }
 
     const activeLegs = [profile.tradePlan.long, profile.tradePlan.short].filter(
@@ -782,11 +839,13 @@ export class AutomationExecutionService {
       throw new BadRequestAppError('No active trade plan legs are available for this automation');
     }
 
-    const sourceBacktestId =
-      this.readString(tradeSuggestion.backtestId, config.backtestId) ?? null;
+    const sourceBacktestId = this.readString(tradeSuggestion.backtestId, config.backtestId) ?? null;
     const sourceSetupKey =
-      this.readString(setupScope?.dedupeKey, tradeSuggestion.sourceSetupKey, config.sourceSetupKey) ??
-      null;
+      this.readString(
+        setupScope?.dedupeKey,
+        tradeSuggestion.sourceSetupKey,
+        config.sourceSetupKey
+      ) ?? null;
     const score = this.readNumber(setupScope?.score, tradeSuggestion.score);
     const confidence =
       this.readNumber(tradeSuggestion.confidence, config.confidence, score) ??
@@ -814,15 +873,22 @@ export class AutomationExecutionService {
       this.readString(executionPolicy.executionMode)?.toLowerCase() === 'live_trade_auto' &&
       this.readString(executionPolicy.approvalMode)?.toLowerCase() === 'auto_if_safe';
     const maxAutoPaperOrdersPerRun = Math.max(
-      1,
-      Math.floor(this.readNumber(this.parseRecord(executionPolicy.limits)?.maxOrdersPerRun) ?? 1)
+      TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.min,
+      Math.floor(
+        this.readNumber(this.parseRecord(executionPolicy.limits)?.maxOrdersPerRun) ??
+          TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.fallback
+      )
     );
     const maxAutoLiveChecksPerRun = Math.max(
-      1,
-      Math.floor(this.readNumber(this.parseRecord(executionPolicy.limits)?.maxOrdersPerRun) ?? 1)
+      TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.min,
+      Math.floor(
+        this.readNumber(this.parseRecord(executionPolicy.limits)?.maxOrdersPerRun) ??
+          TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.fallback
+      )
     );
 
     const candleSettings = this.resolveTradeSuggestionCandleSettings(config);
+    const signalSelectionMode = this.resolveTradeSuggestionSignalSelectionMode(config);
     const existingCursors = await this.automationCursorRepository.listByAutomationAndScope(
       automation.id,
       automation.userId,
@@ -849,6 +915,7 @@ export class AutomationExecutionService {
       candlesTable: candleSettings.candlesTable,
       candlesSchema: candleSettings.candlesSchema,
       candlesMaxRows: candleSettings.candlesMaxRows,
+      signalSelectionMode,
       cursorBySymbol: Object.fromEntries(
         Array.from(cursorMap.entries()).flatMap(([symbol, cursor]) =>
           cursor.lastEvaluatedSignalTime
@@ -879,18 +946,28 @@ export class AutomationExecutionService {
           lastStatus: item.status,
           meta: {
             reason: item.reason ?? null,
-            evaluationMode: 'closed-candle-window',
+            evaluationMode: 'latest-closed-candle',
+            signalSelectionMode,
           },
         });
         continue;
       }
 
       const signalEvents = Array.isArray(item.signals) ? item.signals : [];
-      const normalizedSignalEvents = signalEvents
+      const latestClosedSignalTimeMs =
+        latestClosedSignalTime && !Number.isNaN(latestClosedSignalTime.getTime())
+          ? latestClosedSignalTime.getTime()
+          : null;
+      const validSignalEvents = signalEvents
         .map((event) => {
           const signalTime = event?.signalTime ? new Date(event.signalTime) : null;
           const entryPrice = this.readNumber(event?.entryPrice);
-          if (!signalTime || Number.isNaN(signalTime.getTime()) || entryPrice === null || entryPrice <= 0) {
+          if (
+            !signalTime ||
+            Number.isNaN(signalTime.getTime()) ||
+            entryPrice === null ||
+            entryPrice <= 0
+          ) {
             return null;
           }
           const leg = activeLegs.find((candidate) => candidate.side === event.side);
@@ -901,6 +978,7 @@ export class AutomationExecutionService {
             leg,
             signalTime,
             entryPrice,
+            tradePlan: this.parseRecord(event?.tradePlan),
           };
         })
         .filter(
@@ -910,8 +988,18 @@ export class AutomationExecutionService {
             leg: StrategyTemplateTradePlanLeg;
             signalTime: Date;
             entryPrice: number;
+            tradePlan: Record<string, unknown> | null;
           } => Boolean(event)
         );
+      const normalizedSignalEvents =
+        signalSelectionMode === 'cursor_gap'
+          ? validSignalEvents
+          : validSignalEvents.filter(
+              (event) =>
+                latestClosedSignalTimeMs === null ||
+                event.signalTime.getTime() === latestClosedSignalTimeMs
+            );
+      const skippedHistoricalSignalCount = validSignalEvents.length - normalizedSignalEvents.length;
 
       if (!normalizedSignalEvents.length) {
         await this.automationCursorRepository.upsertCursor({
@@ -922,14 +1010,16 @@ export class AutomationExecutionService {
           lastEvaluatedSignalTime:
             latestClosedSignalTime && !Number.isNaN(latestClosedSignalTime.getTime())
               ? latestClosedSignalTime
-              : currentCursor?.lastEvaluatedSignalTime ?? null,
+              : (currentCursor?.lastEvaluatedSignalTime ?? null),
           lastTriggeredSignalTime: latestTriggeredSignalTime,
           lastRunId: runId,
           lastStatus: 'ok',
           meta: {
             latestClosedSignalTime: latestClosedSignalTime?.toISOString() ?? null,
-            evaluationMode: 'closed-candle-window',
+            evaluationMode: 'latest-closed-candle',
+            signalSelectionMode,
             signalCount: 0,
+            skippedHistoricalSignalCount,
           },
         });
         continue;
@@ -938,9 +1028,10 @@ export class AutomationExecutionService {
       signalsDetected += normalizedSignalEvents.length;
 
       for (const event of normalizedSignalEvents) {
-        const { leg, signalTime, entryPrice } = event;
-        const stopLossPrice = this.computeStopLossPrice(entryPrice, leg);
-        const takeProfitTargets = this.computeTakeProfitTargets(entryPrice, leg);
+        const { leg, signalTime, entryPrice, tradePlan } = event;
+        const protection = this.resolveSuggestedTradeProtection(entryPrice, leg, tradePlan);
+        const stopLossPrice = protection.stopLossPrice;
+        const takeProfitTargets = protection.takeProfitTargets;
         const dedupeKey = [
           automation.id,
           item.symbol,
@@ -984,6 +1075,14 @@ export class AutomationExecutionService {
             sourceBacktestId,
             sourceSetupKey,
             evaluationMode: 'latest-closed-candle',
+            signalSelectionMode,
+            signalTradePlan: tradePlan,
+            resolvedProtection: {
+              stopLossPrice,
+              takeProfitTargets,
+              riskRewardRatio: protection.riskRewardRatio,
+              entryPlanLabel: protection.planLabel,
+            },
           },
         });
 
@@ -1010,6 +1109,8 @@ export class AutomationExecutionService {
             entryPrice: this.formatPrice(entryPrice),
             stopLossPrice,
             takeProfitTargets,
+            riskRewardRatio: protection.riskRewardRatio,
+            entryPlanLabel: protection.planLabel,
             sourceBacktestId,
             sourceTemplateId: profileInfo.sourceTemplateId,
             score,
@@ -1017,14 +1118,26 @@ export class AutomationExecutionService {
           },
         });
 
+        if (!created.duplicate && created.item) {
+          await this.operationalEventService.emitNotificationAlert(automation.userId, {
+            channel: 'Suggested Trades',
+            source: `trade-suggestion.created:${created.item.id}`,
+            symbol: item.symbol,
+            route: 'Suggested Trades',
+            severity: 'Medium',
+            message: `New trade idea created for ${item.symbol} ${timeframe} ${leg.side.toUpperCase()}.`,
+          });
+        }
+
         if (!created.duplicate && created.item && autoPaperEnabled) {
-          const autoExecution = await this.suggestedTradesService.attemptAutoPaperExecutionForAutomation(
-            automation.userId,
-            created.item.id,
-            {
-              placedInRun: autoPaperPlaced,
-            }
-          );
+          const autoExecution =
+            await this.suggestedTradesService.attemptAutoPaperExecutionForAutomation(
+              automation.userId,
+              created.item.id,
+              {
+                placedInRun: autoPaperPlaced,
+              }
+            );
 
           if (autoExecution.outcome === 'placed') {
             autoPaperPlaced += 1;
@@ -1066,19 +1179,20 @@ export class AutomationExecutionService {
         }
 
         if (!created.duplicate && created.item && autoLiveEnabled) {
-          const liveRollout = await this.suggestedTradesService.attemptAutoLiveExecutionForAutomation(
-            automation.userId,
-            created.item.id,
-            {
-              createOrder: async (assetId, body, context) =>
-                this.ordersService.createFuturesOrder(automation.userId, assetId, body, {
-                  suggestedTradeId: context?.suggestedTradeId ?? null,
-                }),
-            },
-            {
-              placedInRun: autoLivePlaced,
-            }
-          );
+          const liveRollout =
+            await this.suggestedTradesService.attemptAutoLiveExecutionForAutomation(
+              automation.userId,
+              created.item.id,
+              {
+                createOrder: async (assetId, body, context) =>
+                  this.ordersService.createFuturesOrder(automation.userId, assetId, body, {
+                    suggestedTradeId: context?.suggestedTradeId ?? null,
+                  }),
+              },
+              {
+                placedInRun: autoLivePlaced,
+              }
+            );
 
           if (liveRollout.outcome === 'placed') {
             autoLivePlaced += 1;
@@ -1104,14 +1218,14 @@ export class AutomationExecutionService {
               liveRollout.outcome === 'placed'
                 ? 'Created'
                 : liveRollout.outcome === 'ready'
-                ? 'Ready'
-                : liveRollout.outcome === 'failed'
-                  ? 'Failed'
-                  : liveRollout.outcome === 'blocked'
-                    ? 'Blocked'
-                    : liveRollout.outcome === 'disabled'
-                      ? 'Skipped'
-                      : 'Skipped',
+                  ? 'Ready'
+                  : liveRollout.outcome === 'failed'
+                    ? 'Failed'
+                    : liveRollout.outcome === 'blocked'
+                      ? 'Blocked'
+                      : liveRollout.outcome === 'disabled'
+                        ? 'Skipped'
+                        : 'Skipped',
             title: `${item.symbol} ${timeframe} live auto rollout guard`,
             dedupeKey: `${dedupeKey}:live-auto`,
             payload: {
@@ -1125,9 +1239,31 @@ export class AutomationExecutionService {
               runLimit: maxAutoLiveChecksPerRun,
             },
           });
+
+          if (liveRollout.outcome === 'ready') {
+            await this.tryQueueLiveTradeSuggestionWhatsappNotification({
+              automation,
+              runId,
+              suggestedTradeId: created.item.id,
+              brokerKey: liveRollout.brokerKey ?? null,
+              accountId: liveRollout.accountId ?? null,
+              preTradeCheckId: liveRollout.preTradeCheckId ?? null,
+            });
+            await this.operationalEventService.emitNotificationAlert(automation.userId, {
+              channel: 'Suggested Trades',
+              source: `trade-suggestion.live-auto.ready:${created.item.id}`,
+              symbol: created.item.symbol,
+              route: 'Suggested Trades',
+              severity: 'Medium',
+              message: `Live trade suggestion ready for ${created.item.symbol} on ${liveRollout.brokerKey ?? 'auto-route'}${liveRollout.accountId ? ` (${liveRollout.accountId})` : ''}.`,
+            });
+          }
         }
 
-        if (!latestTriggeredSignalTime || signalTime.getTime() > latestTriggeredSignalTime.getTime()) {
+        if (
+          !latestTriggeredSignalTime ||
+          signalTime.getTime() > latestTriggeredSignalTime.getTime()
+        ) {
           latestTriggeredSignalTime = signalTime;
         }
       }
@@ -1140,14 +1276,16 @@ export class AutomationExecutionService {
         lastEvaluatedSignalTime:
           latestClosedSignalTime && !Number.isNaN(latestClosedSignalTime.getTime())
             ? latestClosedSignalTime
-            : currentCursor?.lastEvaluatedSignalTime ?? null,
+            : (currentCursor?.lastEvaluatedSignalTime ?? null),
         lastTriggeredSignalTime: latestTriggeredSignalTime,
         lastRunId: runId,
         lastStatus: 'signal',
         meta: {
           latestClosedSignalTime: latestClosedSignalTime?.toISOString() ?? null,
-          evaluationMode: 'closed-candle-window',
+          evaluationMode: 'latest-closed-candle',
+          signalSelectionMode,
           signalCount: normalizedSignalEvents.length,
+          skippedHistoricalSignalCount,
         },
       });
     }
@@ -1171,7 +1309,7 @@ export class AutomationExecutionService {
             ? `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${autoPaperPlaced} paper order(s) auto-placed, ${autoPaperBlocked} blocked, ${autoPaperSkipped} skipped, ${autoPaperFailed} failed, ${symbolsSkipped} symbol(s) skipped`
             : autoLiveEnabled
               ? `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${autoLivePlaced} live order(s) placed, ${autoLiveReady} rollout-ready, ${autoLiveBlocked} blocked, ${autoLiveSkipped} skipped, ${autoLiveDisabled} disabled, ${autoLiveFailed} failed, ${symbolsSkipped} symbol(s) skipped`
-            : `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${symbolsSkipped} symbol(s) skipped`
+              : `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${symbolsSkipped} symbol(s) skipped`
           : `No fresh entry signals detected across ${evaluation.evaluatedSymbols} evaluated symbol(s); ${symbolsSkipped} symbol(s) skipped`,
     });
 
@@ -1195,10 +1333,34 @@ export class AutomationExecutionService {
     };
   }
 
-  private async syncBacktestRunnerRun(
-    automation: Automation,
-    run: AutomationRun
-  ): Promise<void> {
+  private async tryQueueLiveTradeSuggestionWhatsappNotification(payload: {
+    automation: Automation;
+    runId: string;
+    suggestedTradeId: string;
+    brokerKey: string | null;
+    accountId: string | null;
+    preTradeCheckId: string | null;
+  }): Promise<void> {
+    try {
+      await this.whatsappNotificationsService.queueLiveTradeSuggestionReadyNotification({
+        userId: payload.automation.userId,
+        suggestedTradeId: payload.suggestedTradeId,
+        automationId: payload.automation.id,
+        automationRunId: payload.runId,
+        automationName: payload.automation.name,
+        brokerKey: payload.brokerKey,
+        accountId: payload.accountId,
+        preTradeCheckId: payload.preTradeCheckId,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.warn(
+        `Unable to queue WhatsApp live trade suggestion notification for automation ${payload.automation.id} suggested trade ${payload.suggestedTradeId}: ${message}`
+      );
+    }
+  }
+
+  private async syncBacktestRunnerRun(automation: Automation, run: AutomationRun): Promise<void> {
     const meta = this.parseRecord(run.meta) ?? {};
     const lineage = this.parseRecord(meta.lineage) ?? {};
     const backtestId = this.readString(meta.backtestId, lineage.backtestId);
@@ -1375,7 +1537,9 @@ export class AutomationExecutionService {
     });
   }
 
-  private resolveChildBacktestStatus(backtest: Backtest): 'Queued' | 'Running' | 'Completed' | 'Failed' {
+  private resolveChildBacktestStatus(
+    backtest: Backtest
+  ): 'Queued' | 'Running' | 'Completed' | 'Failed' {
     const fromStatus = this.normalizeChildBacktestStatus(backtest.status);
     if (fromStatus) {
       return fromStatus;
@@ -1400,7 +1564,9 @@ export class AutomationExecutionService {
   private normalizeChildBacktestStatus(
     value: unknown
   ): 'Queued' | 'Running' | 'Completed' | 'Failed' | null {
-    const normalized = String(value || '').trim().toLowerCase();
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
     if (!normalized) {
       return null;
     }
@@ -1505,7 +1671,10 @@ export class AutomationExecutionService {
     return code === 'ER_DUP_ENTRY' || code === '23505';
   }
 
-  private async resolveAutomationTimeZone(userId: string, automationTimeZone?: string | null): Promise<string> {
+  private async resolveAutomationTimeZone(
+    userId: string,
+    automationTimeZone?: string | null
+  ): Promise<string> {
     const userTimeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
     return normalizeTimeZone(automationTimeZone ?? userTimeZone, userTimeZone);
   }
@@ -1533,37 +1702,98 @@ export class AutomationExecutionService {
     sourceTemplateId: string | null;
     templateConfig: Record<string, unknown>;
   }> {
+    const inputSnapshot = this.parseRecord(config.inputSnapshot);
+    const nestedConfig = this.parseRecord(config.config);
+    const legacyNestedConfig = this.parseRecord(nestedConfig?.config);
+    const nestedInputSnapshot = this.parseRecord(nestedConfig?.inputSnapshot);
+    const legacyNestedInputSnapshot = this.parseRecord(legacyNestedConfig?.inputSnapshot);
+    const tradeSuggestion = this.parseRecord(config.tradeSuggestion);
+    const tradeSuggestionExecution = this.parseRecord(tradeSuggestion?.execution);
+    const nestedTradeSuggestionExecution = this.parseRecord(tradeSuggestionExecution?.config);
+    const tradeSuggestionInputSnapshot =
+      this.parseRecord(tradeSuggestionExecution?.inputSnapshot) ??
+      this.parseRecord(nestedTradeSuggestionExecution?.inputSnapshot);
+    const sourceTemplateId = this.readString(
+      config.sourceTemplateId,
+      config.templateId,
+      inputSnapshot?.sourceTemplateId,
+      inputSnapshot?.templateId,
+      tradeSuggestion?.sourceTemplateId,
+      tradeSuggestion?.templateId,
+      nestedConfig?.sourceTemplateId,
+      nestedConfig?.templateId,
+      nestedInputSnapshot?.sourceTemplateId,
+      nestedInputSnapshot?.templateId,
+      legacyNestedConfig?.sourceTemplateId,
+      legacyNestedConfig?.templateId,
+      legacyNestedInputSnapshot?.sourceTemplateId,
+      legacyNestedInputSnapshot?.templateId,
+      tradeSuggestionExecution?.sourceTemplateId,
+      tradeSuggestionExecution?.templateId,
+      nestedTradeSuggestionExecution?.sourceTemplateId,
+      nestedTradeSuggestionExecution?.templateId,
+      tradeSuggestionInputSnapshot?.sourceTemplateId,
+      tradeSuggestionInputSnapshot?.templateId
+    );
     const embeddedTemplate =
       this.parseRecord(config.template) ??
-      this.parseRecord(this.parseRecord(config.inputSnapshot)?.template) ??
-      this.parseRecord(this.parseRecord(config.tradeSuggestion)?.template);
+      this.parseRecord(inputSnapshot?.template) ??
+      this.parseRecord(nestedConfig?.template) ??
+      this.parseRecord(nestedInputSnapshot?.template) ??
+      this.parseRecord(legacyNestedConfig?.template) ??
+      this.parseRecord(legacyNestedInputSnapshot?.template) ??
+      this.parseRecord(tradeSuggestion?.template) ??
+      this.parseRecord(tradeSuggestionExecution?.template) ??
+      this.parseRecord(nestedTradeSuggestionExecution?.template) ??
+      this.parseRecord(tradeSuggestionInputSnapshot?.template);
     const embeddedTemplateConfig =
       this.parseRecord(embeddedTemplate?.config) ?? this.parseRecord(embeddedTemplate);
 
     if (embeddedTemplateConfig) {
+      const embeddedProfile = buildStrategyTemplateAutomationProfile(embeddedTemplateConfig);
+      if (embeddedProfile.automationReady || !sourceTemplateId) {
+        return {
+          profile: embeddedProfile,
+          sourceTemplateId: this.readString(
+            embeddedTemplate?.id,
+            embeddedTemplate?.templateId,
+            sourceTemplateId
+          ),
+          templateConfig: embeddedTemplateConfig,
+        };
+      }
+
+      const template = await this.strategyTemplateRepository.getStrategyTemplateById(
+        userId,
+        sourceTemplateId
+      );
+      if (template) {
+        return {
+          profile: buildStrategyTemplateAutomationProfile(template.config ?? null),
+          sourceTemplateId: template.id,
+          templateConfig: this.parseRecord(template.config) ?? {},
+        };
+      }
+
       return {
-        profile: buildStrategyTemplateAutomationProfile(embeddedTemplateConfig),
+        profile: embeddedProfile,
         sourceTemplateId: this.readString(
           embeddedTemplate?.id,
           embeddedTemplate?.templateId,
-          config.sourceTemplateId,
-          config.templateId
+          sourceTemplateId
         ),
         templateConfig: embeddedTemplateConfig,
       };
     }
 
-    const templateId = this.readString(
-      config.sourceTemplateId,
-      config.templateId,
-      this.parseRecord(config.inputSnapshot)?.sourceTemplateId,
-      this.parseRecord(config.inputSnapshot)?.templateId
-    );
-    if (!templateId) {
+    if (!sourceTemplateId) {
       throw new BadRequestAppError('trade-suggestion automation is missing a source template');
     }
 
-    const template = await this.strategyTemplateRepository.getStrategyTemplateById(userId, templateId);
+    const template = await this.strategyTemplateRepository.getStrategyTemplateById(
+      userId,
+      sourceTemplateId
+    );
     if (!template) {
       throw new NotFoundAppError('Strategy template not found for trade-suggestion automation');
     }
@@ -1571,8 +1801,7 @@ export class AutomationExecutionService {
     return {
       profile: buildStrategyTemplateAutomationProfile(template.config ?? null),
       sourceTemplateId: template.id,
-      templateConfig:
-        this.parseRecord(template.config) ?? {},
+      templateConfig: this.parseRecord(template.config) ?? {},
     };
   }
 
@@ -1612,9 +1841,7 @@ export class AutomationExecutionService {
 
     return {
       maxBars:
-        maxBars !== null && Number.isFinite(maxBars)
-          ? Math.max(50, Math.round(maxBars))
-          : null,
+        maxBars !== null && Number.isFinite(maxBars) ? Math.max(50, Math.round(maxBars)) : null,
       warmupBars:
         warmupBars !== null && Number.isFinite(warmupBars)
           ? Math.max(10, Math.round(warmupBars))
@@ -1636,11 +1863,35 @@ export class AutomationExecutionService {
     };
   }
 
+  private resolveTradeSuggestionSignalSelectionMode(
+    config: Record<string, unknown>
+  ): 'latest_closed_only' | 'cursor_gap' {
+    const nestedConfig = this.parseRecord(config.config) ?? {};
+    const inputSnapshot = this.parseRecord(config.inputSnapshot) ?? {};
+    const tradeSuggestion = this.parseRecord(config.tradeSuggestion) ?? {};
+    const execution = this.parseRecord(tradeSuggestion.execution) ?? {};
+    const rawMode = this.readString(
+      tradeSuggestion.signalSelectionMode,
+      tradeSuggestion.catchupMode,
+      execution.signalSelectionMode,
+      execution.catchupMode,
+      config.signalSelectionMode,
+      config.catchupMode,
+      nestedConfig.signalSelectionMode,
+      nestedConfig.catchupMode,
+      inputSnapshot.signalSelectionMode,
+      inputSnapshot.catchupMode
+    );
+
+    return rawMode?.trim().toLowerCase() === 'cursor_gap' ? 'cursor_gap' : 'latest_closed_only';
+  }
+
   private resolveTradeSuggestionSymbols(config: Record<string, unknown>): string[] {
     const tradeSuggestion = this.parseRecord(config.tradeSuggestion) ?? {};
     const nestedConfig = this.parseRecord(config.config) ?? {};
     const inputSnapshot = this.parseRecord(config.inputSnapshot) ?? {};
-    const setupScope = this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(config.setupScope);
+    const setupScope =
+      this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(config.setupScope);
 
     const scopedSymbols = [
       tradeSuggestion.symbols,
@@ -1688,7 +1939,8 @@ export class AutomationExecutionService {
     const tradeSuggestion = this.parseRecord(config.tradeSuggestion) ?? {};
     const nestedConfig = this.parseRecord(config.config) ?? {};
     const inputSnapshot = this.parseRecord(config.inputSnapshot) ?? {};
-    const setupScope = this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(config.setupScope);
+    const setupScope =
+      this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(config.setupScope);
 
     return (
       this.readString(
@@ -1720,13 +1972,15 @@ export class AutomationExecutionService {
     if (!record) {
       return null;
     }
-    return this.readString(
-      record.symbol,
-      record.asset,
-      record.ticker,
-      record.sourceSymbol,
-      record.source_symbol
-    )?.toUpperCase() ?? null;
+    return (
+      this.readString(
+        record.symbol,
+        record.asset,
+        record.ticker,
+        record.sourceSymbol,
+        record.source_symbol
+      )?.toUpperCase() ?? null
+    );
   }
 
   private computeStopLossPrice(
@@ -1759,6 +2013,84 @@ export class AutomationExecutionService {
       return '0';
     }
     return value.toFixed(12).replace(/\.?0+$/, '');
+  }
+
+  private resolveSuggestedTradeProtection(
+    entryPrice: number,
+    leg: StrategyTemplateTradePlanLeg,
+    tradePlan: Record<string, unknown> | null
+  ): {
+    stopLossPrice: string | null;
+    takeProfitTargets: string[];
+    riskRewardRatio: number | null;
+    planLabel: string | null;
+  } {
+    const fallbackStopLossPrice = this.computeStopLossPrice(entryPrice, leg);
+    const fallbackTakeProfitTargets = this.computeTakeProfitTargets(entryPrice, leg);
+    if (!tradePlan || !Number.isFinite(entryPrice) || entryPrice <= 0) {
+      return {
+        stopLossPrice: fallbackStopLossPrice,
+        takeProfitTargets: fallbackTakeProfitTargets,
+        riskRewardRatio: null,
+        planLabel: null,
+      };
+    }
+
+    const normalizedSide = leg.side === 'long' ? 'long' : 'short';
+    let stopLossPrice = this.readNumber(tradePlan.stop_loss_price, tradePlan.stopLossPrice);
+    let takeProfitPrice = this.readNumber(tradePlan.take_profit_price, tradePlan.takeProfitPrice);
+    const riskRewardRatio = this.readNumber(tradePlan.risk_reward_ratio, tradePlan.riskRewardRatio);
+    const planLabel = this.readString(tradePlan.label) ?? null;
+
+    if (stopLossPrice !== null) {
+      if (
+        (normalizedSide === 'long' && stopLossPrice >= entryPrice) ||
+        (normalizedSide === 'short' && stopLossPrice <= entryPrice)
+      ) {
+        stopLossPrice = null;
+      }
+    }
+
+    if (takeProfitPrice !== null) {
+      if (
+        (normalizedSide === 'long' && takeProfitPrice <= entryPrice) ||
+        (normalizedSide === 'short' && takeProfitPrice >= entryPrice)
+      ) {
+        takeProfitPrice = null;
+      }
+    }
+
+    if (
+      takeProfitPrice === null &&
+      stopLossPrice !== null &&
+      riskRewardRatio !== null &&
+      riskRewardRatio > 0
+    ) {
+      const riskDistance =
+        normalizedSide === 'long' ? entryPrice - stopLossPrice : stopLossPrice - entryPrice;
+      if (riskDistance > 0) {
+        takeProfitPrice =
+          normalizedSide === 'long'
+            ? entryPrice + riskRewardRatio * riskDistance
+            : entryPrice - riskRewardRatio * riskDistance;
+      }
+    }
+
+    const resolvedStopLossPrice =
+      stopLossPrice !== null && stopLossPrice > 0
+        ? this.formatPrice(stopLossPrice)
+        : fallbackStopLossPrice;
+    const resolvedTakeProfitTargets =
+      takeProfitPrice !== null && takeProfitPrice > 0
+        ? [this.formatPrice(takeProfitPrice)]
+        : fallbackTakeProfitTargets;
+
+    return {
+      stopLossPrice: resolvedStopLossPrice,
+      takeProfitTargets: resolvedTakeProfitTargets,
+      riskRewardRatio,
+      planLabel,
+    };
   }
 
   private buildSuggestionRationale(

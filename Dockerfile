@@ -7,7 +7,7 @@ RUN npm ci
 FROM deps AS build
 WORKDIR /app
 
-COPY app.ts app.email-worker.ts ./
+COPY app.ts app.email-worker.ts app.whatsapp-worker.ts ./
 COPY src ./src
 COPY scripts ./scripts
 COPY tsconfig.json ./

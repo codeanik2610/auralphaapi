@@ -5,16 +5,26 @@ import {
   SettingsAuditChangeType,
   SettingsAuditItem,
   SettingsAuditResponse,
+  SettingsWhatsappDeliveryRollout,
   SettingsResponse,
   SettingsValue,
   SettingsValueType,
   UpdateSettingsBody,
-  UpdateSettingsRequestBody
+  UpdateSettingsRequestBody,
 } from '../contracts/Settings';
 import { successResponse } from '../utils/response';
-import { ActivityLog, AppSetting, AppSettingsRepository, SettingsAuditLog, SettingsAuditRepository } from '../../database';
+import {
+  ActivityLog,
+  AppSetting,
+  AppSettingsRepository,
+  SettingsAuditLog,
+  SettingsAuditRepository,
+} from '../../database';
 import { OperationalEventService } from './OperationalEventService';
-import { validateSettingsAuditQuery, validateUpdateSettingsBody } from '../validators/settings.validator';
+import {
+  validateSettingsAuditQuery,
+  validateUpdateSettingsBody,
+} from '../validators/settings.validator';
 import { DEFAULT_TIMEZONE, normalizeTimeZone } from '../utils/timezone';
 import { env } from '../../env';
 import { coreDataSource } from '../../database/data-source';
@@ -52,6 +62,9 @@ const SETTINGS_FIELD_KEYS: SettingsFieldKey[] = [
   'timezone',
   'notifyEmail',
   'notifyInApp',
+  'notifyWhatsapp',
+  'whatsappLiveTradeSuggestions',
+  'whatsappNumber',
   'confirmDestructive',
   'notificationChannel',
   'notificationSeverity',
@@ -104,6 +117,12 @@ const SETTINGS_FIELD_METADATA: Record<SettingsAuditFieldName, SettingsFieldMetad
   timezone: { label: 'Time zone', valueType: 'string' },
   notifyEmail: { label: 'Email notifications', valueType: 'boolean' },
   notifyInApp: { label: 'In-app notifications', valueType: 'boolean' },
+  notifyWhatsapp: { label: 'WhatsApp notifications', valueType: 'boolean' },
+  whatsappLiveTradeSuggestions: {
+    label: 'WhatsApp live trade suggestions',
+    valueType: 'boolean',
+  },
+  whatsappNumber: { label: 'WhatsApp number', valueType: 'string' },
   confirmDestructive: { label: 'Confirm destructive actions', valueType: 'boolean' },
   notificationChannel: { label: 'Default channel', valueType: 'string' },
   notificationSeverity: { label: 'Minimum severity', valueType: 'string' },
@@ -114,8 +133,7 @@ const SETTINGS_FIELD_METADATA: Record<SettingsAuditFieldName, SettingsFieldMetad
   'backtestPromotionRules.minTrades': BACKTEST_PROMOTION_RULE_FIELD_METADATA.minTrades,
   'backtestPromotionRules.requireCompleteHistory':
     BACKTEST_PROMOTION_RULE_FIELD_METADATA.requireCompleteHistory,
-  'backtestPromotionRules.requireLineage':
-    BACKTEST_PROMOTION_RULE_FIELD_METADATA.requireLineage,
+  'backtestPromotionRules.requireLineage': BACKTEST_PROMOTION_RULE_FIELD_METADATA.requireLineage,
   'backtestPromotionRules.requireTemplateAutomationReady':
     BACKTEST_PROMOTION_RULE_FIELD_METADATA.requireTemplateAutomationReady,
   'backtestPromotionRules.requireRobustness':
@@ -189,6 +207,9 @@ function buildSettingsDefaults(existing: AppSetting | null): UpdateSettingsBody 
     timezone: existing ? existing.timezone : DEFAULT_TIMEZONE,
     notifyEmail: existing ? existing.notifyEmail : true,
     notifyInApp: existing ? existing.notifyInApp : true,
+    notifyWhatsapp: existing ? existing.notifyWhatsapp : false,
+    whatsappLiveTradeSuggestions: existing ? existing.whatsappLiveTradeSuggestions : false,
+    whatsappNumber: existing ? existing.whatsappNumber : null,
     confirmDestructive: existing ? existing.confirmDestructive : true,
     notificationChannel: existing ? existing.notificationChannel : 'both',
     notificationSeverity: existing ? existing.notificationSeverity : 'all',
@@ -198,16 +219,66 @@ function buildSettingsDefaults(existing: AppSetting | null): UpdateSettingsBody 
   };
 }
 
-function buildSettingsAuditEntries(existing: AppSetting | null, settings: AppSetting): SettingsAuditEntry[] {
+function buildSettingsAuditEntries(
+  existing: AppSetting | null,
+  settings: AppSetting
+): SettingsAuditEntry[] {
   return [
-    { fieldName: 'timezone', oldValue: existing ? existing.timezone : null, newValue: settings.timezone },
-    { fieldName: 'notifyEmail', oldValue: existing ? existing.notifyEmail : null, newValue: settings.notifyEmail },
-    { fieldName: 'notifyInApp', oldValue: existing ? existing.notifyInApp : null, newValue: settings.notifyInApp },
-    { fieldName: 'confirmDestructive', oldValue: existing ? existing.confirmDestructive : null, newValue: settings.confirmDestructive },
-    { fieldName: 'notificationChannel', oldValue: existing ? existing.notificationChannel : null, newValue: settings.notificationChannel },
-    { fieldName: 'notificationSeverity', oldValue: existing ? existing.notificationSeverity : null, newValue: settings.notificationSeverity },
-    { fieldName: 'escalationRoute', oldValue: existing ? existing.escalationRoute : null, newValue: settings.escalationRoute },
-    { fieldName: 'escalationSlaMinutes', oldValue: existing ? existing.escalationSlaMinutes : null, newValue: settings.escalationSlaMinutes },
+    {
+      fieldName: 'timezone',
+      oldValue: existing ? existing.timezone : null,
+      newValue: settings.timezone,
+    },
+    {
+      fieldName: 'notifyEmail',
+      oldValue: existing ? existing.notifyEmail : null,
+      newValue: settings.notifyEmail,
+    },
+    {
+      fieldName: 'notifyInApp',
+      oldValue: existing ? existing.notifyInApp : null,
+      newValue: settings.notifyInApp,
+    },
+    {
+      fieldName: 'notifyWhatsapp',
+      oldValue: existing ? existing.notifyWhatsapp : null,
+      newValue: settings.notifyWhatsapp,
+    },
+    {
+      fieldName: 'whatsappLiveTradeSuggestions',
+      oldValue: existing ? existing.whatsappLiveTradeSuggestions : null,
+      newValue: settings.whatsappLiveTradeSuggestions,
+    },
+    {
+      fieldName: 'whatsappNumber',
+      oldValue: existing ? existing.whatsappNumber : null,
+      newValue: settings.whatsappNumber,
+    },
+    {
+      fieldName: 'confirmDestructive',
+      oldValue: existing ? existing.confirmDestructive : null,
+      newValue: settings.confirmDestructive,
+    },
+    {
+      fieldName: 'notificationChannel',
+      oldValue: existing ? existing.notificationChannel : null,
+      newValue: settings.notificationChannel,
+    },
+    {
+      fieldName: 'notificationSeverity',
+      oldValue: existing ? existing.notificationSeverity : null,
+      newValue: settings.notificationSeverity,
+    },
+    {
+      fieldName: 'escalationRoute',
+      oldValue: existing ? existing.escalationRoute : null,
+      newValue: settings.escalationRoute,
+    },
+    {
+      fieldName: 'escalationSlaMinutes',
+      oldValue: existing ? existing.escalationSlaMinutes : null,
+      newValue: settings.escalationSlaMinutes,
+    },
   ];
 }
 
@@ -258,11 +329,7 @@ function filterChangedSettingsAuditEntries(
     ...buildSettingsAuditEntries(existing, settings).filter((entry) =>
       providedFields.has(entry.fieldName as SettingsFieldKey)
     ),
-    ...buildBacktestPromotionRuleAuditEntries(
-      existing,
-      settings,
-      providedPromotionRuleFields
-    ),
+    ...buildBacktestPromotionRuleAuditEntries(existing, settings, providedPromotionRuleFields),
   ];
 
   return entries.filter((entry) => {
@@ -275,9 +342,9 @@ function filterChangedSettingsAuditEntries(
 }
 
 function getSettingsFieldLabel(fieldName: string): string {
-  return SETTINGS_FIELD_METADATA[fieldName as SettingsAuditFieldName]?.label
-    || fieldName
-    || 'Setting';
+  return (
+    SETTINGS_FIELD_METADATA[fieldName as SettingsAuditFieldName]?.label || fieldName || 'Setting'
+  );
 }
 
 function getSettingsFieldValueType(fieldName: string): Exclude<SettingsValueType, 'null'> {
@@ -431,8 +498,15 @@ function formatSettingsValueForDisplay(fieldName: string, value: SettingsValue):
     return String(value);
   }
 
-  const mappedDisplay =
-    SETTINGS_OPTION_DISPLAY[fieldName as SettingsFieldKey]?.[String(value)];
+  if (fieldName === 'whatsappNumber') {
+    const rawValue = String(value);
+    if (rawValue.length <= 8) {
+      return rawValue;
+    }
+    return `${rawValue.slice(0, 4)}${'*'.repeat(Math.max(1, rawValue.length - 8))}${rawValue.slice(-4)}`;
+  }
+
+  const mappedDisplay = SETTINGS_OPTION_DISPLAY[fieldName as SettingsFieldKey]?.[String(value)];
   return mappedDisplay || String(value);
 }
 
@@ -467,6 +541,43 @@ function mapSettingsAuditItem(item: SettingsAuditLog): SettingsAuditItem {
     newValueDisplay: formatSettingsValueForDisplay(fieldName, newValue),
     actor: item.actor || undefined,
     changedAt: item.createdAt.toISOString(),
+  };
+}
+
+function buildWhatsappDeliveryRollout(): SettingsWhatsappDeliveryRollout {
+  const providerConfigured = Boolean(
+    env.whatsapp.twilio.accountSid && env.whatsapp.twilio.authToken && env.whatsapp.twilio.from
+  );
+
+  if (!env.whatsapp.enabled) {
+    return {
+      status: 'disabled',
+      allowsLiveTradeSuggestions: false,
+      provider: env.whatsapp.provider,
+      providerConfigured,
+      detail:
+        'WhatsApp delivery is deployed but disabled in this environment. You can save your destination now, but live trade suggestions will stay off until rollout is enabled.',
+    };
+  }
+
+  if (!providerConfigured) {
+    return {
+      status: 'misconfigured',
+      allowsLiveTradeSuggestions: false,
+      provider: env.whatsapp.provider,
+      providerConfigured: false,
+      detail:
+        'WhatsApp delivery is enabled in configuration, but provider credentials are incomplete. Live trade suggestions will stay unavailable until the provider setup is finished.',
+    };
+  }
+
+  return {
+    status: 'ready',
+    allowsLiveTradeSuggestions: true,
+    provider: env.whatsapp.provider,
+    providerConfigured: true,
+    detail:
+      'WhatsApp delivery is ready for verified live trade suggestions on this account.',
   };
 }
 
@@ -506,6 +617,11 @@ function mapSettingsResponse(userId: string, settings: AppSetting): SettingsResp
     timezone: normalizeTimeZone(settings.timezone),
     notifyEmail: settings.notifyEmail,
     notifyInApp: settings.notifyInApp,
+    notifyWhatsapp: settings.notifyWhatsapp,
+    whatsappLiveTradeSuggestions: settings.whatsappLiveTradeSuggestions,
+    whatsappNumber: settings.whatsappNumber,
+    whatsappVerifiedAt: settings.whatsappVerifiedAt?.toISOString() ?? null,
+    whatsappDeliveryRollout: buildWhatsappDeliveryRollout(),
     confirmDestructive: settings.confirmDestructive,
     notificationChannel: settings.notificationChannel,
     notificationSeverity: settings.notificationSeverity,
@@ -542,6 +658,11 @@ export class SettingsService {
       timezone: normalizeTimeZone(DEFAULT_TIMEZONE),
       notifyEmail: true,
       notifyInApp: true,
+      notifyWhatsapp: false,
+      whatsappLiveTradeSuggestions: false,
+      whatsappNumber: null,
+      whatsappVerifiedAt: null,
+      whatsappDeliveryRollout: buildWhatsappDeliveryRollout(),
       confirmDestructive: true,
       notificationChannel: 'both',
       notificationSeverity: 'all',
@@ -549,34 +670,42 @@ export class SettingsService {
       escalationSlaMinutes: 15,
       backtestPromotionRules: createDefaultBacktestPromotionRules(),
       updatedAt: undefined,
-      versionToken: undefined
+      versionToken: undefined,
     });
   }
 
-  async getSettingsAudit(userId: string, query: { limit?: string; offset?: string }): Promise<ApiSuccessResponse<SettingsAuditResponse>> {
+  async getSettingsAudit(
+    userId: string,
+    query: { limit?: string; offset?: string }
+  ): Promise<ApiSuccessResponse<SettingsAuditResponse>> {
     const params = validateSettingsAuditQuery(query);
     const { items, total } = await this.settingsAuditRepository.listAuditLogs(userId, params);
     return successResponse({
       items: items.map((item): SettingsAuditItem => mapSettingsAuditItem(item)),
       total,
       limit: params.limit,
-      offset: params.offset
+      offset: params.offset,
     });
   }
 
-  async updateSettings(userId: string, body: UpdateSettingsRequestBody = {}): Promise<ApiSuccessResponse<SettingsResponse>> {
+  async updateSettings(
+    userId: string,
+    body: UpdateSettingsRequestBody = {}
+  ): Promise<ApiSuccessResponse<SettingsResponse>> {
     try {
       const { expectedUpdatedAt, ...settingsBody } = body || {};
       const normalizedExpectedUpdatedAt = normalizeExpectedUpdatedAt(expectedUpdatedAt);
-      const providedFields = new Set<keyof UpdateSettingsBody>(Object.keys(settingsBody) as Array<keyof UpdateSettingsBody>);
+      const providedFields = new Set<keyof UpdateSettingsBody>(
+        Object.keys(settingsBody) as Array<keyof UpdateSettingsBody>
+      );
       const providedPromotionRuleFields = new Set<PromotionRuleFieldKey>(
         isSettingsFieldKey('backtestPromotionRules') &&
-        settingsBody.backtestPromotionRules &&
-        typeof settingsBody.backtestPromotionRules === 'object' &&
-        !Array.isArray(settingsBody.backtestPromotionRules)
-          ? Object.keys(settingsBody.backtestPromotionRules).filter((fieldName) =>
+          settingsBody.backtestPromotionRules &&
+          typeof settingsBody.backtestPromotionRules === 'object' &&
+          !Array.isArray(settingsBody.backtestPromotionRules)
+          ? (Object.keys(settingsBody.backtestPromotionRules).filter((fieldName) =>
               isPromotionRuleFieldKey(fieldName)
-            ) as PromotionRuleFieldKey[]
+            ) as PromotionRuleFieldKey[])
           : []
       );
       const settings = await coreDataSource.transaction(async (manager) => {
@@ -593,9 +722,22 @@ export class SettingsService {
         }
 
         const payload = validateUpdateSettingsBody(settingsBody, buildSettingsDefaults(existing));
+        const nextWhatsappVerifiedAt =
+          existing && payload.whatsappNumber !== existing.whatsappNumber
+            ? null
+            : (existing?.whatsappVerifiedAt ?? null);
+        const persistencePayload = {
+          ...payload,
+          whatsappVerifiedAt: nextWhatsappVerifiedAt,
+          whatsappLiveTradeSuggestions:
+            Boolean(payload.notifyWhatsapp) &&
+            Boolean(payload.whatsappNumber) &&
+            Boolean(nextWhatsappVerifiedAt) &&
+            Boolean(payload.whatsappLiveTradeSuggestions),
+        };
         const candidateSettings = existing
-          ? ({ ...existing, ...payload } as AppSetting)
-          : appSettingsRepository.create({ userId, ...payload });
+          ? ({ ...existing, ...persistencePayload } as AppSetting)
+          : appSettingsRepository.create({ userId, ...persistencePayload });
         const changedEntries = filterChangedSettingsAuditEntries(
           existing,
           candidateSettings,
@@ -609,25 +751,25 @@ export class SettingsService {
 
         const savedSettings = await appSettingsRepository.save(
           existing
-            ? appSettingsRepository.merge(existing, payload)
-            : appSettingsRepository.create({ userId, ...payload })
+            ? appSettingsRepository.merge(existing, persistencePayload)
+            : appSettingsRepository.create({ userId, ...persistencePayload })
         );
         const auditLogs = changedEntries.map((entry) => {
-            const oldValue = serializeAuditValue(entry.fieldName, entry.oldValue);
-            const newValue = serializeAuditValue(entry.fieldName, entry.newValue);
-            return settingsAuditRepository.create({
-              userId,
-              fieldName: entry.fieldName,
-              oldValue: oldValue.text,
-              oldValueType: oldValue.valueType,
-              oldValueJson: oldValue.json,
-              newValue: newValue.text,
-              newValueType: newValue.valueType,
-              newValueJson: newValue.json,
-              changeType: deriveAuditChangeType(oldValue.value, newValue.value),
-              actor: userId,
-            })
+          const oldValue = serializeAuditValue(entry.fieldName, entry.oldValue);
+          const newValue = serializeAuditValue(entry.fieldName, entry.newValue);
+          return settingsAuditRepository.create({
+            userId,
+            fieldName: entry.fieldName,
+            oldValue: oldValue.text,
+            oldValueType: oldValue.valueType,
+            oldValueJson: oldValue.json,
+            newValue: newValue.text,
+            newValueType: newValue.valueType,
+            newValueJson: newValue.json,
+            changeType: deriveAuditChangeType(oldValue.value, newValue.value),
+            actor: userId,
           });
+        });
 
         if (auditLogs.length > 0) {
           await settingsAuditRepository.save(auditLogs);
@@ -664,17 +806,14 @@ export class SettingsService {
       const httpCode = getHttpErrorCode(error);
       const isClientError = httpCode !== undefined && httpCode >= 400 && httpCode < 500;
       if (!isClientError) {
-        await this.operationalEventService.emitFailureAlert(
-          userId,
-          {
-            channel: 'Settings',
-            source: 'app_settings',
-            message: `User settings update failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            route: 'Risk review',
-          }
-        );
+        await this.operationalEventService.emitFailureAlert(userId, {
+          channel: 'Settings',
+          source: 'app_settings',
+          message: `User settings update failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          route: 'Risk review',
+        });
       }
       throw error;
     }

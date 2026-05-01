@@ -4,8 +4,13 @@ import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import { DiscoveryDependencyHealthResponse } from '../contracts/Discovery';
 import { RuntimeOverviewResponse } from '../contracts/Runtime';
+import { SuggestedTradesFreshnessAudit } from '../contracts/SuggestedTrade';
 import { successResponse } from '../utils/response';
-import { requireAdminAuthUser, requireAdminAuthUserOrApiKey, requireAuthUserId } from '../utils/auth';
+import {
+  requireAdminAuthUser,
+  requireAdminAuthUserOrApiKey,
+  requireAuthUserId,
+} from '../utils/auth';
 import { AutomationsService } from '../services/AutomationsService';
 import { AuthLoginProtectionService } from '../services/AuthLoginProtectionService';
 import { DiscoveryDependencyService } from '../services/DiscoveryDependencyService';
@@ -18,6 +23,7 @@ import {
 import { AlertRepository } from '../../database/repositories/AlertRepository';
 import { BacktestRepository } from '../../database/repositories/BacktestRepository';
 import { EmailDeliveryRepository } from '../../database/repositories/EmailDeliveryRepository';
+import { WhatsappDeliveryRepository } from '../../database/repositories/WhatsappDeliveryRepository';
 import { assertSecureEnvironmentConfig, env } from '../../env';
 import { RedisClient } from '../../lib/RedisClient';
 
@@ -59,7 +65,40 @@ interface EmailWorkerHealthPayload {
   key: string;
   timestamp: string;
   emailEnabled: boolean;
+  provider: string;
+  providerConfigured: boolean;
   smtpConfigured: boolean;
+  queuedCount?: number;
+  sendingCount?: number;
+  failedCount?: number;
+  activeCount?: number;
+  oldestPendingAt?: string;
+  oldestPendingAgeMs?: number;
+  workerId?: string;
+  workerStatus?: 'idle' | 'sending' | 'degraded';
+  lastHeartbeatAt?: string;
+  heartbeatAgeMs?: number;
+  heartbeatLagMs?: number;
+  heartbeatStaleThresholdMs?: number;
+  isHeartbeatStale?: boolean;
+  lastBatchStartedAt?: string;
+  lastBatchCompletedAt?: string;
+  lastBatchAgeMs?: number;
+  lastBatchDeliveryCount?: number;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
+  lastError?: string;
+  pollIntervalMs?: number;
+  detail?: string;
+}
+
+interface WhatsappWorkerHealthPayload {
+  status: 'ok' | 'down' | 'degraded' | 'disabled';
+  key: string;
+  timestamp: string;
+  whatsappEnabled: boolean;
+  provider: string;
+  providerConfigured: boolean;
   queuedCount?: number;
   sendingCount?: number;
   failedCount?: number;
@@ -175,6 +214,7 @@ interface SuggestedTradeHealthPayload {
   summaryLatencyMs?: number | null;
   syncStatusLatencyMs?: number | null;
   latencyProbeError?: string | null;
+  freshnessAudit?: SuggestedTradesFreshnessAudit;
   detail?: string;
 }
 
@@ -241,6 +281,9 @@ export class HealthController {
 
   @Inject(() => EmailDeliveryRepository)
   private emailDeliveryRepository!: EmailDeliveryRepository;
+
+  @Inject(() => WhatsappDeliveryRepository)
+  private whatsappDeliveryRepository!: WhatsappDeliveryRepository;
 
   @Inject(() => SuggestedTradesHealthService)
   private suggestedTradesHealthService!: SuggestedTradesHealthService;
@@ -333,6 +376,32 @@ export class HealthController {
   > {
     try {
       const snapshot = await this.emailDeliveryRepository.getOperationalSnapshot();
+      return {
+        queuedCount: snapshot.queued,
+        sendingCount: snapshot.sending,
+        failedCount: snapshot.failed,
+        activeCount: snapshot.active,
+        oldestPendingAt: snapshot.oldestPendingAt?.toISOString(),
+        oldestPendingAgeMs: snapshot.oldestPendingAgeMs ?? undefined,
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  private async readWhatsappQueueMetrics(): Promise<
+    Pick<
+      WhatsappWorkerHealthPayload,
+      | 'queuedCount'
+      | 'sendingCount'
+      | 'failedCount'
+      | 'activeCount'
+      | 'oldestPendingAt'
+      | 'oldestPendingAgeMs'
+    >
+  > {
+    try {
+      const snapshot = await this.whatsappDeliveryRepository.getOperationalSnapshot();
       return {
         queuedCount: snapshot.queued,
         sendingCount: snapshot.sending,
@@ -566,6 +635,10 @@ export class HealthController {
     requireAdminAuthUser(request);
     const heartbeatKey = env.redis.emailWorkerHeartbeatKey;
     const smtpConfigured = Boolean(env.email.smtp.host && env.email.smtp.from);
+    const providerConfigured =
+      env.email.provider === 'smtp'
+        ? smtpConfigured
+        : Boolean(env.email.resend.apiKey && env.email.resend.from);
     const queueMetrics = await this.readEmailQueueMetrics();
 
     if (!env.email.enabled) {
@@ -574,6 +647,8 @@ export class HealthController {
         key: heartbeatKey,
         timestamp: new Date().toISOString(),
         emailEnabled: false,
+        provider: env.email.provider,
+        providerConfigured,
         smtpConfigured,
         ...queueMetrics,
         detail: 'Email delivery is disabled in environment configuration.',
@@ -588,6 +663,8 @@ export class HealthController {
           key: heartbeatKey,
           timestamp: new Date().toISOString(),
           emailEnabled: true,
+          provider: env.email.provider,
+          providerConfigured,
           smtpConfigured,
           ...queueMetrics,
           detail: 'No active email worker heartbeat found.',
@@ -653,6 +730,8 @@ export class HealthController {
         key: heartbeatKey,
         timestamp: new Date().toISOString(),
         emailEnabled: true,
+        provider: env.email.provider,
+        providerConfigured,
         smtpConfigured,
         ...queueMetrics,
         workerId: parsed.workerId,
@@ -689,7 +768,160 @@ export class HealthController {
         key: heartbeatKey,
         timestamp: new Date().toISOString(),
         emailEnabled: true,
+        provider: env.email.provider,
+        providerConfigured,
         smtpConfigured,
+        ...queueMetrics,
+        detail:
+          error instanceof Error
+            ? `Redis heartbeat read failed: ${error.message}`
+            : `Redis heartbeat read failed: ${String(error)}`,
+      });
+    }
+  }
+
+  @Get('/whatsapp-worker')
+  async getWhatsappWorkerHealth(
+    @Req() request: Request
+  ): Promise<ApiSuccessResponse<WhatsappWorkerHealthPayload>> {
+    requireAdminAuthUser(request);
+    const heartbeatKey = env.redis.whatsappWorkerHeartbeatKey;
+    const providerConfigured = Boolean(
+      env.whatsapp.twilio.accountSid && env.whatsapp.twilio.authToken && env.whatsapp.twilio.from
+    );
+    const queueMetrics = await this.readWhatsappQueueMetrics();
+
+    if (!env.whatsapp.enabled) {
+      return successResponse({
+        status: 'disabled',
+        key: heartbeatKey,
+        timestamp: new Date().toISOString(),
+        whatsappEnabled: false,
+        provider: env.whatsapp.provider,
+        providerConfigured,
+        ...queueMetrics,
+        detail: 'WhatsApp delivery is disabled in environment configuration.',
+      });
+    }
+
+    if (!providerConfigured) {
+      return successResponse({
+        status: 'down',
+        key: heartbeatKey,
+        timestamp: new Date().toISOString(),
+        whatsappEnabled: true,
+        provider: env.whatsapp.provider,
+        providerConfigured,
+        ...queueMetrics,
+        detail: 'WhatsApp delivery is enabled but the provider configuration is incomplete.',
+      });
+    }
+
+    try {
+      const rawHeartbeat = await RedisClient.getConnection().get(heartbeatKey);
+      if (!rawHeartbeat) {
+        return successResponse({
+          status: 'down',
+          key: heartbeatKey,
+          timestamp: new Date().toISOString(),
+          whatsappEnabled: true,
+          provider: env.whatsapp.provider,
+          providerConfigured,
+          ...queueMetrics,
+          detail: 'No active WhatsApp worker heartbeat found.',
+        });
+      }
+
+      let parsed: {
+        workerId?: string;
+        timestamp?: string;
+        status?: 'idle' | 'sending' | 'degraded';
+        lastBatchStartedAt?: string;
+        lastBatchCompletedAt?: string;
+        lastBatchDeliveryCount?: number;
+        lastSuccessAt?: string;
+        lastFailureAt?: string;
+        lastError?: string | null;
+        pollIntervalMs?: number;
+      } = {};
+
+      try {
+        parsed = JSON.parse(rawHeartbeat) as typeof parsed;
+      } catch {
+        parsed = {};
+      }
+
+      const parsedHeartbeatDate = parsed.timestamp ? new Date(parsed.timestamp) : null;
+      const heartbeatAgeMs =
+        parsedHeartbeatDate && !Number.isNaN(parsedHeartbeatDate.getTime())
+          ? Math.max(0, Date.now() - parsedHeartbeatDate.getTime())
+          : undefined;
+      const pollIntervalMs =
+        typeof parsed.pollIntervalMs === 'number' ? parsed.pollIntervalMs : undefined;
+      const heartbeatStaleThresholdMs =
+        pollIntervalMs !== undefined ? Math.max(30_000, pollIntervalMs * 3) : undefined;
+      const heartbeatLagMs =
+        heartbeatAgeMs !== undefined && pollIntervalMs !== undefined
+          ? Math.max(0, heartbeatAgeMs - pollIntervalMs)
+          : undefined;
+      const isHeartbeatStale =
+        heartbeatAgeMs !== undefined && heartbeatStaleThresholdMs !== undefined
+          ? heartbeatAgeMs > heartbeatStaleThresholdMs
+          : undefined;
+      const parsedLastBatchCompletedAt = parsed.lastBatchCompletedAt
+        ? new Date(parsed.lastBatchCompletedAt)
+        : null;
+      const lastBatchAgeMs =
+        parsedLastBatchCompletedAt && !Number.isNaN(parsedLastBatchCompletedAt.getTime())
+          ? Math.max(0, Date.now() - parsedLastBatchCompletedAt.getTime())
+          : undefined;
+      const workerStatus = parsed.status || 'idle';
+      const detailParts: string[] = [];
+
+      if (parsed.lastError) {
+        detailParts.push(parsed.lastError);
+      }
+
+      if (isHeartbeatStale) {
+        detailParts.push('WhatsApp worker heartbeat is older than the expected polling window.');
+      }
+
+      return successResponse({
+        status: workerStatus === 'degraded' || isHeartbeatStale ? 'degraded' : 'ok',
+        key: heartbeatKey,
+        timestamp: new Date().toISOString(),
+        whatsappEnabled: true,
+        provider: env.whatsapp.provider,
+        providerConfigured,
+        ...queueMetrics,
+        workerId: parsed.workerId,
+        workerStatus,
+        lastHeartbeatAt: parsed.timestamp,
+        heartbeatAgeMs,
+        heartbeatLagMs,
+        heartbeatStaleThresholdMs,
+        isHeartbeatStale,
+        lastBatchStartedAt: parsed.lastBatchStartedAt,
+        lastBatchCompletedAt: parsed.lastBatchCompletedAt,
+        lastBatchAgeMs,
+        lastBatchDeliveryCount:
+          typeof parsed.lastBatchDeliveryCount === 'number'
+            ? parsed.lastBatchDeliveryCount
+            : undefined,
+        lastSuccessAt: parsed.lastSuccessAt,
+        lastFailureAt: parsed.lastFailureAt,
+        lastError: parsed.lastError ?? undefined,
+        pollIntervalMs,
+        ...(detailParts.length ? { detail: detailParts.join(' ') } : {}),
+      });
+    } catch (error) {
+      return successResponse({
+        status: 'down',
+        key: heartbeatKey,
+        timestamp: new Date().toISOString(),
+        whatsappEnabled: true,
+        provider: env.whatsapp.provider,
+        providerConfigured,
         ...queueMetrics,
         detail:
           error instanceof Error
@@ -879,13 +1111,25 @@ export class HealthController {
   @Get('/broker-canary')
   async getBrokerCanaryProtectionHealth(
     @Req() request: Request,
-    @QueryParam('emitAlerts') emitAlerts?: string
+    @QueryParam('emitAlerts') emitAlerts?: string,
+    @QueryParam('freezeOnCritical') freezeOnCritical?: string
   ): Promise<ApiSuccessResponse<BrokerCanaryProtectionMonitorResponse>> {
     requireAdminAuthUserOrApiKey(request);
-    const normalizedEmitAlerts = String(emitAlerts || '').trim().toLowerCase();
+    const normalizedEmitAlerts = String(emitAlerts || '')
+      .trim()
+      .toLowerCase();
+    const normalizedFreezeOnCritical = String(freezeOnCritical || '')
+      .trim()
+      .toLowerCase();
     return successResponse(
       await this.brokerCanaryProtectionMonitorService.runMonitor({
         emitAlerts: normalizedEmitAlerts === 'false' ? false : true,
+        freezeOnCritical:
+          normalizedFreezeOnCritical === 'true'
+            ? true
+            : normalizedFreezeOnCritical === 'false'
+              ? false
+              : undefined,
       })
     );
   }

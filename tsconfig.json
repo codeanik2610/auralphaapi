@@ -13,6 +13,6 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["app.ts", "app.email-worker.ts", "src", "scripts"],
+  "include": ["app.ts", "app.email-worker.ts", "app.whatsapp-worker.ts", "src", "scripts"],
   "exclude": ["dist", "node_modules"]
 }

@@ -16,6 +16,8 @@ import { Automation } from './Automation';
 @Index('uidx_automation_runs_automation_scheduled', ['automationId', 'scheduledFor'], { unique: true })
 @Index('idx_automation_runs_status_last_progress_at', ['status', 'lastProgressAt'])
 @Index('idx_automation_runs_worker_status_started_at', ['workerId', 'status', 'startedAt'])
+@Index('idx_automation_runs_status_started_at', ['status', 'startedAt'])
+@Index('idx_automation_runs_user_status_started_at', ['userId', 'status', 'startedAt'])
 export class AutomationRun {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

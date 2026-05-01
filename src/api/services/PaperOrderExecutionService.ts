@@ -1,10 +1,6 @@
 import { Inject, Service } from 'typedi';
 import { env } from '../../env';
-import {
-  AssetPrice,
-  AssetPriceRepository,
-  PaperOrderRepository,
-} from '../../database';
+import { AssetPrice, AssetPriceRepository, PaperOrderRepository } from '../../database';
 import { PaperOrder } from '../../database';
 import { strategyDataSource } from '../../database/pg-data-source';
 import { OperationalEventService } from './OperationalEventService';
@@ -85,137 +81,168 @@ export class PaperOrderExecutionService {
     userId: string,
     options: PaperOrderSimulationOptions = {}
   ): Promise<PaperOrderSimulationResult> {
-    return this.withSimulationLock(async () => {
-      const orders = options.paperOrderIds?.length
-        ? await this.paperOrderRepository.listPaperOrdersByIds(userId, options.paperOrderIds)
-        : await this.paperOrderRepository.listExecutablePaperOrders(userId, {
-            brokerKey: options.brokerKey,
-            accountId: options.accountId,
-            limit: options.limit,
-          });
+    try {
+      return await this.withSimulationLock(async () => {
+        const orders = options.paperOrderIds?.length
+          ? await this.paperOrderRepository.listPaperOrdersByIds(userId, options.paperOrderIds)
+          : await this.paperOrderRepository.listExecutablePaperOrders(userId, {
+              brokerKey: options.brokerKey,
+              accountId: options.accountId,
+              limit: options.limit,
+            });
 
-      return this.simulateOrders(orders);
-    });
+        return this.simulateOrders(orders);
+      });
+    } catch (error) {
+      await this.emitPaperExecutionFailureAlert(userId, 'simulate-user-paper-orders', error);
+      throw error;
+    }
   }
 
   async simulateActivePaperOrders(
     options: Pick<PaperOrderSimulationOptions, 'limit'> = {}
   ): Promise<PaperOrderSimulationResult> {
-    return this.withSimulationLock(async () => {
-      const orders = await this.paperOrderRepository.listExecutablePaperOrdersGlobal(options.limit);
-      return this.simulateOrders(orders);
-    });
+    try {
+      return await this.withSimulationLock(async () => {
+        const orders = await this.paperOrderRepository.listExecutablePaperOrdersGlobal(
+          options.limit
+        );
+        return this.simulateOrders(orders);
+      });
+    } catch (error) {
+      await this.emitPaperExecutionFailureAlert(
+        env.scheduler.systemUserId,
+        'simulate-active-paper-orders',
+        error
+      );
+      throw error;
+    }
   }
 
-  async closePaperOrderAtMarket(
-    userId: string,
-    paperOrderId: string
-  ): Promise<PaperOrder> {
-    return this.withSimulationLock(async () => {
-      const order = await this.paperOrderRepository.getPaperOrderById(userId, paperOrderId);
-      if (!order) {
-        throw new NotFoundAppError('Paper order not found');
-      }
+  async closePaperOrderAtMarket(userId: string, paperOrderId: string): Promise<PaperOrder> {
+    try {
+      return await this.withSimulationLock(async () => {
+        const order = await this.paperOrderRepository.getPaperOrderById(userId, paperOrderId);
+        if (!order) {
+          throw new NotFoundAppError('Paper order not found');
+        }
 
-      const currentStatus = String(order.status || '').trim().toUpperCase();
-      if (currentStatus !== 'FILLED') {
-        throw new BadRequestAppError('Only open paper positions can be closed');
-      }
+        const currentStatus = String(order.status || '')
+          .trim()
+          .toUpperCase();
+        if (currentStatus !== 'FILLED') {
+          throw new BadRequestAppError('Only open paper positions can be closed');
+        }
 
-      const symbol = String(order.symbol || '').trim().toUpperCase();
-      if (!symbol) {
-        throw new BadRequestAppError('Paper order symbol is required for a manual close');
-      }
+        const symbol = String(order.symbol || '')
+          .trim()
+          .toUpperCase();
+        if (!symbol) {
+          throw new BadRequestAppError('Paper order symbol is required for a manual close');
+        }
 
-      const [priceBySymbol, priceByScopedSymbol, candleObservations] = await Promise.all([
-        this.loadFallbackMarketPrices([symbol]),
-        this.loadScopedMarketPrices([order]),
-        this.loadLatestCandleObservations([symbol]),
-      ]);
+        const [priceBySymbol, priceByScopedSymbol, candleObservations] = await Promise.all([
+          this.loadFallbackMarketPrices([symbol]),
+          this.loadScopedMarketPrices([order]),
+          this.loadLatestCandleObservations([symbol]),
+        ]);
 
-      const preferredSource = this.resolvePriceSourceForBroker(order.brokerKey);
-      const snapshotPrice =
-        (preferredSource
-          ? priceByScopedSymbol.get(this.buildScopedSymbolKey(preferredSource, symbol)) ?? null
-          : null) ?? priceBySymbol.get(symbol) ?? null;
-      const observation = this.resolveMarketObservation(
-        symbol,
-        candleObservations.get(symbol) ?? null,
-        snapshotPrice
-      );
+        const preferredSource = this.resolvePriceSourceForBroker(order.brokerKey);
+        const snapshotPrice =
+          (preferredSource
+            ? (priceByScopedSymbol.get(this.buildScopedSymbolKey(preferredSource, symbol)) ?? null)
+            : null) ??
+          priceBySymbol.get(symbol) ??
+          null;
+        const observation = this.resolveMarketObservation(
+          symbol,
+          candleObservations.get(symbol) ?? null,
+          snapshotPrice
+        );
 
-      if (!observation) {
-        throw new BadRequestAppError('No market observation is available to close this paper position');
-      }
+        if (!observation) {
+          throw new BadRequestAppError(
+            'No market observation is available to close this paper position'
+          );
+        }
 
-      const payload = this.readPayload(order.payload);
-      const simulation = this.readSimulation(payload);
-      const observedAtIso = observation.observedAt.toISOString();
-      const quantity = this.toNumber(order.quantity) ?? 0;
-      const exitPrice = observation.referencePrice;
-      const nextSimulation: PaperSimulationState = {
-        ...simulation,
-        lastPrice: this.formatDecimal(observation.referencePrice),
-        lastPriceSeenAt: observedAtIso,
-        lastObservationSource: observation.source,
-        lastCandleOpenTime: observation.candleOpenTime
-          ? observation.candleOpenTime.toISOString()
-          : null,
-        lastCandleCloseTime: observation.candleCloseTime
-          ? observation.candleCloseTime.toISOString()
-          : null,
-        lastCandleOpen:
-          observation.candleOpen === null ? null : this.formatDecimal(observation.candleOpen),
-        lastCandleHigh:
-          observation.candleHigh === null ? null : this.formatDecimal(observation.candleHigh),
-        lastCandleLow:
-          observation.candleLow === null ? null : this.formatDecimal(observation.candleLow),
-        lastCandleClose:
-          observation.candleClose === null ? null : this.formatDecimal(observation.candleClose),
-        positionId: simulation.positionId ?? `paper:${order.id}`,
-        executionState: 'closed',
-        positionStatus: 'CLOSED',
-        filledAt: simulation.filledAt ?? observedAtIso,
-        filledPrice:
-          simulation.filledPrice ??
-          this.formatDecimal(this.toNumber(order.orderPrice) ?? observation.referencePrice),
-        filledQuantity: simulation.filledQuantity ?? quantity,
-        remainingQuantity: 0,
-        positionOpenedAt: simulation.positionOpenedAt ?? simulation.filledAt ?? observedAtIso,
-        closedAt: observedAtIso,
-        positionClosedAt: observedAtIso,
-        exitPrice: this.formatDecimal(exitPrice),
-        realizedPnl: this.formatDecimal(
-          this.computeRealizedPnl(order, simulation, exitPrice, quantity)
-        ),
-        outcome: this.deriveOutcome(
-          this.formatDecimal(this.computeRealizedPnl(order, simulation, exitPrice, quantity))
-        ),
-        closeReason: 'manual-close',
-      };
+        const payload = this.readPayload(order.payload);
+        const simulation = this.readSimulation(payload);
+        const observedAtIso = observation.observedAt.toISOString();
+        const quantity = this.toNumber(order.quantity) ?? 0;
+        const exitPrice = observation.referencePrice;
+        const nextSimulation: PaperSimulationState = {
+          ...simulation,
+          lastPrice: this.formatDecimal(observation.referencePrice),
+          lastPriceSeenAt: observedAtIso,
+          lastObservationSource: observation.source,
+          lastCandleOpenTime: observation.candleOpenTime
+            ? observation.candleOpenTime.toISOString()
+            : null,
+          lastCandleCloseTime: observation.candleCloseTime
+            ? observation.candleCloseTime.toISOString()
+            : null,
+          lastCandleOpen:
+            observation.candleOpen === null ? null : this.formatDecimal(observation.candleOpen),
+          lastCandleHigh:
+            observation.candleHigh === null ? null : this.formatDecimal(observation.candleHigh),
+          lastCandleLow:
+            observation.candleLow === null ? null : this.formatDecimal(observation.candleLow),
+          lastCandleClose:
+            observation.candleClose === null ? null : this.formatDecimal(observation.candleClose),
+          positionId: simulation.positionId ?? `paper:${order.id}`,
+          executionState: 'closed',
+          positionStatus: 'CLOSED',
+          filledAt: simulation.filledAt ?? observedAtIso,
+          filledPrice:
+            simulation.filledPrice ??
+            this.formatDecimal(this.toNumber(order.orderPrice) ?? observation.referencePrice),
+          filledQuantity: simulation.filledQuantity ?? quantity,
+          remainingQuantity: 0,
+          positionOpenedAt: simulation.positionOpenedAt ?? simulation.filledAt ?? observedAtIso,
+          closedAt: observedAtIso,
+          positionClosedAt: observedAtIso,
+          exitPrice: this.formatDecimal(exitPrice),
+          realizedPnl: this.formatDecimal(
+            this.computeRealizedPnl(order, simulation, exitPrice, quantity)
+          ),
+          outcome: this.deriveOutcome(
+            this.formatDecimal(this.computeRealizedPnl(order, simulation, exitPrice, quantity))
+          ),
+          closeReason: 'manual-close',
+        };
 
-      order.status = 'CLOSED';
-      order.payload = {
-        ...payload,
-        simulation: nextSimulation,
-      };
-      await this.paperOrderRepository.savePaperOrder(order);
+        order.status = 'CLOSED';
+        order.payload = {
+          ...payload,
+          simulation: nextSimulation,
+        };
+        await this.paperOrderRepository.savePaperOrder(order);
 
-      await this.operationalEventService.logActivity(userId, {
-        type: 'Paper position',
-        title: `Paper position closed: ${symbol}`,
-        status: 'Success',
-        route: 'Positions',
-        stream: 'Paper execution',
-        related: `${order.brokerKey} · ${order.accountId}`,
-        referenceId: order.id,
-        correlationId: order.id,
-        symbol,
-        description: `Paper position closed at market @ ${this.formatDecimal(exitPrice)}`,
+        await this.operationalEventService.logActivity(userId, {
+          type: 'Paper position',
+          title: `Paper position closed: ${symbol}`,
+          status: 'Success',
+          route: 'Positions',
+          stream: 'Paper execution',
+          related: `${order.brokerKey} · ${order.accountId}`,
+          referenceId: order.id,
+          correlationId: order.id,
+          symbol,
+          description: `Paper position closed at market @ ${this.formatDecimal(exitPrice)}`,
+        });
+
+        return order;
       });
-
-      return order;
-    });
+    } catch (error) {
+      await this.emitPaperExecutionFailureAlert(
+        userId,
+        'close-paper-order-at-market',
+        error,
+        paperOrderId
+      );
+      throw error;
+    }
   }
 
   private async simulateSingleOrder(
@@ -225,7 +252,9 @@ export class PaperOrderExecutionService {
   ): Promise<boolean> {
     const currentPrice = observation.referencePrice;
     const observedAt = observation.observedAt;
-    const currentStatus = String(order.status || 'OPEN').trim().toUpperCase();
+    const currentStatus = String(order.status || 'OPEN')
+      .trim()
+      .toUpperCase();
     const payload = this.readPayload(order.payload);
     const simulation = this.readSimulation(payload);
     const nextSimulation: PaperSimulationState = {
@@ -267,8 +296,7 @@ export class PaperOrderExecutionService {
       nextSimulation.filledQuantity = quantity;
       nextSimulation.remainingQuantity = 0;
       nextSimulation.positionStatus = 'OPEN';
-      nextSimulation.positionOpenedAt =
-        nextSimulation.positionOpenedAt ?? observedAt.toISOString();
+      nextSimulation.positionOpenedAt = nextSimulation.positionOpenedAt ?? observedAt.toISOString();
       nextSimulation.outcome = 'open';
       nextSimulation.closeReason = null;
       transitionDescription = `Paper order filled for ${order.symbol || order.assetId} @ ${this.formatDecimal(fillPrice)}`;
@@ -289,8 +317,7 @@ export class PaperOrderExecutionService {
         );
         nextSimulation.outcome = this.deriveOutcome(nextSimulation.realizedPnl);
         nextSimulation.closeReason = closeDecision.reason;
-        transitionDescription =
-          `Paper position closed for ${order.symbol || order.assetId} via ${closeDecision.reason}`;
+        transitionDescription = `Paper position closed for ${order.symbol || order.assetId} via ${closeDecision.reason}`;
       }
     }
 
@@ -301,7 +328,8 @@ export class PaperOrderExecutionService {
       },
     };
 
-    const payloadChanged = JSON.stringify(payload.simulation ?? null) !== JSON.stringify(nextPayload.simulation);
+    const payloadChanged =
+      JSON.stringify(payload.simulation ?? null) !== JSON.stringify(nextPayload.simulation);
     const statusChanged = nextStatus !== currentStatus;
 
     if (!statusChanged && !payloadChanged) {
@@ -344,7 +372,11 @@ export class PaperOrderExecutionService {
     }
 
     const symbols = orders
-      .map((item) => String(item.symbol || '').trim().toUpperCase())
+      .map((item) =>
+        String(item.symbol || '')
+          .trim()
+          .toUpperCase()
+      )
       .filter(Boolean);
 
     const [priceBySymbol, priceByScopedSymbol, candleObservations] = await Promise.all([
@@ -357,7 +389,9 @@ export class PaperOrderExecutionService {
     const updatedOrders: PaperOrderSimulationUpdate[] = [];
 
     for (const order of orders) {
-      const symbol = String(order.symbol || '').trim().toUpperCase();
+      const symbol = String(order.symbol || '')
+        .trim()
+        .toUpperCase();
       if (!symbol) {
         continue;
       }
@@ -365,8 +399,10 @@ export class PaperOrderExecutionService {
       const preferredSource = this.resolvePriceSourceForBroker(order.brokerKey);
       const snapshotPrice =
         (preferredSource
-          ? priceByScopedSymbol.get(this.buildScopedSymbolKey(preferredSource, symbol)) ?? null
-          : null) ?? priceBySymbol.get(symbol) ?? null;
+          ? (priceByScopedSymbol.get(this.buildScopedSymbolKey(preferredSource, symbol)) ?? null)
+          : null) ??
+        priceBySymbol.get(symbol) ??
+        null;
 
       const observation = this.resolveMarketObservation(
         symbol,
@@ -410,12 +446,36 @@ export class PaperOrderExecutionService {
     }
   }
 
-  private shouldFillOrder(
-    order: PaperOrder,
-    observation: LatestMarketObservation
-  ): boolean {
-    const orderType = String(order.orderType || '').trim().toLowerCase();
-    const triggerType = String(order.triggerType || '').trim().toLowerCase();
+  private async emitPaperExecutionFailureAlert(
+    userId: string,
+    action: string,
+    error: unknown,
+    referenceId?: string
+  ): Promise<void> {
+    if (!this.operationalEventService) {
+      return;
+    }
+    await this.operationalEventService.emitFailureAlert(userId, {
+      channel: 'paper-execution',
+      source: `paper-execution.${action}${referenceId ? `.${referenceId}` : ''}`,
+      message: `Paper execution failed: ${this.readErrorMessage(error)}`,
+      route: 'Orders',
+      severity: 'High',
+      urgency: 'Review paper execution state and rerun simulation after the issue is resolved.',
+    });
+  }
+
+  private readErrorMessage(error: unknown): string {
+    return error instanceof Error && error.message ? error.message : 'Unknown error';
+  }
+
+  private shouldFillOrder(order: PaperOrder, observation: LatestMarketObservation): boolean {
+    const orderType = String(order.orderType || '')
+      .trim()
+      .toLowerCase();
+    const triggerType = String(order.triggerType || '')
+      .trim()
+      .toLowerCase();
     const limitPrice = this.toNumber(order.orderPrice);
     const isShort = this.isShortOrder(order.side);
 
@@ -424,9 +484,7 @@ export class PaperOrderExecutionService {
     }
 
     if (observation.candleHigh !== null && observation.candleLow !== null) {
-      return isShort
-        ? observation.candleHigh >= limitPrice
-        : observation.candleLow <= limitPrice;
+      return isShort ? observation.candleHigh >= limitPrice : observation.candleLow <= limitPrice;
     }
 
     return isShort
@@ -434,12 +492,13 @@ export class PaperOrderExecutionService {
       : observation.referencePrice <= limitPrice;
   }
 
-  private resolveFillPrice(
-    order: PaperOrder,
-    observation: LatestMarketObservation
-  ): number {
-    const orderType = String(order.orderType || '').trim().toLowerCase();
-    const triggerType = String(order.triggerType || '').trim().toLowerCase();
+  private resolveFillPrice(order: PaperOrder, observation: LatestMarketObservation): number {
+    const orderType = String(order.orderType || '')
+      .trim()
+      .toLowerCase();
+    const triggerType = String(order.triggerType || '')
+      .trim()
+      .toLowerCase();
     const limitPrice = this.toNumber(order.orderPrice);
 
     if (orderType === 'limit' && triggerType !== 'immediate' && limitPrice !== null) {
@@ -514,7 +573,11 @@ export class PaperOrderExecutionService {
     const normalizedSymbols = Array.from(
       new Set(
         (symbols || [])
-          .map((value) => String(value || '').trim().toUpperCase())
+          .map((value) =>
+            String(value || '')
+              .trim()
+              .toUpperCase()
+          )
           .filter(Boolean)
       )
     );
@@ -544,7 +607,9 @@ export class PaperOrderExecutionService {
 
     const observationBySymbol = new Map<string, LatestMarketObservation>();
     for (const row of rows || []) {
-      const symbol = String(row.symbol || '').trim().toUpperCase();
+      const symbol = String(row.symbol || '')
+        .trim()
+        .toUpperCase();
       if (!symbol) {
         continue;
       }
@@ -583,7 +648,12 @@ export class PaperOrderExecutionService {
       sources: ['mudrex', 'delta_exchange'],
     });
     return new Map(
-      rows.map((item) => [String(item.symbol || '').trim().toUpperCase(), item])
+      rows.map((item) => [
+        String(item.symbol || '')
+          .trim()
+          .toUpperCase(),
+        item,
+      ])
     );
   }
 
@@ -591,7 +661,9 @@ export class PaperOrderExecutionService {
     const symbolsBySource = new Map<string, Set<string>>();
     for (const order of orders) {
       const source = this.resolvePriceSourceForBroker(order.brokerKey);
-      const symbol = String(order.symbol || '').trim().toUpperCase();
+      const symbol = String(order.symbol || '')
+        .trim()
+        .toUpperCase();
       if (!source || !symbol) {
         continue;
       }
@@ -613,7 +685,9 @@ export class PaperOrderExecutionService {
     const priceByScopedSymbol = new Map<string, AssetPrice>();
     for (const entry of scopedRows) {
       entry.rows.forEach((row) => {
-        const symbol = String(row.symbol || '').trim().toUpperCase();
+        const symbol = String(row.symbol || '')
+          .trim()
+          .toUpperCase();
         if (!symbol) {
           return;
         }
@@ -653,7 +727,9 @@ export class PaperOrderExecutionService {
   }
 
   private resolvePriceSourceForBroker(brokerKey: string | null | undefined): string | null {
-    const normalized = String(brokerKey || '').trim().toLowerCase();
+    const normalized = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
     if (normalized === 'mudrex' || normalized === 'delta_exchange') {
       return normalized;
     }
@@ -661,7 +737,11 @@ export class PaperOrderExecutionService {
   }
 
   private buildScopedSymbolKey(source: string, symbol: string): string {
-    return `${String(source || '').trim().toLowerCase()}:${String(symbol || '').trim().toUpperCase()}`;
+    return `${String(source || '')
+      .trim()
+      .toLowerCase()}:${String(symbol || '')
+      .trim()
+      .toUpperCase()}`;
   }
 
   private computeRealizedPnl(
@@ -670,7 +750,8 @@ export class PaperOrderExecutionService {
     exitPrice: number,
     quantity: number
   ): number {
-    const filledPrice = this.toNumber(simulation.filledPrice) ?? this.toNumber(order.orderPrice) ?? exitPrice;
+    const filledPrice =
+      this.toNumber(simulation.filledPrice) ?? this.toNumber(order.orderPrice) ?? exitPrice;
     if (quantity <= 0) {
       return 0;
     }
@@ -695,7 +776,9 @@ export class PaperOrderExecutionService {
   }
 
   private isShortOrder(side: string | null | undefined): boolean {
-    const normalized = String(side || '').trim().toUpperCase();
+    const normalized = String(side || '')
+      .trim()
+      .toUpperCase();
     return normalized === 'SELL' || normalized === 'SHORT';
   }
 

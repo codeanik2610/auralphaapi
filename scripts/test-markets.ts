@@ -5,6 +5,8 @@ import path from 'node:path';
 import { InternalMarketsSnapshotController } from '../src/api/controllers/InternalMarketsSnapshotController';
 import { MarketController } from '../src/api/controllers/MarketController';
 import { MarketsOverviewController } from '../src/api/controllers/MarketsOverviewController';
+import { env } from '../src/env';
+import { MarketMetricsService } from '../src/api/services/MarketMetricsService';
 import { MarketsOverviewService } from '../src/api/services/MarketsOverviewService';
 import { MarketSnapshotRefreshService } from '../src/api/services/MarketSnapshotRefreshService';
 import { validateMarketCandlesQuery } from '../src/api/validators/market.validator';
@@ -356,9 +358,68 @@ async function runMarketsChartWarehouseSymbolResolutionAssertions(): Promise<voi
   }
 }
 
+async function runMarketMetricsServiceBatchAssertions(): Promise<void> {
+  const service = new MarketMetricsService() as any;
+  const capturedQueries: Array<{ sql: string; params: unknown[] }> = [];
+
+  service.candleQueryBatchSize = 2;
+  service.assetPriceRepository = {
+    async getBySymbols(symbols: string[]) {
+      return symbols.map((symbol) => ({
+        brokerAssetId: `broker-${symbol}`,
+        symbol,
+        sourceSymbol: symbol,
+        price: symbol === 'SOLUSDT' ? '155.50' : '100.00',
+        source: 'delta_exchange',
+        retrievedAt: new Date('2026-04-13T03:00:00.000Z'),
+        updatedAt: new Date('2026-04-13T03:00:00.000Z'),
+      }));
+    },
+  };
+
+  const originalQuery = strategyDataSource.query.bind(strategyDataSource);
+  const originalInitialized = strategyDataSource.isInitialized;
+  const originalPgEnabled = env.pg.enabled;
+  (env.pg as any).enabled = true;
+  (strategyDataSource as any).isInitialized = true;
+  (strategyDataSource as any).query = async (sql: string, params: unknown[]) => {
+    capturedQueries.push({ sql, params });
+    const symbols = Array.isArray(params?.[0]) ? (params[0] as string[]) : [];
+    return symbols.map((symbol) => ({
+      symbol,
+      lastPrice: symbol === 'BTCUSDT' ? '67500.12' : null,
+      snapshotAt: '2026-04-13T02:45:00.000Z',
+      prevClose: symbol === 'BTCUSDT' ? '65000.00' : null,
+      volume24h: symbol === 'BTCUSDT' ? '250000000' : null,
+      high24h: symbol === 'BTCUSDT' ? '68000.55' : null,
+      low24h: symbol === 'BTCUSDT' ? '64000.10' : null,
+    }));
+  };
+
+  try {
+    const metrics = await service.getMetricsForSymbols(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+
+    assert.equal(capturedQueries.length, 2);
+    assert.ok(capturedQueries.every((entry) => entry.sql.includes("INTERVAL '48 hours'")));
+    assert.deepEqual(capturedQueries[0].params, [['BTCUSDT', 'ETHUSDT']]);
+    assert.deepEqual(capturedQueries[1].params, [['SOLUSDT']]);
+    assert.equal(metrics.get('BTCUSDT')?.lastPrice, 67500.12);
+    assert.equal(metrics.get('SOLUSDT')?.lastPrice, 155.5);
+    assert.equal(metrics.get('SOLUSDT')?.priceSource, 'delta_exchange');
+  } finally {
+    (env.pg as any).enabled = originalPgEnabled;
+    (strategyDataSource as any).query = originalQuery;
+    (strategyDataSource as any).isInitialized = originalInitialized;
+  }
+}
+
 async function runMarketSnapshotRefreshServiceAssertions(): Promise<void> {
   const service = new MarketSnapshotRefreshService() as any;
   const upsertPayloads: Array<Array<Record<string, unknown>>> = [];
+  const metricRequests: string[][] = [];
+  const snapshotRequests: string[][] = [];
+
+  service.refreshBatchSize = 1;
 
   service.assetRepository = {
     async listAssets() {
@@ -371,7 +432,8 @@ async function runMarketSnapshotRefreshServiceAssertions(): Promise<void> {
     },
   };
   service.marketMetricsService = {
-    async getMetricsForSymbols() {
+    async getMetricsForSymbols(symbols: string[]) {
+      metricRequests.push([...symbols]);
       return new Map([
         [
           'BTCUSDT',
@@ -390,7 +452,8 @@ async function runMarketSnapshotRefreshServiceAssertions(): Promise<void> {
     },
   };
   service.marketSymbolSnapshotRepository = {
-    async getBySymbols() {
+    async getBySymbols(symbols: string[]) {
+      snapshotRequests.push([...symbols]);
       return [
         {
           symbol: 'ETHUSDT',
@@ -420,13 +483,16 @@ async function runMarketSnapshotRefreshServiceAssertions(): Promise<void> {
   assert.equal(response.data.insertedSnapshots, 1);
   assert.equal(response.data.updatedSnapshots, 1);
   assert.equal(response.data.skippedSymbols, 0);
-  assert.equal(upsertPayloads.length, 1);
-  assert.equal(upsertPayloads[0].length, 2);
+  assert.deepEqual(metricRequests, [['BTCUSDT'], ['ETHUSDT']]);
+  assert.deepEqual(snapshotRequests, [['BTCUSDT'], ['ETHUSDT']]);
+  assert.equal(upsertPayloads.length, 2);
+  assert.equal(upsertPayloads[0].length, 1);
+  assert.equal(upsertPayloads[1].length, 1);
   assert.equal(upsertPayloads[0][0].symbol, 'BTCUSDT');
   assert.equal(upsertPayloads[0][0].liquidityTier, 'Core');
   assert.equal(upsertPayloads[0][0].priceSource, 'pg.market_candles_1m');
-  assert.equal(upsertPayloads[0][1].symbol, 'ETHUSDT');
-  assert.equal(upsertPayloads[0][1].liquidityTier, 'Active');
+  assert.equal(upsertPayloads[1][0].symbol, 'ETHUSDT');
+  assert.equal(upsertPayloads[1][0].liquidityTier, 'Active');
 }
 
 function runMarketsScriptWiringAssertions(): void {
@@ -457,6 +523,7 @@ async function main(): Promise<void> {
   await runMarketsOverviewSnapshotAssertions();
   await runMarketsSymbolOverviewAssertions();
   await runMarketsChartWarehouseSymbolResolutionAssertions();
+  await runMarketMetricsServiceBatchAssertions();
   await runMarketSnapshotRefreshServiceAssertions();
   runMarketsScriptWiringAssertions();
   console.log('Markets module assertions passed.');

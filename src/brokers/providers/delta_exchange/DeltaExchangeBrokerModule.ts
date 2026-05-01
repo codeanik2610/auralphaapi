@@ -13,10 +13,11 @@ export class DeltaExchangeBrokerModule implements BrokerModule {
 
   readonly profile = {
     purpose: 'Execution account, balances, positions, and exchange candle data',
-    capabilities: 'Candles, balances, open orders, order history, cancel order, positions, liquidation info',
+    capabilities:
+      'Candles, balances, open orders, order history, cancel order, positions, liquidation info, leverage controls',
     authMode: 'API key + secret signing',
     limitations:
-      'Create order, close-position actions, leverage controls, and websocket updates still need explicit product/action mapping.',
+      'Websocket updates still need fuller runtime coverage, and create/close flows still depend on explicit product/action mapping.',
     environment: 'Testnet + Production',
   };
 
@@ -25,7 +26,7 @@ export class DeltaExchangeBrokerModule implements BrokerModule {
     orders: true,
     positions: true,
     balances: true,
-    leverage: false,
+    leverage: true,
     risk: true,
     streaming: false,
   };

@@ -6,6 +6,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/platform-common.sh"
 
 WITH_EMAIL=false
+WITH_WHATSAPP=false
 WITH_PULL=false
 SKIP_BUILD=false
 SKIP_MIGRATE=false
@@ -15,6 +16,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --with-email)
       WITH_EMAIL=true
+      shift
+      ;;
+    --with-whatsapp)
+      WITH_WHATSAPP=true
       shift
       ;;
     --with-pull)
@@ -35,7 +40,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Supported arguments: --with-email --with-pull --skip-build --skip-migrate --seed" >&2
+      echo "Supported arguments: --with-email --with-whatsapp --with-pull --skip-build --skip-migrate --seed" >&2
       exit 1
       ;;
   esac
@@ -52,13 +57,25 @@ if [[ "${WITH_PULL}" == "true" ]]; then
   git -C "${ROOT_DIR}/../../Frontend/aurAlphaApp" pull
 fi
 
-profile_args=()
-if [[ "${WITH_EMAIL}" == "true" ]]; then
-  profile_args+=(--profile email)
-fi
+function compose_with_selected_profiles() {
+  case "${WITH_EMAIL}:${WITH_WHATSAPP}" in
+    true:true)
+      compose --profile email --profile whatsapp "$@"
+      ;;
+    true:false)
+      compose --profile email "$@"
+      ;;
+    false:true)
+      compose --profile whatsapp "$@"
+      ;;
+    *)
+      compose "$@"
+      ;;
+  esac
+}
 
 if [[ "${SKIP_BUILD}" != "true" ]]; then
-  compose "${profile_args[@]}" build
+  compose_with_selected_profiles build
 fi
 
 if [[ "${SKIP_MIGRATE}" != "true" ]]; then
@@ -69,7 +86,7 @@ if [[ "${RUN_SEED}" == "true" || "$(read_env_value "${BACKEND_ENV_FILE}" "PRODUC
   compose run --rm --no-deps auralpha-api node dist/scripts/db/db-seed-production-bootstrap.js
 fi
 
-compose "${profile_args[@]}" up -d
+compose_with_selected_profiles up -d
 
 echo "Platform update completed successfully."
 echo "Run the smoke checks next with: bash scripts/deploy/platform-smoke.sh"

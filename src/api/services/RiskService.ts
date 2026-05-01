@@ -4,6 +4,7 @@ import {
   ReviewRiskPolicyVersionBody,
   RiskKillSwitchBody,
   RiskKillSwitchResult,
+  RiskKillSwitchStatusResult,
   RiskPoliciesResponse,
   RiskPolicyApprovalMode,
   RiskPolicyApprovalState,
@@ -53,7 +54,6 @@ import {
   validateRiskAlertsQuery,
   validateRiskControlsQuery,
   validateRiskScenariosQuery,
-  validateRiskKillSwitchBody,
   validateRollbackRiskPolicyBody,
   validateUpsertRiskPolicyBody,
 } from '../validators/risk.validator';
@@ -119,6 +119,7 @@ import {
   RiskSnapshotSourceCoverageRepository,
 } from '../../database/repositories/RiskSnapshotSourceCoverageRepository';
 import { OperationalEventService } from './OperationalEventService';
+import { RiskKillSwitchService } from './RiskKillSwitchService';
 import { BrokerRouteResolution } from '../../brokers/core/BrokerAccountRoutingService';
 import { getUtcDateRangeFromLocalDates } from '../utils/timezone';
 import { UserTimeZoneService } from './UserTimeZoneService';
@@ -204,6 +205,7 @@ interface RiskThresholdProfile {
   monthlyLossLimitPct: number;
   minLeverage: number | null;
   maxLeverage: number;
+  tradeSizePctOfBalance: number | null;
   minNotionalPerTrade: number | null;
   maxOrderAllocation: number | null;
   maxTotalAllocation: number;
@@ -220,6 +222,7 @@ interface RiskThresholdProfileInput {
   monthlyLossLimitPct?: number | null;
   minLeverage?: number | null;
   maxLeverage?: number | null;
+  tradeSizePctOfBalance?: number | null;
   minNotionalPerTrade?: number | null;
   maxOrderAllocation?: number | null;
   maxTotalAllocation?: number | null;
@@ -240,6 +243,7 @@ interface AccountRiskSnapshotInput {
   fundsCoverage: FundsSnapshotCoverageRow | null;
   walletBalance: number | null;
   futuresBalance: number | null;
+  lockedMargin: number | null;
   balance: number | null;
   positions: PositionRecord[];
   positionsFreshness: PositionAccountFreshnessRow | null;
@@ -289,18 +293,24 @@ interface EffectiveRiskPolicyContext {
   monthlyLossLimitPct: number;
   minLeverage: number | null;
   maxLeverage: number | null;
+  tradeSizePctOfBalance: number | null;
   minNotionalPerTrade: number | null;
   maxOrderAllocation: number | null;
   maxTotalAllocation: number | null;
   maxAvgLeverage: number | null;
 }
 
-interface ComputedRiskBrokerSnapshotDraft extends Omit<ComputedRiskBrokerSnapshotPayload, 'policyContextId'> {
+interface ComputedRiskBrokerSnapshotDraft extends Omit<
+  ComputedRiskBrokerSnapshotPayload,
+  'policyContextId'
+> {
   policyContextKey: string | null;
 }
 
-interface ComputedRiskBrokerAssetSnapshotDraft
-  extends Omit<ComputedRiskBrokerAssetSnapshotPayload, 'policyContextId'> {
+interface ComputedRiskBrokerAssetSnapshotDraft extends Omit<
+  ComputedRiskBrokerAssetSnapshotPayload,
+  'policyContextId'
+> {
   policyContextKey: string | null;
 }
 
@@ -335,6 +345,7 @@ interface RiskComputationResult {
 interface FundsBalanceBreakdown {
   walletBalance: number | null;
   futuresBalance: number | null;
+  lockedMargin: number | null;
   trackedBalance: number | null;
 }
 
@@ -399,6 +410,9 @@ export class RiskService {
 
   @Inject(() => UserTimeZoneService)
   private userTimeZoneService!: UserTimeZoneService;
+
+  @Inject(() => RiskKillSwitchService)
+  private riskKillSwitchService!: RiskKillSwitchService;
 
   @Inject(() => PortfolioService)
   private portfolioService!: PortfolioService;
@@ -517,7 +531,9 @@ export class RiskService {
       });
     }
 
-    const positionSnapshots = await this.riskPositionSnapshotRepository.listBySnapshotId(snapshot.id);
+    const positionSnapshots = await this.riskPositionSnapshotRepository.listBySnapshotId(
+      snapshot.id
+    );
     const items: RiskPositionItem[] = positionSnapshots.map((item) => ({
       id: item.id,
       snapshotId: item.snapshotId,
@@ -537,6 +553,10 @@ export class RiskService {
       unrealizedPnl: item.unrealizedPnl,
       realizedPnl: item.realizedPnl,
       leverage: item.leverage,
+      requestedLeverage: item.requestedLeverage,
+      confirmedOrderLeverage: item.confirmedOrderLeverage,
+      observedPositionLeverage: item.observedPositionLeverage,
+      leverageSource: item.leverageSource,
       liquidationPrice: item.liquidationPrice,
       liquidationDistancePct: item.liquidationDistancePct,
       concentrationPct: item.concentrationPct,
@@ -990,13 +1010,13 @@ export class RiskService {
 
     return successResponse({
       snapshotId: snapshot.id,
-      createdAt: this.formatDisplayTime(snapshot.createdAt, timeZone) || snapshot.createdAt.toISOString(),
+      createdAt:
+        this.formatDisplayTime(snapshot.createdAt, timeZone) || snapshot.createdAt.toISOString(),
       createdAtIso: this.formatRawIso(snapshot.createdAt) || undefined,
       previousSnapshotId: previousSnapshot?.id || undefined,
       previousSnapshotCreatedAt:
         this.formatDisplayTime(previousSnapshot?.createdAt || null, timeZone) || null,
-      previousSnapshotCreatedAtIso:
-        this.formatRawIso(previousSnapshot?.createdAt || null) || null,
+      previousSnapshotCreatedAtIso: this.formatRawIso(previousSnapshot?.createdAt || null) || null,
       summary,
       accounts,
       positions,
@@ -1030,9 +1050,10 @@ export class RiskService {
     );
 
     return accountSnapshots.map((item) => {
-      const brokerKey = String(item.brokerKey || '').trim().toLowerCase();
-      const policyContext =
-        brokerPolicyContextByKey.get(brokerKey) || defaultPolicyContext || null;
+      const brokerKey = String(item.brokerKey || '')
+        .trim()
+        .toLowerCase();
+      const policyContext = brokerPolicyContextByKey.get(brokerKey) || defaultPolicyContext || null;
       const sourceCoverage =
         sourceCoverageByAccountId.get(String(item.accountId || '').trim()) || null;
 
@@ -1127,9 +1148,7 @@ export class RiskService {
         createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
         createdAtIso: this.formatRawIso(item.createdAt) || undefined,
       }))
-      .sort((left, right) =>
-        this.compareRiskSeverityRows(left, right, (item) => item.brokerKey)
-      );
+      .sort((left, right) => this.compareRiskSeverityRows(left, right, (item) => item.brokerKey));
   }
 
   private mapRiskAssetSnapshotItems(
@@ -1164,9 +1183,7 @@ export class RiskService {
         createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
         createdAtIso: this.formatRawIso(item.createdAt) || undefined,
       }))
-      .sort((left, right) =>
-        this.compareRiskSeverityRows(left, right, (item) => item.symbol)
-      );
+      .sort((left, right) => this.compareRiskSeverityRows(left, right, (item) => item.symbol));
   }
 
   private mapRiskBrokerAssetSnapshotItems(
@@ -1202,8 +1219,10 @@ export class RiskService {
         worstLiquidationDistancePct: item.worstLiquidationDistancePct,
         allocationPct: this.toRatioPct(item.grossExposure, snapshot.portfolioEquity) ?? undefined,
         marginUsagePct:
-          this.toRatioPct(item.reservedOrderMargin, brokerBalanceByKey.get(item.brokerKey) ?? null) ??
-          undefined,
+          this.toRatioPct(
+            item.reservedOrderMargin,
+            brokerBalanceByKey.get(item.brokerKey) ?? null
+          ) ?? undefined,
         riskScore: item.riskScore,
         riskState: item.riskState,
         primaryConcern: item.primaryConcern,
@@ -1222,7 +1241,8 @@ export class RiskService {
     return [...rows]
       .sort((left, right) => {
         const scopeDiff =
-          this.resolvePolicyScopeRank(left.policyScope) - this.resolvePolicyScopeRank(right.policyScope);
+          this.resolvePolicyScopeRank(left.policyScope) -
+          this.resolvePolicyScopeRank(right.policyScope);
         if (scopeDiff !== 0) {
           return scopeDiff;
         }
@@ -1255,6 +1275,7 @@ export class RiskService {
         monthlyLossLimitPct: item.monthlyLossLimitPct,
         minLeverage: item.minLeverage,
         maxLeverage: item.maxLeverage,
+        tradeSizePctOfBalance: item.tradeSizePctOfBalance,
         minNotionalPerTrade: item.minNotionalPerTrade,
         maxOrderAllocation: item.maxOrderAllocation,
         maxTotalAllocation: item.maxTotalAllocation,
@@ -1270,11 +1291,15 @@ export class RiskService {
   ): RiskSourceCoverageItem[] {
     return [...rows]
       .sort((left, right) => {
-        const brokerDiff = String(left.brokerKey || '').localeCompare(String(right.brokerKey || ''));
+        const brokerDiff = String(left.brokerKey || '').localeCompare(
+          String(right.brokerKey || '')
+        );
         if (brokerDiff !== 0) {
           return brokerDiff;
         }
-        const accountDiff = String(left.accountName || '').localeCompare(String(right.accountName || ''));
+        const accountDiff = String(left.accountName || '').localeCompare(
+          String(right.accountName || '')
+        );
         if (accountDiff !== 0) {
           return accountDiff;
         }
@@ -1304,7 +1329,8 @@ export class RiskService {
         latestSuccessFundsSnapshotDate: item.latestSuccessFundsSnapshotDate,
         latestSuccessFundsObservedAt:
           this.formatDisplayTime(item.latestSuccessFundsObservedAt, timeZone) || null,
-        latestSuccessFundsObservedAtIso: this.formatRawIso(item.latestSuccessFundsObservedAt) || null,
+        latestSuccessFundsObservedAtIso:
+          this.formatRawIso(item.latestSuccessFundsObservedAt) || null,
         latestSuccessFundsComputedAt:
           this.formatDisplayTime(item.latestSuccessFundsComputedAt, timeZone) || null,
         latestSuccessFundsComputedAtIso:
@@ -1396,37 +1422,37 @@ export class RiskService {
     timeZone: string
   ): RiskRuleEvaluationItem[] {
     return rows.map((item) => ({
-        id: item.id,
-        snapshotId: item.snapshotId,
-        policyContextId: item.policyContextId,
-        sourceType: item.sourceType,
-        scopeType: item.scopeType,
-        scopeKey: item.scopeKey,
-        scopeLabel: item.scopeLabel,
-        brokerKey: item.brokerKey,
-        accountId: item.accountId,
-        positionId: item.positionId,
-        symbol: item.symbol,
-        ruleCode: item.ruleCode,
-        metricName: item.metricName,
-        actualValue: item.actualValue,
-        basisValue: item.basisValue,
-        warnThresholdValue: item.warnThresholdValue,
-        criticalThresholdValue: item.criticalThresholdValue,
-        status: item.status,
-        bucket: item.bucket,
-        exposure: item.exposure,
-        threshold: item.threshold,
-        action: item.action,
-        alertSeverity: item.alertSeverity,
-        alertMessage: item.alertMessage,
-        alertSymbol: item.alertSymbol,
-        alertChannel: item.alertChannel,
-        alertStatus: item.alertStatus,
-        sortOrder: item.sortOrder,
-        createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
-        createdAtIso: this.formatRawIso(item.createdAt) || undefined,
-      }));
+      id: item.id,
+      snapshotId: item.snapshotId,
+      policyContextId: item.policyContextId,
+      sourceType: item.sourceType,
+      scopeType: item.scopeType,
+      scopeKey: item.scopeKey,
+      scopeLabel: item.scopeLabel,
+      brokerKey: item.brokerKey,
+      accountId: item.accountId,
+      positionId: item.positionId,
+      symbol: item.symbol,
+      ruleCode: item.ruleCode,
+      metricName: item.metricName,
+      actualValue: item.actualValue,
+      basisValue: item.basisValue,
+      warnThresholdValue: item.warnThresholdValue,
+      criticalThresholdValue: item.criticalThresholdValue,
+      status: item.status,
+      bucket: item.bucket,
+      exposure: item.exposure,
+      threshold: item.threshold,
+      action: item.action,
+      alertSeverity: item.alertSeverity,
+      alertMessage: item.alertMessage,
+      alertSymbol: item.alertSymbol,
+      alertChannel: item.alertChannel,
+      alertStatus: item.alertStatus,
+      sortOrder: item.sortOrder,
+      createdAt: this.formatDisplayTime(item.createdAt, timeZone) || item.createdAt.toISOString(),
+      createdAtIso: this.formatRawIso(item.createdAt) || undefined,
+    }));
   }
 
   private mapRiskControlItemsFromEvaluations(
@@ -1434,7 +1460,12 @@ export class RiskService {
     timeZone: string
   ): RiskControlItem[] {
     return this.mapRiskRuleEvaluationItems(
-      rows.filter((item) => String(item.sourceType || '').trim().toLowerCase() === 'control'),
+      rows.filter(
+        (item) =>
+          String(item.sourceType || '')
+            .trim()
+            .toLowerCase() === 'control'
+      ),
       timeZone
     ).map((item) => ({
       id: item.id,
@@ -1455,9 +1486,7 @@ export class RiskService {
   ): RiskAlertItem[] {
     return this.mapRiskRuleEvaluationItems(
       rows.filter(
-        (item) =>
-          String(item.alertSeverity || '').trim() &&
-          String(item.alertMessage || '').trim()
+        (item) => String(item.alertSeverity || '').trim() && String(item.alertMessage || '').trim()
       ),
       timeZone
     ).map((item) => ({
@@ -1523,13 +1552,13 @@ export class RiskService {
     const hasNormalizedAlerts =
       normalized.total > 0 ||
       Boolean(await this.riskRuleEvaluationRepository.getLatestCreatedAtForUsers([userId]));
-    const legacy =
-      hasNormalizedAlerts ? null : await this.riskAlertRepository.listRiskAlerts(userId, params);
+    const legacy = hasNormalizedAlerts
+      ? null
+      : await this.riskAlertRepository.listRiskAlerts(userId, params);
 
-    const mapped =
-      hasNormalizedAlerts
-        ? this.mapRiskAlertItemsFromEvaluations(normalized.items, timeZone)
-        : this.mapLegacyRiskAlertItems(legacy?.items || [], timeZone);
+    const mapped = hasNormalizedAlerts
+      ? this.mapRiskAlertItemsFromEvaluations(normalized.items, timeZone)
+      : this.mapLegacyRiskAlertItems(legacy?.items || [], timeZone);
     const total = hasNormalizedAlerts ? normalized.total : legacy?.total || 0;
 
     return successResponse({
@@ -1572,13 +1601,13 @@ export class RiskService {
     const hasNormalizedControls =
       normalized.total > 0 ||
       Boolean(await this.riskRuleEvaluationRepository.getLatestControlCreatedAtForUsers([userId]));
-    const legacy =
-      hasNormalizedControls ? null : await this.riskControlRepository.listRiskControls(userId, params);
+    const legacy = hasNormalizedControls
+      ? null
+      : await this.riskControlRepository.listRiskControls(userId, params);
 
-    const mapped =
-      hasNormalizedControls
-        ? this.mapRiskControlItemsFromEvaluations(normalized.items, timeZone)
-        : this.mapLegacyRiskControlItems(legacy?.items || [], timeZone);
+    const mapped = hasNormalizedControls
+      ? this.mapRiskControlItemsFromEvaluations(normalized.items, timeZone)
+      : this.mapLegacyRiskControlItems(legacy?.items || [], timeZone);
     const total = hasNormalizedControls ? normalized.total : legacy?.total || 0;
 
     return successResponse({
@@ -1745,7 +1774,10 @@ export class RiskService {
       await this.assertNoPendingRiskPolicyReview(userId, policyId);
       await this.assertNoDuplicateRiskPolicyTarget(userId, validated, policyId);
       const currentPolicy = this.mapPolicy(existing, {}, timeZone);
-      const shouldRequireManualReview = this.requiresManualRiskPolicyReview(currentPolicy, validated);
+      const shouldRequireManualReview = this.requiresManualRiskPolicyReview(
+        currentPolicy,
+        validated
+      );
 
       if (shouldRequireManualReview) {
         const pendingSnapshot = this.buildRequestedPolicySnapshot(policyId, validated);
@@ -1774,13 +1806,17 @@ export class RiskService {
         return successResponse({
           message: 'Risk policy change submitted for approval.',
           policyId,
-          policy: this.mapPolicy({
-            ...pendingSnapshot,
-            approvalMode: 'manual_review',
-            approvalState: 'pending_review',
-            pendingVersionId: createdVersion.id,
-            pendingVersionCount: 1,
-          }, {}, timeZone),
+          policy: this.mapPolicy(
+            {
+              ...pendingSnapshot,
+              approvalMode: 'manual_review',
+              approvalState: 'pending_review',
+              pendingVersionId: createdVersion.id,
+              pendingVersionCount: 1,
+            },
+            {},
+            timeZone
+          ),
           versionId: createdVersion.id,
           approvalMode: 'manual_review',
           approvalState: 'pending_review',
@@ -1875,7 +1911,9 @@ export class RiskService {
       parsedVersions.find((item) => item.id === targetVersion.id) ||
       this.parsePolicyVersionRecord(
         targetVersion,
-        versions.length > 1 && versions[versions.length - 1]?.id === targetVersion.id ? 'create' : 'update'
+        versions.length > 1 && versions[versions.length - 1]?.id === targetVersion.id
+          ? 'create'
+          : 'update'
       );
     const rollbackPayload = this.validateRiskPolicy(parsedVersion.snapshot);
     const currentPolicy = this.mapPolicy(existing, {}, timeZone);
@@ -1911,13 +1949,17 @@ export class RiskService {
         return successResponse({
           message: 'Risk policy rollback submitted for approval.',
           policyId,
-          policy: this.mapPolicy({
-            ...pendingSnapshot,
-            approvalMode: 'manual_review',
-            approvalState: 'pending_review',
-            pendingVersionId: createdVersion.id,
-            pendingVersionCount: 1,
-          }, {}, timeZone),
+          policy: this.mapPolicy(
+            {
+              ...pendingSnapshot,
+              approvalMode: 'manual_review',
+              approvalState: 'pending_review',
+              pendingVersionId: createdVersion.id,
+              pendingVersionCount: 1,
+            },
+            {},
+            timeZone
+          ),
           versionId: createdVersion.id,
           restoredVersionId: targetVersion.id,
           createdVersionId: createdVersion.id,
@@ -1929,7 +1971,11 @@ export class RiskService {
         });
       }
 
-      const updated = await this.riskPolicyRepository.updatePolicy(userId, policyId, rollbackPayload);
+      const updated = await this.riskPolicyRepository.updatePolicy(
+        userId,
+        policyId,
+        rollbackPayload
+      );
       if (!updated) {
         throw new NotFoundAppError('Risk policy not found');
       }
@@ -2005,7 +2051,11 @@ export class RiskService {
       throw new NotFoundAppError('Risk policy not found');
     }
 
-    const version = await this.riskPolicyRepository.getPolicyVersionById(userId, policyId, versionId);
+    const version = await this.riskPolicyRepository.getPolicyVersionById(
+      userId,
+      policyId,
+      versionId
+    );
     if (!version) {
       throw new NotFoundAppError('Risk policy version not found');
     }
@@ -2026,12 +2076,16 @@ export class RiskService {
       throw new NotFoundAppError('Risk policy not found');
     }
 
-    const mappedPolicy = this.mapPolicy(updated, {
-      currentVersionId: versionId,
-      pendingVersionCount: 0,
-      approvalMode: 'manual_review',
-      currentApprovalState: 'approved',
-    }, timeZone);
+    const mappedPolicy = this.mapPolicy(
+      updated,
+      {
+        currentVersionId: versionId,
+        pendingVersionCount: 0,
+        approvalMode: 'manual_review',
+        currentApprovalState: 'approved',
+      },
+      timeZone
+    );
 
     const updatedVersion = await this.riskPolicyRepository.updatePolicyVersionPayload(
       userId,
@@ -2087,7 +2141,11 @@ export class RiskService {
       throw new NotFoundAppError('Risk policy not found');
     }
 
-    const version = await this.riskPolicyRepository.getPolicyVersionById(userId, policyId, versionId);
+    const version = await this.riskPolicyRepository.getPolicyVersionById(
+      userId,
+      policyId,
+      versionId
+    );
     if (!version) {
       throw new NotFoundAppError('Risk policy version not found');
     }
@@ -2135,11 +2193,15 @@ export class RiskService {
       approvalMode: 'manual_review',
       approvalState: 'rejected',
       applied: false,
-      policy: this.mapPolicy(existing, {
-        pendingVersionCount: 0,
-        approvalMode: 'manual_review',
-        currentApprovalState: 'approved',
-      }, timeZone),
+      policy: this.mapPolicy(
+        existing,
+        {
+          pendingVersionCount: 0,
+          approvalMode: 'manual_review',
+          currentApprovalState: 'approved',
+        },
+        timeZone
+      ),
       activityPath: this.buildPolicyActivityPath(policyId),
       enforcementActivityPath: this.buildPolicyEnforcementActivityPath(policyId),
     });
@@ -2149,38 +2211,32 @@ export class RiskService {
     userId: string,
     body: RiskKillSwitchBody
   ): Promise<ApiSuccessResponse<RiskKillSwitchResult>> {
-    const validated = validateRiskKillSwitchBody(body);
-    const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+    return successResponse(await this.riskKillSwitchService.trigger(userId, body));
+  }
 
-    await this.operationalEventService.logActivity(userId, {
-      type: 'Risk control',
-      title: 'Kill switch triggered',
-      status: 'Success',
-      route: 'Risk',
-      stream: 'Controls',
-      related: validated.scope,
-      description: validated.reason,
-    });
+  async clearKillSwitch(
+    userId: string,
+    body: RiskKillSwitchBody
+  ): Promise<ApiSuccessResponse<RiskKillSwitchResult>> {
+    return successResponse(await this.riskKillSwitchService.clear(userId, body));
+  }
 
-    const triggeredAtIso = new Date().toISOString();
-    return successResponse({
-      message: 'Kill switch triggered',
-      triggeredAt: this.formatDisplayTime(triggeredAtIso, timeZone) || triggeredAtIso,
-      triggeredAtIso,
-      scope: validated.scope,
-      time: buildApiTimeContract(timeZone),
-    });
+  async getKillSwitchStatus(
+    userId: string
+  ): Promise<ApiSuccessResponse<RiskKillSwitchStatusResult>> {
+    return successResponse(await this.riskKillSwitchService.getStatus(userId));
   }
 
   async recomputeRiskSnapshot(userId: string): Promise<ApiSuccessResponse<RiskRecomputeResult>> {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
     const computed = await this.buildComputedRiskSnapshot(userId);
     const snapshot = await this.riskRepository.createComputedSnapshot(userId, computed.snapshot);
-    const createdPolicyContexts = await this.riskSnapshotPolicyContextRepository.createComputedPolicyContexts(
-      userId,
-      snapshot.id,
-      computed.policyContexts
-    );
+    const createdPolicyContexts =
+      await this.riskSnapshotPolicyContextRepository.createComputedPolicyContexts(
+        userId,
+        snapshot.id,
+        computed.policyContexts
+      );
     const policyContextIdByKey = new Map(
       createdPolicyContexts.map((context) => [context.contextKey, context.id] as const)
     );
@@ -2271,7 +2327,8 @@ export class RiskService {
 
     return successResponse({
       message: 'Risk snapshot recomputed',
-      computedAt: this.formatDisplayTime(snapshot.createdAt, timeZone) || snapshot.createdAt.toISOString(),
+      computedAt:
+        this.formatDisplayTime(snapshot.createdAt, timeZone) || snapshot.createdAt.toISOString(),
       computedAtIso: this.formatRawIso(snapshot.createdAt) || undefined,
       equity: computed.equity,
       snapshotId: snapshot.id,
@@ -2294,13 +2351,7 @@ export class RiskService {
   ): Promise<ApiSuccessResponse<RiskBatchRecomputeResult>> {
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(actorUserId);
     const targets = Array.isArray(targetUserIds)
-      ? Array.from(
-          new Set(
-            targetUserIds
-              .map((item) => String(item || '').trim())
-              .filter(Boolean)
-          )
-        )
+      ? Array.from(new Set(targetUserIds.map((item) => String(item || '').trim()).filter(Boolean)))
       : [];
     let succeeded = 0;
     const failures: Array<{ userId: string; error: string }> = [];
@@ -2336,9 +2387,7 @@ export class RiskService {
       route: 'Risk',
       stream: 'Controls',
       related: 'batch-recompute',
-      description: failures.length
-        ? `Failures: ${failures.length}`
-        : 'All recomputes completed',
+      description: failures.length ? `Failures: ${failures.length}` : 'All recomputes completed',
     });
 
     const completedAtIso = new Date().toISOString();
@@ -2366,9 +2415,19 @@ export class RiskService {
     const brokerKey = String(query.brokerKey || '').trim();
     const accountId = String(query.accountId || '').trim();
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
-    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(query.startDate, query.endDate, timeZone);
+    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(
+      query.startDate,
+      query.endDate,
+      timeZone
+    );
 
-    return successResponse({ items: [], brokerKey, accountId, startDate: startUtc, endDate: endUtc });
+    return successResponse({
+      items: [],
+      brokerKey,
+      accountId,
+      startDate: startUtc,
+      endDate: endUtc,
+    });
   }
 
   async evaluatePreTradeOrder(
@@ -2376,7 +2435,10 @@ export class RiskService {
     route: BrokerRouteResolution,
     input: PreTradeOrderInput
   ): Promise<PreTradeOrderResult> {
-    const activePolicy = await this.riskPolicyRepository.getEffectivePolicy(userId, route.brokerKey);
+    const activePolicy = await this.riskPolicyRepository.getEffectivePolicy(
+      userId,
+      route.brokerKey
+    );
 
     if (!activePolicy) {
       return { allowed: true, blocked: false, breaches: [] };
@@ -2384,48 +2446,12 @@ export class RiskService {
 
     const breaches: string[] = [];
     const leverage = this.toFiniteNumber(input.leverage, null);
-    const orderNotional =
-      input.orderPrice && input.quantity
-        ? this.roundNumber(Math.abs(input.orderPrice * input.quantity), 2)
-        : null;
 
     if (activePolicy.minLeverage && leverage !== null && leverage < activePolicy.minLeverage) {
       breaches.push(`Leverage below min (${activePolicy.minLeverage})`);
     }
     if (activePolicy.maxLeverage && leverage !== null && leverage > activePolicy.maxLeverage) {
       breaches.push(`Leverage exceeds max (${activePolicy.maxLeverage})`);
-    }
-    if (
-      activePolicy.minNotionalPerTrade &&
-      orderNotional !== null &&
-      orderNotional < activePolicy.minNotionalPerTrade
-    ) {
-      breaches.push(
-        `Order notional below min (${this.formatCurrency(orderNotional)} vs ${this.formatCurrency(
-          activePolicy.minNotionalPerTrade
-        )})`
-      );
-    }
-    if (activePolicy.maxOrderAllocation && orderNotional !== null) {
-      const fundsSnapshot =
-        route.brokerKey && route.accountId
-          ? await this.fundsSnapshotRepository.getLatestSnapshot(
-              userId,
-              route.brokerKey,
-              route.accountId
-            )
-          : null;
-      const balance = this.extractFundsBalanceValue(fundsSnapshot);
-      const orderReservedMargin = this.resolveReservedMarginFromNotional(orderNotional, leverage);
-      const allocationPct =
-        balance && balance > 0 ? (orderReservedMargin / balance) * 100 : null;
-      if (allocationPct !== null && allocationPct > activePolicy.maxOrderAllocation) {
-        breaches.push(
-          `Order margin allocation exceeds max (${this.formatPercent(allocationPct)} vs ${this.formatPercent(
-            activePolicy.maxOrderAllocation
-          )} of account balance)`
-        );
-      }
     }
 
     const blocked = Boolean(activePolicy.enforceHardBlock && breaches.length);
@@ -2448,8 +2474,16 @@ export class RiskService {
       ).values()
     );
 
-    const accountIds = uniqueAccounts.map((account) => String(account.id || '').trim()).filter(Boolean);
-    const [fundsCoverageRows, livePositionsByAccount, positionCoverageByAccount, positionFreshnessByAccount, openOrdersByAccount] = accountIds.length
+    const accountIds = uniqueAccounts
+      .map((account) => String(account.id || '').trim())
+      .filter(Boolean);
+    const [
+      fundsCoverageRows,
+      livePositionsByAccount,
+      positionCoverageByAccount,
+      positionFreshnessByAccount,
+      openOrdersByAccount,
+    ] = accountIds.length
       ? await Promise.all([
           this.fundsSnapshotRepository.listLatestAccountCoverage(userId),
           this.positionReadModelRepository.listLivePositionsForAccounts(userId, accountIds),
@@ -2471,9 +2505,14 @@ export class RiskService {
     const brokerPolicyCache = new Map<string, EffectiveRiskPolicyContext>();
     const accountInputs = await Promise.all(
       uniqueAccounts.map(async (account) => {
-        const brokerKey = String(account.brokerKey || '').trim().toLowerCase();
+        const brokerKey = String(account.brokerKey || '')
+          .trim()
+          .toLowerCase();
         if (!brokerPolicyCache.has(brokerKey)) {
-          const effectivePolicy = await this.riskPolicyRepository.getEffectivePolicy(userId, brokerKey);
+          const effectivePolicy = await this.riskPolicyRepository.getEffectivePolicy(
+            userId,
+            brokerKey
+          );
           brokerPolicyCache.set(
             brokerKey,
             this.buildEffectiveRiskPolicyContext(effectivePolicy, brokerKey)
@@ -2489,22 +2528,26 @@ export class RiskService {
         return {
           accountId: String(account.id || '').trim(),
           brokerKey,
-          accountName: String(account.accountName || account.accountKey || account.id || '--').trim(),
+          accountName: String(
+            account.accountName || account.accountKey || account.id || '--'
+          ).trim(),
           fundsSnapshot,
           fundsCoverage: fundsCoverageByAccount.get(String(account.id || '').trim()) || null,
           walletBalance: fundsBreakdown.walletBalance,
           futuresBalance: fundsBreakdown.futuresBalance,
+          lockedMargin: fundsBreakdown.lockedMargin,
           balance: fundsBreakdown.trackedBalance,
           positions: livePositionsByAccount.get(String(account.id || '').trim()) || [],
           positionsFreshness:
             positionFreshnessByAccount.get(String(account.id || '').trim()) || null,
-          positionCoverage:
-            positionCoverageByAccount.get(String(account.id || '').trim()) || null,
+          positionCoverage: positionCoverageByAccount.get(String(account.id || '').trim()) || null,
           thresholds: this.buildRiskThresholdProfile(
-            brokerPolicyCache.get(brokerKey) || this.buildEffectiveRiskPolicyContext(null, brokerKey)
+            brokerPolicyCache.get(brokerKey) ||
+              this.buildEffectiveRiskPolicyContext(null, brokerKey)
           ),
           policyContext:
-            brokerPolicyCache.get(brokerKey) || this.buildEffectiveRiskPolicyContext(null, brokerKey),
+            brokerPolicyCache.get(brokerKey) ||
+            this.buildEffectiveRiskPolicyContext(null, brokerKey),
         } satisfies AccountRiskSnapshotInput;
       })
     );
@@ -2565,29 +2608,25 @@ export class RiskService {
       ),
       2
     );
-    const portfolioReservedPositionMargin = this.roundNumber(
-      positionEvaluations.reduce((sum, evaluation) => sum + evaluation.reservedMargin, 0),
-      2
-    );
-    const portfolioReservedOrderMargin = this.roundNumber(
-      portfolioReservedPositionMargin +
-        Array.from(orderSummaryByAccount.values()).reduce(
-          (sum, item) => sum + item.reservedOrderMargin,
-          0
-        ),
-      2
-    );
     const accountPositionMarginTotals = new Map<string, number>();
     positionEvaluations.forEach((evaluation) => {
       accountPositionMarginTotals.set(
         evaluation.accountId,
         this.roundNumber(
-          (accountPositionMarginTotals.get(evaluation.accountId) || 0) +
-            evaluation.reservedMargin,
+          (accountPositionMarginTotals.get(evaluation.accountId) || 0) + evaluation.reservedMargin,
           2
         )
       );
     });
+    const preferredReservedMarginByAccount = this.buildPreferredReservedMarginByAccount(
+      accountInputs,
+      accountPositionMarginTotals,
+      orderSummaryByAccount
+    );
+    const portfolioReservedOrderMargin = this.roundNumber(
+      Array.from(preferredReservedMarginByAccount.values()).reduce((sum, value) => sum + value, 0),
+      2
+    );
 
     const capitalAtRisk = this.roundNumber(
       positionEvaluations.reduce((sum, evaluation) => sum + evaluation.exposure, 0)
@@ -2629,7 +2668,8 @@ export class RiskService {
       brokerExposureTotals,
       accountExposureTotals,
       orderSummaryByAccount,
-      positionEvaluations
+      positionEvaluations,
+      preferredReservedMarginByAccount
     );
     const alerts = this.buildRiskAlerts(positionEvaluations, controls);
     const scenarios = this.buildRiskScenarios(
@@ -2645,8 +2685,12 @@ export class RiskService {
       positionEvaluations
     );
 
-    const criticalControls = controls.filter((item) => this.normalizeRiskState(item.status) === 'critical');
-    const watchControls = controls.filter((item) => this.normalizeRiskState(item.status) === 'watch');
+    const criticalControls = controls.filter(
+      (item) => this.normalizeRiskState(item.status) === 'critical'
+    );
+    const watchControls = controls.filter(
+      (item) => this.normalizeRiskState(item.status) === 'watch'
+    );
     const atRiskPositions = positionEvaluations.filter((evaluation) =>
       evaluation.statuses.some((status) => status !== 'ok')
     ).length;
@@ -2662,8 +2706,18 @@ export class RiskService {
       watchControls: watchControls.length,
       atRiskPositions,
     });
-    const portfolioRisk = this.resolvePortfolioRiskLabel(riskScore, criticalControls.length, watchControls.length);
-    const primaryConcern = this.resolvePrimaryConcern(criticalControls, watchControls, alerts, equity, livePositionCount);
+    const portfolioRisk = this.resolvePortfolioRiskLabel(
+      riskScore,
+      criticalControls.length,
+      watchControls.length
+    );
+    const primaryConcern = this.resolvePrimaryConcern(
+      criticalControls,
+      watchControls,
+      alerts,
+      equity,
+      livePositionCount
+    );
     const topHolding = this.resolveTopHolding(positionEvaluations, equity);
     const topBroker = this.resolveTopBroker(brokerExposureTotals, capitalAtRisk);
     const positionEvaluationsById = new Map(
@@ -2671,26 +2725,42 @@ export class RiskService {
     );
     const accountSnapshots = accountInputs.map((account) => {
       const grossExposure = this.roundNumber(accountExposureTotals.get(account.accountId) || 0);
-      const accountLongExposure = this.roundNumber(accountLongExposureTotals.get(account.accountId) || 0);
-      const accountShortExposure = this.roundNumber(accountShortExposureTotals.get(account.accountId) || 0);
-      const accountNetExposure = this.roundNumber(accountNetExposureTotals.get(account.accountId) || 0);
+      const accountLongExposure = this.roundNumber(
+        accountLongExposureTotals.get(account.accountId) || 0
+      );
+      const accountShortExposure = this.roundNumber(
+        accountShortExposureTotals.get(account.accountId) || 0
+      );
+      const accountNetExposure = this.roundNumber(
+        accountNetExposureTotals.get(account.accountId) || 0
+      );
       const trackedBalance = account.balance;
       const orderSummary = orderSummaryByAccount.get(account.accountId) || {
         openOrders: 0,
         openOrderExposure: 0,
         reservedOrderMargin: 0,
       };
-      const accountReservedOrderMargin = this.roundNumber(
-        (accountPositionMarginTotals.get(account.accountId) || 0) +
-          orderSummary.reservedOrderMargin,
-        2
-      );
+      const accountReservedOrderMargin =
+        preferredReservedMarginByAccount.get(account.accountId) ??
+        this.roundNumber(
+          (accountPositionMarginTotals.get(account.accountId) || 0) +
+            orderSummary.reservedOrderMargin,
+          2
+        );
       const marginUsagePctForAccount =
-        trackedBalance && trackedBalance > 0 ? (accountReservedOrderMargin / trackedBalance) * 100 : 0;
+        trackedBalance && trackedBalance > 0
+          ? (accountReservedOrderMargin / trackedBalance) * 100
+          : 0;
       const portfolioConcentrationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
       const unrealizedPnl = this.roundNumber(
         account.positions.reduce((sum, position) => {
-          return sum + this.toFiniteNumber(position.positionSummary?.unrealizedPnl ?? position.unrealized_pnl, 0);
+          return (
+            sum +
+            this.toFiniteNumber(
+              position.positionSummary?.unrealizedPnl ?? position.unrealized_pnl,
+              0
+            )
+          );
         }, 0),
         2
       );
@@ -2699,9 +2769,7 @@ export class RiskService {
           ? (Math.max(0, -unrealizedPnl) / trackedBalance) * 100
           : 0;
       const maxPositionLeverage = this.maxNumber(
-        account.positions.map((position) =>
-          this.toFiniteNumber(position.positionSummary?.leverage ?? position.leverage, null)
-        )
+        account.positions.map((position) => this.resolveEffectivePositionLeverage(position))
       );
       const closestLiquidationDistancePct = this.minNumber(
         account.positions.map((position) => this.resolveLiquidationDistancePct(position))
@@ -2757,6 +2825,7 @@ export class RiskService {
           `${account.accountId}-${this.resolvePositionSymbol(position)}`;
         const evaluation = positionEvaluationsById.get(positionId);
         const summary = position.positionSummary;
+        const leverageContext = this.resolvePositionLeverageContext(position);
         return {
           brokerKey: account.brokerKey,
           accountId: account.accountId,
@@ -2770,13 +2839,30 @@ export class RiskService {
           quantity: this.toFiniteNumber(summary?.quantity ?? position.quantity, null),
           entryPrice: this.toFiniteNumber(summary?.entryPrice ?? position.entry_price, null),
           currentPrice: this.toFiniteNumber(summary?.currentPrice ?? position.current_price, null),
-          exposure: this.roundNumber(evaluation?.exposure ?? this.resolvePositionExposure(position), 2),
-          unrealizedPnl: this.toFiniteNumber(summary?.unrealizedPnl ?? position.unrealized_pnl, null),
-          realizedPnl: this.toFiniteNumber(summary?.realizedPnl ?? position.realized_pnl ?? position.realized, null),
-          leverage: this.toFiniteNumber(summary?.leverage ?? position.leverage, null),
-          liquidationPrice: this.toFiniteNumber(summary?.liquidationPrice ?? position.liquidation_price, null),
+          exposure: this.roundNumber(
+            evaluation?.exposure ?? this.resolvePositionExposure(position),
+            2
+          ),
+          unrealizedPnl: this.toFiniteNumber(
+            summary?.unrealizedPnl ?? position.unrealized_pnl,
+            null
+          ),
+          realizedPnl: this.toFiniteNumber(
+            summary?.realizedPnl ?? position.realized_pnl ?? position.realized,
+            null
+          ),
+          leverage: leverageContext.leverage,
+          requestedLeverage: leverageContext.requestedLeverage,
+          confirmedOrderLeverage: leverageContext.confirmedOrderLeverage,
+          observedPositionLeverage: leverageContext.observedPositionLeverage,
+          leverageSource: leverageContext.leverageSource,
+          liquidationPrice: this.toFiniteNumber(
+            summary?.liquidationPrice ?? position.liquidation_price,
+            null
+          ),
           liquidationDistancePct:
-            evaluation?.liquidationDistancePct === null || evaluation?.liquidationDistancePct === undefined
+            evaluation?.liquidationDistancePct === null ||
+            evaluation?.liquidationDistancePct === undefined
               ? this.resolveLiquidationDistancePct(position)
               : this.roundNumber(evaluation.liquidationDistancePct, 2),
           concentrationPct:
@@ -2806,6 +2892,7 @@ export class RiskService {
       accountInputs,
       positionEvaluations,
       orderSummaryByAccount,
+      preferredReservedMarginByAccount,
       equity
     );
     const assetSnapshots = this.buildComputedRiskAssetSnapshots(
@@ -2861,11 +2948,9 @@ export class RiskService {
           watchControls[0]?.bucket ||
           'No active guardrail breach detected.',
         guardrailOne:
-          controls[0]?.action ||
-          'No configured risk controls were breached during this recompute.',
+          controls[0]?.action || 'No configured risk controls were breached during this recompute.',
         guardrailTwo:
-          controls[1]?.action ||
-          'Funds and positions remain snapshot-backed, not broker-live.',
+          controls[1]?.action || 'Funds and positions remain snapshot-backed, not broker-live.',
         guardrailThree:
           controls[2]?.action ||
           'Weekly and monthly loss windows are now backed by persisted closed-position activity.',
@@ -2910,7 +2995,7 @@ export class RiskService {
           dayPnL: this.roundNumber(evaluation.unrealizedPnl || 0),
           strategy: 'Risk Center recompute',
           riskState: this.resolveWorstRiskState(evaluation.statuses),
-      })),
+        })),
     };
   }
 
@@ -2935,13 +3020,17 @@ export class RiskService {
     const brokerPolicyContextByKey = new Map<string, RiskSnapshotPolicyContext>();
 
     rows.forEach((row) => {
-      const scope = String(row.policyScope || '').trim().toLowerCase();
+      const scope = String(row.policyScope || '')
+        .trim()
+        .toLowerCase();
       if (scope === 'user') {
         defaultPolicyContext ??= row;
         return;
       }
       if (scope === 'broker') {
-        const brokerKey = String(row.policyTargetKey || '').trim().toLowerCase();
+        const brokerKey = String(row.policyTargetKey || '')
+          .trim()
+          .toLowerCase();
         if (brokerKey && !brokerPolicyContextByKey.has(brokerKey)) {
           brokerPolicyContextByKey.set(brokerKey, row);
         }
@@ -2966,7 +3055,8 @@ export class RiskService {
       return leftRank - rightRank;
     }
 
-    const scoreDiff = this.toFiniteNumber(right.riskScore, 0) - this.toFiniteNumber(left.riskScore, 0);
+    const scoreDiff =
+      this.toFiniteNumber(right.riskScore, 0) - this.toFiniteNumber(left.riskScore, 0);
     if (scoreDiff !== 0) {
       return scoreDiff;
     }
@@ -2975,7 +3065,9 @@ export class RiskService {
   }
 
   private resolveRiskStateRank(state: unknown): number {
-    const normalized = String(state || '').trim().toLowerCase();
+    const normalized = String(state || '')
+      .trim()
+      .toLowerCase();
     if (normalized === 'critical') {
       return 0;
     }
@@ -2989,7 +3081,9 @@ export class RiskService {
   }
 
   private resolvePolicyScopeRank(scope: unknown): number {
-    const normalized = String(scope || '').trim().toLowerCase();
+    const normalized = String(scope || '')
+      .trim()
+      .toLowerCase();
     if (normalized === 'user') {
       return 0;
     }
@@ -3029,7 +3123,9 @@ export class RiskService {
         sourceRows.map((row) => row.lastSeenAt || row.firstSeenAt)
       );
       observedAtByAccount.set(account.accountId, observedAt);
-      const accountOrderSnapshots = sourceRows.map((row) => this.mapOpenOrderSnapshot(account, row));
+      const accountOrderSnapshots = sourceRows.map((row) =>
+        this.mapOpenOrderSnapshot(account, row)
+      );
       summaryByAccount.set(account.accountId, {
         openOrders: sourceRows.length,
         openOrderExposure: this.roundNumber(
@@ -3089,6 +3185,7 @@ export class RiskService {
         monthlyLossLimitPct: thresholds.monthlyLossLimitPct,
         minLeverage: thresholds.minLeverage,
         maxLeverage: thresholds.maxLeverage,
+        tradeSizePctOfBalance: thresholds.tradeSizePctOfBalance,
         minNotionalPerTrade: thresholds.minNotionalPerTrade,
         maxOrderAllocation: thresholds.maxOrderAllocation,
         maxTotalAllocation: thresholds.maxTotalAllocation,
@@ -3114,6 +3211,7 @@ export class RiskService {
         monthlyLossLimitPct: thresholds.monthlyLossLimitPct,
         minLeverage: thresholds.minLeverage,
         maxLeverage: thresholds.maxLeverage,
+        tradeSizePctOfBalance: thresholds.tradeSizePctOfBalance,
         minNotionalPerTrade: thresholds.minNotionalPerTrade,
         maxOrderAllocation: thresholds.maxOrderAllocation,
         maxTotalAllocation: thresholds.maxTotalAllocation,
@@ -3138,6 +3236,7 @@ export class RiskService {
       monthlyLossLimitPct: thresholds.monthlyLossLimitPct,
       minLeverage: thresholds.minLeverage,
       maxLeverage: thresholds.maxLeverage,
+      tradeSizePctOfBalance: thresholds.tradeSizePctOfBalance,
       minNotionalPerTrade: thresholds.minNotionalPerTrade,
       maxOrderAllocation: thresholds.maxOrderAllocation,
       maxTotalAllocation: thresholds.maxTotalAllocation,
@@ -3173,6 +3272,7 @@ export class RiskService {
         monthlyLossLimitPct: context.monthlyLossLimitPct,
         minLeverage: context.minLeverage,
         maxLeverage: context.maxLeverage,
+        tradeSizePctOfBalance: context.tradeSizePctOfBalance,
         minNotionalPerTrade: context.minNotionalPerTrade,
         maxOrderAllocation: context.maxOrderAllocation,
         maxTotalAllocation: context.maxTotalAllocation,
@@ -3249,24 +3349,33 @@ export class RiskService {
     accounts: AccountRiskSnapshotInput[],
     evaluations: PositionRiskEvaluation[],
     orderSummaryByAccount: Map<string, ComputedRiskOrderAccountSummary>,
+    preferredReservedMarginByAccount: Map<string, number>,
     equity: number
   ): ComputedRiskBrokerSnapshotDraft[] {
     const brokers = Array.from(new Set(accounts.map((account) => account.brokerKey))).sort();
 
     return brokers.map((brokerKey) => {
       const scopedAccounts = accounts.filter((account) => account.brokerKey === brokerKey);
-      const scopedEvaluations = evaluations.filter((evaluation) => evaluation.brokerKey === brokerKey);
+      const scopedEvaluations = evaluations.filter(
+        (evaluation) => evaluation.brokerKey === brokerKey
+      );
       const thresholds = scopedAccounts[0]?.thresholds || this.buildRiskThresholdProfile(null);
       const trackedBalance = this.roundNumber(
         scopedAccounts.reduce((sum, account) => sum + this.toFiniteNumber(account.balance, 0), 0),
         4
       );
       const walletBalance = this.roundNumber(
-        scopedAccounts.reduce((sum, account) => sum + this.toFiniteNumber(account.walletBalance, 0), 0),
+        scopedAccounts.reduce(
+          (sum, account) => sum + this.toFiniteNumber(account.walletBalance, 0),
+          0
+        ),
         4
       );
       const futuresBalance = this.roundNumber(
-        scopedAccounts.reduce((sum, account) => sum + this.toFiniteNumber(account.futuresBalance, 0), 0),
+        scopedAccounts.reduce(
+          (sum, account) => sum + this.toFiniteNumber(account.futuresBalance, 0),
+          0
+        ),
         4
       );
       const grossExposure = this.roundNumber(
@@ -3287,7 +3396,8 @@ export class RiskService {
       );
       const netExposure = this.roundNumber(longExposure - shortExposure, 2);
       const openPositions = scopedAccounts.reduce(
-        (sum, account) => sum + (account.positionsFreshness?.openPositions ?? account.positions.length),
+        (sum, account) =>
+          sum + (account.positionsFreshness?.openPositions ?? account.positions.length),
         0
       );
       const openOrders = scopedAccounts.reduce(
@@ -3296,21 +3406,33 @@ export class RiskService {
       );
       const openOrderExposure = this.roundNumber(
         scopedAccounts.reduce(
-          (sum, account) => sum + (orderSummaryByAccount.get(account.accountId)?.openOrderExposure || 0),
+          (sum, account) =>
+            sum + (orderSummaryByAccount.get(account.accountId)?.openOrderExposure || 0),
           0
         ),
         2
       );
       const reservedOrderMargin = this.roundNumber(
-        scopedEvaluations.reduce((sum, evaluation) => sum + evaluation.reservedMargin, 0) +
-          scopedAccounts.reduce(
-          (sum, account) => sum + (orderSummaryByAccount.get(account.accountId)?.reservedOrderMargin || 0),
+        scopedAccounts.reduce(
+          (sum, account) =>
+            sum +
+            (preferredReservedMarginByAccount.get(account.accountId) ??
+              this.roundNumber(
+                scopedEvaluations
+                  .filter((evaluation) => evaluation.accountId === account.accountId)
+                  .reduce((innerSum, evaluation) => innerSum + evaluation.reservedMargin, 0) +
+                  (orderSummaryByAccount.get(account.accountId)?.reservedOrderMargin || 0),
+                2
+              )),
           0
         ),
         2
       );
       const unrealizedPnl = this.roundNumber(
-        scopedEvaluations.reduce((sum, evaluation) => sum + this.toFiniteNumber(evaluation.unrealizedPnl, 0), 0),
+        scopedEvaluations.reduce(
+          (sum, evaluation) => sum + this.toFiniteNumber(evaluation.unrealizedPnl, 0),
+          0
+        ),
         2
       );
       const weightedAvgLeverage = this.weightedAverage(
@@ -3319,7 +3441,9 @@ export class RiskService {
           weight: evaluation.exposure,
         }))
       );
-      const maxLeverage = this.maxNumber(scopedEvaluations.map((evaluation) => evaluation.leverage));
+      const maxLeverage = this.maxNumber(
+        scopedEvaluations.map((evaluation) => evaluation.leverage)
+      );
       const worstLiquidationDistancePct = this.minNumber(
         scopedEvaluations.map((evaluation) => evaluation.liquidationDistancePct)
       );
@@ -3361,10 +3485,13 @@ export class RiskService {
             : []),
         ],
         fallbackCriticalSignal:
-          scopedEvaluations.find((evaluation) => evaluation.statuses.includes('critical'))?.notes?.[0] || null,
+          scopedEvaluations.find((evaluation) => evaluation.statuses.includes('critical'))
+            ?.notes?.[0] || null,
         fallbackWatchSignal:
-          scopedEvaluations.find((evaluation) => !evaluation.statuses.includes('critical') && evaluation.statuses.includes('watch'))?.notes?.[0] ||
-          null,
+          scopedEvaluations.find(
+            (evaluation) =>
+              !evaluation.statuses.includes('critical') && evaluation.statuses.includes('watch')
+          )?.notes?.[0] || null,
         baseScore:
           Math.min(20, marginUsagePct / 4) +
           Math.min(20, allocationPct / 4) +
@@ -3398,7 +3525,9 @@ export class RiskService {
         weightedAvgLeverage,
         maxLeverage,
         worstLiquidationDistancePct:
-          worstLiquidationDistancePct === null ? null : this.roundNumber(worstLiquidationDistancePct, 2),
+          worstLiquidationDistancePct === null
+            ? null
+            : this.roundNumber(worstLiquidationDistancePct, 2),
         riskScore: assessment.riskScore,
         riskState: assessment.riskState,
         primaryConcern: assessment.primaryConcern,
@@ -3414,19 +3543,28 @@ export class RiskService {
   ): ComputedRiskAssetSnapshotPayload[] {
     const accountsById = new Map(accounts.map((account) => [account.accountId, account] as const));
     const orderSummaryBySymbol = this.buildOrderSummaryMap(orderSnapshots, (order) =>
-      String(order.symbol || '').trim().toUpperCase()
+      String(order.symbol || '')
+        .trim()
+        .toUpperCase()
     );
     const symbols = Array.from(
       new Set(
         evaluations
-          .map((evaluation) => String(evaluation.symbol || '').trim().toUpperCase())
+          .map((evaluation) =>
+            String(evaluation.symbol || '')
+              .trim()
+              .toUpperCase()
+          )
           .filter(Boolean)
       )
     ).sort();
 
     return symbols.map((symbol) => {
       const scopedEvaluations = evaluations.filter(
-        (evaluation) => String(evaluation.symbol || '').trim().toUpperCase() === symbol
+        (evaluation) =>
+          String(evaluation.symbol || '')
+            .trim()
+            .toUpperCase() === symbol
       );
       const scopedAccounts = Array.from(
         new Map(
@@ -3461,12 +3599,17 @@ export class RiskService {
           weight: evaluation.exposure,
         }))
       );
-      const maxLeverage = this.maxNumber(scopedEvaluations.map((evaluation) => evaluation.leverage));
+      const maxLeverage = this.maxNumber(
+        scopedEvaluations.map((evaluation) => evaluation.leverage)
+      );
       const worstLiquidationDistancePct = this.minNumber(
         scopedEvaluations.map((evaluation) => evaluation.liquidationDistancePct)
       );
       const unrealizedPnl = this.roundNumber(
-        scopedEvaluations.reduce((sum, evaluation) => sum + this.toFiniteNumber(evaluation.unrealizedPnl, 0), 0),
+        scopedEvaluations.reduce(
+          (sum, evaluation) => sum + this.toFiniteNumber(evaluation.unrealizedPnl, 0),
+          0
+        ),
         2
       );
       const orderSummary = orderSummaryBySymbol.get(symbol) || {
@@ -3508,10 +3651,13 @@ export class RiskService {
             : []),
         ],
         fallbackCriticalSignal:
-          scopedEvaluations.find((evaluation) => evaluation.statuses.includes('critical'))?.notes?.[0] || null,
+          scopedEvaluations.find((evaluation) => evaluation.statuses.includes('critical'))
+            ?.notes?.[0] || null,
         fallbackWatchSignal:
-          scopedEvaluations.find((evaluation) => !evaluation.statuses.includes('critical') && evaluation.statuses.includes('watch'))?.notes?.[0] ||
-          null,
+          scopedEvaluations.find(
+            (evaluation) =>
+              !evaluation.statuses.includes('critical') && evaluation.statuses.includes('watch')
+          )?.notes?.[0] || null,
         baseScore:
           Math.min(25, allocationPct / 4) +
           (maxLeverage !== null ? Math.min(15, maxLeverage * 2) : 0) +
@@ -3541,7 +3687,9 @@ export class RiskService {
         weightedAvgLeverage,
         maxLeverage,
         worstLiquidationDistancePct:
-          worstLiquidationDistancePct === null ? null : this.roundNumber(worstLiquidationDistancePct, 2),
+          worstLiquidationDistancePct === null
+            ? null
+            : this.roundNumber(worstLiquidationDistancePct, 2),
         riskScore: assessment.riskScore,
         riskState: assessment.riskState,
         primaryConcern: assessment.primaryConcern,
@@ -3557,16 +3705,24 @@ export class RiskService {
   ): ComputedRiskBrokerAssetSnapshotDraft[] {
     const accountsById = new Map(accounts.map((account) => [account.accountId, account] as const));
     const orderSummaryByBrokerAsset = this.buildOrderSummaryMap(orderSnapshots, (order) => {
-      const brokerKey = String(order.brokerKey || '').trim().toLowerCase();
-      const symbol = String(order.symbol || '').trim().toUpperCase();
+      const brokerKey = String(order.brokerKey || '')
+        .trim()
+        .toLowerCase();
+      const symbol = String(order.symbol || '')
+        .trim()
+        .toUpperCase();
       return brokerKey && symbol ? `${brokerKey}|${symbol}` : '';
     });
     const keys = Array.from(
       new Set(
         evaluations
           .map((evaluation) => {
-            const brokerKey = String(evaluation.brokerKey || '').trim().toLowerCase();
-            const symbol = String(evaluation.symbol || '').trim().toUpperCase();
+            const brokerKey = String(evaluation.brokerKey || '')
+              .trim()
+              .toLowerCase();
+            const symbol = String(evaluation.symbol || '')
+              .trim()
+              .toUpperCase();
             return brokerKey && symbol ? `${brokerKey}|${symbol}` : '';
           })
           .filter(Boolean)
@@ -3577,8 +3733,12 @@ export class RiskService {
       const [brokerKey, symbol] = key.split('|');
       const scopedEvaluations = evaluations.filter(
         (evaluation) =>
-          String(evaluation.brokerKey || '').trim().toLowerCase() === brokerKey &&
-          String(evaluation.symbol || '').trim().toUpperCase() === symbol
+          String(evaluation.brokerKey || '')
+            .trim()
+            .toLowerCase() === brokerKey &&
+          String(evaluation.symbol || '')
+            .trim()
+            .toUpperCase() === symbol
       );
       const scopedAccounts = Array.from(
         new Map(
@@ -3617,12 +3777,17 @@ export class RiskService {
           weight: evaluation.exposure,
         }))
       );
-      const maxLeverage = this.maxNumber(scopedEvaluations.map((evaluation) => evaluation.leverage));
+      const maxLeverage = this.maxNumber(
+        scopedEvaluations.map((evaluation) => evaluation.leverage)
+      );
       const worstLiquidationDistancePct = this.minNumber(
         scopedEvaluations.map((evaluation) => evaluation.liquidationDistancePct)
       );
       const unrealizedPnl = this.roundNumber(
-        scopedEvaluations.reduce((sum, evaluation) => sum + this.toFiniteNumber(evaluation.unrealizedPnl, 0), 0),
+        scopedEvaluations.reduce(
+          (sum, evaluation) => sum + this.toFiniteNumber(evaluation.unrealizedPnl, 0),
+          0
+        ),
         2
       );
       const orderSummary = orderSummaryByBrokerAsset.get(key) || {
@@ -3635,7 +3800,8 @@ export class RiskService {
           orderSummary.reservedOrderMargin,
         2
       );
-      const marginUsagePct = brokerTrackedBalance > 0 ? (reservedOrderMargin / brokerTrackedBalance) * 100 : 0;
+      const marginUsagePct =
+        brokerTrackedBalance > 0 ? (reservedOrderMargin / brokerTrackedBalance) * 100 : 0;
       const assessment = this.buildScopedRiskAssessment({
         criticalSignals: [
           ...(marginUsagePct >= thresholds.marginUsageCriticalPct
@@ -3672,10 +3838,13 @@ export class RiskService {
             : []),
         ],
         fallbackCriticalSignal:
-          scopedEvaluations.find((evaluation) => evaluation.statuses.includes('critical'))?.notes?.[0] || null,
+          scopedEvaluations.find((evaluation) => evaluation.statuses.includes('critical'))
+            ?.notes?.[0] || null,
         fallbackWatchSignal:
-          scopedEvaluations.find((evaluation) => !evaluation.statuses.includes('critical') && evaluation.statuses.includes('watch'))?.notes?.[0] ||
-          null,
+          scopedEvaluations.find(
+            (evaluation) =>
+              !evaluation.statuses.includes('critical') && evaluation.statuses.includes('watch')
+          )?.notes?.[0] || null,
         baseScore:
           Math.min(20, marginUsagePct / 4) +
           Math.min(20, allocationPct / 4) +
@@ -3707,7 +3876,9 @@ export class RiskService {
         weightedAvgLeverage,
         maxLeverage,
         worstLiquidationDistancePct:
-          worstLiquidationDistancePct === null ? null : this.roundNumber(worstLiquidationDistancePct, 2),
+          worstLiquidationDistancePct === null
+            ? null
+            : this.roundNumber(worstLiquidationDistancePct, 2),
         riskScore: assessment.riskScore,
         riskState: assessment.riskState,
         primaryConcern: assessment.primaryConcern,
@@ -3828,6 +3999,7 @@ export class RiskService {
       monthlyLossLimitPct: this.toFiniteNumber(policy?.monthlyLossLimitPct, 20),
       minLeverage: this.toFiniteNumber(policy?.minLeverage, null),
       maxLeverage: this.toFiniteNumber(policy?.maxLeverage, 5),
+      tradeSizePctOfBalance: this.toFiniteNumber(policy?.tradeSizePctOfBalance, null),
       minNotionalPerTrade: this.toFiniteNumber(policy?.minNotionalPerTrade, null),
       maxOrderAllocation: this.toFiniteNumber(policy?.maxOrderAllocation, null),
       maxTotalAllocation: this.toFiniteNumber(policy?.maxTotalAllocation, 80),
@@ -3844,7 +4016,8 @@ export class RiskService {
     brokerExposureTotals: Map<string, number>,
     accountExposureTotals: Map<string, number>,
     orderSummaryByAccount: Map<string, ComputedRiskOrderAccountSummary>,
-    evaluations: PositionRiskEvaluation[]
+    evaluations: PositionRiskEvaluation[],
+    preferredReservedMarginByAccount: Map<string, number>
   ): ComputedRiskControlPayload[] {
     const controls: ComputedRiskControlPayload[] = [];
     const globalThresholds = this.buildGlobalThresholdProfile(accounts);
@@ -3982,8 +4155,7 @@ export class RiskService {
     }
 
     brokerExposureTotals.forEach((exposure, brokerKey) => {
-      const brokerAccount =
-        accounts.find((account) => account.brokerKey === brokerKey) || null;
+      const brokerAccount = accounts.find((account) => account.brokerKey === brokerKey) || null;
       const thresholds = brokerAccount?.thresholds || globalThresholds;
       const criticalLimit = Math.min(100, thresholds.maxTotalAllocation);
       const pct = equity > 0 ? (exposure / equity) * 100 : 0;
@@ -4017,15 +4189,18 @@ export class RiskService {
     });
 
     accounts.forEach((account) => {
-      const accountReservedMargin = this.roundNumber(
-        evaluations
-          .filter((evaluation) => evaluation.accountId === account.accountId)
-          .reduce((sum, evaluation) => sum + evaluation.reservedMargin, 0) +
-          (orderSummaryByAccount.get(account.accountId)?.reservedOrderMargin || 0),
-        2
-      );
+      const accountReservedMargin =
+        preferredReservedMarginByAccount.get(account.accountId) ??
+        this.roundNumber(
+          evaluations
+            .filter((evaluation) => evaluation.accountId === account.accountId)
+            .reduce((sum, evaluation) => sum + evaluation.reservedMargin, 0) +
+            (orderSummaryByAccount.get(account.accountId)?.reservedOrderMargin || 0),
+          2
+        );
       const accountBalance = account.balance || 0;
-      const accountMarginUsagePct = accountBalance > 0 ? (accountReservedMargin / accountBalance) * 100 : 0;
+      const accountMarginUsagePct =
+        accountBalance > 0 ? (accountReservedMargin / accountBalance) * 100 : 0;
       const accountStatus = this.resolveThresholdState(
         accountMarginUsagePct,
         account.thresholds.marginUsageWarnPct,
@@ -4096,7 +4271,9 @@ export class RiskService {
       });
 
     return controls
-      .filter((control) => control.bucket && control.exposure && control.threshold && control.action)
+      .filter(
+        (control) => control.bucket && control.exposure && control.threshold && control.action
+      )
       .slice(0, 12);
   }
 
@@ -4110,7 +4287,8 @@ export class RiskService {
       .filter((control) => this.normalizeRiskState(control.status) !== 'ok')
       .slice(0, 6)
       .forEach((control) => {
-        const severity = this.normalizeRiskState(control.status) === 'critical' ? 'Critical' : 'Watch';
+        const severity =
+          this.normalizeRiskState(control.status) === 'critical' ? 'Critical' : 'Watch';
         alerts.push({
           severity,
           message: `${control.bucket}: ${control.action}`,
@@ -4174,11 +4352,7 @@ export class RiskService {
         exposure: control.exposure,
         threshold: control.threshold,
         action: control.action,
-        alertSeverity: hasAlert
-          ? normalizedStatus === 'critical'
-            ? 'Critical'
-            : 'Watch'
-          : null,
+        alertSeverity: hasAlert ? (normalizedStatus === 'critical' ? 'Critical' : 'Watch') : null,
         alertMessage: hasAlert ? `${control.bucket}: ${control.action}` : null,
         alertSymbol: hasAlert ? 'PORTFOLIO' : null,
         alertChannel: hasAlert ? 'Risk' : null,
@@ -4193,7 +4367,9 @@ export class RiskService {
         const normalizedStatus = this.resolveWorstRiskState(evaluation.statuses);
         const hasAlert = normalizedStatus !== 'ok';
         const accountName =
-          accountNameById.get(evaluation.accountId) || evaluation.accountName || evaluation.accountId;
+          accountNameById.get(evaluation.accountId) ||
+          evaluation.accountName ||
+          evaluation.accountId;
 
         return {
           policyContextKey: evaluation.policyContextKey,
@@ -4216,16 +4392,11 @@ export class RiskService {
           exposure: null,
           threshold: null,
           action: null,
-          alertSeverity: hasAlert
-            ? normalizedStatus === 'critical'
-              ? 'Critical'
-              : 'Watch'
+          alertSeverity: hasAlert ? (normalizedStatus === 'critical' ? 'Critical' : 'Watch') : null,
+          alertMessage: hasAlert
+            ? evaluation.notes[0] ||
+              `${evaluation.symbol} is carrying elevated position risk on ${accountName}.`
             : null,
-          alertMessage:
-            hasAlert
-              ? evaluation.notes[0] ||
-                `${evaluation.symbol} is carrying elevated position risk on ${accountName}.`
-              : null,
           alertSymbol: hasAlert ? evaluation.symbol : null,
           alertChannel: hasAlert ? 'Risk' : null,
           alertStatus: hasAlert ? 'Open' : null,
@@ -4276,12 +4447,18 @@ export class RiskService {
 
     const topLiquidation = evaluations
       .filter((evaluation) => evaluation.liquidationDistancePct !== null)
-      .sort((left, right) => (left.liquidationDistancePct || Number.MAX_SAFE_INTEGER) - (right.liquidationDistancePct || Number.MAX_SAFE_INTEGER))[0];
+      .sort(
+        (left, right) =>
+          (left.liquidationDistancePct || Number.MAX_SAFE_INTEGER) -
+          (right.liquidationDistancePct || Number.MAX_SAFE_INTEGER)
+      )[0];
     if (topLiquidation) {
       scenarios.push({
         scenario: 'Liquidation cascade',
         impact:
-          (topLiquidation.liquidationDistancePct || Number.MAX_SAFE_INTEGER) <= 5 ? 'Critical' : 'Watch',
+          (topLiquidation.liquidationDistancePct || Number.MAX_SAFE_INTEGER) <= 5
+            ? 'Critical'
+            : 'Watch',
         commentary: `${topLiquidation.symbol} is only ${this.formatPercent(topLiquidation.liquidationDistancePct || 0)} away from its liquidation reference price.`,
       });
     }
@@ -4296,13 +4473,22 @@ export class RiskService {
   ): PositionRiskEvaluation {
     const summary = position.positionSummary;
     const exposure = this.resolvePositionExposure(position);
-    const leverage = this.toFiniteNumber(summary?.leverage ?? position.leverage, null);
+    const leverage = this.resolveEffectivePositionLeverage(position);
     const reservedMargin = this.resolvePositionReservedMargin(position, exposure, leverage);
-    const unrealizedPnl = this.toFiniteNumber(summary?.unrealizedPnl ?? position.unrealized_pnl, null);
+    const unrealizedPnl = this.toFiniteNumber(
+      summary?.unrealizedPnl ?? position.unrealized_pnl,
+      null
+    );
     const concentrationPct = portfolioEquity > 0 ? (exposure / portfolioEquity) * 100 : null;
     const liquidationDistancePct = this.resolveLiquidationDistancePct(position);
     const statuses: Array<'ok' | 'watch' | 'critical'> = [];
     const notes: string[] = [];
+    const leverageCanarySignals = this.buildPositionLeverageCanarySignals(position);
+
+    leverageCanarySignals.forEach((signal) => {
+      statuses.push(signal.status);
+      notes.push(signal.message);
+    });
 
     if (concentrationPct !== null) {
       const state = this.resolveThresholdState(
@@ -4340,7 +4526,7 @@ export class RiskService {
     }
 
     if (unrealizedPnl !== null && unrealizedPnl < 0 && account.balance && account.balance > 0) {
-      const lossPct = Math.abs(unrealizedPnl) / account.balance * 100;
+      const lossPct = (Math.abs(unrealizedPnl) / account.balance) * 100;
       if (lossPct >= account.thresholds.dailyLossLimitPct) {
         statuses.push('critical');
         notes.push(
@@ -4375,20 +4561,114 @@ export class RiskService {
     };
   }
 
+  private buildPositionLeverageCanarySignals(
+    position: PositionRecord
+  ): Array<{ status: 'watch' | 'critical'; message: string }> {
+    const context = this.resolvePositionLeverageContext(position);
+    const symbol = this.resolvePositionSymbol(position);
+    const signals: Array<{ status: 'watch' | 'critical'; message: string }> = [];
+    const tolerance = 0.01;
+
+    if (
+      context.requestedLeverage !== null &&
+      context.confirmedOrderLeverage !== null &&
+      Math.abs(context.requestedLeverage - context.confirmedOrderLeverage) >= tolerance
+    ) {
+      signals.push({
+        status: 'critical',
+        message: `${symbol} requested ${this.formatLeverageNarrativeValue(
+          context.requestedLeverage
+        )} but the broker confirmed ${this.formatLeverageNarrativeValue(
+          context.confirmedOrderLeverage
+        )}.`,
+      });
+    }
+
+    if (
+      context.confirmedOrderLeverage !== null &&
+      context.observedPositionLeverage !== null &&
+      Math.abs(context.confirmedOrderLeverage - context.observedPositionLeverage) >= tolerance
+    ) {
+      signals.push({
+        status: 'critical',
+        message: `${symbol} broker position snapshot is reporting ${this.formatLeverageNarrativeValue(
+          context.observedPositionLeverage
+        )} after the order was confirmed at ${this.formatLeverageNarrativeValue(
+          context.confirmedOrderLeverage
+        )}.`,
+      });
+    }
+
+    if (
+      context.confirmedOrderLeverage !== null &&
+      context.observedPositionLeverage === null &&
+      String(context.leverageSource || '')
+        .trim()
+        .toLowerCase() !== 'broker_position'
+    ) {
+      signals.push({
+        status: 'watch',
+        message: `${symbol} is using confirmed broker order leverage (${this.formatLeverageNarrativeValue(
+          context.confirmedOrderLeverage
+        )}) because the live broker position snapshot did not report leverage.`,
+      });
+    }
+
+    if (
+      context.requestedLeverage !== null &&
+      context.confirmedOrderLeverage === null &&
+      context.observedPositionLeverage === null
+    ) {
+      signals.push({
+        status: 'watch',
+        message: `${symbol} only has requested leverage (${this.formatLeverageNarrativeValue(
+          context.requestedLeverage
+        )}) and is still missing broker-confirmed leverage.`,
+      });
+    }
+
+    if (
+      context.leverage === null &&
+      context.requestedLeverage === null &&
+      context.confirmedOrderLeverage === null &&
+      context.observedPositionLeverage === null
+    ) {
+      signals.push({
+        status: 'watch',
+        message: `${symbol} does not currently have any persisted leverage truth from the broker route.`,
+      });
+    }
+
+    return signals;
+  }
+
+  private formatLeverageNarrativeValue(value: number | null): string {
+    if (value === null || !Number.isFinite(value) || value <= 0) {
+      return '--';
+    }
+    return `${this.roundNumber(value, 2)}x`;
+  }
+
   private mapOpenOrderSnapshot(
     account: AccountRiskSnapshotInput,
     row: OpenOrderSnapshotSourceRow
   ): ComputedRiskOrderSnapshotPayload {
     const payload = this.parseSnapshotJson(row.payloadJson);
-    const orderId =
-      this.pickRecordNullableString(payload, ['order_id', 'orderId', 'id']) || null;
+    const orderId = this.pickRecordNullableString(payload, ['order_id', 'orderId', 'id']) || null;
     const externalId =
       this.pickRecordString(payload, ['external_id', 'externalId', 'id', 'order_id', 'orderId']) ||
       String(row.externalId || '').trim() ||
       `${account.accountId}-open-order`;
-    const quantity = this.pickRecordNumber(payload, ['quantity', 'actual_amount', 'desired_amount']);
+    const quantity = this.pickRecordNumber(payload, [
+      'quantity',
+      'actual_amount',
+      'desired_amount',
+    ]);
     const filledQuantity = this.pickRecordNumber(payload, ['filled_quantity', 'filledQuantity']);
-    const remainingQuantity = this.pickRecordNumber(payload, ['remaining_quantity', 'remainingQuantity']);
+    const remainingQuantity = this.pickRecordNumber(payload, [
+      'remaining_quantity',
+      'remainingQuantity',
+    ]);
     const price = this.pickRecordNumber(payload, ['price', 'order_price', 'orderPrice']);
     const orderPrice = this.pickRecordNumber(payload, ['order_price', 'orderPrice', 'price']);
     const triggerPrice = this.pickRecordNumber(payload, ['trigger_price', 'triggerPrice']);
@@ -4399,6 +4679,7 @@ export class RiskService {
       this.pickRecordNumber(payload, ['actual_amount', 'actualAmount', 'notional']) ??
       this.resolveOrderNotional(quantity, referencePrice);
     const reservedMargin = this.resolveOrderReservedMargin(payload, notional);
+    const explicitReduceOnly = this.pickRecordBoolean(payload, ['reduce_only', 'reduceOnly']);
 
     return {
       brokerKey: account.brokerKey,
@@ -4422,7 +4703,7 @@ export class RiskService {
       stoplossPrice: this.pickRecordNumber(payload, ['stoploss_price', 'stopLossPrice']),
       takeprofitPrice: this.pickRecordNumber(payload, ['takeprofit_price', 'takeProfitPrice']),
       leverage: this.pickRecordNumber(payload, ['leverage']),
-      reduceOnly: this.pickRecordBoolean(payload, ['reduce_only', 'reduceOnly']),
+      reduceOnly: explicitReduceOnly ?? this.inferProtectiveReduceOnly(account, payload, quantity),
       snapshotStatusRank: Math.max(
         0,
         Math.trunc(
@@ -4486,7 +4767,9 @@ export class RiskService {
     brokerExposureTotals: Map<string, number>,
     capitalAtRisk: number
   ): { label: string; pct: number } | null {
-    const top = Array.from(brokerExposureTotals.entries()).sort((left, right) => right[1] - left[1])[0];
+    const top = Array.from(brokerExposureTotals.entries()).sort(
+      (left, right) => right[1] - left[1]
+    )[0];
     if (!top) {
       return null;
     }
@@ -4498,6 +4781,44 @@ export class RiskService {
     };
   }
 
+  private buildPreferredReservedMarginByAccount(
+    accounts: AccountRiskSnapshotInput[],
+    accountPositionMarginTotals: Map<string, number>,
+    orderSummaryByAccount: Map<string, ComputedRiskOrderAccountSummary>
+  ): Map<string, number> {
+    return new Map(
+      accounts.map((account) => {
+        const computedReservedMargin = this.roundNumber(
+          (accountPositionMarginTotals.get(account.accountId) || 0) +
+            (orderSummaryByAccount.get(account.accountId)?.reservedOrderMargin || 0),
+          2
+        );
+        return [
+          account.accountId,
+          this.resolvePreferredAccountReservedMargin(account, computedReservedMargin),
+        ] as const;
+      })
+    );
+  }
+
+  private resolvePreferredAccountReservedMargin(
+    account: AccountRiskSnapshotInput,
+    computedReservedMargin: number
+  ): number {
+    const normalizedBrokerKey = String(account.brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (
+      normalizedBrokerKey === 'delta_exchange' &&
+      account.lockedMargin !== null &&
+      Number.isFinite(account.lockedMargin)
+    ) {
+      return this.roundNumber(Math.max(0, account.lockedMargin), 2);
+    }
+
+    return this.roundNumber(Math.max(0, computedReservedMargin), 2);
+  }
+
   private buildGlobalThresholdProfile(accounts: AccountRiskSnapshotInput[]): RiskThresholdProfile {
     if (!accounts.length) {
       return this.buildRiskThresholdProfile(null);
@@ -4505,13 +4826,34 @@ export class RiskService {
 
     return accounts.reduce<RiskThresholdProfile>(
       (accumulator, account) => ({
-        marginUsageWarnPct: Math.min(accumulator.marginUsageWarnPct, account.thresholds.marginUsageWarnPct),
-        marginUsageCriticalPct: Math.min(accumulator.marginUsageCriticalPct, account.thresholds.marginUsageCriticalPct),
-        concentrationWarnPct: Math.min(accumulator.concentrationWarnPct, account.thresholds.concentrationWarnPct),
-        concentrationCriticalPct: Math.min(accumulator.concentrationCriticalPct, account.thresholds.concentrationCriticalPct),
-        dailyLossLimitPct: Math.min(accumulator.dailyLossLimitPct, account.thresholds.dailyLossLimitPct),
-        weeklyLossLimitPct: Math.min(accumulator.weeklyLossLimitPct, account.thresholds.weeklyLossLimitPct),
-        monthlyLossLimitPct: Math.min(accumulator.monthlyLossLimitPct, account.thresholds.monthlyLossLimitPct),
+        marginUsageWarnPct: Math.min(
+          accumulator.marginUsageWarnPct,
+          account.thresholds.marginUsageWarnPct
+        ),
+        marginUsageCriticalPct: Math.min(
+          accumulator.marginUsageCriticalPct,
+          account.thresholds.marginUsageCriticalPct
+        ),
+        concentrationWarnPct: Math.min(
+          accumulator.concentrationWarnPct,
+          account.thresholds.concentrationWarnPct
+        ),
+        concentrationCriticalPct: Math.min(
+          accumulator.concentrationCriticalPct,
+          account.thresholds.concentrationCriticalPct
+        ),
+        dailyLossLimitPct: Math.min(
+          accumulator.dailyLossLimitPct,
+          account.thresholds.dailyLossLimitPct
+        ),
+        weeklyLossLimitPct: Math.min(
+          accumulator.weeklyLossLimitPct,
+          account.thresholds.weeklyLossLimitPct
+        ),
+        monthlyLossLimitPct: Math.min(
+          accumulator.monthlyLossLimitPct,
+          account.thresholds.monthlyLossLimitPct
+        ),
         minLeverage:
           accumulator.minLeverage === null
             ? account.thresholds.minLeverage
@@ -4519,6 +4861,15 @@ export class RiskService {
               ? accumulator.minLeverage
               : Math.max(accumulator.minLeverage, account.thresholds.minLeverage),
         maxLeverage: Math.min(accumulator.maxLeverage, account.thresholds.maxLeverage),
+        tradeSizePctOfBalance:
+          accumulator.tradeSizePctOfBalance === null
+            ? account.thresholds.tradeSizePctOfBalance
+            : account.thresholds.tradeSizePctOfBalance === null
+              ? accumulator.tradeSizePctOfBalance
+              : Math.min(
+                  accumulator.tradeSizePctOfBalance,
+                  account.thresholds.tradeSizePctOfBalance
+                ),
         minNotionalPerTrade:
           accumulator.minNotionalPerTrade === null
             ? account.thresholds.minNotionalPerTrade
@@ -4531,7 +4882,10 @@ export class RiskService {
             : account.thresholds.maxOrderAllocation === null
               ? accumulator.maxOrderAllocation
               : Math.min(accumulator.maxOrderAllocation, account.thresholds.maxOrderAllocation),
-        maxTotalAllocation: Math.min(accumulator.maxTotalAllocation, account.thresholds.maxTotalAllocation),
+        maxTotalAllocation: Math.min(
+          accumulator.maxTotalAllocation,
+          account.thresholds.maxTotalAllocation
+        ),
         maxAvgLeverage: Math.min(accumulator.maxAvgLeverage, account.thresholds.maxAvgLeverage),
       }),
       this.buildRiskThresholdProfile(null)
@@ -4571,7 +4925,11 @@ export class RiskService {
     return 'Healthy';
   }
 
-  private resolveThresholdState(value: number, warnThreshold: number, criticalThreshold: number): string {
+  private resolveThresholdState(
+    value: number,
+    warnThreshold: number,
+    criticalThreshold: number
+  ): string {
     if (value >= criticalThreshold) {
       return 'Critical';
     }
@@ -4636,7 +4994,9 @@ export class RiskService {
   }
 
   private normalizeRiskState(value: string): 'ok' | 'watch' | 'critical' {
-    const normalized = String(value || '').trim().toLowerCase();
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
     if (normalized === 'critical' || normalized === 'breach') {
       return 'critical';
     }
@@ -4666,7 +5026,10 @@ export class RiskService {
 
     const quantity = this.toFiniteNumber(summary?.quantity ?? position.quantity, null);
     const price = this.toFiniteNumber(
-      summary?.currentPrice ?? position.current_price ?? summary?.entryPrice ?? position.entry_price,
+      summary?.currentPrice ??
+        position.current_price ??
+        summary?.entryPrice ??
+        position.entry_price,
       null
     );
     if (quantity !== null && price !== null) {
@@ -4674,6 +5037,54 @@ export class RiskService {
     }
 
     return 0;
+  }
+
+  private resolvePositionLeverageContext(position: PositionRecord): {
+    leverage: number | null;
+    requestedLeverage: number | null;
+    confirmedOrderLeverage: number | null;
+    observedPositionLeverage: number | null;
+    leverageSource: string | null;
+  } {
+    const summary = position.positionSummary;
+    const payload = this.parseSnapshotJson(position.payload_json);
+
+    return {
+      leverage: this.toPositiveFiniteNumber(
+        summary?.leverage ?? position.leverage ?? this.pickRecordNumber(payload, ['leverage'])
+      ),
+      requestedLeverage: this.toPositiveFiniteNumber(
+        summary?.requestedLeverage ??
+          position.requested_leverage ??
+          this.pickRecordNumber(payload, ['requested_leverage', 'requestedLeverage'])
+      ),
+      confirmedOrderLeverage: this.toPositiveFiniteNumber(
+        summary?.confirmedOrderLeverage ??
+          position.confirmed_order_leverage ??
+          this.pickRecordNumber(payload, ['confirmed_order_leverage', 'confirmedOrderLeverage'])
+      ),
+      observedPositionLeverage: this.toPositiveFiniteNumber(
+        summary?.observedPositionLeverage ??
+          position.observed_position_leverage ??
+          this.pickRecordNumber(payload, ['observed_position_leverage', 'observedPositionLeverage'])
+      ),
+      leverageSource:
+        this.readNullableString(
+          summary?.leverageSource ??
+            position.leverage_source ??
+            this.pickRecordNullableString(payload, ['leverage_source', 'leverageSource'])
+        ) || null,
+    };
+  }
+
+  private resolveEffectivePositionLeverage(position: PositionRecord): number | null {
+    const context = this.resolvePositionLeverageContext(position);
+    return (
+      context.observedPositionLeverage ??
+      context.confirmedOrderLeverage ??
+      context.requestedLeverage ??
+      context.leverage
+    );
   }
 
   private resolvePositionReservedMargin(
@@ -4716,10 +5127,7 @@ export class RiskService {
     return this.resolveReservedMarginFromNotional(exposure, leverage);
   }
 
-  private resolveReservedMarginFromNotional(
-    notional: number,
-    leverage?: number | null
-  ): number {
+  private resolveReservedMarginFromNotional(notional: number, leverage?: number | null): number {
     const normalizedLeverage = this.toFiniteNumber(leverage, null);
     if (normalizedLeverage && normalizedLeverage > 0) {
       return this.roundNumber(Math.abs(notional) / normalizedLeverage, 2);
@@ -4729,13 +5137,21 @@ export class RiskService {
   }
 
   private resolvePositionSideKey(position: PositionRecord): 'long' | 'short' | null {
-    const rawValue = String(
-      position.positionSummary?.sideKey ||
-        position.sideKey ||
-        position.positionSummary?.side ||
-        position.side ||
-        ''
-    )
+    return this.resolveDirectionalSideKey(
+      String(
+        position.positionSummary?.sideKey ||
+          position.sideKey ||
+          position.positionSummary?.side ||
+          position.side ||
+          ''
+      )
+        .trim()
+        .toLowerCase()
+    );
+  }
+
+  private resolveDirectionalSideKey(value: string | null | undefined): 'long' | 'short' | null {
+    const rawValue = String(value || '')
       .trim()
       .toLowerCase();
 
@@ -4748,22 +5164,84 @@ export class RiskService {
     return null;
   }
 
+  private inferProtectiveReduceOnly(
+    account: AccountRiskSnapshotInput,
+    payload: Record<string, unknown> | null,
+    quantity: number | null
+  ): boolean {
+    const normalizedBrokerKey = String(account.brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (normalizedBrokerKey !== 'delta_exchange') {
+      return false;
+    }
+
+    const stopOrderType = this.pickRecordNullableString(payload, [
+      'stop_order_type',
+      'stopOrderType',
+    ]);
+    if (stopOrderType === 'stop_loss_order' || stopOrderType === 'take_profit_order') {
+      return true;
+    }
+
+    const orderSymbol = String(this.pickRecordNullableString(payload, ['symbol']) || '')
+      .trim()
+      .toUpperCase();
+    const orderSide = this.resolveDirectionalSideKey(
+      this.pickRecordNullableString(payload, ['side'])
+    );
+    if (!orderSymbol || !orderSide) {
+      return false;
+    }
+
+    return account.positions.some((position) => {
+      const positionSymbol = String(this.resolvePositionSymbol(position) || '')
+        .trim()
+        .toUpperCase();
+      if (positionSymbol !== orderSymbol) {
+        return false;
+      }
+
+      const positionSide = this.resolvePositionSideKey(position);
+      if (!positionSide || positionSide === orderSide) {
+        return false;
+      }
+
+      const positionQuantity = Math.abs(
+        this.toFiniteNumber(position.positionSummary?.quantity ?? position.quantity, 0)
+      );
+      if (!(positionQuantity > 0)) {
+        return false;
+      }
+
+      return quantity === null || quantity <= positionQuantity * 1.01;
+    });
+  }
+
   private resolveLiquidationDistancePct(position: PositionRecord): number | null {
     const summary = position.positionSummary;
-    const liquidationPrice = this.toFiniteNumber(summary?.liquidationPrice ?? position.liquidation_price, null);
+    const liquidationPrice = this.toFiniteNumber(
+      summary?.liquidationPrice ?? position.liquidation_price,
+      null
+    );
     const currentPrice = this.toFiniteNumber(
-      summary?.currentPrice ?? position.current_price ?? summary?.entryPrice ?? position.entry_price,
+      summary?.currentPrice ??
+        position.current_price ??
+        summary?.entryPrice ??
+        position.entry_price,
       null
     );
     if (liquidationPrice === null || currentPrice === null || currentPrice === 0) {
       return null;
     }
 
-    return Math.abs(currentPrice - liquidationPrice) / Math.abs(currentPrice) * 100;
+    return (Math.abs(currentPrice - liquidationPrice) / Math.abs(currentPrice)) * 100;
   }
 
   private resolvePositionSymbol(position: PositionRecord): string {
-    return String(position.positionSummary?.symbol || position.symbol || 'UNKNOWN').trim() || 'UNKNOWN';
+    return (
+      String(position.positionSummary?.symbol || position.symbol || 'UNKNOWN').trim() || 'UNKNOWN'
+    );
   }
 
   private readNullableString(value: unknown): string | null {
@@ -4780,21 +5258,43 @@ export class RiskService {
       return {
         walletBalance: null,
         futuresBalance: null,
+        lockedMargin: null,
         trackedBalance: null,
       };
     }
 
     const futuresFunds = this.parseSnapshotJson(snapshot.futures_funds_json);
     const walletFunds = this.parseSnapshotJson(snapshot.wallet_funds_json);
-    const brokerKey = String(snapshot.broker_key || '').trim().toLowerCase();
+    const brokerKey = String(snapshot.broker_key || '')
+      .trim()
+      .toLowerCase();
     const walletBalance = this.extractFundsBalanceFromPayload(walletFunds, brokerKey);
     const futuresBalance = this.extractFundsBalanceFromPayload(futuresFunds, brokerKey);
 
     return {
       walletBalance,
       futuresBalance,
+      lockedMargin: this.extractFundsLockedMarginFromPayload(futuresFunds, brokerKey),
       trackedBalance: futuresBalance ?? walletBalance,
     };
+  }
+
+  private extractFundsLockedMarginFromPayload(
+    payload: Record<string, unknown> | null,
+    brokerKey?: string
+  ): number | null {
+    if (!payload) {
+      return null;
+    }
+
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (normalizedBrokerKey !== 'delta_exchange') {
+      return null;
+    }
+
+    return this.toFiniteNumber(payload.locked_amount ?? payload.lockedAmount, null);
   }
 
   private resolveFundsObservedAt(snapshot: FundsSnapshotRow | null): Date | null {
@@ -4838,11 +5338,13 @@ export class RiskService {
     }
 
     const balance = this.toFiniteNumber(payload.balance, null);
-    const lockedAmount = this.toFiniteNumber(
-      payload.locked_amount ?? payload.lockedAmount,
-      null
-    );
-    if (String(brokerKey || '').trim().toLowerCase() === 'mudrex' && balance !== null) {
+    const lockedAmount = this.toFiniteNumber(payload.locked_amount ?? payload.lockedAmount, null);
+    if (
+      String(brokerKey || '')
+        .trim()
+        .toLowerCase() === 'mudrex' &&
+      balance !== null
+    ) {
       return this.roundNumber(balance + Math.max(0, lockedAmount ?? 0), 2);
     }
 
@@ -4877,16 +5379,11 @@ export class RiskService {
 
   private isPresentRecordValue(value: unknown): boolean {
     return (
-      value !== undefined &&
-      value !== null &&
-      !(typeof value === 'string' && value.trim() === '')
+      value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '')
     );
   }
 
-  private pickRecordValue(
-    record: Record<string, unknown> | null,
-    keys: string[]
-  ): unknown {
+  private pickRecordValue(record: Record<string, unknown> | null, keys: string[]): unknown {
     if (!record) {
       return null;
     }
@@ -4900,10 +5397,7 @@ export class RiskService {
     return null;
   }
 
-  private pickRecordString(
-    record: Record<string, unknown> | null,
-    keys: string[]
-  ): string {
+  private pickRecordString(record: Record<string, unknown> | null, keys: string[]): string {
     const value = this.pickRecordValue(record, keys);
     return this.isPresentRecordValue(value) ? String(value).trim() : '';
   }
@@ -4916,10 +5410,7 @@ export class RiskService {
     return normalized || null;
   }
 
-  private pickRecordNumber(
-    record: Record<string, unknown> | null,
-    keys: string[]
-  ): number | null {
+  private pickRecordNumber(record: Record<string, unknown> | null, keys: string[]): number | null {
     const value = this.pickRecordValue(record, keys);
     if (!this.isPresentRecordValue(value)) {
       return null;
@@ -4955,10 +5446,7 @@ export class RiskService {
     return null;
   }
 
-  private pickRecordDate(
-    record: Record<string, unknown> | null,
-    keys: string[]
-  ): Date | null {
+  private pickRecordDate(record: Record<string, unknown> | null, keys: string[]): Date | null {
     return this.parseDateLike(this.pickRecordValue(record, keys));
   }
 
@@ -5081,6 +5569,14 @@ export class RiskService {
     return Number.isFinite(numeric) ? numeric : fallback;
   }
 
+  private toPositiveFiniteNumber(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+  }
+
   private validateRiskPolicy(body: UpsertRiskPolicyBody): UpsertRiskPolicyBody {
     return validateUpsertRiskPolicyBody(body);
   }
@@ -5105,7 +5601,10 @@ export class RiskService {
     policy: Pick<UpsertRiskPolicyBody, 'scope' | 'brokerKey'>
   ): string {
     if (policy.scope === 'broker') {
-      const brokerLabel = String(policy.brokerKey || '').trim().toLowerCase() || 'the selected broker';
+      const brokerLabel =
+        String(policy.brokerKey || '')
+          .trim()
+          .toLowerCase() || 'the selected broker';
       return `A broker risk policy already exists for "${brokerLabel}". Update the existing broker policy instead of creating another one.`;
     }
 
@@ -5168,6 +5667,7 @@ export class RiskService {
       monthlyLossLimitPct: policy.monthlyLossLimitPct ?? undefined,
       minLeverage: policy.minLeverage ?? undefined,
       maxLeverage: policy.maxLeverage ?? undefined,
+      tradeSizePctOfBalance: policy.tradeSizePctOfBalance ?? undefined,
       minNotionalPerTrade: policy.minNotionalPerTrade ?? undefined,
       maxOrderAllocation: policy.maxOrderAllocation ?? undefined,
       maxTotalAllocation: policy.maxTotalAllocation ?? undefined,
@@ -5202,6 +5702,7 @@ export class RiskService {
       monthlyLossLimitPct: policy.monthlyLossLimitPct,
       minLeverage: policy.minLeverage,
       maxLeverage: policy.maxLeverage,
+      tradeSizePctOfBalance: policy.tradeSizePctOfBalance,
       minNotionalPerTrade: policy.minNotionalPerTrade,
       maxOrderAllocation: policy.maxOrderAllocation,
       maxTotalAllocation: policy.maxTotalAllocation,
@@ -5230,8 +5731,7 @@ export class RiskService {
     const approvalMode = options.approvalMode || 'auto_approved';
     const approvalState = options.approvalState || 'approved';
     const reviewedAt =
-      options.reviewedAt ||
-      (approvalState === 'approved' ? new Date().toISOString() : undefined);
+      options.reviewedAt || (approvalState === 'approved' ? new Date().toISOString() : undefined);
 
     return {
       snapshot,
@@ -5245,9 +5745,7 @@ export class RiskService {
         reviewReason: options.reviewReason || undefined,
         reviewedAt: approvalState === 'approved' ? reviewedAt : options.reviewedAt || undefined,
         reviewedByUserId:
-          approvalState === 'approved'
-            ? actorUserId
-            : options.reviewedByUserId || undefined,
+          approvalState === 'approved' ? actorUserId : options.reviewedByUserId || undefined,
         rollbackFromVersionId: options.rollbackFromVersionId || undefined,
       },
     };
@@ -5291,10 +5789,7 @@ export class RiskService {
     }>
   ): ParsedRiskPolicyVersionRecord[] {
     return versions.map((version, index) =>
-      this.parsePolicyVersionRecord(
-        version,
-        index === versions.length - 1 ? 'create' : 'update'
-      )
+      this.parsePolicyVersionRecord(version, index === versions.length - 1 ? 'create' : 'update')
     );
   }
 
@@ -5354,13 +5849,16 @@ export class RiskService {
         canApprove: current.approvalState === 'pending_review',
         canReject: current.approvalState === 'pending_review',
         effective,
-        snapshot: this.mapPolicy(current.snapshot, {
-          approvalMode: current.approvalMode,
-          currentApprovalState: current.approvalState,
-          pendingVersionCount: current.approvalState === 'pending_review' ? 1 : 0,
-          pendingVersionId:
-            current.approvalState === 'pending_review' ? current.id : undefined,
-        }, timeZone),
+        snapshot: this.mapPolicy(
+          current.snapshot,
+          {
+            approvalMode: current.approvalMode,
+            currentApprovalState: current.approvalState,
+            pendingVersionCount: current.approvalState === 'pending_review' ? 1 : 0,
+            pendingVersionId: current.approvalState === 'pending_review' ? current.id : undefined,
+          },
+          timeZone
+        ),
         links: {
           activityPath: this.buildPolicyActivityPath(policyId),
           enforcementActivityPath: this.buildPolicyEnforcementActivityPath(policyId),
@@ -5408,6 +5906,7 @@ export class RiskService {
       monthlyLossLimitPct: this.readNumber(rawSnapshot.monthlyLossLimitPct, 20),
       minLeverage: this.readNullableNumber(rawSnapshot.minLeverage),
       maxLeverage: this.readNullableNumber(rawSnapshot.maxLeverage),
+      tradeSizePctOfBalance: this.readNullableNumber(rawSnapshot.tradeSizePctOfBalance),
       minNotionalPerTrade: this.readNullableNumber(rawSnapshot.minNotionalPerTrade),
       maxOrderAllocation: this.readNullableNumber(rawSnapshot.maxOrderAllocation),
       maxTotalAllocation: this.readNullableNumber(rawSnapshot.maxTotalAllocation),
@@ -5433,12 +5932,14 @@ export class RiskService {
       reason: this.readOptionalString(lifecycle?.reason),
       approvalMode,
       approvalState,
-      approvedAt: approvalState === 'approved'
-        ? this.readOptionalString(lifecycle?.approvedAt) || createdAt
-        : undefined,
-      approvedByUserId: approvalState === 'approved'
-        ? this.readOptionalString(lifecycle?.approvedByUserId) || version.actorUserId
-        : undefined,
+      approvedAt:
+        approvalState === 'approved'
+          ? this.readOptionalString(lifecycle?.approvedAt) || createdAt
+          : undefined,
+      approvedByUserId:
+        approvalState === 'approved'
+          ? this.readOptionalString(lifecycle?.approvedByUserId) || version.actorUserId
+          : undefined,
       reviewReason: this.readOptionalString(lifecycle?.reviewReason),
       reviewedAt: this.readOptionalString(lifecycle?.reviewedAt),
       reviewedByUserId: this.readOptionalString(lifecycle?.reviewedByUserId),
@@ -5460,16 +5961,14 @@ export class RiskService {
         monthlyLossLimitPct: validatedSnapshot.monthlyLossLimitPct,
         minLeverage: validatedSnapshot.minLeverage,
         maxLeverage: validatedSnapshot.maxLeverage,
+        tradeSizePctOfBalance: validatedSnapshot.tradeSizePctOfBalance,
         minNotionalPerTrade: validatedSnapshot.minNotionalPerTrade,
         maxOrderAllocation: validatedSnapshot.maxOrderAllocation,
         maxTotalAllocation: validatedSnapshot.maxTotalAllocation,
         maxAvgLeverage: validatedSnapshot.maxAvgLeverage,
         approvalMode,
         approvalState,
-        pendingVersionId:
-          approvalState === 'pending_review'
-            ? version.id
-            : undefined,
+        pendingVersionId: approvalState === 'pending_review' ? version.id : undefined,
         pendingVersionCount: approvalState === 'pending_review' ? 1 : 0,
         updatedAt: this.readOptionalString(rawSnapshot.updatedAt) || createdAt,
       },
@@ -5494,7 +5993,9 @@ export class RiskService {
     return 'warn';
   }
 
-  private safeParsePolicyVersionPayload(raw: string): StoredRiskPolicyVersionPayload | Record<string, unknown> {
+  private safeParsePolicyVersionPayload(
+    raw: string
+  ): StoredRiskPolicyVersionPayload | Record<string, unknown> {
     try {
       const parsed = JSON.parse(raw);
       return parsed && typeof parsed === 'object' ? parsed : {};
@@ -5563,15 +6064,36 @@ export class RiskService {
       ['Margin warning', current.marginUsageWarnPct, previous.marginUsageWarnPct],
       ['Margin critical', current.marginUsageCriticalPct, previous.marginUsageCriticalPct],
       ['Concentration warning', current.concentrationWarnPct, previous.concentrationWarnPct],
-      ['Concentration critical', current.concentrationCriticalPct, previous.concentrationCriticalPct],
+      [
+        'Concentration critical',
+        current.concentrationCriticalPct,
+        previous.concentrationCriticalPct,
+      ],
       ['Daily loss limit', current.dailyLossLimitPct, previous.dailyLossLimitPct],
       ['Weekly loss limit', current.weeklyLossLimitPct, previous.weeklyLossLimitPct],
       ['Monthly loss limit', current.monthlyLossLimitPct, previous.monthlyLossLimitPct],
       ['Min leverage', current.minLeverage ?? null, previous.minLeverage ?? null],
       ['Max leverage', current.maxLeverage ?? null, previous.maxLeverage ?? null],
-      ['Min notional per trade', current.minNotionalPerTrade ?? null, previous.minNotionalPerTrade ?? null],
-      ['Per-trade max allocation', current.maxOrderAllocation ?? null, previous.maxOrderAllocation ?? null],
-      ['Max total allocation', current.maxTotalAllocation ?? null, previous.maxTotalAllocation ?? null],
+      [
+        'Trade size (% of balance)',
+        current.tradeSizePctOfBalance ?? null,
+        previous.tradeSizePctOfBalance ?? null,
+      ],
+      [
+        'Min notional per trade',
+        current.minNotionalPerTrade ?? null,
+        previous.minNotionalPerTrade ?? null,
+      ],
+      [
+        'Per-trade max allocation',
+        current.maxOrderAllocation ?? null,
+        previous.maxOrderAllocation ?? null,
+      ],
+      [
+        'Max total allocation',
+        current.maxTotalAllocation ?? null,
+        previous.maxTotalAllocation ?? null,
+      ],
       ['Max avg leverage', current.maxAvgLeverage ?? null, previous.maxAvgLeverage ?? null],
     ];
 
@@ -5585,7 +6107,13 @@ export class RiskService {
   private async assertNoPendingRiskPolicyReview(
     userId: string,
     policyId: string,
-    versions?: Array<{ id: string; actorUserId: string; versionPayload: string; createdAt: Date; policyId?: string }>
+    versions?: Array<{
+      id: string;
+      actorUserId: string;
+      versionPayload: string;
+      createdAt: Date;
+      policyId?: string;
+    }>
   ): Promise<void> {
     const currentVersions =
       versions || (await this.riskPolicyRepository.listPolicyVersions(userId, policyId));
@@ -5607,7 +6135,14 @@ export class RiskService {
       return true;
     }
 
-    if (String(current.brokerKey || '').trim().toLowerCase() !== String(next.brokerKey || '').trim().toLowerCase()) {
+    if (
+      String(current.brokerKey || '')
+        .trim()
+        .toLowerCase() !==
+      String(next.brokerKey || '')
+        .trim()
+        .toLowerCase()
+    ) {
       return true;
     }
 
@@ -5627,6 +6162,8 @@ export class RiskService {
       this.hasTighterConstraint(current.dailyLossLimitPct, next.dailyLossLimitPct),
       this.hasHigherTighterConstraint(current.minLeverage, next.minLeverage),
       this.hasTighterConstraint(current.maxLeverage, next.maxLeverage),
+      this.toFiniteNumber(current.tradeSizePctOfBalance, null) !==
+        this.toFiniteNumber(next.tradeSizePctOfBalance, null),
       this.hasHigherTighterConstraint(current.minNotionalPerTrade, next.minNotionalPerTrade),
       this.hasTighterConstraint(current.maxOrderAllocation, next.maxOrderAllocation),
       this.hasTighterConstraint(current.maxTotalAllocation, next.maxTotalAllocation),
@@ -5675,13 +6212,15 @@ export class RiskService {
   private buildPolicyTargetLabel(
     policy: Pick<UpsertRiskPolicyBody, 'scope' | 'brokerKey'>
   ): string {
-    return policy.scope === 'broker'
-      ? policy.brokerKey || 'broker'
-      : 'user-default';
+    return policy.scope === 'broker' ? policy.brokerKey || 'broker' : 'user-default';
   }
 
   private readScope(value: unknown): UpsertRiskPolicyBody['scope'] {
-    return String(value || '').trim().toLowerCase() === 'broker' ? 'broker' : 'user';
+    return String(value || '')
+      .trim()
+      .toLowerCase() === 'broker'
+      ? 'broker'
+      : 'user';
   }
 
   private readOptionalString(value: unknown): string | undefined {
@@ -5710,12 +6249,16 @@ export class RiskService {
   }
 
   private readApprovalMode(value: unknown): RiskPolicyApprovalMode {
-    const normalized = String(value || '').trim().toLowerCase();
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
     return normalized === 'manual_review' ? 'manual_review' : 'auto_approved';
   }
 
   private readApprovalState(value: unknown): RiskPolicyApprovalState {
-    const normalized = String(value || '').trim().toLowerCase();
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
     if (normalized === 'pending_review' || normalized === 'rejected') {
       return normalized;
     }
@@ -5726,7 +6269,9 @@ export class RiskService {
     value: unknown,
     fallback: RiskPolicyVersionOperation
   ): RiskPolicyVersionOperation {
-    const normalized = String(value || '').trim().toLowerCase();
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
     if (normalized === 'create' || normalized === 'update' || normalized === 'rollback') {
       return normalized;
     }

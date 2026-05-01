@@ -11,6 +11,7 @@ import {
   UnauthorizedAppError,
 } from '../../../api';
 import { BrokerAccountRepository, BrokerRepository } from '../../../database';
+import { env } from '../../../env';
 import { decryptBrokerAccountSettings } from '../../../lib/brokerAccountSecrets';
 
 const DELTA_EXCHANGE_BASE_URL = 'https://api.india.delta.exchange';
@@ -47,7 +48,10 @@ export class DeltaExchangeHttpClient {
   @Inject(() => BrokerRepository)
   private brokerRepository!: BrokerRepository;
 
-  async publicGet<T>(path: string, query?: Record<string, string | number | boolean | undefined>): Promise<T> {
+  async publicGet<T>(
+    path: string,
+    query?: Record<string, string | number | boolean | undefined>
+  ): Promise<T> {
     return this.request<T>('GET', path, { query });
   }
 
@@ -102,10 +106,7 @@ export class DeltaExchangeHttpClient {
     return this.request<T>('DELETE', path, { body, query, credentials });
   }
 
-  private async resolveCredentials(
-    accountId?: string,
-    userId?: string
-  ): Promise<DeltaCredentials> {
+  private async resolveCredentials(accountId?: string, userId?: string): Promise<DeltaCredentials> {
     if (!accountId) {
       throw new BadRequestAppError('Delta Exchange routing requires accountId');
     }
@@ -147,10 +148,7 @@ export class DeltaExchangeHttpClient {
       );
     }
 
-    if (
-      apiKey.toLowerCase() === 'replace-me' ||
-      apiSecret.toLowerCase() === 'replace-me'
-    ) {
+    if (apiKey.toLowerCase() === 'replace-me' || apiSecret.toLowerCase() === 'replace-me') {
       throw new ServiceUnavailableAppError(
         'Delta Exchange account is still using placeholder credentials; update apiKey/apiSecret in broker account settings'
       );
@@ -184,8 +182,7 @@ export class DeltaExchangeHttpClient {
     const requestPath = queryString ? `${routePath}?${queryString}` : routePath;
     const baseUrl = options.credentials?.baseUrl ?? DELTA_EXCHANGE_BASE_URL;
     const url = new URL(requestPath, baseUrl);
-    const bodyString =
-      options.body === undefined ? '' : JSON.stringify(options.body);
+    const bodyString = options.body === undefined ? '' : JSON.stringify(options.body);
     const headers: Record<string, string> = {
       Accept: 'application/json',
       'Content-Type': 'application/json',
@@ -200,6 +197,7 @@ export class DeltaExchangeHttpClient {
       : {};
 
     const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+      const timeoutMs = Math.max(1, env.http.requestTimeoutMs);
       const request = https.request(
         url,
         {
@@ -213,16 +211,28 @@ export class DeltaExchangeHttpClient {
           const chunks: Buffer[] = [];
 
           responseStream.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
-          responseStream.on('end', () =>
+          responseStream.on('end', () => {
+            clearTimeout(timeout);
             resolve({
               statusCode: responseStream.statusCode ?? 500,
               body: Buffer.concat(chunks).toString('utf8'),
-            })
-          );
+            });
+          });
         }
       );
 
-      request.on('error', reject);
+      const timeout = setTimeout(() => {
+        request.destroy(
+          new ServiceUnavailableAppError(
+            `Delta Exchange request timed out after ${timeoutMs}ms for ${routePath}`
+          )
+        );
+      }, timeoutMs);
+
+      request.on('error', (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
 
       if (bodyString) {
         request.write(bodyString);

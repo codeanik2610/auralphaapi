@@ -130,7 +130,9 @@ export class RiskOverviewService {
     ]);
 
     const brokerKeyNameMap = brokerDefinitions.reduce<Record<string, string>>((acc, def) => {
-      const key = String(def.brokerKey || '').trim().toLowerCase();
+      const key = String(def.brokerKey || '')
+        .trim()
+        .toLowerCase();
       const name = String(def.name || '').trim();
       if (key && name) {
         acc[key] = name;
@@ -141,7 +143,11 @@ export class RiskOverviewService {
     const brokerKeys = Array.from(
       new Set(
         brokerAccounts
-          .map((account) => String(account.brokerKey || '').trim().toLowerCase())
+          .map((account) =>
+            String(account.brokerKey || '')
+              .trim()
+              .toLowerCase()
+          )
           .filter(Boolean)
       )
     ).sort();
@@ -152,19 +158,27 @@ export class RiskOverviewService {
     const alerts = alertsResponse.data ?? alertsResponse;
     const policies = policiesResponse.data ?? policiesResponse;
     const riskWindows = this.buildRiskWindowItems(summary, latestRiskSnapshot, timeZone);
-    const brokerCoverage = await this.buildBrokerItems(userId, brokerAccounts, brokerKeyNameMap, timeZone);
+    const brokerCoverage = await this.buildBrokerItems(
+      userId,
+      brokerAccounts,
+      brokerKeyNameMap,
+      timeZone
+    );
     const activityTrail = this.buildActivityTrailOverview(recentActivityExports.items, timeZone);
-    const freshness = this.buildFreshnessMeta({
-      latestRiskSnapshotAt: latestRiskSnapshot?.createdAt || null,
-      latestFundsObservedAt: brokerCoverage.aggregate.latestFundsObservedAt,
-      latestPositionsObservedAt: brokerCoverage.aggregate.latestPositionsObservedAt,
-      latestControlAt,
-      latestAlertAt,
-      latestScenarioAt,
-      connectedAccountCount: brokerCoverage.aggregate.connectedAccountCount,
-      fundsAccountsWithSnapshot: brokerCoverage.aggregate.fundsAccountsWithSnapshot,
-      positionsAccountsWithSnapshot: brokerCoverage.aggregate.positionsAccountsWithSnapshot,
-    }, timeZone);
+    const freshness = this.buildFreshnessMeta(
+      {
+        latestRiskSnapshotAt: latestRiskSnapshot?.createdAt || null,
+        latestFundsObservedAt: brokerCoverage.aggregate.latestFundsObservedAt,
+        latestPositionsObservedAt: brokerCoverage.aggregate.latestPositionsObservedAt,
+        latestControlAt,
+        latestAlertAt,
+        latestScenarioAt,
+        connectedAccountCount: brokerCoverage.aggregate.connectedAccountCount,
+        fundsAccountsWithSnapshot: brokerCoverage.aggregate.fundsAccountsWithSnapshot,
+        positionsAccountsWithSnapshot: brokerCoverage.aggregate.positionsAccountsWithSnapshot,
+      },
+      timeZone
+    );
     const generatedAtIso = new Date().toISOString();
 
     return successResponse({
@@ -229,7 +243,7 @@ export class RiskOverviewService {
           snapshotBrokerKpis: true,
           weeklyMonthlyRiskWindowUsage: true,
           riskCapacity: false,
-          killSwitchAutomation: false,
+          killSwitchAutomation: true,
           recomputeExecutesRealCalculation: true,
           riskActivityTrailUsedByPage: true,
           riskActivityTrailFiltersUsedByPage: true,
@@ -242,7 +256,8 @@ export class RiskOverviewService {
         lineage: {
           summary: 'risk_snapshots_latest',
           riskWindows: 'risk_snapshots_latest_with_persisted_loss_windows',
-          brokerCoverage: 'risk_account_snapshots_plus_funds_snapshots_plus_position_read_models_for_connected_accounts',
+          brokerCoverage:
+            'risk_account_snapshots_plus_funds_snapshots_plus_position_read_models_for_connected_accounts',
           recomputeWrites: [
             'risk_snapshots',
             'risk_account_snapshots',
@@ -277,7 +292,9 @@ export class RiskOverviewService {
     timeZone: string
   ): RiskActivityTrailOverview {
     const latestRiskExport = exports.find((item) => {
-      const route = String(item.filters?.route || '').trim().toLowerCase();
+      const route = String(item.filters?.route || '')
+        .trim()
+        .toLowerCase();
       return route === 'risk';
     });
 
@@ -308,7 +325,9 @@ export class RiskOverviewService {
       exportFormat: 'csv',
       exportRetentionDays: env.activity.exportRetentionDays,
       exportRetentionLabel: `Exports from this trail are retained for ${env.activity.exportRetentionDays} day${env.activity.exportRetentionDays === 1 ? '' : 's'}.`,
-      latestExport: latestRiskExport ? this.mapActivityTrailExport(latestRiskExport, timeZone) : null,
+      latestExport: latestRiskExport
+        ? this.mapActivityTrailExport(latestRiskExport, timeZone)
+        : null,
     };
   }
 
@@ -340,14 +359,12 @@ export class RiskOverviewService {
         }
       | null
       | undefined,
-    latestRiskSnapshot:
-      | {
-          createdAt?: Date | null;
-          drawdownBudgetUsed?: string | null;
-          weeklyDrawdownBudgetUsed?: string | null;
-          monthlyDrawdownBudgetUsed?: string | null;
-        }
-      | null,
+    latestRiskSnapshot: {
+      createdAt?: Date | null;
+      drawdownBudgetUsed?: string | null;
+      weeklyDrawdownBudgetUsed?: string | null;
+      monthlyDrawdownBudgetUsed?: string | null;
+    } | null,
     timeZone: string
   ): RiskWindowOverviewItem[] {
     const drawdownBudgetUsed = String(
@@ -419,10 +436,11 @@ export class RiskOverviewService {
       ).values()
     );
 
-    const positionSummaryByAccount = await this.positionSnapshotRepository.getAccountOpenPositionSummary(
-      userId,
-      uniqueAccounts.map((account) => account.id)
-    );
+    const positionSummaryByAccount =
+      await this.positionSnapshotRepository.getAccountOpenPositionSummary(
+        userId,
+        uniqueAccounts.map((account) => account.id)
+      );
 
     const fundsSnapshotByAccount = new Map<string, FundsSnapshotRow | null>();
     await Promise.all(
@@ -451,7 +469,9 @@ export class RiskOverviewService {
     >();
 
     uniqueAccounts.forEach((account) => {
-      const normalizedBrokerKey = String(account.brokerKey || '').trim().toLowerCase();
+      const normalizedBrokerKey = String(account.brokerKey || '')
+        .trim()
+        .toLowerCase();
       if (!normalizedBrokerKey) {
         return;
       }
@@ -502,11 +522,7 @@ export class RiskOverviewService {
           value.positionsAccountsWithSnapshot === value.connectedAccountCount;
 
         const snapshotAvailability: RiskBrokerOverviewItem['snapshotAvailability'] =
-          hasFullSnapshotCoverage
-          ? 'snapshot'
-          : hasAnySnapshot
-            ? 'partial'
-            : 'unavailable';
+          hasFullSnapshotCoverage ? 'snapshot' : hasAnySnapshot ? 'partial' : 'unavailable';
         const fundsAvailability: RiskBrokerOverviewItem['fundsBalance']['availability'] =
           value.fundsAccountsWithSnapshot > 0 ? 'snapshot' : 'unavailable';
         const openPositionsAvailability: RiskBrokerOverviewItem['openPositions']['availability'] =
@@ -518,16 +534,14 @@ export class RiskOverviewService {
           connectedAccountCount: value.connectedAccountCount,
           snapshotAvailability,
           fundsBalance: {
-            value:
-              value.fundsAccountsWithSnapshot > 0 ? value.fundsBalanceTotal : null,
+            value: value.fundsAccountsWithSnapshot > 0 ? value.fundsBalanceTotal : null,
             availability: fundsAvailability,
             observedAt: this.formatDisplayTime(value.latestFundsObservedAt, timeZone),
             observedAtIso: this.formatRawIso(value.latestFundsObservedAt),
             sourceLabel: 'Latest funds snapshot',
           },
           openPositions: {
-            value:
-              value.positionsAccountsWithSnapshot > 0 ? value.openPositionsTotal : null,
+            value: value.positionsAccountsWithSnapshot > 0 ? value.openPositionsTotal : null,
             availability: openPositionsAvailability,
             observedAt: this.formatDisplayTime(value.latestPositionsObservedAt, timeZone),
             observedAtIso: this.formatRawIso(value.latestPositionsObservedAt),
@@ -572,17 +586,20 @@ export class RiskOverviewService {
     };
   }
 
-  private buildFreshnessMeta(input: {
-    latestRiskSnapshotAt: Date | null;
-    latestFundsObservedAt: Date | null;
-    latestPositionsObservedAt: Date | null;
-    latestControlAt: Date | null;
-    latestAlertAt: Date | null;
-    latestScenarioAt: Date | null;
-    connectedAccountCount: number;
-    fundsAccountsWithSnapshot: number;
-    positionsAccountsWithSnapshot: number;
-  }, timeZone: string): RiskOverviewFreshnessMeta {
+  private buildFreshnessMeta(
+    input: {
+      latestRiskSnapshotAt: Date | null;
+      latestFundsObservedAt: Date | null;
+      latestPositionsObservedAt: Date | null;
+      latestControlAt: Date | null;
+      latestAlertAt: Date | null;
+      latestScenarioAt: Date | null;
+      connectedAccountCount: number;
+      fundsAccountsWithSnapshot: number;
+      positionsAccountsWithSnapshot: number;
+    },
+    timeZone: string
+  ): RiskOverviewFreshnessMeta {
     const blockers: RiskOverviewFreshnessMeta['blockers'] = [];
     const freshestSourceAt = this.maxDate(
       input.latestFundsObservedAt,
@@ -621,11 +638,7 @@ export class RiskOverviewService {
     }
 
     let state: RiskOverviewFreshnessMeta['state'] = 'unavailable';
-    if (
-      input.latestRiskSnapshotAt &&
-      blockers.length === 0 &&
-      input.connectedAccountCount > 0
-    ) {
+    if (input.latestRiskSnapshotAt && blockers.length === 0 && input.connectedAccountCount > 0) {
       state = 'fresh';
     } else if (blockers.includes('risk_snapshot_behind_sources')) {
       state = 'lagging';
@@ -678,9 +691,10 @@ export class RiskOverviewService {
     return 'No funds or positions snapshots are available for the connected accounts yet.';
   }
 
-  private extractFundsBalance(
-    snapshot: FundsSnapshotRow | null
-  ): { value: number | null; observedAt: string | null } {
+  private extractFundsBalance(snapshot: FundsSnapshotRow | null): {
+    value: number | null;
+    observedAt: string | null;
+  } {
     if (!snapshot) {
       return { value: null, observedAt: null };
     }
@@ -688,7 +702,9 @@ export class RiskOverviewService {
     const futuresFunds = this.parseSnapshotJson(snapshot.futures_funds_json);
     const walletFunds = this.parseSnapshotJson(snapshot.wallet_funds_json);
 
-    const brokerKey = String(snapshot.broker_key || '').trim().toLowerCase();
+    const brokerKey = String(snapshot.broker_key || '')
+      .trim()
+      .toLowerCase();
     const value =
       this.extractFundsBalanceValue(futuresFunds, brokerKey) ??
       this.extractFundsBalanceValue(walletFunds, brokerKey);
@@ -724,16 +740,19 @@ export class RiskOverviewService {
       return equityLikeBalance;
     }
 
-    const totalBalance = this.toNumber(
-      funds.total ?? funds.wallet_balance ?? funds.walletBalance
-    );
+    const totalBalance = this.toNumber(funds.total ?? funds.wallet_balance ?? funds.walletBalance);
     if (totalBalance !== null) {
       return totalBalance;
     }
 
     const balance = this.toNumber(funds.balance);
     const lockedAmount = this.toNumber(funds.locked_amount ?? funds.lockedAmount);
-    if (String(brokerKey || '').trim().toLowerCase() === 'mudrex' && balance !== null) {
+    if (
+      String(brokerKey || '')
+        .trim()
+        .toLowerCase() === 'mudrex' &&
+      balance !== null
+    ) {
       return Number((balance + Math.max(0, lockedAmount ?? 0)).toFixed(2));
     }
 

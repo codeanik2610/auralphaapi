@@ -892,6 +892,8 @@ async function runRiskControllerAssertions(): Promise<void> {
   controller.riskService = {
     getRiskSummary: async (...args: unknown[]) => createSuccess({ args }),
     triggerKillSwitch: async (...args: unknown[]) => createSuccess({ args }),
+    getKillSwitchStatus: async (...args: unknown[]) => createSuccess({ args }),
+    clearKillSwitch: async (...args: unknown[]) => createSuccess({ args }),
     getRiskPolicies: async (...args: unknown[]) => createSuccess({ args }),
     getRiskPolicyVersions: async (...args: unknown[]) => createSuccess({ args }),
     createRiskPolicy: async (...args: unknown[]) => createSuccess({ args }),
@@ -907,6 +909,11 @@ async function runRiskControllerAssertions(): Promise<void> {
     'user-1',
     { scope: 'global' },
   ]);
+  assert.deepEqual((await controller.getKillSwitchStatus(authReq)).data.args, ['user-1']);
+  assert.deepEqual(
+    (await controller.clearKillSwitch(authReq, { scope: 'global', reason: 'clear' })).data.args,
+    ['user-1', { scope: 'global', reason: 'clear' }]
+  );
   assert.deepEqual((await controller.getRiskPolicies(authReq)).data.args, ['user-1']);
   assert.deepEqual((await controller.getRiskPolicyVersions(authReq, 'pol-1')).data.args, [
     'user-1',
@@ -934,6 +941,7 @@ async function runRiskControllerAssertions(): Promise<void> {
       monthlyLossLimitPct: 20,
       maxLeverage: undefined,
       minLeverage: undefined,
+      tradeSizePctOfBalance: undefined,
       minNotionalPerTrade: undefined,
       maxOrderAllocation: undefined,
       maxTotalAllocation: undefined,
@@ -960,6 +968,7 @@ async function runRiskControllerAssertions(): Promise<void> {
       maxTotalAllocation: undefined,
       maxAvgLeverage: undefined,
       minLeverage: undefined,
+      tradeSizePctOfBalance: undefined,
       minNotionalPerTrade: undefined,
     },
   ]);
@@ -1711,6 +1720,10 @@ async function runHealthControllerAssertions(): Promise<void> {
   const originalEmailEnabled = env.email.enabled;
   const originalSmtpHost = env.email.smtp.host;
   const originalSmtpFrom = env.email.smtp.from;
+  const originalWhatsappEnabled = env.whatsapp.enabled;
+  const originalWhatsappAccountSid = env.whatsapp.twilio.accountSid;
+  const originalWhatsappAuthToken = env.whatsapp.twilio.authToken;
+  const originalWhatsappFrom = env.whatsapp.twilio.from;
   const originalDateNow = Date.now;
 
   controller.readWorkerHttpHealth = async () => ({ status: 'ok' });
@@ -1726,21 +1739,50 @@ async function runHealthControllerAssertions(): Promise<void> {
       };
     },
   };
+  controller.whatsappDeliveryRepository = {
+    async getOperationalSnapshot() {
+      return {
+        queued: 2,
+        sending: 0,
+        failed: 1,
+        active: 3,
+        oldestPendingAt: new Date('2026-04-04T08:00:30.000Z'),
+        oldestPendingAgeMs: 60_000,
+      };
+    },
+  };
 
   env.email.enabled = true;
   env.email.smtp.host = 'smtp.example.com';
   env.email.smtp.from = 'alerts@example.com';
+  env.whatsapp.enabled = true;
+  env.whatsapp.twilio.accountSid = 'AC_whatsapp';
+  env.whatsapp.twilio.authToken = 'token_whatsapp';
+  env.whatsapp.twilio.from = 'whatsapp:+14155238886';
   Date.now = () => new Date('2026-04-04T08:01:30.000Z').getTime();
   (RedisClient as any).getConnection = () => ({
     async get(key: string) {
-      assert.equal(key, env.redis.emailWorkerHeartbeatKey);
-      return JSON.stringify({
-        workerId: 'email-worker-1',
-        timestamp: '2026-04-04T08:01:00.000Z',
-        status: 'idle',
-        pollIntervalMs: 5000,
-        lastBatchCompletedAt: '2026-04-04T08:00:30.000Z',
-      });
+      if (key === env.redis.emailWorkerHeartbeatKey) {
+        return JSON.stringify({
+          workerId: 'email-worker-1',
+          timestamp: '2026-04-04T08:01:00.000Z',
+          status: 'idle',
+          pollIntervalMs: 5000,
+          lastBatchCompletedAt: '2026-04-04T08:00:30.000Z',
+        });
+      }
+
+      if (key === env.redis.whatsappWorkerHeartbeatKey) {
+        return JSON.stringify({
+          workerId: 'whatsapp-worker-1',
+          timestamp: '2026-04-04T08:01:10.000Z',
+          status: 'idle',
+          pollIntervalMs: 5000,
+          lastBatchCompletedAt: '2026-04-04T08:00:40.000Z',
+        });
+      }
+
+      assert.fail(`Unexpected Redis heartbeat key: ${key}`);
     },
   });
 
@@ -1802,16 +1844,42 @@ async function runHealthControllerAssertions(): Promise<void> {
     assert.equal(response.data.heartbeatStaleThresholdMs, 30_000);
     assert.equal(response.data.isHeartbeatStale, false);
     assert.equal(response.data.lastBatchAgeMs, 60_000);
+
+    const whatsappResponse = await controller.getWhatsappWorkerHealth(adminAuthReq);
+    assert.equal(whatsappResponse.data.status, 'ok');
+    assert.equal(whatsappResponse.data.provider, 'twilio');
+    assert.equal(whatsappResponse.data.providerConfigured, true);
+    assert.equal(whatsappResponse.data.workerId, 'whatsapp-worker-1');
+    assert.equal(whatsappResponse.data.queuedCount, 2);
+    assert.equal(whatsappResponse.data.sendingCount, 0);
+    assert.equal(whatsappResponse.data.failedCount, 1);
+    assert.equal(whatsappResponse.data.activeCount, 3);
+    assert.equal(whatsappResponse.data.oldestPendingAt, '2026-04-04T08:00:30.000Z');
+    assert.equal(whatsappResponse.data.oldestPendingAgeMs, 60_000);
+    assert.equal(whatsappResponse.data.heartbeatAgeMs, 20_000);
+    assert.equal(whatsappResponse.data.heartbeatLagMs, 15_000);
+    assert.equal(whatsappResponse.data.heartbeatStaleThresholdMs, 30_000);
+    assert.equal(whatsappResponse.data.isHeartbeatStale, false);
+    assert.equal(whatsappResponse.data.lastBatchAgeMs, 50_000);
   } finally {
     (RedisClient as any).getConnection = originalGetConnection;
     env.email.enabled = originalEmailEnabled;
     env.email.smtp.host = originalSmtpHost;
     env.email.smtp.from = originalSmtpFrom;
+    env.whatsapp.enabled = originalWhatsappEnabled;
+    env.whatsapp.twilio.accountSid = originalWhatsappAccountSid;
+    env.whatsapp.twilio.authToken = originalWhatsappAuthToken;
+    env.whatsapp.twilio.from = originalWhatsappFrom;
     Date.now = originalDateNow;
   }
 
   await assert.rejects(
     () => controller.getEmailWorkerHealth(authReq),
+    (error: unknown) => error instanceof Error && error.message === 'Admin role is required'
+  );
+
+  await assert.rejects(
+    () => controller.getWhatsappWorkerHealth(authReq),
     (error: unknown) => error instanceof Error && error.message === 'Admin role is required'
   );
 

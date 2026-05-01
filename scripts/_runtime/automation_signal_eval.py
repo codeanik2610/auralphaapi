@@ -64,6 +64,18 @@ def _bool_at(series: Any, index: int | None) -> bool:
         return False
 
 
+def _planned_entry_price(trade_plan: Any, fallback: Any) -> float:
+    if isinstance(trade_plan, dict):
+        for key in ("entry_price", "entryPrice"):
+            try:
+                value = float(trade_plan.get(key))
+            except Exception:
+                value = float("nan")
+            if pd.notna(value) and value > 0:
+                return float(value)
+    return float(fallback)
+
+
 def _parse_iso_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc)
@@ -178,6 +190,9 @@ async def _evaluate() -> dict[str, Any]:
     cursor_by_symbol = payload.get("cursorBySymbol")
     if not isinstance(cursor_by_symbol, dict):
         cursor_by_symbol = {}
+    signal_selection_mode = str(payload.get("signalSelectionMode") or "latest_closed_only").strip().lower()
+    if signal_selection_mode not in {"latest_closed_only", "cursor_gap"}:
+        signal_selection_mode = "latest_closed_only"
 
     bucket_seconds = _timeframe_to_seconds(timeframe)
     if bucket_seconds is None:
@@ -258,9 +273,17 @@ async def _evaluate() -> dict[str, Any]:
                 skipped_symbols += 1
                 continue
 
+            entry_trade_plans = None
+            entry_short_trade_plans = None
             if spec.code_target == "python" and spec.code_definition:
                 executor = PythonStrategyExecutor.from_code(spec.code_definition)
-                entry, exit_, entry_short, exit_short = executor.build_signals_with_shorts(df)
+                bundle = executor.build_signal_bundle(df)
+                entry = bundle.entry_long
+                exit_ = bundle.exit_long
+                entry_short = bundle.entry_short
+                exit_short = bundle.exit_short
+                entry_trade_plans = bundle.entry_long_plans
+                entry_short_trade_plans = bundle.entry_short_plans
             else:
                 engine = RuleEngine(df)
                 entry, exit_, entry_short, exit_short = engine.build_signals_with_shorts(
@@ -279,7 +302,12 @@ async def _evaluate() -> dict[str, Any]:
             )
             closed_candidate_indexes = list(timestamps[timestamps < current_bucket_start].index)
             latest_closed_signal_time = pd.to_datetime(latest_row["timestamp"], utc=True).isoformat()
-            if cursor_time is None:
+            latest_closed_datetime = pd.to_datetime(
+                latest_row["timestamp"], utc=True
+            ).to_pydatetime()
+            if cursor_time is not None and latest_closed_datetime <= cursor_time:
+                candidate_indexes = []
+            elif signal_selection_mode == "latest_closed_only" or cursor_time is None:
                 candidate_indexes = [latest_index]
             else:
                 candidate_indexes = [
@@ -296,17 +324,25 @@ async def _evaluate() -> dict[str, Any]:
                 candidate_signal_time = pd.to_datetime(
                     candidate_row["timestamp"], utc=True
                 ).isoformat()
-                candidate_entry_price = float(candidate_row["close"])
+                candidate_fallback_entry_price = float(candidate_row["close"])
 
                 long_entry = _bool_at(entry, candidate_index)
                 long_entry_previous = _bool_at(entry, previous_bar_index)
                 long_exit = _bool_at(exit_, candidate_index)
                 if long_entry and not long_entry_previous and not long_exit:
+                    long_trade_plan = (
+                        entry_trade_plans.iloc[candidate_index]
+                        if entry_trade_plans is not None
+                        else None
+                    )
                     signal_events.append(
                         {
                             "side": "long",
                             "signalTime": candidate_signal_time,
-                            "entryPrice": candidate_entry_price,
+                            "entryPrice": _planned_entry_price(
+                                long_trade_plan, candidate_fallback_entry_price
+                            ),
+                            "tradePlan": long_trade_plan,
                         }
                     )
 
@@ -314,11 +350,19 @@ async def _evaluate() -> dict[str, Any]:
                 short_entry_previous = _bool_at(entry_short, previous_bar_index)
                 short_exit = _bool_at(exit_short, candidate_index)
                 if short_entry and not short_entry_previous and not short_exit:
+                    short_trade_plan = (
+                        entry_short_trade_plans.iloc[candidate_index]
+                        if entry_short_trade_plans is not None
+                        else None
+                    )
                     signal_events.append(
                         {
                             "side": "short",
                             "signalTime": candidate_signal_time,
-                            "entryPrice": candidate_entry_price,
+                            "entryPrice": _planned_entry_price(
+                                short_trade_plan, candidate_fallback_entry_price
+                            ),
+                            "tradePlan": short_trade_plan,
                         }
                     )
 
@@ -337,6 +381,7 @@ async def _evaluate() -> dict[str, Any]:
                     "shortEntry": _bool_at(entry_short, latest_index),
                     "shortEntryPrevious": _bool_at(entry_short, previous_index),
                     "shortExit": _bool_at(exit_short, latest_index),
+                    "signalSelectionMode": signal_selection_mode,
                     "signals": signal_events,
                 }
             )

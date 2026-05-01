@@ -40,6 +40,7 @@ import {
 import { BadRequestAppError, ServiceUnavailableAppError } from '../errors/AppError';
 import {
   ExchangeAssetUpdateLogRepository,
+  MarketSymbolSnapshotRepository,
   SchedulerCommandRepository,
   SchedulerConfig,
   SchedulerConfigRepository,
@@ -79,6 +80,9 @@ export class SchedulerService {
 
   @Inject(() => ExchangeAssetRepository)
   private exchangeAssetRepository!: ExchangeAssetRepository;
+
+  @Inject(() => MarketSymbolSnapshotRepository)
+  private marketSymbolSnapshotRepository!: MarketSymbolSnapshotRepository;
 
   @Inject(() => UserTimeZoneService)
   private userTimeZoneService!: UserTimeZoneService;
@@ -597,6 +601,11 @@ export class SchedulerService {
   }
 
   private async listCandleBackedAssetSymbols(search?: string): Promise<string[] | null> {
+    const snapshotSymbols = await this.listCandleBackedAssetSymbolsFromSnapshots(search);
+    if (snapshotSymbols) {
+      return snapshotSymbols;
+    }
+
     if (!env.pg.enabled) {
       return null;
     }
@@ -621,6 +630,26 @@ export class SchedulerService {
       new Set(
         rows
           .map((row: { symbol?: unknown }) => String(row.symbol || '').trim().toUpperCase())
+          .filter(Boolean)
+      )
+    );
+  }
+
+  private async listCandleBackedAssetSymbolsFromSnapshots(
+    search?: string
+  ): Promise<string[] | null> {
+    const snapshots = await this.marketSymbolSnapshotRepository.listMatchingSnapshots({
+      search,
+    });
+
+    if (!snapshots.length) {
+      return null;
+    }
+
+    return Array.from(
+      new Set(
+        snapshots
+          .map((snapshot) => String(snapshot.symbol || '').trim().toUpperCase())
           .filter(Boolean)
       )
     );

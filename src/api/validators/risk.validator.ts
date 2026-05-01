@@ -9,7 +9,7 @@ import {
   ReviewRiskPolicyVersionBody,
   RiskKillSwitchBody,
   RollbackRiskPolicyBody,
-  UpsertRiskPolicyBody
+  UpsertRiskPolicyBody,
 } from '../contracts/Risk';
 
 export interface RiskAlertsQuery {
@@ -138,17 +138,47 @@ const readOptionalNumber = (value: unknown, field: string): number | null => {
 export const validateRiskKillSwitchBody = (
   body: RiskKillSwitchBody = {}
 ): Required<RiskKillSwitchBody> => {
-  const scope = body.scope?.trim() || 'workspace';
+  const scope = normalizeKillSwitchScope(body.scope);
+  const brokerKey = normalizeOptionalString(body.brokerKey);
+  const accountId = normalizeOptionalString(body.accountId);
+  if (scope === 'broker' && !brokerKey) {
+    throw new BadRequestAppError('brokerKey is required for broker kill switch scope');
+  }
   const reason = body.reason?.trim() || 'Operator initiated emergency stop';
   return {
     scope,
+    brokerKey,
+    accountId,
     reason,
   };
 };
 
-export const validateRiskAlertsQuery = (
-  query: RiskAlertsQuery = {}
-): ValidatedRiskAlertsQuery => {
+export const validateRiskKillSwitchClearBody = (
+  body: RiskKillSwitchBody = {}
+): Required<RiskKillSwitchBody> => {
+  const validated = validateRiskKillSwitchBody({
+    ...body,
+    reason: body.reason?.trim() || 'Operator cleared emergency stop',
+  });
+  return validated;
+};
+
+const normalizeKillSwitchScope = (scopeValue?: string): string => {
+  const scope = String(scopeValue || 'workspace')
+    .trim()
+    .toLowerCase();
+  if (!['workspace', 'user', 'global', 'broker'].includes(scope)) {
+    throw new BadRequestAppError('scope must be workspace, user, global, or broker');
+  }
+  return scope;
+};
+
+const normalizeOptionalString = (value: unknown): string | null => {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+};
+
+export const validateRiskAlertsQuery = (query: RiskAlertsQuery = {}): ValidatedRiskAlertsQuery => {
   const limit = query.limit !== undefined ? Number(query.limit) : 10;
   const offset = query.offset !== undefined ? Number(query.offset) : 0;
 
@@ -203,11 +233,7 @@ export const validateRiskPreTradeCheckBody = (
   const routeMode = (
     readString(routing.routeMode) || 'strategy_default'
   ).toLowerCase() as RiskPreTradeRouteMode;
-  if (
-    routeMode !== 'strategy_default' &&
-    routeMode !== 'user_default' &&
-    routeMode !== 'fixed'
-  ) {
+  if (routeMode !== 'strategy_default' && routeMode !== 'user_default' && routeMode !== 'fixed') {
     throw new BadRequestAppError(
       'routing.routeMode must be one of: strategy_default, user_default, fixed'
     );
@@ -219,7 +245,9 @@ export const validateRiskPreTradeCheckBody = (
     throw new BadRequestAppError('routing.brokerKey is required when routing.routeMode is fixed');
   }
 
-  const orderType = (readString(order.orderType) || 'market').toLowerCase() as RiskPreTradeOrderType;
+  const orderType = (
+    readString(order.orderType) || 'market'
+  ).toLowerCase() as RiskPreTradeOrderType;
   if (orderType !== 'market' && orderType !== 'limit') {
     throw new BadRequestAppError('order.orderType must be one of: market, limit');
   }
@@ -261,7 +289,9 @@ export const validateRiskPreTradeCheckBody = (
   }
   if (quantityMode === 'quantity') {
     if (!(quantity && quantity > 0)) {
-      throw new BadRequestAppError('order.quantity must be greater than 0 when quantityMode is quantity');
+      throw new BadRequestAppError(
+        'order.quantity must be greater than 0 when quantityMode is quantity'
+      );
     }
     if (!(entryPrice && entryPrice > 0)) {
       throw new BadRequestAppError(
@@ -290,9 +320,7 @@ export const validateRiskPreTradeCheckBody = (
     ? order.takeProfitTargets.map((value, index) => {
         const numeric = readNumber(value, `order.takeProfitTargets[${index}]`);
         if (numeric <= 0) {
-          throw new BadRequestAppError(
-            `order.takeProfitTargets[${index}] must be greater than 0`
-          );
+          throw new BadRequestAppError(`order.takeProfitTargets[${index}] must be greater than 0`);
         }
         return numeric;
       })
@@ -384,16 +412,16 @@ export const validateUpsertRiskPolicyBody = (
     return numeric;
   };
 
-  const rawScope = String(body.scope ?? 'user').trim().toLowerCase();
+  const rawScope = String(body.scope ?? 'user')
+    .trim()
+    .toLowerCase();
   if (rawScope !== 'user' && rawScope !== 'broker') {
     throw new BadRequestAppError('scope must be one of: user, broker');
   }
 
   const scope = rawScope as UpsertRiskPolicyBody['scope'];
   const brokerKey =
-    scope === 'broker' && body.brokerKey
-      ? String(body.brokerKey).trim().toLowerCase()
-      : undefined;
+    scope === 'broker' && body.brokerKey ? String(body.brokerKey).trim().toLowerCase() : undefined;
   if (scope === 'broker' && !brokerKey) {
     throw new BadRequestAppError('brokerKey is required for broker scope');
   }
@@ -432,8 +460,7 @@ export const validateUpsertRiskPolicyBody = (
   const weeklyLossLimitPct =
     coerceNumber(body.weeklyLossLimitPct ?? 12, 'weeklyLossLimitPct', { min: 0, max: 100 }) ?? 12;
   const monthlyLossLimitPct =
-    coerceNumber(body.monthlyLossLimitPct ?? 20, 'monthlyLossLimitPct', { min: 0, max: 100 }) ??
-    20;
+    coerceNumber(body.monthlyLossLimitPct ?? 20, 'monthlyLossLimitPct', { min: 0, max: 100 }) ?? 20;
 
   if (dailyLossLimitPct > weeklyLossLimitPct) {
     throw new BadRequestAppError(
@@ -455,17 +482,28 @@ export const validateUpsertRiskPolicyBody = (
     min: 0,
     allowNull: true,
   });
-  const minNotionalPerTrade = coerceNumber(
-    body.minNotionalPerTrade,
-    'minNotionalPerTrade',
-    {
-      min: 0,
-      allowNull: true,
-    }
-  );
+  const tradeSizePctOfBalance = coerceNumber(body.tradeSizePctOfBalance, 'tradeSizePctOfBalance', {
+    min: 0,
+    max: 1000,
+    allowNull: true,
+  });
+  const minNotionalPerTrade = coerceNumber(body.minNotionalPerTrade, 'minNotionalPerTrade', {
+    min: 0,
+    allowNull: true,
+  });
 
   if (minLeverage !== undefined && minLeverage <= 0) {
     throw new BadRequestAppError('minLeverage must be greater than 0 when provided');
+  }
+
+  if (tradeSizePctOfBalance !== undefined && tradeSizePctOfBalance <= 0) {
+    throw new BadRequestAppError('tradeSizePctOfBalance must be greater than 0 when provided');
+  }
+
+  if (tradeSizePctOfBalance !== undefined && tradeSizePctOfBalance !== null && scope !== 'broker') {
+    throw new BadRequestAppError(
+      'tradeSizePctOfBalance is only supported for broker-scoped policies'
+    );
   }
 
   if (minNotionalPerTrade !== undefined && minNotionalPerTrade <= 0) {
@@ -491,6 +529,7 @@ export const validateUpsertRiskPolicyBody = (
     monthlyLossLimitPct,
     minLeverage,
     maxLeverage,
+    tradeSizePctOfBalance,
     minNotionalPerTrade,
     maxOrderAllocation: coerceNumber(body.maxOrderAllocation, 'maxOrderAllocation', {
       min: 0,
@@ -517,8 +556,7 @@ export const validateRollbackRiskPolicyBody = (
     throw new BadRequestAppError('versionId is required');
   }
 
-  const reason =
-    String(body.reason || '').trim() || 'Operator initiated rollback from Risk Center';
+  const reason = String(body.reason || '').trim() || 'Operator initiated rollback from Risk Center';
 
   return {
     versionId,

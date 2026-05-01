@@ -115,6 +115,12 @@ require_equals "${BACKEND_ENV_FILE}" "BROKER_ACCOUNT_SECRETS_KEY" "${DISCOVERY_E
 require_equals "${BACKEND_ENV_FILE}" "DISCOVERY_SCHEDULER_SECRET" "${WORKER_ENV_FILE}" "DISCOVERY_SCHEDULER_SECRET" "Worker discovery scheduler secret"
 require_equals "${BACKEND_ENV_FILE}" "DISCOVERY_SCHEDULER_SECRET" "${DISCOVERY_ENV_FILE}" "SCHEDULER_SECRET" "Discovery scheduler secret"
 
+if [[ "$(read_env_value "${BACKEND_ENV_FILE}" "WHATSAPP_DELIVERY_ENABLED")" == "true" ]]; then
+  require_nonempty "${BACKEND_ENV_FILE}" "WHATSAPP_TWILIO_ACCOUNT_SID" "WhatsApp Twilio account SID"
+  require_nonempty "${BACKEND_ENV_FILE}" "WHATSAPP_TWILIO_AUTH_TOKEN" "WhatsApp Twilio auth token"
+  require_nonempty "${BACKEND_ENV_FILE}" "WHATSAPP_TWILIO_FROM" "WhatsApp Twilio sender"
+fi
+
 if [[ "$(read_env_value "${BACKEND_ENV_FILE}" "APP_HOST")" != "$(read_env_value "${PLATFORM_ENV_FILE}" "API_DOMAIN")" ]]; then
   add_error "Backend APP_HOST must match platform API_DOMAIN"
 fi

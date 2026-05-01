@@ -10,10 +10,6 @@ import {
   validateRuntimeRequeueBody,
 } from '../src/api/validators/runtime.validator';
 
-function createSuccess<T>(data: T) {
-  return { success: true as const, data };
-}
-
 function read(relativePath: string): string {
   return fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
 }
@@ -276,7 +272,11 @@ async function runRuntimeSourceCoverageAssertions(): Promise<void> {
     },
     {
       relativePath: 'src/api/services/AutomationsService.ts',
-      markers: ['getRuntimeStaleRunCandidates(', 'repairRuntimeRun(', 'reconcileStaleRunsOnStartup('],
+      markers: [
+        'getRuntimeStaleRunCandidates(',
+        'repairRuntimeRun(',
+        'reconcileStaleRunsOnStartup(',
+      ],
     },
     {
       relativePath: 'scripts/_support/run-package-suite.ts',

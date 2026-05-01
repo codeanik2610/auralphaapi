@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 WITH_EMAIL=false
+WITH_WHATSAPP=false
 SKIP_BUILD=false
 SKIP_MIGRATE=false
 SKIP_SMOKE=false
@@ -14,6 +15,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --with-email)
       WITH_EMAIL=true
+      shift
+      ;;
+    --with-whatsapp)
+      WITH_WHATSAPP=true
       shift
       ;;
     --skip-build)
@@ -38,7 +43,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Supported arguments: --with-email --skip-build --skip-migrate --skip-smoke --skip-post-bootstrap --seed" >&2
+      echo "Supported arguments: --with-email --with-whatsapp --skip-build --skip-migrate --skip-smoke --skip-post-bootstrap --seed" >&2
       exit 1
       ;;
   esac
@@ -54,6 +59,9 @@ echo "[3/5] Building, migrating, and starting the stack..."
 first_run_args=()
 if [[ "${WITH_EMAIL}" == "true" ]]; then
   first_run_args+=(--with-email)
+fi
+if [[ "${WITH_WHATSAPP}" == "true" ]]; then
+  first_run_args+=(--with-whatsapp)
 fi
 if [[ "${SKIP_BUILD}" == "true" ]]; then
   first_run_args+=(--skip-build)

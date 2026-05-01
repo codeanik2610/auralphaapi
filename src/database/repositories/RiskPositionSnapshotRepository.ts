@@ -20,6 +20,10 @@ export interface ComputedRiskPositionSnapshotPayload {
   unrealizedPnl: number | null;
   realizedPnl: number | null;
   leverage: number | null;
+  requestedLeverage: number | null;
+  confirmedOrderLeverage: number | null;
+  observedPositionLeverage: number | null;
+  leverageSource: string | null;
   liquidationPrice: number | null;
   liquidationDistancePct: number | null;
   concentrationPct: number | null;
@@ -64,6 +68,10 @@ export class RiskPositionSnapshotRepository {
         unrealizedPnl: payload.unrealizedPnl,
         realizedPnl: payload.realizedPnl,
         leverage: payload.leverage,
+        requestedLeverage: payload.requestedLeverage,
+        confirmedOrderLeverage: payload.confirmedOrderLeverage,
+        observedPositionLeverage: payload.observedPositionLeverage,
+        leverageSource: payload.leverageSource,
         liquidationPrice: payload.liquidationPrice,
         liquidationDistancePct: payload.liquidationDistancePct,
         concentrationPct: payload.concentrationPct,

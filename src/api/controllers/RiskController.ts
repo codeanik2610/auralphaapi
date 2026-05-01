@@ -1,11 +1,22 @@
 import { Request, Response } from 'express';
-import { Body, Get, JsonController, Post, Put, QueryParams, Req, Param, Res } from 'routing-controllers';
+import {
+  Body,
+  Get,
+  JsonController,
+  Post,
+  Put,
+  QueryParams,
+  Req,
+  Param,
+  Res,
+} from 'routing-controllers';
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import {
   ReviewRiskPolicyVersionBody,
   RiskKillSwitchBody,
   RiskKillSwitchResult,
+  RiskKillSwitchStatusResult,
   RiskAccountsResponse,
   RiskPreTradeCheckBody,
   RiskPreTradeCheckResult,
@@ -36,7 +47,7 @@ import {
   validateRiskPreTradeCheckBody,
   validateReviewRiskPolicyVersionBody,
   validateRollbackRiskPolicyBody,
-  validateUpsertRiskPolicyBody
+  validateUpsertRiskPolicyBody,
 } from '../validators/risk.validator';
 import { requireAuthUserId } from '../utils/auth';
 
@@ -55,12 +66,16 @@ export class RiskController {
   }
 
   @Get('/accounts')
-  async getRiskAccounts(@Req() request: Request): Promise<ApiSuccessResponse<RiskAccountsResponse>> {
+  async getRiskAccounts(
+    @Req() request: Request
+  ): Promise<ApiSuccessResponse<RiskAccountsResponse>> {
     return this.riskService.getRiskAccounts(requireAuthUserId(request));
   }
 
   @Get('/positions')
-  async getRiskPositions(@Req() request: Request): Promise<ApiSuccessResponse<RiskPositionsResponse>> {
+  async getRiskPositions(
+    @Req() request: Request
+  ): Promise<ApiSuccessResponse<RiskPositionsResponse>> {
     return this.riskService.getRiskPositions(requireAuthUserId(request));
   }
 
@@ -90,7 +105,10 @@ export class RiskController {
     @Req() request: Request,
     @QueryParams() query: { snapshotId?: string }
   ): Promise<ApiSuccessResponse<RiskBrokerAssetSnapshotsResponse>> {
-    return this.riskService.getRiskBrokerAssetSnapshots(requireAuthUserId(request), query.snapshotId);
+    return this.riskService.getRiskBrokerAssetSnapshots(
+      requireAuthUserId(request),
+      query.snapshotId
+    );
   }
 
   @Get('/storage/policy-contexts')
@@ -164,6 +182,21 @@ export class RiskController {
     @Body() body: RiskKillSwitchBody
   ): Promise<ApiSuccessResponse<RiskKillSwitchResult>> {
     return this.riskService.triggerKillSwitch(requireAuthUserId(request), body);
+  }
+
+  @Get('/kill-switch')
+  async getKillSwitchStatus(
+    @Req() request: Request
+  ): Promise<ApiSuccessResponse<RiskKillSwitchStatusResult>> {
+    return this.riskService.getKillSwitchStatus(requireAuthUserId(request));
+  }
+
+  @Post('/kill-switch/clear')
+  async clearKillSwitch(
+    @Req() request: Request,
+    @Body() body: RiskKillSwitchBody
+  ): Promise<ApiSuccessResponse<RiskKillSwitchResult>> {
+    return this.riskService.clearKillSwitch(requireAuthUserId(request), body);
   }
 
   @Post('/recompute')

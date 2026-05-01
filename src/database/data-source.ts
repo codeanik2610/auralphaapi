@@ -11,11 +11,13 @@ import { BrokerAccount } from './entities/BrokerAccount';
 import { Broker } from './entities/Broker';
 import { Exchange } from './entities/Exchange';
 import { EmailDelivery } from './entities/EmailDelivery';
+import { WhatsappDelivery } from './entities/WhatsappDelivery';
 import { Connection } from './entities/Connection';
 import { AppSetting } from './entities/AppSetting';
 import { PortfolioHolding } from './entities/PortfolioHolding';
 import { RiskPolicy } from './entities/RiskPolicy';
 import { RiskPolicyVersion } from './entities/RiskPolicyVersion';
+import { RiskKillSwitchState } from './entities/RiskKillSwitchState';
 import { RiskAccountSnapshot } from './entities/RiskAccountSnapshot';
 import { RiskAssetSnapshot } from './entities/RiskAssetSnapshot';
 import { RiskBrokerAssetSnapshot } from './entities/RiskBrokerAssetSnapshot';
@@ -68,6 +70,66 @@ export const coreDataSource = new DataSource({
   timezone: 'Z',
   synchronize: env.db.synchronize,
   logging: env.db.logging,
-  entities: [Trade, ActivityExport, ActivityLog, ActivitySavedView, Alert, AlertAction, AssetPrice, Asset, ExchangeAsset, ExchangeAssetUpdateLog, SchedulerHealthCheckResult, MarketSymbolSnapshot, Signal, SignalAction, SignalAlertLink, SuggestedTrade, SuggestedTradeExecution, Automation, AutomationCursor, AutomationEvent, AutomationAlert, AutomationRun, AutomationRunOutput, Watchlist, WatchlistItem, Connection, BrokerAccount, Broker, Exchange, EmailDelivery, AppSetting, SettingsAuditLog, SchedulerConfig, SchedulerCommand, SchedulerRunLog, SchedulerUserConfig, PortfolioSnapshot, PortfolioHolding, PaperOrder, OrderSubmissionRequest, RiskAccountSnapshot, RiskAssetSnapshot, RiskBrokerAssetSnapshot, RiskBrokerSnapshot, RiskOrderSnapshot, RiskPositionSnapshot, RiskRequestCheck, RiskRequestRuleEvaluation, RiskRequestScopeImpact, RiskRuleEvaluation, RiskSnapshot, RiskSnapshotPolicyContext, RiskSnapshotSourceCoverage, RiskPolicy, RiskPolicyVersion, User, RefreshToken],
+  entities: [
+    Trade,
+    ActivityExport,
+    ActivityLog,
+    ActivitySavedView,
+    Alert,
+    AlertAction,
+    AssetPrice,
+    Asset,
+    ExchangeAsset,
+    ExchangeAssetUpdateLog,
+    SchedulerHealthCheckResult,
+    MarketSymbolSnapshot,
+    Signal,
+    SignalAction,
+    SignalAlertLink,
+    SuggestedTrade,
+    SuggestedTradeExecution,
+    Automation,
+    AutomationCursor,
+    AutomationEvent,
+    AutomationAlert,
+    AutomationRun,
+    AutomationRunOutput,
+    Watchlist,
+    WatchlistItem,
+    Connection,
+    BrokerAccount,
+    Broker,
+    Exchange,
+    EmailDelivery,
+    WhatsappDelivery,
+    AppSetting,
+    SettingsAuditLog,
+    SchedulerConfig,
+    SchedulerCommand,
+    SchedulerRunLog,
+    SchedulerUserConfig,
+    PortfolioSnapshot,
+    PortfolioHolding,
+    PaperOrder,
+    OrderSubmissionRequest,
+    RiskAccountSnapshot,
+    RiskAssetSnapshot,
+    RiskBrokerAssetSnapshot,
+    RiskBrokerSnapshot,
+    RiskOrderSnapshot,
+    RiskPositionSnapshot,
+    RiskRequestCheck,
+    RiskRequestRuleEvaluation,
+    RiskRequestScopeImpact,
+    RiskRuleEvaluation,
+    RiskSnapshot,
+    RiskSnapshotPolicyContext,
+    RiskSnapshotSourceCoverage,
+    RiskPolicy,
+    RiskPolicyVersion,
+    RiskKillSwitchState,
+    User,
+    RefreshToken,
+  ],
   migrations: [`${__dirname}/migrations_baseline/*.{ts,js}`],
 });

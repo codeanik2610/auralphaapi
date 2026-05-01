@@ -1105,6 +1105,29 @@ async function runSignalScanServiceFailureAssertions(): Promise<void> {
   }
 }
 
+function runSignalScanFallbackTradePlanAssertions(): void {
+  const service = new SignalScanService() as any;
+  const events = service.buildFallbackEvents({
+    symbol: 'BTCUSDT',
+    timeframe: '1h',
+    status: 'ok',
+    signalTime: '2026-04-06T09:00:00.000Z',
+    entryPrice: 102.5,
+    longEntry: true,
+    longEntryPrevious: false,
+    longExit: false,
+    shortEntry: true,
+    shortEntryPrevious: false,
+    shortExit: false,
+  });
+
+  assert.equal(events.length, 2);
+  assert.deepEqual(
+    events.map((event: Record<string, unknown>) => event.tradePlan),
+    [null, null]
+  );
+}
+
 function runSignalsScriptWiringAssertions(): void {
   const packageSource = read('package.json');
   const packageJson = JSON.parse(packageSource) as { scripts?: Record<string, string> };
@@ -1146,6 +1169,7 @@ async function main(): Promise<void> {
   await runSignalsSchedulerRunNowAssertions();
   await runSignalScanServiceSuccessAssertions();
   await runSignalScanServiceFailureAssertions();
+  runSignalScanFallbackTradePlanAssertions();
   runSignalsScriptWiringAssertions();
   console.log('Signals module assertions passed.');
 }

@@ -239,8 +239,10 @@ async function risk_centerGuard01(): Promise<void> {
       maxLeverage: 5,
       minNotionalPerTrade: 100,
       maxOrderAllocation: 25,
+      tradeSizePctOfBalance: undefined,
       maxTotalAllocation: 70,
       maxAvgLeverage: 3,
+      mode: 'hard_block',
       approvalMode: 'auto_approved',
       approvalState: 'approved',
       pendingVersionId: undefined,
@@ -419,10 +421,7 @@ async function risk_centerGuard01(): Promise<void> {
 
     assert.equal(belowMinimumsResult.policyId, 'broker-minimums');
     assert.equal(belowMinimumsResult.blocked, true);
-    assert.deepEqual(belowMinimumsResult.breaches, [
-      'Leverage below min (2)',
-      'Order notional below min (100 vs 250)',
-    ]);
+    assert.deepEqual(belowMinimumsResult.breaches, ['Leverage below min (2)']);
   }
 
   async function runSnapshotPreTradeThresholdAssertions(): Promise<void> {
@@ -904,6 +903,157 @@ async function risk_centerGuard01(): Promise<void> {
       ),
       346.9501
     );
+
+    const deltaBreakdown = service.extractFundsBalanceBreakdown({
+      broker_key: 'delta_exchange',
+      futures_funds_json: JSON.stringify({
+        balance: '119.55',
+        locked_amount: '4.91',
+      }),
+      wallet_funds_json: null,
+    });
+    assert.equal(deltaBreakdown.trackedBalance, 119.55);
+    assert.equal(deltaBreakdown.lockedMargin, 4.91);
+  }
+
+  async function runDeltaProtectiveOrderInferenceAssertions(): Promise<void> {
+    const service = createRiskService();
+    const account = {
+      accountId: 'account-1',
+      brokerKey: 'delta_exchange',
+      accountName: 'Delta Production',
+      fundsSnapshot: null,
+      fundsCoverage: null,
+      walletBalance: null,
+      futuresBalance: 119.55,
+      lockedMargin: 4.91,
+      balance: 119.55,
+      positions: [
+        {
+          symbol: 'EIGENUSD',
+          side: 'Short',
+          quantity: 565,
+          positionSummary: {
+            symbol: 'EIGENUSD',
+            side: 'Short',
+            quantity: 565,
+          },
+        },
+      ],
+      positionsFreshness: null,
+      positionCoverage: null,
+      thresholds: service.buildRiskThresholdProfile(null),
+      policyContext: service.buildEffectiveRiskPolicyContext(null, 'delta_exchange'),
+    };
+
+    const snapshot = service.mapOpenOrderSnapshot(account, {
+      externalId: 'order-1',
+      payloadJson: JSON.stringify({
+        symbol: 'EIGENUSD',
+        side: 'buy',
+        quantity: '565',
+        price: '0.180336',
+      }),
+      firstSeenAt: new Date('2026-04-28T00:00:00.000Z'),
+      lastSeenAt: new Date('2026-04-28T00:01:00.000Z'),
+      statusRank: 1,
+    });
+
+    assert.equal(snapshot.reduceOnly, true);
+  }
+
+  async function runDeltaPreferredMarginAssertions(): Promise<void> {
+    const service = createRiskService();
+    const deltaAccount = {
+      accountId: 'account-1',
+      brokerKey: 'delta_exchange',
+      accountName: 'Delta Production',
+      fundsSnapshot: null,
+      fundsCoverage: null,
+      walletBalance: null,
+      futuresBalance: 119.55,
+      lockedMargin: 4.91,
+      balance: 119.55,
+      positions: [],
+      positionsFreshness: null,
+      positionCoverage: null,
+      thresholds: service.buildRiskThresholdProfile(null),
+      policyContext: service.buildEffectiveRiskPolicyContext(null, 'delta_exchange'),
+    };
+
+    const mudrexAccount = {
+      ...deltaAccount,
+      brokerKey: 'mudrex',
+      lockedMargin: 4.91,
+      policyContext: service.buildEffectiveRiskPolicyContext(null, 'mudrex'),
+    };
+
+    assert.equal(service.resolvePreferredAccountReservedMargin(deltaAccount, 298.25), 4.91);
+    assert.equal(service.resolvePreferredAccountReservedMargin(mudrexAccount, 298.25), 298.25);
+  }
+
+  async function runPositionLeverageTruthAssertions(): Promise<void> {
+    const service = createRiskService() as any;
+    const account = {
+      accountId: 'account-1',
+      brokerKey: 'delta_exchange',
+      accountName: 'Delta Production',
+      fundsSnapshot: null,
+      fundsCoverage: null,
+      walletBalance: null,
+      futuresBalance: 119.55,
+      lockedMargin: 4.91,
+      balance: 119.55,
+      positions: [],
+      positionsFreshness: null,
+      positionCoverage: null,
+      thresholds: service.buildRiskThresholdProfile(null),
+      policyContext: service.buildEffectiveRiskPolicyContext(null, 'delta_exchange'),
+    };
+
+    const confirmedOrderPosition = {
+      symbol: 'EIGENUSD',
+      side: 'Short',
+      quantity: 10,
+      current_price: 10,
+      leverage: 1,
+      requested_leverage: 10,
+      confirmed_order_leverage: 10,
+      observed_position_leverage: null,
+      leverage_source: 'confirmed_order_submission',
+      positionSummary: {
+        symbol: 'EIGENUSD',
+        side: 'Short',
+        quantity: 10,
+        currentPrice: 10,
+        leverage: 1,
+        requestedLeverage: 10,
+        confirmedOrderLeverage: 10,
+        observedPositionLeverage: null,
+        leverageSource: 'confirmed_order_submission',
+      },
+    };
+
+    assert.equal(service.resolveEffectivePositionLeverage(confirmedOrderPosition), 10);
+
+    const confirmedEvaluation = service.evaluatePositionRisk(confirmedOrderPosition, account, 500);
+    assert.equal(confirmedEvaluation.leverage, 10);
+    assert.equal(confirmedEvaluation.reservedMargin, 10);
+
+    const brokerObservedPosition = {
+      ...confirmedOrderPosition,
+      leverage: 10,
+      observed_position_leverage: 12,
+      leverage_source: 'broker_position',
+      positionSummary: {
+        ...confirmedOrderPosition.positionSummary,
+        leverage: 12,
+        observedPositionLeverage: 12,
+        leverageSource: 'broker_position',
+      },
+    };
+
+    assert.equal(service.resolveEffectivePositionLeverage(brokerObservedPosition), 12);
   }
 
   async function main(): Promise<void> {
@@ -914,6 +1064,9 @@ async function risk_centerGuard01(): Promise<void> {
     await runSnapshotPreTradeThresholdAssertions();
     await runPreviewPreTradeCheckAssertions();
     await runFundsBalanceExtractionAssertions();
+    await runDeltaProtectiveOrderInferenceAssertions();
+    await runDeltaPreferredMarginAssertions();
+    await runPositionLeverageTruthAssertions();
     console.log('Risk Center Phase 1 assertions passed.');
   }
 
@@ -1590,6 +1743,30 @@ async function risk_centerGuard05(): Promise<void> {
         };
       },
     };
+    service.riskPreTradeService = {
+      async createPreTradeCheck() {
+        return {
+          success: true,
+          data: {
+            checkId: 'pretrade-pass-1',
+            status: 'passed',
+            decision: {
+              allowed: true,
+              blocked: false,
+              approvalRequired: false,
+              blockingRuleCount: 0,
+              warningRuleCount: 0,
+              summary: 'Pre-trade check passed.',
+            },
+          },
+        };
+      },
+    };
+    service.riskKillSwitchService = {
+      async assertLiveTradingAllowed() {
+        return undefined;
+      },
+    };
     service.operationalEventService = {
       async logActivity(_userId: string, payload: Record<string, unknown>) {
         activities.push(payload);
@@ -1683,6 +1860,30 @@ async function risk_centerGuard05(): Promise<void> {
         };
       },
     };
+    service.riskPreTradeService = {
+      async createPreTradeCheck() {
+        return {
+          success: true,
+          data: {
+            checkId: 'pretrade-pass-2',
+            status: 'passed',
+            decision: {
+              allowed: true,
+              blocked: false,
+              approvalRequired: false,
+              blockingRuleCount: 0,
+              warningRuleCount: 0,
+              summary: 'Pre-trade check passed.',
+            },
+          },
+        };
+      },
+    };
+    service.riskKillSwitchService = {
+      async assertLiveTradingAllowed() {
+        return undefined;
+      },
+    };
     service.operationalEventService = {
       async logActivity(_userId: string, payload: Record<string, unknown>) {
         activities.push(payload);
@@ -1705,6 +1906,9 @@ async function risk_centerGuard05(): Promise<void> {
       },
     };
     service.suggestedTradesService = {
+      async assertLiveOrderFreshnessForSuggestedTrade() {
+        return undefined;
+      },
       async linkSuggestedTradeOrder() {
         return undefined;
       },
@@ -2664,6 +2868,111 @@ async function risk_centerGuard09(): Promise<void> {
   await main();
 }
 
+async function risk_centerGuard11(): Promise<void> {
+  const { RiskService } = await import('../src/api/services/RiskService');
+
+  const service = new RiskService() as any;
+  const account = {
+    accountId: 'account-1',
+    brokerKey: 'delta_exchange',
+    accountName: 'Delta Production',
+    fundsSnapshot: null,
+    fundsCoverage: null,
+    walletBalance: null,
+    futuresBalance: 119.55,
+    lockedMargin: 4.91,
+    balance: 119.55,
+    positions: [],
+    positionsFreshness: null,
+    positionCoverage: null,
+    thresholds: service.buildRiskThresholdProfile({ maxLeverage: 15 }),
+    policyContext: service.buildEffectiveRiskPolicyContext(null, 'delta_exchange'),
+  };
+
+  const confirmedOrderPosition = {
+    symbol: 'EIGENUSD',
+    side: 'Short',
+    quantity: 10,
+    current_price: 10,
+    leverage: 1,
+    requested_leverage: 10,
+    confirmed_order_leverage: 10,
+    observed_position_leverage: null,
+    leverage_source: 'confirmed_order_submission',
+    positionSummary: {
+      symbol: 'EIGENUSD',
+      side: 'Short',
+      quantity: 10,
+      currentPrice: 10,
+      leverage: 1,
+      requestedLeverage: 10,
+      confirmedOrderLeverage: 10,
+      observedPositionLeverage: null,
+      leverageSource: 'confirmed_order_submission',
+    },
+  };
+
+  assert.equal(service.resolveEffectivePositionLeverage(confirmedOrderPosition), 10);
+
+  const confirmedEvaluation = service.evaluatePositionRisk(confirmedOrderPosition, account, 500);
+  assert.equal(confirmedEvaluation.leverage, 10);
+  assert.equal(confirmedEvaluation.reservedMargin, 10);
+  assert.ok(confirmedEvaluation.statuses.includes('watch'));
+  assert.ok(
+    confirmedEvaluation.notes.some((note: string) => note.includes('did not report leverage'))
+  );
+  const confirmedAlerts = service.buildRiskAlerts([confirmedEvaluation], []);
+  assert.equal(confirmedAlerts[0]?.severity, 'Watch');
+  assert.ok(String(confirmedAlerts[0]?.message || '').includes('did not report leverage'));
+
+  const brokerObservedPosition = {
+    ...confirmedOrderPosition,
+    leverage: 10,
+    observed_position_leverage: 12,
+    leverage_source: 'broker_position',
+    positionSummary: {
+      ...confirmedOrderPosition.positionSummary,
+      leverage: 12,
+      observedPositionLeverage: 12,
+      leverageSource: 'broker_position',
+    },
+  };
+
+  assert.equal(service.resolveEffectivePositionLeverage(brokerObservedPosition), 12);
+  const brokerObservedEvaluation = service.evaluatePositionRisk(
+    brokerObservedPosition,
+    account,
+    500
+  );
+  assert.ok(brokerObservedEvaluation.statuses.includes('critical'));
+  assert.ok(
+    brokerObservedEvaluation.notes.some((note: string) =>
+      note.includes('reporting 12x after the order was confirmed at 10x')
+    )
+  );
+
+  const requestedMismatchPosition = {
+    ...confirmedOrderPosition,
+    confirmed_order_leverage: 8,
+    positionSummary: {
+      ...confirmedOrderPosition.positionSummary,
+      confirmedOrderLeverage: 8,
+    },
+  };
+  const requestedMismatchEvaluation = service.evaluatePositionRisk(
+    requestedMismatchPosition,
+    account,
+    500
+  );
+  assert.ok(requestedMismatchEvaluation.statuses.includes('critical'));
+  assert.ok(
+    requestedMismatchEvaluation.notes.some((note: string) =>
+      note.includes('requested 10x but the broker confirmed 8x')
+    )
+  );
+  console.log('Risk Center Phase 11 assertions passed.');
+}
+
 const suiteSteps = {
   '01': risk_centerGuard01,
   '02': risk_centerGuard02,
@@ -2672,6 +2981,7 @@ const suiteSteps = {
   '06': risk_centerGuard06,
   '08': risk_centerGuard08,
   '09': risk_centerGuard09,
+  '11': risk_centerGuard11,
 } as const;
 
 export async function runRiskCenterSuite(): Promise<void> {

@@ -3,6 +3,7 @@ import { ActivityRepository } from '../../database/repositories/ActivityReposito
 import { AlertRepository } from '../../database/repositories/AlertRepository';
 import { AutomationRunOutputRepository } from '../../database/repositories/AutomationRunOutputRepository';
 import { SuggestedTradeRepository } from '../../database/repositories/SuggestedTradeRepository';
+import { SuggestedTradesFreshnessAudit } from '../contracts/SuggestedTrade';
 import { env } from '../../env';
 import { SuggestedTradeExecutionSyncService } from './SuggestedTradeExecutionSyncService';
 import { SuggestedTradesOverviewService } from './SuggestedTradesOverviewService';
@@ -51,6 +52,7 @@ export interface SuggestedTradesHealthSnapshot {
   summaryLatencyMs: number | null;
   syncStatusLatencyMs: number | null;
   latencyProbeError?: string | null;
+  freshnessAudit?: SuggestedTradesFreshnessAudit;
   detail?: string;
 }
 
@@ -77,9 +79,11 @@ export class SuggestedTradesHealthService {
   @Inject(() => SuggestedTradesService)
   private suggestedTradesService!: SuggestedTradesService;
 
-  async getOperationalSnapshot(options: {
-    probeUserId?: string | null;
-  } = {}): Promise<SuggestedTradesHealthSnapshot> {
+  async getOperationalSnapshot(
+    options: {
+      probeUserId?: string | null;
+    } = {}
+  ): Promise<SuggestedTradesHealthSnapshot> {
     const createdAfter = new Date(Date.now() - HEALTH_LOOKBACK_MS);
     const normalizedProbeUserId = this.normalizeOptionalText(options.probeUserId);
 
@@ -91,6 +95,7 @@ export class SuggestedTradesHealthService {
       refreshFailures24h,
       stateTransitionFailures24h,
       queueToOrderSuccess24h,
+      freshnessAudit,
       latencyProbe,
     ] = await Promise.all([
       this.suggestedTradeRepository.getOperationalSnapshot(),
@@ -118,6 +123,9 @@ export class SuggestedTradesHealthService {
         status: 'Success',
         titleLike: 'routed to orders',
         createdAfter,
+      }),
+      this.suggestedTradesService.getSuggestedTradesFreshnessAudit({
+        lookbackDays: 7,
       }),
       this.runLatencyProbe(normalizedProbeUserId),
     ]);
@@ -198,6 +206,7 @@ export class SuggestedTradesHealthService {
       summaryLatencyMs: latencyProbe.summaryLatencyMs,
       syncStatusLatencyMs: latencyProbe.syncStatusLatencyMs,
       latencyProbeError: latencyProbe.latencyProbeError,
+      freshnessAudit,
       ...(detailParts.length ? { detail: detailParts.join(' ') } : {}),
     };
   }

@@ -7,6 +7,9 @@ export interface StrategyTemplateTradePlanLeg {
   exitRule: string | null;
   stopLossPct: number;
   takeProfitTargetsPct: number[];
+  stopLossMode?: string | null;
+  takeProfitMode?: string | null;
+  riskRewardRatio?: number | null;
   rationale: string;
   source: 'rule-based' | 'custom-python';
 }
@@ -104,6 +107,142 @@ const normalizeCodeTarget = (value: unknown): string => {
   return normalized;
 };
 
+const extractPythonRiskBlock = (codeDefinition: string): string => {
+  const match = /\brisk\s*[:=]\s*\{/.exec(codeDefinition);
+  if (!match) {
+    return '';
+  }
+
+  const openingBraceIndex = codeDefinition.indexOf('{', match.index);
+  if (openingBraceIndex < 0) {
+    return '';
+  }
+
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+
+  for (let index = openingBraceIndex; index < codeDefinition.length; index += 1) {
+    const char = codeDefinition[index];
+
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char === '{') {
+      depth += 1;
+      continue;
+    }
+
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return codeDefinition.slice(openingBraceIndex + 1, index);
+      }
+    }
+  }
+
+  return '';
+};
+
+const extractPythonRiskLiteralValue = (
+  block: string,
+  keys: string[]
+): number | string | boolean | null => {
+  for (const key of keys) {
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const patterns = [
+      new RegExp(`["']${escapedKey}["']\\s*:\\s*([^,\\n}]+)`, 'm'),
+      new RegExp(`\\b${escapedKey}\\b\\s*:\\s*([^,\\n}]+)`, 'm'),
+    ];
+
+    for (const pattern of patterns) {
+      const match = pattern.exec(block);
+      if (!match) {
+        continue;
+      }
+      const raw = String(match[1] || '')
+        .trim()
+        .replace(/,$/, '');
+      if (!raw) {
+        continue;
+      }
+      const quoted = /^['"]([\s\S]*)['"]$/.exec(raw);
+      if (quoted) {
+        return quoted[1];
+      }
+      if (/^(true|false)$/i.test(raw)) {
+        return raw.toLowerCase() === 'true';
+      }
+      if (/^-?\d+(\.\d+)?$/.test(raw)) {
+        return raw.includes('.') ? Number(raw) : parseInt(raw, 10);
+      }
+    }
+  }
+
+  return null;
+};
+
+const mergeExecutionRiskConfig = (
+  riskConfig: Record<string, unknown>,
+  codeDefinition: string
+): Record<string, unknown> => {
+  const resolved = { ...riskConfig };
+  const riskBlock = extractPythonRiskBlock(codeDefinition);
+  if (!riskBlock) {
+    return resolved;
+  }
+
+  const stopLoss = extractPythonRiskLiteralValue(riskBlock, [
+    'stop_loss_pct',
+    'stopLossPct',
+    'stop_loss',
+    'stopLoss',
+  ]);
+  const takeProfit = extractPythonRiskLiteralValue(riskBlock, [
+    'take_profit_pct',
+    'takeProfitPct',
+    'take_profit',
+    'takeProfit',
+  ]);
+
+  if (
+    stopLoss !== null &&
+    !['stop_loss_pct', 'stopLossPct', 'stop_loss', 'stopLoss'].some(
+      (key) => resolved[key] !== undefined && resolved[key] !== null
+    )
+  ) {
+    resolved.stop_loss_pct = stopLoss;
+  }
+
+  if (
+    takeProfit !== null &&
+    !['take_profit_pct', 'takeProfitPct', 'take_profit', 'takeProfit'].some(
+      (key) => resolved[key] !== undefined && resolved[key] !== null
+    )
+  ) {
+    resolved.take_profit_pct = takeProfit;
+  }
+
+  return resolved;
+};
+
 const hasPythonMethod = (code: string, names: string[]): boolean =>
   names.some((name) => new RegExp(`def\\s+${name}\\s*\\(`, 'i').test(code));
 
@@ -113,6 +252,9 @@ const buildLegRationale = ({
   exitRule,
   stopLossPct,
   targets,
+  stopLossMode,
+  takeProfitMode,
+  riskRewardRatio,
   source,
 }: {
   side: StrategyTradeSide;
@@ -120,6 +262,9 @@ const buildLegRationale = ({
   exitRule: string | null;
   stopLossPct: number;
   targets: number[];
+  stopLossMode?: string | null;
+  takeProfitMode?: string | null;
+  riskRewardRatio?: number | null;
   source: 'rule-based' | 'custom-python';
 }): string => {
   const sideLabel = side === 'long' ? 'Long' : 'Short';
@@ -133,6 +278,23 @@ const buildLegRationale = ({
     (source === 'custom-python'
       ? `${sideLabel.toLowerCase()} exit is defined in the custom Python template`
       : `${sideLabel.toLowerCase()} exit follows the template rules`);
+  const dynamicStop =
+    typeof stopLossMode === 'string' && stopLossMode.trim().toLowerCase().startsWith('dynamic');
+  const dynamicTarget =
+    typeof takeProfitMode === 'string' && takeProfitMode.trim().toLowerCase().startsWith('dynamic');
+  if (dynamicStop || dynamicTarget) {
+    const riskRewardSummary =
+      riskRewardRatio && Number.isFinite(riskRewardRatio) && riskRewardRatio > 0
+        ? ` and a 1:${riskRewardRatio} reward target`
+        : '';
+    const protectionSummary =
+      dynamicStop && dynamicTarget
+        ? `Use a dynamic stop loss${riskRewardSummary} defined by the custom Python strategy.`
+        : dynamicStop
+          ? `Use a dynamic stop loss defined by the custom Python strategy.`
+          : `Use a dynamic take-profit plan${riskRewardSummary} defined by the custom Python strategy.`;
+    return `${sideLabel} setup: enter when ${entrySummary}. Exit when ${exitSummary}. ${protectionSummary}`;
+  }
   const targetSummary = targets.length
     ? `${targets.map((value) => `${value}%`).join(', ')} take-profit target${targets.length === 1 ? '' : 's'}`
     : 'configured take-profit targets';
@@ -188,7 +350,7 @@ export const buildStrategyTemplateAutomationProfile = (
 ): StrategyTemplateAutomationProfile => {
   const root = parseRecord(config) || {};
   const searchSpace = buildTemplateSearchSpace(root);
-  const riskConfig = extractRiskConfig(searchSpace);
+  const baseRiskConfig = extractRiskConfig(searchSpace);
   const parameters = extractParameters(searchSpace);
 
   const entryLogic = readText(...searchSpace.map((scope) => scope.entryLogic ?? scope.entry_logic));
@@ -220,8 +382,14 @@ export const buildStrategyTemplateAutomationProfile = (
     )
   );
 
-  const ruleBasedLong = Boolean(entryLogic && exitLogic);
-  const ruleBasedShort = Boolean(entryShortLogic && exitShortLogic);
+  const riskConfig =
+    codeTarget === 'python' && codeDefinition
+      ? mergeExecutionRiskConfig(baseRiskConfig, codeDefinition)
+      : baseRiskConfig;
+
+  const usesCustomPython = codeTarget === 'python' && Boolean(codeDefinition);
+  const ruleBasedLong = !usesCustomPython && Boolean(entryLogic && exitLogic);
+  const ruleBasedShort = !usesCustomPython && Boolean(entryShortLogic && exitShortLogic);
   const pythonLong =
     codeTarget === 'python' &&
     hasPythonMethod(codeDefinition, ['entry', 'entry_long']) &&
@@ -233,13 +401,25 @@ export const buildStrategyTemplateAutomationProfile = (
 
   const supportsLong = ruleBasedLong || pythonLong;
   const supportsShort = ruleBasedShort || pythonShort;
+  const stopLossMode = readText(
+    riskConfig.stopLossMode,
+    riskConfig.stop_loss_mode
+  );
+  const takeProfitMode = readText(
+    riskConfig.takeProfitMode,
+    riskConfig.take_profit_mode
+  );
+  const riskRewardRatio =
+    parseNumber(riskConfig.riskRewardRatio ?? riskConfig.risk_reward_ratio) ?? null;
+  const usesDynamicStopLoss = stopLossMode.toLowerCase().startsWith('dynamic');
+  const usesDynamicTakeProfit = takeProfitMode.toLowerCase().startsWith('dynamic');
   const stopLossPct =
     normalizePercent(
       riskConfig.stopLossPct ??
         riskConfig.stop_loss_pct ??
         riskConfig.stopLoss ??
         riskConfig.stop_loss
-    ) ?? DEFAULT_STOP_LOSS_PCT;
+    ) ?? (usesDynamicStopLoss ? 0 : DEFAULT_STOP_LOSS_PCT);
   const takeProfitTargetsPct = normalizePercentList(
     riskConfig.takeProfitTargetsPct ??
       riskConfig.take_profit_targets_pct ??
@@ -254,10 +434,10 @@ export const buildStrategyTemplateAutomationProfile = (
         riskConfig.take_profit_pct ??
         riskConfig.takeProfit ??
         riskConfig.take_profit
-    ) ?? DEFAULT_TAKE_PROFIT_PCT;
+    ) ?? (usesDynamicTakeProfit ? null : DEFAULT_TAKE_PROFIT_PCT);
   const resolvedTargets = takeProfitTargetsPct.length
     ? takeProfitTargetsPct
-    : [fallbackTakeProfitPct];
+    : (fallbackTakeProfitPct === null ? [] : [fallbackTakeProfitPct]);
   const signalThreshold =
     parseNumber(parameters.signalThreshold ?? parameters.signal_threshold) ?? null;
   const market =
@@ -278,12 +458,18 @@ export const buildStrategyTemplateAutomationProfile = (
         exitRule: exitLogic || (pythonLong ? 'Defined in custom Python strategy' : null),
         stopLossPct,
         takeProfitTargetsPct: resolvedTargets,
+        stopLossMode: stopLossMode || null,
+        takeProfitMode: takeProfitMode || null,
+        riskRewardRatio,
         rationale: buildLegRationale({
           side: 'long',
           entryRule: entryLogic || null,
           exitRule: exitLogic || null,
           stopLossPct,
           targets: resolvedTargets,
+          stopLossMode: stopLossMode || null,
+          takeProfitMode: takeProfitMode || null,
+          riskRewardRatio,
           source: longSource,
         }),
         source: longSource,
@@ -298,12 +484,18 @@ export const buildStrategyTemplateAutomationProfile = (
         exitRule: exitShortLogic || (pythonShort ? 'Defined in custom Python strategy' : null),
         stopLossPct,
         takeProfitTargetsPct: resolvedTargets,
+        stopLossMode: stopLossMode || null,
+        takeProfitMode: takeProfitMode || null,
+        riskRewardRatio,
         rationale: buildLegRationale({
           side: 'short',
           entryRule: entryShortLogic || null,
           exitRule: exitShortLogic || null,
           stopLossPct,
           targets: resolvedTargets,
+          stopLossMode: stopLossMode || null,
+          takeProfitMode: takeProfitMode || null,
+          riskRewardRatio,
           source: shortSource,
         }),
         source: shortSource,
@@ -324,7 +516,7 @@ export const buildStrategyTemplateAutomationProfile = (
     supports: {
       long: supportsLong,
       short: supportsShort,
-      customPython: codeTarget === 'python',
+      customPython: usesCustomPython,
       ruleBased: ruleBasedLong || ruleBasedShort,
     },
     tradePlan: {

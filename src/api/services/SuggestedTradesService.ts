@@ -7,11 +7,13 @@ import {
   SuggestedTradeReconcileActionResult,
   SuggestedTradeOrderLinkResult,
   SuggestedTradeExecutionLink,
+  SuggestedTradeRouteDecision,
   SuggestedTradeStatus,
   SuggestedTradesListResponse,
   SuggestedTradesExecutionSyncResult,
   SuggestedTradeStatusActionResult,
   SuggestedTradesSummary,
+  SuggestedTradesFreshnessAudit,
 } from '../contracts/SuggestedTrade';
 import { successResponse } from '../utils/response';
 import { BadRequestAppError, NotFoundAppError } from '../errors/AppError';
@@ -29,19 +31,38 @@ import {
 } from '../validators/suggestedTrades.validator';
 import {
   AutomationRepository,
+  ActivityRepository,
   BrokerAccountRepository,
   ExchangeAssetRepository,
+  FundsSnapshotRepository,
+  OrdersSnapshotSourceRepository,
   PaperOrderRepository,
+  PositionReadModelRepository,
+  RiskPolicyRepository,
   SuggestedTradeExecutionUpsertPayload,
   SuggestedTradeRepository,
 } from '../../database';
+import { coreDataSource } from '../../database/data-source';
 import { SuggestedTrade } from '../../database';
+import { BrokerRuntimeRegistry } from '../../brokers/core/BrokerRuntimeRegistry';
 import { env } from '../../env';
-import { normalizeTradeSuggestionExecutionPolicy } from '../utils/automationType';
+import {
+  TRADE_SUGGESTION_EXECUTION_LIMIT_RULES,
+  normalizeTradeSuggestionExecutionPolicy,
+} from '../utils/automationType';
+import {
+  SignalFreshnessEvaluation,
+  TradeSuggestionFreshnessPolicy,
+  evaluateSignalFreshness,
+  normalizeTradeSuggestionFreshnessPolicy,
+  parseTimeframeSeconds,
+  resolveFreshnessGraceSeconds,
+} from '../utils/signalFreshness';
 import { OperationalEventService } from './OperationalEventService';
 import { PaperOrderExecutionService } from './PaperOrderExecutionService';
 import { BrokerReferenceDataService } from './BrokerReferenceDataService';
 import { RiskPreTradeService } from './RiskPreTradeService';
+import { RiskKillSwitchService } from './RiskKillSwitchService';
 
 type TradeSuggestionExecutionMode = 'suggestion_only' | 'paper_trade_auto' | 'live_trade_auto';
 type TradeSuggestionApprovalMode = 'manual_review' | 'auto_if_safe';
@@ -49,6 +70,10 @@ type TradeSuggestionRouteMode = 'strategy_default' | 'user_default' | 'fixed';
 type TradeSuggestionOrderType = 'market' | 'limit';
 type TradeSuggestionQuantityMode = 'quantity' | 'notional' | 'risk_percent';
 type SuggestedTradePreTradeState = NonNullable<SuggestedTradeExecutionLink['preTradeState']>;
+type LiveAutoAdaptiveRoutingMode = 'off' | 'shadow' | 'live';
+
+const SUGGESTED_TRADES_FRESHNESS_AUDIT_LOOKBACK_DAYS = 7;
+const SUGGESTED_TRADES_FRESHNESS_AUDIT_LIMIT = 5000;
 
 interface ResolvedTradeSuggestionExecutionPolicy {
   executionMode: TradeSuggestionExecutionMode;
@@ -70,6 +95,8 @@ interface ResolvedTradeSuggestionExecutionPolicy {
   maxConcurrentOpenTrades: number;
   maxNotionalPerTrade: number | null;
   maxNotionalPerDay: number | null;
+  dedupeWindowSeconds: number;
+  freshness: TradeSuggestionFreshnessPolicy;
 }
 
 interface SuggestedTradePreTradeGate {
@@ -138,6 +165,7 @@ interface SuggestedTradePreTradeRequest {
 interface AdaptivePreTradeRouteDecision {
   request: SuggestedTradePreTradeRequest;
   previewBlock?: RiskPreTradeCheckResult | null;
+  routeDecision?: SuggestedTradeRouteDecision | null;
 }
 
 interface DefaultRouteCandidate {
@@ -150,10 +178,24 @@ interface EvaluatedRouteCandidate {
   route: DefaultRouteCandidate;
   request: SuggestedTradePreTradeRequest;
   preview: RiskPreTradeCheckResult;
+  assetRoute: ResolvedLiveAutoAssetRoute | null;
   support: {
     supported: boolean;
     message: string | null;
   };
+}
+
+interface ResolvedLiveAutoAssetRoute {
+  assetId: string;
+  requestedSymbol: string;
+  brokerSymbol: string;
+  candidateSymbols: string[];
+  resolvedVia: 'catalog_exact' | 'catalog_equivalent' | 'remote_exact' | 'remote_equivalent';
+}
+
+interface NormalizedLiveAutoOrderSizing {
+  quantity: number;
+  auditNote: string | null;
 }
 
 interface LiveAutoOrderPlacementHandler {
@@ -168,10 +210,26 @@ interface ExecutionRefreshOptions {
   resolveStaleGaps?: boolean;
 }
 
+interface LiveProtectionOrderContext {
+  stopLossOrderId: string | null;
+  takeProfitOrderId: string | null;
+  stopLossStatus: string | null;
+  takeProfitStatus: string | null;
+  activeOrderIds: string[];
+}
+
+interface MudrexLiveAutoProtectionAttachmentResult {
+  attached: boolean;
+  note: string | null;
+}
+
 @Service()
 export class SuggestedTradesService {
   @Inject(() => SuggestedTradeRepository)
   private suggestedTradeRepository!: SuggestedTradeRepository;
+
+  @Inject(() => ActivityRepository)
+  private activityRepository!: ActivityRepository;
 
   @Inject(() => OperationalEventService)
   private operationalEventService!: OperationalEventService;
@@ -188,14 +246,32 @@ export class SuggestedTradesService {
   @Inject(() => BrokerAccountRepository)
   private brokerAccountRepository!: BrokerAccountRepository;
 
+  @Inject(() => PositionReadModelRepository)
+  private positionReadModelRepository!: PositionReadModelRepository;
+
+  @Inject(() => OrdersSnapshotSourceRepository)
+  private ordersSnapshotSourceRepository!: OrdersSnapshotSourceRepository;
+
   @Inject(() => ExchangeAssetRepository)
   private exchangeAssetRepository!: ExchangeAssetRepository;
+
+  @Inject(() => FundsSnapshotRepository)
+  private fundsSnapshotRepository!: FundsSnapshotRepository;
+
+  @Inject(() => RiskPolicyRepository)
+  private riskPolicyRepository!: RiskPolicyRepository;
 
   @Inject(() => BrokerReferenceDataService)
   private brokerReferenceDataService!: BrokerReferenceDataService;
 
+  @Inject(() => BrokerRuntimeRegistry)
+  private brokerRuntimeRegistry!: BrokerRuntimeRegistry;
+
   @Inject(() => RiskPreTradeService)
   private riskPreTradeService!: RiskPreTradeService;
+
+  @Inject(() => RiskKillSwitchService)
+  private riskKillSwitchService!: RiskKillSwitchService;
 
   async getSuggestedTrades(
     userId: string,
@@ -229,7 +305,7 @@ export class SuggestedTradesService {
     query: SuggestedTradesQuery = {}
   ): Promise<ApiSuccessResponse<SuggestedTradesSummary>> {
     const params = validateSuggestedTradesQuery(query);
-    const summary = await this.suggestedTradeRepository.getSuggestedTradesSummary(userId, {
+    const summaryQuery = {
       automationId: params.automationId,
       automationRunId: params.automationRunId,
       status: params.status,
@@ -238,8 +314,286 @@ export class SuggestedTradesService {
       timeframe: params.timeframe,
       side: params.side,
       search: params.search,
+    };
+    const [summary, freshnessAudit] = await Promise.all([
+      this.suggestedTradeRepository.getSuggestedTradesSummary(userId, summaryQuery),
+      this.getSuggestedTradesFreshnessAudit({
+        userId,
+        query: summaryQuery,
+      }),
+    ]);
+    return successResponse({
+      ...summary,
+      freshnessAudit,
     });
-    return successResponse(summary);
+  }
+
+  async getSuggestedTradesFreshnessAudit(
+    options: {
+      userId?: string | null;
+      query?: Partial<SuggestedTradesQuery>;
+      lookbackDays?: number;
+      limit?: number;
+    } = {}
+  ): Promise<SuggestedTradesFreshnessAudit> {
+    const lookbackDays = this.normalizeAuditLookbackDays(options.lookbackDays);
+    const windowStart = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+    const limit = Math.max(
+      1,
+      Math.min(25000, Math.floor(options.limit ?? SUGGESTED_TRADES_FRESHNESS_AUDIT_LIMIT))
+    );
+    const query = options.query ?? {};
+    const userId = this.readStringValue(options.userId);
+
+    const [sample, liveAutoStaleSkipped, staleSuggestedTradeBlocked] = await Promise.all([
+      this.suggestedTradeRepository.listSuggestedTradesForFreshnessAudit({
+        userId,
+        createdAfter: windowStart,
+        limit,
+        automationId: query.automationId,
+        automationRunId: query.automationRunId,
+        status: query.status,
+        executionState: query.executionState,
+        symbol: query.symbol,
+        timeframe: query.timeframe,
+        side: query.side,
+        search: query.search,
+      }),
+      this.activityRepository.countOperationalActivities({
+        userId,
+        type: 'Suggested Trade',
+        titleLike: 'Live auto stale signal skipped',
+        status: 'Warning',
+        stream: 'Execution',
+        createdAfter: windowStart,
+      }),
+      this.activityRepository.countOperationalActivities({
+        userId,
+        type: 'Suggested Trade',
+        titleLike: 'Stale suggested trade blocked',
+        status: 'Warning',
+        stream: 'Execution',
+        createdAfter: windowStart,
+      }),
+    ]);
+
+    return this.summarizeSuggestedTradeFreshnessAudit(sample.items, {
+      lookbackDays,
+      windowStart,
+      sampledSignals: sample.sampled,
+      totalSignals: sample.total,
+      staleBlockedCount: liveAutoStaleSkipped + staleSuggestedTradeBlocked,
+    });
+  }
+
+  private summarizeSuggestedTradeFreshnessAudit(
+    items: SuggestedTrade[],
+    context: {
+      lookbackDays: number;
+      windowStart: Date;
+      sampledSignals: number;
+      totalSignals: number;
+      staleBlockedCount: number;
+    }
+  ): SuggestedTradesFreshnessAudit {
+    const defaultFreshnessPolicy = normalizeTradeSuggestionFreshnessPolicy({});
+    const timeframeBuckets = new Map<
+      string,
+      {
+        totalSignals: number;
+        openedSignals: number;
+        staleOpenCount: number;
+        signalToSuggestionTotalMs: number;
+        signalToSuggestionCount: number;
+        signalToOpenTotalMs: number;
+        signalToOpenCount: number;
+        maxSignalToOpenMs: number | null;
+      }
+    >();
+    const worstDelays: SuggestedTradesFreshnessAudit['worstDelays'] = [];
+
+    let openedSignals = 0;
+    let staleOpenCount = 0;
+    let latestClosedOnlyCount = 0;
+    let cursorGapCount = 0;
+    let unknownSignalSelectionModeCount = 0;
+    let signalToSuggestionTotalMs = 0;
+    let signalToSuggestionCount = 0;
+    let signalToOpenTotalMs = 0;
+    let signalToOpenCount = 0;
+    let maxSignalToOpenMs: number | null = null;
+
+    for (const item of items) {
+      const signalMs = this.toTimestamp(item.signalTime);
+      const createdMs = this.toTimestamp(item.createdAt);
+      if (!signalMs || !createdMs) {
+        continue;
+      }
+
+      const timeframe = String(item.timeframe || '').trim() || 'unknown';
+      const bucket = timeframeBuckets.get(timeframe) ?? {
+        totalSignals: 0,
+        openedSignals: 0,
+        staleOpenCount: 0,
+        signalToSuggestionTotalMs: 0,
+        signalToSuggestionCount: 0,
+        signalToOpenTotalMs: 0,
+        signalToOpenCount: 0,
+        maxSignalToOpenMs: null,
+      };
+      bucket.totalSignals += 1;
+      timeframeBuckets.set(timeframe, bucket);
+
+      const meta = this.readRecordValue(item.meta) ?? {};
+      const signalSelectionMode = this.readStringValue(meta.signalSelectionMode);
+      if (signalSelectionMode === 'latest_closed_only') {
+        latestClosedOnlyCount += 1;
+      } else if (signalSelectionMode === 'cursor_gap') {
+        cursorGapCount += 1;
+      } else {
+        unknownSignalSelectionModeCount += 1;
+      }
+
+      const signalToSuggestionMs = Math.max(0, createdMs - signalMs);
+      signalToSuggestionTotalMs += signalToSuggestionMs;
+      signalToSuggestionCount += 1;
+      bucket.signalToSuggestionTotalMs += signalToSuggestionMs;
+      bucket.signalToSuggestionCount += 1;
+
+      const execution = this.getExecutionLink(item);
+      const openedAt = execution?.positionOpenedAt ?? execution?.filledAt ?? null;
+      const openedMs = this.toTimestamp(openedAt);
+      if (!openedMs) {
+        continue;
+      }
+
+      const signalToOpenMs = Math.max(0, openedMs - signalMs);
+      const timeframeSeconds = parseTimeframeSeconds(timeframe);
+      const maxAgeAfterCloseSeconds = resolveFreshnessGraceSeconds(
+        timeframe,
+        defaultFreshnessPolicy
+      );
+      const candleCloseMs = timeframeSeconds ? signalMs + timeframeSeconds * 1000 : null;
+      const openAgeAfterCloseMs =
+        candleCloseMs === null ? null : Math.max(0, openedMs - candleCloseMs);
+      const stale =
+        openAgeAfterCloseMs !== null &&
+        maxAgeAfterCloseSeconds !== null &&
+        openAgeAfterCloseMs > maxAgeAfterCloseSeconds * 1000;
+
+      openedSignals += 1;
+      signalToOpenTotalMs += signalToOpenMs;
+      signalToOpenCount += 1;
+      maxSignalToOpenMs =
+        maxSignalToOpenMs === null ? signalToOpenMs : Math.max(maxSignalToOpenMs, signalToOpenMs);
+      if (stale) {
+        staleOpenCount += 1;
+      }
+
+      bucket.openedSignals += 1;
+      bucket.signalToOpenTotalMs += signalToOpenMs;
+      bucket.signalToOpenCount += 1;
+      bucket.maxSignalToOpenMs =
+        bucket.maxSignalToOpenMs === null
+          ? signalToOpenMs
+          : Math.max(bucket.maxSignalToOpenMs, signalToOpenMs);
+      if (stale) {
+        bucket.staleOpenCount += 1;
+      }
+
+      worstDelays.push({
+        suggestedTradeId: item.id,
+        symbol: item.symbol,
+        timeframe,
+        side: item.side as SuggestedTradesFreshnessAudit['worstDelays'][number]['side'],
+        signalTime: item.signalTime.toISOString(),
+        suggestedTradeCreatedAt: item.createdAt.toISOString(),
+        openedAt: new Date(openedMs).toISOString(),
+        executionMode: execution?.executionMode ?? null,
+        executionState: this.buildExecutionStage(execution),
+        brokerKey: execution?.brokerKey ?? null,
+        accountId: execution?.accountId ?? null,
+        signalSelectionMode,
+        signalToSuggestionMinutes: this.toAuditMinutes(signalToSuggestionMs),
+        signalToOpenMinutes: this.toAuditMinutes(signalToOpenMs),
+        openAgeAfterCloseMinutes:
+          openAgeAfterCloseMs === null ? null : this.toAuditMinutes(openAgeAfterCloseMs),
+        maxAgeAfterCloseMinutes:
+          maxAgeAfterCloseSeconds === null
+            ? null
+            : this.toAuditMinutes(maxAgeAfterCloseSeconds * 1000),
+        stale,
+      });
+    }
+
+    return {
+      lookbackDays: context.lookbackDays,
+      windowStart: context.windowStart.toISOString(),
+      generatedAt: new Date().toISOString(),
+      sampledSignals: context.sampledSignals,
+      totalSignals: context.totalSignals,
+      openedSignals,
+      staleOpenCount,
+      staleBlockedCount: context.staleBlockedCount,
+      latestClosedOnlyCount,
+      cursorGapCount,
+      unknownSignalSelectionModeCount,
+      averageSignalToSuggestionMinutes: this.toAuditAverageMinutes(
+        signalToSuggestionTotalMs,
+        signalToSuggestionCount
+      ),
+      averageSignalToOpenMinutes: this.toAuditAverageMinutes(
+        signalToOpenTotalMs,
+        signalToOpenCount
+      ),
+      maxSignalToOpenMinutes:
+        maxSignalToOpenMs === null ? null : this.toAuditMinutes(maxSignalToOpenMs),
+      byTimeframe: Array.from(timeframeBuckets.entries())
+        .map(([timeframe, bucket]) => ({
+          timeframe,
+          totalSignals: bucket.totalSignals,
+          openedSignals: bucket.openedSignals,
+          staleOpenCount: bucket.staleOpenCount,
+          averageSignalToSuggestionMinutes: this.toAuditAverageMinutes(
+            bucket.signalToSuggestionTotalMs,
+            bucket.signalToSuggestionCount
+          ),
+          averageSignalToOpenMinutes: this.toAuditAverageMinutes(
+            bucket.signalToOpenTotalMs,
+            bucket.signalToOpenCount
+          ),
+          maxSignalToOpenMinutes:
+            bucket.maxSignalToOpenMs === null
+              ? null
+              : this.toAuditMinutes(bucket.maxSignalToOpenMs),
+        }))
+        .sort(
+          (left, right) =>
+            right.totalSignals - left.totalSignals || left.timeframe.localeCompare(right.timeframe)
+        ),
+      worstDelays: worstDelays
+        .sort((left, right) => (right.signalToOpenMinutes ?? 0) - (left.signalToOpenMinutes ?? 0))
+        .slice(0, 5),
+    };
+  }
+
+  private normalizeAuditLookbackDays(value: unknown): number {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return SUGGESTED_TRADES_FRESHNESS_AUDIT_LOOKBACK_DAYS;
+    }
+    return Math.max(1, Math.min(30, Math.floor(numeric)));
+  }
+
+  private toAuditAverageMinutes(totalMs: number, count: number): number | null {
+    if (count <= 0) {
+      return null;
+    }
+    return this.toAuditMinutes(totalMs / count);
+  }
+
+  private toAuditMinutes(valueMs: number): number {
+    return Number((Math.max(0, valueMs) / 60000).toFixed(2));
   }
 
   async getSuggestedTradeById(
@@ -650,6 +1004,44 @@ export class SuggestedTradesService {
     }
   }
 
+  async assertLiveOrderFreshnessForSuggestedTrade(
+    userId: string,
+    suggestedTradeId: string
+  ): Promise<void> {
+    const validatedTradeId = validateSuggestedTradeId(suggestedTradeId);
+    const trade = await this.suggestedTradeRepository.getSuggestedTradeById(
+      userId,
+      validatedTradeId
+    );
+    if (!trade) {
+      throw new NotFoundAppError('Suggested trade not found');
+    }
+
+    const executionPolicy = await this.loadTradeSuggestionExecutionPolicy(
+      userId,
+      trade.automationId
+    );
+    const freshness = this.evaluateSuggestedTradeFreshness(trade, executionPolicy);
+    if (freshness.allowed) {
+      return;
+    }
+
+    const message = this.buildLiveExecutionFreshnessBlockedMessage(freshness);
+    await this.operationalEventService.logActivity(userId, {
+      type: 'Suggested Trade',
+      title: `Stale suggested trade blocked: ${trade.symbol}`,
+      status: 'Warning',
+      route: 'Orders',
+      stream: 'Execution',
+      related: `${trade.symbol} · ${trade.timeframe}`,
+      referenceId: trade.id,
+      symbol: trade.symbol,
+      description: message,
+    });
+
+    throw new BadRequestAppError(message);
+  }
+
   private async updateSuggestedTradeStatus(
     userId: string,
     suggestedTradeId: string,
@@ -878,11 +1270,15 @@ export class SuggestedTradesService {
       userId,
       trade.automationId
     );
-    const request = this.buildPreTradeCheckRequest(
-      trade,
-      executionPolicy,
-      existingExecution,
-      options.linkPayload
+    const request = await this.applyBrokerPolicyTradeSize(
+      userId,
+      this.buildPreTradeCheckRequest(
+        trade,
+        executionPolicy,
+        existingExecution,
+        options.linkPayload
+      ),
+      options.sourceType
     );
     const adaptiveRoute = this.shouldUseAdaptivePreTradeRoute(options.sourceType, request)
       ? await this.resolveAdaptivePreTradeRoute(userId, trade, request, options.sourceType)
@@ -896,6 +1292,17 @@ export class SuggestedTradesService {
           sourceType: options.sourceType,
         })
       ).data;
+
+    if (adaptiveRoute.routeDecision) {
+      const nextMeta = this.readRecordValue(trade.meta) ?? {};
+      trade.meta = {
+        ...nextMeta,
+        routeDecision: adaptiveRoute.routeDecision,
+      };
+      const savedTrade = await this.suggestedTradeRepository.saveSuggestedTrade(trade);
+      trade.meta = savedTrade.meta;
+      trade.updatedAt = savedTrade.updatedAt;
+    }
 
     const preTradeState = this.resolvePreTradeState(result.status);
     const ready = preTradeState === 'passed';
@@ -949,6 +1356,12 @@ export class SuggestedTradesService {
     if (!String(sourceType || '').startsWith('suggested_trade_automation_')) {
       return false;
     }
+    if (
+      sourceType === 'suggested_trade_automation_live_rollout' &&
+      this.resolveAdaptiveRoutingMode(request.executionMode, sourceType) === 'off'
+    ) {
+      return false;
+    }
     return !(
       request.routing.routeMode === 'fixed' ||
       request.routing.brokerKey ||
@@ -962,6 +1375,7 @@ export class SuggestedTradesService {
     request: SuggestedTradePreTradeRequest,
     sourceType: string
   ): Promise<AdaptivePreTradeRouteDecision> {
+    const adaptiveRoutingMode = this.resolveAdaptiveRoutingMode(request.executionMode, sourceType);
     const candidates = await this.listDefaultRouteCandidates(
       userId,
       request.executionMode,
@@ -973,14 +1387,33 @@ export class SuggestedTradesService {
 
     const evaluated: EvaluatedRouteCandidate[] = [];
     for (const route of candidates) {
-      const candidateRequest: SuggestedTradePreTradeRequest = {
-        ...request,
-        routing: {
-          routeMode: 'fixed',
-          brokerKey: route.brokerKey,
-          accountId: route.accountId,
+      let equivalentAssetRoute: ResolvedLiveAutoAssetRoute | null = null;
+      try {
+        equivalentAssetRoute = await this.resolveEquivalentLiveAutoAssetRouteIfNeeded(
+          route.brokerKey,
+          trade.symbol,
+          request.executionMode,
+          sourceType
+        );
+      } catch {
+        equivalentAssetRoute = null;
+      }
+      const candidateRequest = await this.applyBrokerPolicyTradeSize(
+        userId,
+        {
+          ...request,
+          routing: {
+            routeMode: 'fixed',
+            brokerKey: route.brokerKey,
+            accountId: route.accountId,
+          },
+          order: {
+            ...request.order,
+            symbol: equivalentAssetRoute?.brokerSymbol ?? request.order.symbol,
+          },
         },
-      };
+        sourceType
+      );
       const preview = (
         await this.riskPreTradeService.previewPreTradeCheck(userId, {
           ...candidateRequest,
@@ -997,6 +1430,7 @@ export class SuggestedTradesService {
         route,
         request: candidateRequest,
         preview,
+        assetRoute: equivalentAssetRoute,
         support,
       });
     }
@@ -1006,8 +1440,21 @@ export class SuggestedTradesService {
       .sort((left, right) => this.compareRouteCandidates(left, right));
 
     if (viableCandidates.length > 0) {
+      const selectedCandidate = viableCandidates[0];
+      const decisionMode =
+        adaptiveRoutingMode === 'shadow' ? 'adaptive_candidate_shadow' : 'adaptive_candidate_live';
       return {
-        request: viableCandidates[0].request,
+        request: adaptiveRoutingMode === 'shadow' ? request : selectedCandidate.request,
+        routeDecision: this.buildAdaptiveRouteDecisionRecord(
+          trade,
+          evaluated,
+          selectedCandidate,
+          decisionMode,
+          'selected',
+          adaptiveRoutingMode === 'shadow'
+            ? 'shadow_best_viable_candidate'
+            : 'best_viable_candidate'
+        ),
       };
     }
 
@@ -1018,11 +1465,26 @@ export class SuggestedTradesService {
       return { request };
     }
 
+    const decisionMode =
+      adaptiveRoutingMode === 'shadow' ? 'adaptive_candidate_shadow' : 'adaptive_candidate_live';
     return {
-      request: bestRejectedCandidate.request,
-      previewBlock: this.createBlockedCandidatePreview(
-        bestRejectedCandidate.preview,
-        this.buildNoSafeRouteMessage(evaluated)
+      request: adaptiveRoutingMode === 'shadow' ? request : bestRejectedCandidate.request,
+      previewBlock:
+        adaptiveRoutingMode === 'shadow'
+          ? null
+          : this.createBlockedCandidatePreview(
+              bestRejectedCandidate.preview,
+              this.buildNoSafeRouteMessage(evaluated)
+            ),
+      routeDecision: this.buildAdaptiveRouteDecisionRecord(
+        trade,
+        evaluated,
+        bestRejectedCandidate,
+        decisionMode,
+        'blocked',
+        adaptiveRoutingMode === 'shadow'
+          ? 'shadow_best_rejected_candidate'
+          : 'best_rejected_candidate'
       ),
     };
   }
@@ -1133,7 +1595,22 @@ export class SuggestedTradesService {
         metrics.stopLossPrice,
         metrics.takeProfitPrice
       );
-      await this.resolveLiveAutoAssetId(metrics.brokerKey, trade.symbol);
+      const deltaProtectionConflict = await this.detectLiveAutoDeltaNativeProtectionConflict(
+        trade.userId,
+        metrics.brokerKey,
+        metrics.accountId,
+        this.readStringValue(preview.request.order.symbol) ?? trade.symbol
+      );
+      if (deltaProtectionConflict) {
+        return {
+          supported: false,
+          message: deltaProtectionConflict,
+        };
+      }
+      await this.resolveLiveAutoAssetRoute(
+        metrics.brokerKey,
+        this.readStringValue(preview.request.order.symbol) ?? trade.symbol
+      );
       return {
         supported: true,
         message: null,
@@ -1243,6 +1720,231 @@ export class SuggestedTradesService {
     }
   }
 
+  private async detectLiveAutoDeltaNativeProtectionConflict(
+    userId: string,
+    brokerKey: string | null,
+    accountId: string | null,
+    symbol: string | null | undefined
+  ): Promise<string | null> {
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    const normalizedAccountId = String(accountId || '').trim();
+    const normalizedSymbol = this.normalizeDeltaRouteSymbol(symbol);
+    if (normalizedBrokerKey !== 'delta_exchange' || !normalizedAccountId || !normalizedSymbol) {
+      return null;
+    }
+
+    const rows = (await coreDataSource.query(
+      `SELECT symbol, quantity
+         FROM position_read_models
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = 'delta_exchange'
+          AND status_rank > 0
+          AND status_rank <= 2
+        ORDER BY last_seen_at DESC
+        LIMIT 50`,
+      [userId, normalizedAccountId]
+    )) as Array<{
+      symbol?: string | null;
+      quantity?: string | number | null;
+    }>;
+
+    const hasConflict = rows.some((row) => {
+      const quantity = Number(row.quantity);
+      if (!(Number.isFinite(quantity) && Math.abs(quantity) > 0)) {
+        return false;
+      }
+      return this.isDeltaRouteSymbolCompatible(row.symbol, normalizedSymbol);
+    });
+
+    return hasConflict
+      ? 'Delta Exchange live-auto native SL/TP is not safe when the account already has an open net position on this symbol. Close or reconcile the existing Delta exposure before placing another protected live-auto order.'
+      : null;
+  }
+
+  private async detectLiveAutoDuplicateAssetConflict(
+    userId: string,
+    trade: SuggestedTrade,
+    executionPolicy: ResolvedTradeSuggestionExecutionPolicy
+  ): Promise<string | null> {
+    const assetKey = this.resolveLiveAutoDuplicateAssetKey(trade.symbol);
+    if (!assetKey) {
+      return null;
+    }
+
+    const recentExecutionConflict = await this.detectRecentLiveAutoDuplicateExecutionConflict(
+      userId,
+      trade,
+      executionPolicy,
+      assetKey
+    );
+    if (recentExecutionConflict) {
+      return recentExecutionConflict;
+    }
+
+    if (
+      typeof this.brokerAccountRepository?.getConnectedBrokerAccounts !== 'function' ||
+      typeof this.positionReadModelRepository?.listLivePositionsForAccounts !== 'function' ||
+      typeof this.ordersSnapshotSourceRepository?.listOpenOrdersForAccounts !== 'function'
+    ) {
+      return null;
+    }
+
+    const connectedAccounts = await this.brokerAccountRepository.getConnectedBrokerAccounts(userId);
+    const accountIds = Array.from(
+      new Set(
+        (Array.isArray(connectedAccounts) ? connectedAccounts : [])
+          .map((account) => this.readStringValue(account?.id))
+          .filter((value): value is string => Boolean(value))
+      )
+    );
+    if (!accountIds.length) {
+      return null;
+    }
+
+    const positionsByAccount = await this.positionReadModelRepository.listLivePositionsForAccounts(
+      userId,
+      accountIds
+    );
+    for (const positions of positionsByAccount.values()) {
+      for (const position of positions) {
+        const positionSymbol = this.readStringValue((position as { symbol?: unknown })?.symbol);
+        const quantity = this.readNumberValue((position as { quantity?: unknown })?.quantity);
+        if (!(quantity && Math.abs(quantity) > 0)) {
+          continue;
+        }
+        if (this.isLiveAutoDuplicateAssetMatch(positionSymbol, assetKey)) {
+          return `Active exposure already exists for asset ${assetKey}; skipping duplicate live-auto suggestion.`;
+        }
+      }
+    }
+
+    const openOrdersByAccount = await this.ordersSnapshotSourceRepository.listOpenOrdersForAccounts(
+      userId,
+      accountIds
+    );
+    for (const orders of openOrdersByAccount.values()) {
+      for (const order of orders) {
+        const orderSymbol = this.extractLiveAutoOpenOrderSymbol(order?.payloadJson);
+        if (this.isLiveAutoDuplicateAssetMatch(orderSymbol, assetKey)) {
+          return `Active exposure already exists for asset ${assetKey}; skipping duplicate live-auto suggestion.`;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private async detectRecentLiveAutoDuplicateExecutionConflict(
+    userId: string,
+    trade: SuggestedTrade,
+    executionPolicy: ResolvedTradeSuggestionExecutionPolicy,
+    assetKey: string
+  ): Promise<string | null> {
+    if (!(executionPolicy.dedupeWindowSeconds > 0) || !coreDataSource.isInitialized) {
+      return null;
+    }
+
+    const cutoff = new Date(Date.now() - executionPolicy.dedupeWindowSeconds * 1000);
+    const rows = (await coreDataSource.query(
+      `SELECT st.symbol AS symbol
+         FROM suggested_trade_executions ste
+         JOIN suggested_trades st
+           ON st.id = ste.suggested_trade_id
+        WHERE ste.user_id = ?
+          AND st.id <> ?
+          AND st.signal_time >= ?
+          AND LOWER(COALESCE(ste.execution_mode, '')) = 'live'
+          AND (
+            LOWER(COALESCE(ste.execution_state, '')) IN ('submitting', 'linked', 'working', 'filled')
+            OR LOWER(COALESCE(ste.position_status, '')) IN ('open', 'partial')
+            OR LOWER(COALESCE(ste.order_status, '')) IN (
+              'open',
+              'new',
+              'created',
+              'pending',
+              'trigger_pending',
+              'partially_filled',
+              'partial'
+            )
+          )
+        ORDER BY COALESCE(ste.last_seen_at, ste.linked_at, ste.accepted_at, ste.created_at) DESC
+        LIMIT 50`,
+      [userId, trade.id, cutoff]
+    )) as Array<{
+      symbol?: string | null;
+    }>;
+
+    const hasConflict = rows.some((row) =>
+      this.isLiveAutoDuplicateAssetMatch(row.symbol, assetKey)
+    );
+
+    return hasConflict
+      ? `Active exposure already exists for asset ${assetKey}; skipping duplicate live-auto suggestion.`
+      : null;
+  }
+
+  private normalizeDeltaRouteSymbol(value: unknown): string {
+    return String(value || '')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+  }
+
+  private normalizeDeltaRouteUsdQuoteSymbol(symbol: string): string {
+    const normalized = this.normalizeDeltaRouteSymbol(symbol);
+    for (const quote of ['USDT', 'USDC', 'BUSD', 'FDUSD']) {
+      if (normalized.endsWith(quote) && normalized.length > quote.length) {
+        return `${normalized.slice(0, -quote.length)}USD`;
+      }
+    }
+
+    return normalized;
+  }
+
+  private resolveDeltaRouteBaseSymbol(value: unknown): string {
+    const normalized = this.normalizeDeltaRouteSymbol(value);
+    for (const quote of ['USDT', 'USDC', 'BUSD', 'FDUSD', 'USD']) {
+      if (normalized.endsWith(quote) && normalized.length > quote.length) {
+        return normalized.slice(0, -quote.length);
+      }
+    }
+
+    return normalized;
+  }
+
+  private resolveLiveAutoDuplicateAssetKey(value: unknown): string {
+    return this.resolveDeltaRouteBaseSymbol(value);
+  }
+
+  private isLiveAutoDuplicateAssetMatch(symbol: unknown, duplicateAssetKey: string): boolean {
+    return this.resolveLiveAutoDuplicateAssetKey(symbol) === duplicateAssetKey;
+  }
+
+  private extractLiveAutoOpenOrderSymbol(payload: unknown): string | null {
+    const record = this.readRecordValue(payload);
+    return (
+      this.readStringValue(record?.symbol) ??
+      this.readStringValue(record?.product_symbol) ??
+      this.readStringValue(record?.trading_symbol) ??
+      null
+    );
+  }
+
+  private isDeltaRouteSymbolCompatible(positionSymbol: unknown, requestedSymbol: unknown): boolean {
+    const normalizedPositionSymbol = this.normalizeDeltaRouteSymbol(positionSymbol);
+    const normalizedRequestedSymbol = this.normalizeDeltaRouteSymbol(requestedSymbol);
+    return (
+      normalizedPositionSymbol === normalizedRequestedSymbol ||
+      normalizedPositionSymbol ===
+        this.normalizeDeltaRouteUsdQuoteSymbol(normalizedRequestedSymbol) ||
+      this.resolveDeltaRouteBaseSymbol(normalizedPositionSymbol) ===
+        this.resolveDeltaRouteBaseSymbol(normalizedRequestedSymbol)
+    );
+  }
+
   private createBlockedCandidatePreview(
     preview: RiskPreTradeCheckResult,
     message: string
@@ -1292,6 +1994,74 @@ export class SuggestedTradesService {
       blockingRules: [...preview.blockingRules, blockingRule],
       evaluatedRules: [...preview.evaluatedRules, blockingRule],
     };
+  }
+
+  private buildAdaptiveRouteDecisionRecord(
+    trade: SuggestedTrade,
+    candidates: EvaluatedRouteCandidate[],
+    selectedCandidate: EvaluatedRouteCandidate,
+    mode: SuggestedTradeRouteDecision['mode'],
+    decision: 'selected' | 'blocked',
+    selectionReason: string
+  ): SuggestedTradeRouteDecision {
+    const selectedBrokerSymbol =
+      this.readStringValue(selectedCandidate.request.order.symbol) ?? trade.symbol;
+    const selectedLabel = selectedCandidate.route.accountName
+      ? `${selectedCandidate.route.brokerKey} (${selectedCandidate.route.accountName})`
+      : selectedCandidate.route.brokerKey;
+    const summary =
+      decision === 'selected'
+        ? mode === 'adaptive_candidate_shadow'
+          ? `Shadow route would select ${selectedLabel} using broker symbol ${selectedBrokerSymbol}. Live routing remained unchanged.`
+          : `Selected ${selectedLabel} using broker symbol ${selectedBrokerSymbol}.`
+        : mode === 'adaptive_candidate_shadow'
+          ? `Shadow route found no safe adaptive candidate. ${this.buildNoSafeRouteMessage(candidates)}`
+          : this.buildNoSafeRouteMessage(candidates);
+
+    return {
+      mode,
+      decision,
+      requestedSymbol: trade.symbol,
+      selectedBrokerKey: selectedCandidate.route.brokerKey,
+      selectedAccountId: selectedCandidate.route.accountId,
+      selectedAccountName: selectedCandidate.route.accountName,
+      selectedBrokerSymbol,
+      selectionReason,
+      summary,
+      decidedAt: new Date().toISOString(),
+      candidates: candidates.map((candidate) => ({
+        brokerKey: candidate.route.brokerKey,
+        accountId: candidate.route.accountId,
+        accountName: candidate.route.accountName,
+        requestedSymbol: trade.symbol,
+        brokerSymbol: this.readStringValue(candidate.request.order.symbol) ?? trade.symbol,
+        candidateSymbols:
+          candidate.assetRoute?.candidateSymbols ??
+          this.buildEquivalentLiveAutoSymbols(trade.symbol),
+        resolvedVia: candidate.assetRoute?.resolvedVia ?? null,
+        supported: candidate.support.supported,
+        supportMessage: candidate.support.message ?? null,
+        allowed: candidate.preview.decision.allowed,
+        blocked: candidate.preview.decision.blocked,
+        summary: candidate.support.supported
+          ? candidate.preview.decision.summary
+          : candidate.support.message || candidate.preview.decision.summary,
+        warningRuleCount: candidate.preview.decision.warningRuleCount,
+        blockingRuleCount: candidate.preview.decision.blockingRuleCount,
+        freshnessState: candidate.preview.snapshot.freshnessState ?? null,
+      })),
+    };
+  }
+
+  private resolveAdaptiveRoutingMode(
+    executionMode: 'paper' | 'live',
+    sourceType: string
+  ): LiveAutoAdaptiveRoutingMode {
+    if (executionMode === 'live' && sourceType === 'suggested_trade_automation_live_rollout') {
+      return this.resolveLiveAutoRuntimeConfig().adaptiveRoutingMode;
+    }
+
+    return 'live';
   }
 
   private buildNoSafeRouteMessage(candidates: EvaluatedRouteCandidate[]): string {
@@ -1840,6 +2610,57 @@ export class SuggestedTradesService {
       };
     }
 
+    const signalFreshness = this.evaluateSuggestedTradeFreshness(trade, executionPolicy);
+    if (!signalFreshness.allowed) {
+      const message = this.buildLiveExecutionFreshnessBlockedMessage(signalFreshness);
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Suggested Trade',
+        title: `Live auto stale signal skipped: ${trade.symbol}`,
+        status: 'Warning',
+        route: 'Suggested Trades',
+        stream: 'Execution',
+        related: `${trade.symbol} · ${trade.timeframe}`,
+        referenceId: trade.id,
+        symbol: trade.symbol,
+        description: message,
+      });
+
+      return {
+        outcome: 'skipped',
+        message,
+        suggestedTradeId: trade.id,
+        brokerKey: rolloutGuard.brokerKey,
+        accountId: rolloutGuard.accountId,
+      };
+    }
+
+    const duplicateAssetConflict = await this.detectLiveAutoDuplicateAssetConflict(
+      userId,
+      trade,
+      executionPolicy
+    );
+    if (duplicateAssetConflict) {
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Suggested Trade',
+        title: `Live auto duplicate skipped: ${trade.symbol}`,
+        status: 'Warning',
+        route: 'Suggested Trades',
+        stream: 'Execution',
+        related: `${trade.symbol} · ${trade.timeframe}`,
+        referenceId: trade.id,
+        symbol: trade.symbol,
+        description: duplicateAssetConflict,
+      });
+
+      return {
+        outcome: 'skipped',
+        message: duplicateAssetConflict,
+        suggestedTradeId: trade.id,
+        brokerKey: rolloutGuard.brokerKey,
+        accountId: rolloutGuard.accountId,
+      };
+    }
+
     const placedInRun = Math.max(0, Math.floor(options.placedInRun ?? 0));
     if (placedInRun >= executionPolicy.maxOrdersPerRun) {
       return {
@@ -1916,6 +2737,46 @@ export class SuggestedTradesService {
           accountId:
             this.readStringValue(gatedExecution.result.request.routing.accountId) ??
             rolloutGuard.accountId,
+          preTradeCheckId: persistedPreTradeCheckId,
+        };
+      }
+
+      const liveAutoRuntimeConfig = this.resolveLiveAutoRuntimeConfig();
+      const routeDecision = this.readRecordValue(this.readRecordValue(trade.meta)?.routeDecision);
+      if (liveAutoRuntimeConfig.adaptiveRoutingMode === 'shadow') {
+        const shadowBrokerKey =
+          this.readStringValue(routeDecision?.selectedBrokerKey)?.toLowerCase() ??
+          this.readStringValue(gatedExecution.result.request.routing.brokerKey)?.toLowerCase() ??
+          rolloutGuard.brokerKey;
+        const shadowAccountId =
+          this.readStringValue(routeDecision?.selectedAccountId) ??
+          this.readStringValue(gatedExecution.result.request.routing.accountId) ??
+          rolloutGuard.accountId;
+        const readyMessage = `${
+          this.readStringValue(routeDecision?.summary) ??
+          'Adaptive live-auto shadow routing recorded a candidate route.'
+        } Broker placement remains disabled while adaptive routing runs in shadow mode.`;
+        await this.persistExecutionState(trade, {
+          ...gatedExecution.execution,
+          note: readyMessage,
+        });
+        await this.operationalEventService.logActivity(userId, {
+          type: 'Suggested Trade',
+          title: `Live auto shadow route ready: ${trade.symbol}`,
+          status: 'Success',
+          route: 'Suggested Trades',
+          stream: 'Execution',
+          related: `${trade.symbol} · ${trade.timeframe}`,
+          referenceId: trade.id,
+          symbol: trade.symbol,
+          description: readyMessage,
+        });
+        return {
+          outcome: 'ready',
+          message: readyMessage,
+          suggestedTradeId: trade.id,
+          brokerKey: shadowBrokerKey,
+          accountId: shadowAccountId,
           preTradeCheckId: persistedPreTradeCheckId,
         };
       }
@@ -2028,11 +2889,60 @@ export class SuggestedTradesService {
         };
       }
 
-      if (!this.resolveLiveAutoRuntimeConfig().executionEnabled) {
-        const readyMessage =
-          'Live auto rollout guard passed. Broker placement remains disabled until live auto execution is explicitly enabled.';
+      const killSwitchBlock =
+        (await this.riskKillSwitchService?.findActiveLiveTradingBlock(userId, {
+          brokerKey,
+          accountId,
+        })) ?? null;
+      if (killSwitchBlock) {
+        const message = `Risk kill switch is active for ${killSwitchBlock.scope}. Live auto placement is blocked until it is cleared.`;
         await this.persistExecutionState(trade, {
           ...gatedExecution.execution,
+          executionState: 'rejected',
+          preTradeState: 'blocked',
+          preTradeBlockedReason: message,
+          note: message,
+        });
+        await this.operationalEventService.logActivity(userId, {
+          type: 'Suggested Trade',
+          title: `Live auto kill switch blocked: ${trade.symbol}`,
+          status: 'Warning',
+          route: 'Suggested Trades',
+          stream: 'Execution',
+          related: `${brokerKey} · ${accountId}`,
+          referenceId: trade.id,
+          symbol: trade.symbol,
+          description: message,
+        });
+        return {
+          outcome: 'blocked',
+          message,
+          suggestedTradeId: trade.id,
+          brokerKey,
+          accountId,
+          preTradeCheckId: persistedPreTradeCheckId,
+        };
+      }
+
+      const resolvedAssetRoute = await this.resolveLiveAutoAssetRoute(
+        brokerKey,
+        this.readStringValue(gatedExecution.result.request.order.symbol) ?? trade.symbol
+      );
+      const normalizedSizing = await this.normalizeLiveAutoOrderSizing(
+        brokerKey,
+        resolvedAssetRoute.brokerSymbol,
+        quantity,
+        entryPrice,
+        orderType
+      );
+      const normalizedQuantity = normalizedSizing.quantity;
+      const normalizedSizingNote = normalizedSizing.auditNote;
+
+      if (!this.resolveLiveAutoRuntimeConfig().executionEnabled) {
+        const readyMessage = `Live auto rollout guard passed. Broker placement remains disabled until live auto execution is explicitly enabled.${normalizedSizingNote ? ` ${normalizedSizingNote}` : ''}`;
+        await this.persistExecutionState(trade, {
+          ...gatedExecution.execution,
+          quantity: normalizedQuantity,
           note: readyMessage,
         });
         await this.operationalEventService.logActivity(userId, {
@@ -2055,8 +2965,7 @@ export class SuggestedTradesService {
           preTradeCheckId: persistedPreTradeCheckId,
         };
       }
-
-      const assetId = await this.resolveLiveAutoAssetId(brokerKey, trade.symbol);
+      const assetId = resolvedAssetRoute.assetId;
       const idempotencyKey = this.buildAutoLiveIdempotencyKey(trade.id, persistedPreTradeCheckId);
       const acceptedAt = new Date().toISOString();
       const reviewMeta = trade.meta && typeof trade.meta === 'object' ? { ...trade.meta } : {};
@@ -2083,11 +2992,18 @@ export class SuggestedTradesService {
         orderType,
         triggerType: 'immediate',
         leverage,
-        quantity,
+        quantity: normalizedQuantity,
         entryPrice: this.formatNumericString(entryPrice) ?? null,
         stopLossPrice: this.formatNumericString(stopLossPrice) ?? null,
         takeProfitPrice: this.formatNumericString(takeProfitPrice) ?? null,
-        note: 'Live order queued automatically from automation suggestion',
+        note: [
+          resolvedAssetRoute.brokerSymbol !== trade.symbol
+            ? `Live order queued automatically from automation suggestion using equivalent broker symbol ${resolvedAssetRoute.brokerSymbol} for requested signal ${trade.symbol}`
+            : 'Live order queued automatically from automation suggestion',
+          normalizedSizingNote,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join(' '),
       };
 
       await this.persistExecutionState(updatedTrade, acceptedExecution);
@@ -2099,11 +3015,11 @@ export class SuggestedTradesService {
         brokerKey,
         accountId,
         idempotency_key: idempotencyKey,
-        symbol: trade.symbol,
+        symbol: resolvedAssetRoute.brokerSymbol,
         side,
         execution_mode: 'live',
         leverage,
-        quantity,
+        quantity: normalizedQuantity,
         order_price: entryPrice,
         order_type: orderType,
         trigger_type: 'immediate',
@@ -2139,8 +3055,8 @@ export class SuggestedTradesService {
       const protectionStatus = this.readStringValue(createdOrder.protection_status);
       const stopLossOrderId = this.readStringValue(createdOrder.stop_loss_order_id);
       const takeProfitOrderId = this.readStringValue(createdOrder.take_profit_order_id);
-      const protectionAttached = protectionStatus === 'attached';
-      const protectionNote = protectionAttached
+      let protectionAttached = protectionStatus === 'attached';
+      let protectionNote = protectionAttached
         ? ` Native SL/TP protection attached${
             stopLossOrderId || takeProfitOrderId
               ? ` (SL ${stopLossOrderId ?? 'unknown'}, TP ${takeProfitOrderId ?? 'unknown'})`
@@ -2150,6 +3066,27 @@ export class SuggestedTradesService {
 
       if (!createdOrderId) {
         throw new BadRequestAppError('Live auto execution did not return a broker order id');
+      }
+
+      if (!protectionAttached && brokerKey === 'mudrex') {
+        const attachedProtection = await this.attachMudrexLiveAutoProtectionIfNeeded({
+          userId,
+          brokerKey,
+          accountId,
+          brokerSymbol: resolvedAssetRoute.brokerSymbol,
+          side,
+          orderId: createdOrderId,
+          requestedEntryPrice: entryPrice,
+          requestedStopLossPrice: stopLossPrice,
+          requestedTakeProfitPrice: takeProfitPrice,
+        });
+        if (attachedProtection.attached) {
+          protectionAttached = true;
+        }
+        if (attachedProtection.note) {
+          protectionNote =
+            `${protectionNote}${protectionNote ? ' ' : ' '}${attachedProtection.note}`.trimEnd();
+        }
       }
 
       const linkedExecution: SuggestedTradeExecutionLink = {
@@ -2174,6 +3111,14 @@ export class SuggestedTradesService {
         description: protectionAttached
           ? `Live order ${createdOrderId} created automatically after pre-trade clearance with native SL/TP protection`
           : `Live order ${createdOrderId} created automatically after pre-trade clearance`,
+      });
+      await this.operationalEventService.emitNotificationAlert(userId, {
+        channel: 'Trading',
+        source: `trade-suggestion.live-auto.placed:${updatedTrade.id}`,
+        symbol: updatedTrade.symbol,
+        route: 'Suggested Trades',
+        severity: 'Medium',
+        message: `Live order ${createdOrderId} created for ${updatedTrade.symbol} on ${brokerKey}${accountId ? ` (${accountId})` : ''}.`,
       });
 
       return {
@@ -2310,6 +3255,7 @@ export class SuggestedTradesService {
     rolloutEnabled: boolean;
     enabled: boolean;
     executionEnabled: boolean;
+    adaptiveRoutingMode: LiveAutoAdaptiveRoutingMode;
     requireFixedRouting: boolean;
     userAllowlist: string[];
     brokerAllowlist: string[];
@@ -2323,6 +3269,10 @@ export class SuggestedTradesService {
     const executionEnabled =
       this.readBooleanEnvOverride('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED') ??
       env.suggestedTrades.liveAuto.executionEnabled;
+    const adaptiveRoutingMode = this.resolveLiveAutoAdaptiveRoutingModeValue(
+      this.readStringEnvOverride('SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE') ??
+        env.suggestedTrades.liveAuto.adaptiveRoutingMode
+    );
     const requireFixedRouting =
       this.readBooleanEnvOverride('SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING') ??
       env.suggestedTrades.liveAuto.requireFixedRouting;
@@ -2337,6 +3287,7 @@ export class SuggestedTradesService {
       rolloutEnabled,
       enabled,
       executionEnabled,
+      adaptiveRoutingMode,
       requireFixedRouting,
       userAllowlist: userAllowlist.map((item) => String(item).trim()).filter(Boolean),
       brokerAllowlist: brokerAllowlist
@@ -2345,7 +3296,45 @@ export class SuggestedTradesService {
     };
   }
 
-  private async resolveLiveAutoAssetId(brokerKey: string, symbol: string): Promise<string> {
+  private async resolveEquivalentLiveAutoAssetRouteIfNeeded(
+    brokerKey: string,
+    symbol: string,
+    executionMode: 'paper' | 'live',
+    sourceType: string
+  ): Promise<ResolvedLiveAutoAssetRoute | null> {
+    if (!(executionMode === 'live' && sourceType === 'suggested_trade_automation_live_rollout')) {
+      return null;
+    }
+
+    return this.resolveLiveAutoAssetRoute(brokerKey, symbol);
+  }
+
+  private buildEquivalentLiveAutoSymbols(symbol: string): string[] {
+    const normalizedSymbol = String(symbol || '')
+      .trim()
+      .toUpperCase();
+    if (!normalizedSymbol) {
+      return [];
+    }
+
+    const candidates = new Set<string>([normalizedSymbol]);
+    if (normalizedSymbol.endsWith('USDC')) {
+      candidates.add(`${normalizedSymbol.slice(0, -4)}USDT`);
+    } else if (normalizedSymbol.endsWith('USDT')) {
+      candidates.add(`${normalizedSymbol.slice(0, -4)}USDC`);
+    } else if (normalizedSymbol.endsWith('USD')) {
+      const base = normalizedSymbol.slice(0, -3);
+      candidates.add(`${base}USDT`);
+      candidates.add(`${base}USDC`);
+    }
+
+    return Array.from(candidates);
+  }
+
+  private async resolveLiveAutoAssetRoute(
+    brokerKey: string,
+    symbol: string
+  ): Promise<ResolvedLiveAutoAssetRoute> {
     const normalizedBrokerKey = String(brokerKey || '')
       .trim()
       .toLowerCase();
@@ -2363,38 +3352,73 @@ export class SuggestedTradesService {
       throw new BadRequestAppError('Live auto execution requires a trade symbol');
     }
 
-    const catalogAsset = await this.exchangeAssetRepository.getSystemAssetBySourceAndSymbol(
+    const candidateSymbols = this.buildEquivalentLiveAutoSymbols(normalizedSymbol);
+    const catalogAssets = await this.exchangeAssetRepository.listSystemAssetsBySourceAndSymbols(
       normalizedBrokerKey,
-      normalizedSymbol
+      candidateSymbols
     );
-    const externalId = this.readStringValue(catalogAsset?.externalId);
-    if (externalId) {
-      return externalId;
+    const catalogAssetBySymbol = new Map(
+      catalogAssets.map((item) => [
+        String(item.symbol || '')
+          .trim()
+          .toUpperCase(),
+        item,
+      ])
+    );
+
+    for (const candidateSymbol of candidateSymbols) {
+      const catalogAsset = catalogAssetBySymbol.get(candidateSymbol);
+      const externalId = this.readStringValue(catalogAsset?.externalId);
+      if (externalId) {
+        return {
+          assetId: externalId,
+          requestedSymbol: normalizedSymbol,
+          brokerSymbol: candidateSymbol,
+          candidateSymbols,
+          resolvedVia:
+            candidateSymbol === normalizedSymbol ? 'catalog_exact' : 'catalog_equivalent',
+        };
+      }
     }
 
     if (normalizedBrokerKey === 'delta_exchange') {
       throw new BadRequestAppError(
-        `Could not resolve a broker asset id for ${normalizedSymbol} on ${normalizedBrokerKey}; run exchange-assets-sync before live auto placement`
+        `Could not resolve a broker asset id for ${normalizedSymbol} on ${normalizedBrokerKey}; tried ${candidateSymbols.join(', ')}. Run exchange-assets-sync before live auto placement.`
       );
     }
 
-    const remoteAsset = (
-      await this.brokerReferenceDataService.getFuturesAssetDetailBySymbol(
-        normalizedBrokerKey,
-        normalizedSymbol
-      )
-    ).data;
-    const remoteId =
-      this.readStringValue((remoteAsset as { id?: unknown })?.id) ??
-      this.readStringValue((remoteAsset as { asset_uuid?: unknown })?.asset_uuid);
+    for (const candidateSymbol of candidateSymbols) {
+      try {
+        const remoteAsset = (
+          await this.brokerReferenceDataService.getFuturesAssetDetailBySymbol(
+            normalizedBrokerKey,
+            candidateSymbol
+          )
+        ).data;
+        const remoteId =
+          this.readStringValue((remoteAsset as { id?: unknown })?.id) ??
+          this.readStringValue((remoteAsset as { asset_uuid?: unknown })?.asset_uuid);
 
-    if (!remoteId) {
-      throw new BadRequestAppError(
-        `Could not resolve a broker asset id for ${normalizedSymbol} on ${normalizedBrokerKey}`
-      );
+        if (remoteId) {
+          return {
+            assetId: remoteId,
+            requestedSymbol: normalizedSymbol,
+            brokerSymbol: candidateSymbol,
+            candidateSymbols,
+            resolvedVia:
+              candidateSymbol === normalizedSymbol ? 'remote_exact' : 'remote_equivalent',
+          };
+        }
+      } catch (error) {
+        if (candidateSymbol === candidateSymbols[candidateSymbols.length - 1]) {
+          throw error;
+        }
+      }
     }
 
-    return remoteId;
+    throw new BadRequestAppError(
+      `Could not resolve a broker asset id for ${normalizedSymbol} on ${normalizedBrokerKey}; tried ${candidateSymbols.join(', ')}`
+    );
   }
 
   private buildAutoLiveIdempotencyKey(
@@ -2404,6 +3428,111 @@ export class SuggestedTradesService {
     const tradeId = String(suggestedTradeId || '').trim();
     const checkId = String(preTradeCheckId || '').trim() || 'pretrade';
     return `live-auto:${tradeId}:${checkId}`.slice(0, 191);
+  }
+
+  private async attachMudrexLiveAutoProtectionIfNeeded(input: {
+    userId: string;
+    brokerKey: string;
+    accountId: string;
+    brokerSymbol: string;
+    side: 'buy' | 'sell' | 'long' | 'short';
+    orderId: string;
+    requestedEntryPrice: number;
+    requestedStopLossPrice: number | null;
+    requestedTakeProfitPrice: number | null;
+  }): Promise<MudrexLiveAutoProtectionAttachmentResult> {
+    if (
+      !(input.requestedEntryPrice > 0) ||
+      !(input.requestedStopLossPrice && input.requestedStopLossPrice > 0) ||
+      !(input.requestedTakeProfitPrice && input.requestedTakeProfitPrice > 0)
+    ) {
+      return {
+        attached: false,
+        note: null,
+      };
+    }
+
+    const positionsAdapter = this.brokerRuntimeRegistry?.getPositionsAdapter?.('mudrex');
+    if (!positionsAdapter?.getPositions || !positionsAdapter?.createRiskOrder) {
+      return {
+        attached: false,
+        note: 'Mudrex order created, but the positions adapter is unavailable for automatic SL/TP attachment.',
+      };
+    }
+
+    try {
+      const position = await this.pollMudrexLiveAutoPosition({
+        adapter: positionsAdapter,
+        userId: input.userId,
+        accountId: input.accountId,
+        brokerSymbol: input.brokerSymbol,
+        side: input.side,
+        orderId: input.orderId,
+      });
+      if (!position) {
+        return {
+          attached: false,
+          note: `Mudrex order ${input.orderId} was created, but no matching open position was found in time for automatic SL/TP attachment.`,
+        };
+      }
+
+      if (this.mudrexPositionHasProtection(position)) {
+        return {
+          attached: true,
+          note: 'Mudrex position already reports active SL/TP protection.',
+        };
+      }
+
+      const positionId =
+        this.readStringValue(position.id) ??
+        this.readStringValue(position.position_id) ??
+        this.readStringValue(position.positionId);
+      const actualEntryPrice = this.readNumberValue(
+        position.entry_price ?? position.entryPrice ?? position.avg_price ?? position.average_price
+      );
+      if (!positionId || !(actualEntryPrice && actualEntryPrice > 0)) {
+        return {
+          attached: false,
+          note: `Mudrex order ${input.orderId} opened a position, but the broker position payload did not include a usable id/entry price for automatic SL/TP attachment.`,
+        };
+      }
+
+      const stopLossPrice = this.deriveScaledProtectionPrice(
+        actualEntryPrice,
+        input.requestedEntryPrice,
+        input.requestedStopLossPrice
+      );
+      const takeProfitPrice = this.deriveScaledProtectionPrice(
+        actualEntryPrice,
+        input.requestedEntryPrice,
+        input.requestedTakeProfitPrice
+      );
+      await positionsAdapter.createRiskOrder(
+        positionId,
+        {
+          stoploss_price: stopLossPrice,
+          takeprofit_price: takeProfitPrice,
+          order_source: 'positions_desk',
+          is_stoploss: true,
+          is_takeprofit: true,
+        },
+        {
+          userId: input.userId,
+          brokerKey: input.brokerKey,
+          accountId: input.accountId,
+        }
+      );
+
+      return {
+        attached: true,
+        note: `Derived Mudrex SL/TP attached from actual fill price ${this.formatNumericString(actualEntryPrice) || actualEntryPrice} (SL ${stopLossPrice}, TP ${takeProfitPrice}).`,
+      };
+    } catch (error) {
+      return {
+        attached: false,
+        note: `Mudrex order ${input.orderId} was created, but automatic SL/TP attachment failed: ${error instanceof Error ? error.message : 'unknown error'}.`,
+      };
+    }
   }
 
   private unwrapOrderPlacementResponse(value: unknown): Record<string, unknown> {
@@ -2417,6 +3546,260 @@ export class SuggestedTradesService {
     }
 
     return record ? { ...record } : {};
+  }
+
+  private async normalizeLiveAutoOrderSizing(
+    brokerKey: string,
+    brokerSymbol: string,
+    quantity: number,
+    entryPrice: number,
+    orderType: string
+  ): Promise<NormalizedLiveAutoOrderSizing> {
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (normalizedBrokerKey !== 'mudrex') {
+      return {
+        quantity,
+        auditNote: null,
+      };
+    }
+
+    const assetDetail = (
+      await this.brokerReferenceDataService.getFuturesAssetDetailBySymbol('mudrex', brokerSymbol)
+    ).data as unknown as Record<string, unknown> | null;
+
+    const step = this.readNumberValue(assetDetail?.quantity_step);
+    const minContract = this.readNumberValue(assetDetail?.min_contract);
+    const maxContract = this.readNumberValue(assetDetail?.max_contract);
+    const maxMarketContract = this.readNumberValue(assetDetail?.max_market_contract);
+    const minNotionalValue = this.readNumberValue(assetDetail?.min_notional_value);
+
+    if (!(step && step > 0)) {
+      return {
+        quantity,
+        auditNote: null,
+      };
+    }
+
+    const precision = this.countNumericDecimals(assetDetail?.quantity_step);
+    const steppedQuantity = Math.floor(quantity / step) * step;
+    const normalizedQuantity = Number(steppedQuantity.toFixed(precision));
+
+    if (!(normalizedQuantity > 0)) {
+      throw new BadRequestAppError(
+        `Mudrex quantity ${this.formatNumericString(quantity) || quantity} rounds below the broker minimum step ${this.formatNumericString(step) || step} for ${brokerSymbol}.`
+      );
+    }
+
+    if (minContract && normalizedQuantity < minContract) {
+      throw new BadRequestAppError(
+        `Mudrex quantity ${this.formatNumericString(normalizedQuantity) || normalizedQuantity} is below the broker minimum contract ${this.formatNumericString(minContract) || minContract} for ${brokerSymbol}.`
+      );
+    }
+
+    const normalizedOrderType = String(orderType || '')
+      .trim()
+      .toLowerCase();
+    const maxAllowed =
+      normalizedOrderType === 'market' && maxMarketContract && maxMarketContract > 0
+        ? maxMarketContract
+        : maxContract;
+    if (maxAllowed && normalizedQuantity > maxAllowed) {
+      throw new BadRequestAppError(
+        `Mudrex quantity ${this.formatNumericString(normalizedQuantity) || normalizedQuantity} exceeds the broker maximum ${this.formatNumericString(maxAllowed) || maxAllowed} for ${brokerSymbol}.`
+      );
+    }
+
+    const normalizedNotional = normalizedQuantity * entryPrice;
+    if (minNotionalValue && normalizedNotional < minNotionalValue) {
+      throw new BadRequestAppError(
+        `Mudrex order notional ${this.formatNumericString(normalizedNotional) || normalizedNotional} is below the broker minimum ${this.formatNumericString(minNotionalValue) || minNotionalValue} for ${brokerSymbol}.`
+      );
+    }
+
+    const changed = Math.abs(normalizedQuantity - quantity) > 1e-12;
+    return {
+      quantity: normalizedQuantity,
+      auditNote: changed
+        ? `Normalized Mudrex quantity from ${this.formatNumericString(quantity) || quantity} to ${this.formatNumericString(normalizedQuantity) || normalizedQuantity} to satisfy broker quantity step ${this.formatNumericString(step) || step}.`
+        : null,
+    };
+  }
+
+  private async pollMudrexLiveAutoPosition(input: {
+    adapter: {
+      getPositions: (
+        query: { limit?: number },
+        context?: { userId?: string; brokerKey?: string; accountId?: string }
+      ) => Promise<unknown>;
+    };
+    userId: string;
+    accountId: string;
+    brokerSymbol: string;
+    side: 'buy' | 'sell' | 'long' | 'short';
+    orderId: string;
+  }): Promise<Record<string, unknown> | null> {
+    const normalizedSymbol = String(input.brokerSymbol || '')
+      .trim()
+      .toUpperCase();
+    const expectedDirection = input.side === 'sell' || input.side === 'short' ? 'short' : 'long';
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const response = await input.adapter.getPositions(
+        { limit: 100 },
+        {
+          userId: input.userId,
+          brokerKey: 'mudrex',
+          accountId: input.accountId,
+        }
+      );
+      const positions = this.extractPositionRecords(response)
+        .filter((position) => {
+          const symbol = String(position.symbol ?? position.asset_symbol ?? '')
+            .trim()
+            .toUpperCase();
+          if (symbol !== normalizedSymbol) {
+            return false;
+          }
+          const status = this.normalizePositionStatus(
+            this.readStringValue(position.status) ?? this.readStringValue(position.position_status)
+          );
+          if (status && ['CLOSED', 'LIQUIDATED'].includes(status)) {
+            return false;
+          }
+          return this.resolvePositionDirection(position) === expectedDirection;
+        })
+        .sort(
+          (left, right) =>
+            this.extractPositionTimestamp(right) - this.extractPositionTimestamp(left)
+        );
+
+      if (positions[0]) {
+        return positions[0];
+      }
+
+      if (attempt < 7) {
+        await this.waitForLiveAutoProtectionPoll(750);
+      }
+    }
+
+    return null;
+  }
+
+  private extractPositionRecords(value: unknown): Record<string, unknown>[] {
+    if (Array.isArray(value)) {
+      return value.filter((item): item is Record<string, unknown> =>
+        Boolean(this.readRecordValue(item))
+      );
+    }
+
+    const record = this.readRecordValue(value);
+    if (!record) {
+      return [];
+    }
+
+    const directList = [record.items, record.positions, record.results, record.data].find(
+      (candidate) => Array.isArray(candidate)
+    );
+    if (Array.isArray(directList)) {
+      return directList.filter((item): item is Record<string, unknown> =>
+        Boolean(this.readRecordValue(item))
+      );
+    }
+
+    const dataRecord = this.readRecordValue(record.data);
+    if (!dataRecord) {
+      return [];
+    }
+
+    const nestedList = [dataRecord.items, dataRecord.positions, dataRecord.results].find(
+      (candidate) => Array.isArray(candidate)
+    );
+    return Array.isArray(nestedList)
+      ? nestedList.filter((item): item is Record<string, unknown> =>
+          Boolean(this.readRecordValue(item))
+        )
+      : [];
+  }
+
+  private extractPositionTimestamp(position: Record<string, unknown>): number {
+    const candidates = [
+      position.updated_at,
+      position.updatedAt,
+      position.created_at,
+      position.createdAt,
+      position.open_time,
+      position.openTime,
+    ];
+    for (const candidate of candidates) {
+      const raw = this.readStringValue(candidate);
+      if (!raw) {
+        continue;
+      }
+      const parsed = Date.parse(raw);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+    return 0;
+  }
+
+  private mudrexPositionHasProtection(position: Record<string, unknown>): boolean {
+    const stopLossPrice = this.readNumberValue(
+      position.stoploss_price ??
+        position.stopLossPrice ??
+        this.readRecordValue(position.stoploss)?.price ??
+        this.readRecordValue(position.stopLoss)?.price
+    );
+    const takeProfitPrice = this.readNumberValue(
+      position.takeprofit_price ??
+        position.takeProfitPrice ??
+        this.readRecordValue(position.takeprofit)?.price ??
+        this.readRecordValue(position.takeProfit)?.price
+    );
+    const stopLossOrderId =
+      this.readStringValue(position.stoploss_order_id) ??
+      this.readStringValue(this.readRecordValue(position.stoploss)?.id);
+    const takeProfitOrderId =
+      this.readStringValue(position.takeprofit_order_id) ??
+      this.readStringValue(this.readRecordValue(position.takeprofit)?.id);
+
+    return Boolean(
+      (stopLossPrice && stopLossPrice > 0) ||
+      (takeProfitPrice && takeProfitPrice > 0) ||
+      stopLossOrderId ||
+      takeProfitOrderId
+    );
+  }
+
+  private deriveScaledProtectionPrice(
+    actualEntryPrice: number,
+    requestedEntryPrice: number,
+    requestedTargetPrice: number
+  ): string {
+    const precision = Math.max(
+      6,
+      this.countNumericDecimals(requestedEntryPrice),
+      this.countNumericDecimals(requestedTargetPrice)
+    );
+    return Number(
+      ((actualEntryPrice * requestedTargetPrice) / requestedEntryPrice).toFixed(precision)
+    ).toFixed(precision);
+  }
+
+  private waitForLiveAutoProtectionPoll(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private countNumericDecimals(value: unknown): number {
+    const raw = String(value ?? '').trim();
+    if (!raw || !raw.includes('.')) {
+      return 0;
+    }
+
+    const fractional = raw.split('.')[1]?.replace(/0+$/, '') ?? '';
+    return fractional.length;
   }
 
   private resolveAutoPaperQuantity(input: {
@@ -2440,13 +3823,61 @@ export class SuggestedTradesService {
     return null;
   }
 
+  private async applyBrokerPolicyTradeSize(
+    userId: string,
+    request: SuggestedTradePreTradeRequest,
+    sourceType: string
+  ): Promise<SuggestedTradePreTradeRequest> {
+    if (!String(sourceType || '').startsWith('suggested_trade_automation_')) {
+      return request;
+    }
+
+    const brokerKey = this.readStringValue(request.routing.brokerKey)?.toLowerCase();
+    const accountId = this.readStringValue(request.routing.accountId);
+    if (!brokerKey || !accountId) {
+      return request;
+    }
+
+    const activePolicy = await this.riskPolicyRepository.getEffectivePolicy(userId, brokerKey);
+    const tradeSizePctOfBalance = this.readNumberValue(activePolicy?.tradeSizePctOfBalance);
+    if (!(tradeSizePctOfBalance && tradeSizePctOfBalance > 0)) {
+      return request;
+    }
+
+    const fundsSnapshot = await this.fundsSnapshotRepository.getLatestSnapshot(
+      userId,
+      brokerKey,
+      accountId
+    );
+    const trackedBalance = this.extractTrackedBalanceFromFundsSnapshot(fundsSnapshot);
+    if (!(trackedBalance && trackedBalance > 0)) {
+      return request;
+    }
+
+    const notional = Number(((trackedBalance * tradeSizePctOfBalance) / 100).toFixed(2));
+    if (!(notional > 0)) {
+      return request;
+    }
+
+    return {
+      ...request,
+      order: {
+        ...request.order,
+        quantityMode: 'notional',
+        quantity: null,
+        notional,
+        riskPercent: null,
+      },
+    };
+  }
+
   private async loadTradeSuggestionExecutionPolicy(
     userId: string,
     automationId: string | null | undefined
   ): Promise<ResolvedTradeSuggestionExecutionPolicy> {
     const normalizedAutomationId = this.readStringValue(automationId);
     const automation = normalizedAutomationId
-      ? await this.automationRepository.getAutomationById(userId, normalizedAutomationId)
+      ? await this.automationRepository.getAutomationCoreById(userId, normalizedAutomationId)
       : null;
     const automationConfig = this.readRecordValue(automation?.config) ?? {};
     const tradeSuggestion = this.readRecordValue(automationConfig.tradeSuggestion) ?? {};
@@ -2457,6 +3888,7 @@ export class SuggestedTradesService {
     const orderTemplate = this.readRecordValue(normalizedPolicy.orderTemplate) ?? {};
     const limits = this.readRecordValue(normalizedPolicy.limits) ?? {};
     const liveConsent = this.readRecordValue(normalizedPolicy.liveConsent) ?? {};
+    const freshness = this.readRecordValue(normalizedPolicy.freshness) ?? {};
     const executionModeRaw = this.readStringValue(normalizedPolicy.executionMode)?.toLowerCase();
     const approvalModeRaw = this.readStringValue(normalizedPolicy.approvalMode)?.toLowerCase();
     const routeModeRaw = this.readStringValue(routing.routeMode)?.toLowerCase();
@@ -2497,15 +3929,76 @@ export class SuggestedTradesService {
       riskPercent: this.readNumberValue(orderTemplate.riskPercent),
       leverage: this.readNumberValue(orderTemplate.leverage),
       reduceOnly: this.readBooleanValue(orderTemplate.reduceOnly) ?? false,
-      maxOrdersPerRun: Math.max(1, Math.floor(this.readNumberValue(limits.maxOrdersPerRun) ?? 1)),
-      maxOrdersPerDay: Math.max(1, Math.floor(this.readNumberValue(limits.maxOrdersPerDay) ?? 3)),
+      maxOrdersPerRun: Math.max(
+        TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.min,
+        Math.floor(
+          this.readNumberValue(limits.maxOrdersPerRun) ??
+            TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.fallback
+        )
+      ),
+      maxOrdersPerDay: Math.max(
+        TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerDay.min,
+        Math.floor(
+          this.readNumberValue(limits.maxOrdersPerDay) ??
+            TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerDay.fallback
+        )
+      ),
       maxConcurrentOpenTrades: Math.max(
-        1,
-        Math.floor(this.readNumberValue(limits.maxConcurrentOpenTrades) ?? 1)
+        TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxConcurrentOpenTrades.min,
+        Math.floor(
+          this.readNumberValue(limits.maxConcurrentOpenTrades) ??
+            TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxConcurrentOpenTrades.fallback
+        )
       ),
       maxNotionalPerTrade: this.readNumberValue(limits.maxNotionalPerTrade),
       maxNotionalPerDay: this.readNumberValue(limits.maxNotionalPerDay),
+      dedupeWindowSeconds: Math.max(
+        TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.dedupeWindowSeconds.min,
+        Math.floor(
+          this.readNumberValue(limits.dedupeWindowSeconds) ??
+            TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.dedupeWindowSeconds.fallback
+        )
+      ),
+      freshness: normalizeTradeSuggestionFreshnessPolicy(freshness),
     };
+  }
+
+  private evaluateSuggestedTradeFreshness(
+    trade: SuggestedTrade,
+    executionPolicy: ResolvedTradeSuggestionExecutionPolicy
+  ): SignalFreshnessEvaluation {
+    return evaluateSignalFreshness({
+      signalTime: trade.signalTime,
+      timeframe: trade.timeframe,
+      policy: executionPolicy.freshness,
+    });
+  }
+
+  private buildLiveExecutionFreshnessBlockedMessage(freshness: SignalFreshnessEvaluation): string {
+    if (!freshness.enabled) {
+      return 'Signal freshness guard is disabled for this automation.';
+    }
+    if (freshness.ageAfterCloseSeconds !== null && freshness.maxAgeAfterCloseSeconds !== null) {
+      return `Skipped live execution: ${freshness.timeframe} signal closed ${this.formatDurationFromSeconds(freshness.ageAfterCloseSeconds)} ago, exceeding the configured ${this.formatDurationFromSeconds(freshness.maxAgeAfterCloseSeconds)} freshness window.`;
+    }
+    return `Skipped live execution: ${freshness.reason}`;
+  }
+
+  private formatDurationFromSeconds(seconds: number): string {
+    const normalized = Math.max(0, Math.floor(seconds));
+    if (normalized < 60) {
+      return `${normalized}s`;
+    }
+    const minutes = normalized / 60;
+    if (minutes < 60) {
+      return `${minutes.toFixed(minutes >= 10 ? 0 : 1)}m`;
+    }
+    const hours = minutes / 60;
+    if (hours < 48) {
+      return `${hours.toFixed(hours >= 10 ? 0 : 1)}h`;
+    }
+    const days = hours / 24;
+    return `${days.toFixed(days >= 10 ? 0 : 1)}d`;
   }
 
   private buildPreTradeCheckRequest(
@@ -2709,6 +4202,7 @@ export class SuggestedTradesService {
       rationale: item.rationale ?? null,
       dedupeKey: item.dedupeKey,
       meta: item.meta ?? null,
+      routeDecision: this.buildRouteDecision(item),
       execution,
       allowedActions: this.buildAllowedActions(item, execution),
       statusReason: this.buildStatusReason(item, execution),
@@ -2723,6 +4217,65 @@ export class SuggestedTradesService {
       timeline: this.buildTimeline(item, execution, syncStatus),
       createdAt: item.createdAt.toISOString(),
       updatedAt: item.updatedAt.toISOString(),
+    };
+  }
+
+  private buildRouteDecision(item: SuggestedTrade): SuggestedTradeItem['routeDecision'] {
+    const meta = this.readRecordValue(item.meta);
+    const routeDecision = this.readRecordValue(meta?.routeDecision);
+    if (!routeDecision) {
+      return null;
+    }
+
+    const rawCandidates = Array.isArray(routeDecision.candidates) ? routeDecision.candidates : [];
+
+    return {
+      mode:
+        this.readStringValue(routeDecision.mode) === 'adaptive_candidate_shadow'
+          ? 'adaptive_candidate_shadow'
+          : 'adaptive_candidate_live',
+      decision: this.readStringValue(routeDecision.decision) === 'blocked' ? 'blocked' : 'selected',
+      requestedSymbol: this.readStringValue(routeDecision.requestedSymbol) ?? item.symbol,
+      selectedBrokerKey: this.readStringValue(routeDecision.selectedBrokerKey),
+      selectedAccountId: this.readStringValue(routeDecision.selectedAccountId),
+      selectedAccountName: this.readStringValue(routeDecision.selectedAccountName),
+      selectedBrokerSymbol: this.readStringValue(routeDecision.selectedBrokerSymbol),
+      selectionReason: this.readStringValue(routeDecision.selectionReason) ?? 'adaptive_candidate',
+      summary: this.readStringValue(routeDecision.summary) ?? 'Adaptive route decision recorded.',
+      decidedAt: this.toIsoString(routeDecision.decidedAt),
+      candidates: rawCandidates
+        .map((candidate) => this.readRecordValue(candidate))
+        .filter(Boolean)
+        .map((candidate) => ({
+          brokerKey: this.readStringValue(candidate?.brokerKey) ?? 'unknown',
+          accountId: this.readStringValue(candidate?.accountId) ?? 'unknown',
+          accountName: this.readStringValue(candidate?.accountName),
+          requestedSymbol: this.readStringValue(candidate?.requestedSymbol) ?? item.symbol,
+          brokerSymbol: this.readStringValue(candidate?.brokerSymbol) ?? item.symbol,
+          candidateSymbols: Array.isArray(candidate?.candidateSymbols)
+            ? candidate.candidateSymbols
+                .map((entry) => this.readStringValue(entry))
+                .filter((entry): entry is string => Boolean(entry))
+            : [],
+          resolvedVia:
+            (this.readStringValue(
+              candidate?.resolvedVia
+            ) as SuggestedTradeRouteDecision['candidates'][number]['resolvedVia']) ?? null,
+          supported: candidate?.supported === true,
+          supportMessage: this.readStringValue(candidate?.supportMessage),
+          allowed: candidate?.allowed === true,
+          blocked: candidate?.blocked === true,
+          summary: this.readStringValue(candidate?.summary) ?? 'No summary recorded.',
+          warningRuleCount: Math.max(
+            0,
+            Math.floor(this.readNumberValue(candidate?.warningRuleCount) ?? 0)
+          ),
+          blockingRuleCount: Math.max(
+            0,
+            Math.floor(this.readNumberValue(candidate?.blockingRuleCount) ?? 0)
+          ),
+          freshnessState: this.readStringValue(candidate?.freshnessState),
+        })),
     };
   }
 
@@ -3634,6 +5187,12 @@ export class SuggestedTradesService {
         20
       );
       nextExecution = this.mergePositionOutcome(trade, nextExecution, positionSnapshots);
+      nextExecution = await this.maybeAutoCancelSiblingProtectionOrders(
+        userId,
+        trade,
+        nextExecution,
+        positionSnapshots
+      );
       const currentExecutionJson = JSON.stringify(execution ?? null);
       const nextExecutionJson = JSON.stringify(nextExecution ?? null);
       if (currentExecutionJson === nextExecutionJson) {
@@ -3645,6 +5204,85 @@ export class SuggestedTradesService {
     }
 
     return refreshedTrades;
+  }
+
+  private async maybeAutoCancelSiblingProtectionOrders(
+    userId: string,
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink,
+    positionSnapshots: Array<{
+      externalId: string;
+      status: string | null;
+      statusRank: number | null;
+      firstSeenAt: Date | string | null;
+      lastSeenAt: Date | string | null;
+      payload: Record<string, unknown> | null;
+    }>
+  ): Promise<SuggestedTradeExecutionLink> {
+    if (execution.executionMode !== 'live') {
+      return execution;
+    }
+
+    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
+    const accountId = this.readStringValue(execution.accountId);
+    const orderId = this.readStringValue(execution.orderId);
+    if (!brokerKey || !accountId || !orderId) {
+      return execution;
+    }
+
+    if (!this.brokerRuntimeRegistry?.supportsOrdersAdapter?.(brokerKey)) {
+      return execution;
+    }
+
+    if (!this.isExecutionPositionClosed(execution, positionSnapshots)) {
+      return execution;
+    }
+
+    const protection = await this.resolveLiveProtectionOrderContext(
+      userId,
+      trade.id,
+      brokerKey,
+      accountId,
+      orderId
+    );
+    if (!protection.activeOrderIds.length) {
+      return execution;
+    }
+
+    const cancelMessage = `Sibling protection cancel requested after position close: ${protection.activeOrderIds.join(', ')}`;
+    if (String(execution.note || '').includes(cancelMessage)) {
+      return execution;
+    }
+
+    const adapter = this.brokerRuntimeRegistry?.getOrdersAdapter?.(brokerKey);
+    if (!adapter?.cancelOrder) {
+      return execution;
+    }
+    const cancelledOrderIds: string[] = [];
+    for (const protectionOrderId of protection.activeOrderIds) {
+      try {
+        await adapter.cancelOrder(protectionOrderId, {
+          userId,
+          brokerKey,
+          accountId,
+        });
+        cancelledOrderIds.push(protectionOrderId);
+      } catch {
+        // Keep reconciliation non-fatal here. The next sync/canary pass can retry.
+      }
+    }
+
+    if (!cancelledOrderIds.length) {
+      return execution;
+    }
+
+    return {
+      ...execution,
+      note: this.appendExecutionNote(
+        execution.note,
+        `Sibling protection cancel requested after position close: ${cancelledOrderIds.join(', ')}`
+      ),
+    };
   }
 
   private mergePaperExecutionOutcome(
@@ -3925,15 +5563,29 @@ export class SuggestedTradesService {
       this.readStringValue(candidate.payload?.realized_pnl) ??
       execution.realizedPnl ??
       null;
+    const observedLeverage = this.resolveObservedPositionLeverage(candidate.payload);
     const positionStatus = this.normalizePositionStatus(
       this.readStringValue(candidate.status) ??
         this.readStringValue(candidate.payload?.status) ??
         null
     );
     const outcome = this.deriveOutcome(positionStatus, realizedPnl);
+    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
+    const requestedLeverage = execution.leverage ?? null;
+    const leverageDriftMessage =
+      brokerKey === 'mudrex' &&
+      observedLeverage !== null &&
+      requestedLeverage !== null &&
+      Math.abs(observedLeverage - requestedLeverage) > 1e-12
+        ? `Broker observed leverage ${this.formatNumericString(observedLeverage) || observedLeverage} differs from requested leverage ${this.formatNumericString(requestedLeverage) || requestedLeverage}. Using broker-observed leverage for tracking.`
+        : null;
 
     return {
       ...execution,
+      leverage:
+        brokerKey === 'mudrex' && observedLeverage !== null
+          ? observedLeverage
+          : (execution.leverage ?? null),
       positionId: candidate.externalId || execution.positionId || null,
       positionStatus,
       positionOpenedAt:
@@ -3959,11 +5611,176 @@ export class SuggestedTradesService {
         null,
       realizedPnl,
       outcome,
+      note: leverageDriftMessage
+        ? this.appendExecutionNote(execution.note, leverageDriftMessage)
+        : (execution.note ?? null),
       executionState:
         positionStatus === 'CLOSED' || positionStatus === 'LIQUIDATED'
           ? 'closed'
           : (execution.executionState ?? null),
     };
+  }
+
+  private resolveObservedPositionLeverage(
+    payload: Record<string, unknown> | null | undefined
+  ): number | null {
+    if (!payload) {
+      return null;
+    }
+    return this.readNumberValue(
+      payload.leverage ?? payload.position_leverage ?? payload.leverageValue ?? null
+    );
+  }
+
+  private isExecutionPositionClosed(
+    execution: SuggestedTradeExecutionLink,
+    snapshots: Array<{
+      externalId: string;
+      status: string | null;
+      statusRank: number | null;
+      firstSeenAt: Date | string | null;
+      lastSeenAt: Date | string | null;
+      payload: Record<string, unknown> | null;
+    }>
+  ): boolean {
+    const normalizedExecutionStatus = this.normalizePositionStatus(execution.positionStatus);
+    if (normalizedExecutionStatus === 'CLOSED' || normalizedExecutionStatus === 'LIQUIDATED') {
+      return true;
+    }
+
+    if (!snapshots.length) {
+      return false;
+    }
+
+    return snapshots.every((snapshot) => {
+      const normalizedStatus = this.normalizePositionStatus(
+        this.readStringValue(snapshot.status) ??
+          this.readStringValue(snapshot.payload?.status) ??
+          null
+      );
+      return normalizedStatus === 'CLOSED' || normalizedStatus === 'LIQUIDATED';
+    });
+  }
+
+  private async resolveLiveProtectionOrderContext(
+    userId: string,
+    suggestedTradeId: string,
+    brokerKey: string,
+    accountId: string,
+    orderId: string
+  ): Promise<LiveProtectionOrderContext> {
+    const rows = (await coreDataSource.query(
+      `SELECT NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.stop_loss_order_id')), 'null'), '') AS stopLossOrderId,
+              NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.data.stop_loss_order_id')), 'null'), '') AS stopLossOrderIdNested,
+              NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.take_profit_order_id')), 'null'), '') AS takeProfitOrderId,
+              NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.data.take_profit_order_id')), 'null'), '') AS takeProfitOrderIdNested
+         FROM order_submission_requests
+        WHERE user_id = ?
+          AND suggested_trade_id = ?
+          AND account_id = ?
+          AND LOWER(COALESCE(broker_key, '')) = ?
+          AND status = 'completed'
+          AND placement_state IN ('placed', 'replayed')
+          AND broker_order_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [userId, suggestedTradeId, accountId, brokerKey.toLowerCase(), orderId]
+    )) as Array<{
+      stopLossOrderId?: string | null;
+      stopLossOrderIdNested?: string | null;
+      takeProfitOrderId?: string | null;
+      takeProfitOrderIdNested?: string | null;
+    }>;
+
+    const row = rows[0] ?? {};
+    const stopLossOrderId =
+      this.readStringValue(row.stopLossOrderId) ??
+      this.readStringValue(row.stopLossOrderIdNested) ??
+      null;
+    const takeProfitOrderId =
+      this.readStringValue(row.takeProfitOrderId) ??
+      this.readStringValue(row.takeProfitOrderIdNested) ??
+      null;
+    const trackedOrderIds = [stopLossOrderId, takeProfitOrderId].filter((value): value is string =>
+      Boolean(value)
+    );
+    if (!trackedOrderIds.length) {
+      return {
+        stopLossOrderId,
+        takeProfitOrderId,
+        stopLossStatus: null,
+        takeProfitStatus: null,
+        activeOrderIds: [],
+      };
+    }
+
+    const snapshots = (await coreDataSource.query(
+      `SELECT external_id AS externalId,
+              order_status AS orderStatus,
+              status_rank AS statusRank
+         FROM scheduler_orders_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND external_id IN (${trackedOrderIds.map(() => '?').join(', ')})`,
+      [userId, accountId, brokerKey.toLowerCase(), ...trackedOrderIds]
+    )) as Array<{
+      externalId?: string | null;
+      orderStatus?: string | null;
+      statusRank?: number | string | null;
+    }>;
+
+    const snapshotById = new Map(
+      snapshots
+        .map(
+          (snapshot) =>
+            [
+              this.readStringValue(snapshot.externalId),
+              {
+                status: this.normalizeOrderStatus(this.readStringValue(snapshot.orderStatus)),
+                statusRank:
+                  snapshot.statusRank === undefined || snapshot.statusRank === null
+                    ? null
+                    : Number(snapshot.statusRank),
+              },
+            ] as const
+        )
+        .filter((entry): entry is [string, { status: string | null; statusRank: number | null }] =>
+          Boolean(entry[0])
+        )
+    );
+
+    const stopLossStatus = stopLossOrderId
+      ? (snapshotById.get(stopLossOrderId)?.status ?? null)
+      : null;
+    const takeProfitStatus = takeProfitOrderId
+      ? (snapshotById.get(takeProfitOrderId)?.status ?? null)
+      : null;
+    const activeOrderIds = trackedOrderIds.filter((trackedOrderId) => {
+      const snapshot = snapshotById.get(trackedOrderId);
+      return this.isActiveLiveProtectionOrder(
+        snapshot?.status ?? null,
+        snapshot?.statusRank ?? null
+      );
+    });
+
+    return {
+      stopLossOrderId,
+      takeProfitOrderId,
+      stopLossStatus,
+      takeProfitStatus,
+      activeOrderIds,
+    };
+  }
+
+  private isActiveLiveProtectionOrder(
+    orderStatus: string | null,
+    statusRank: number | null
+  ): boolean {
+    if (orderStatus && ['OPEN', 'PENDING', 'PARTIALLY_FILLED'].includes(orderStatus)) {
+      return true;
+    }
+    return Boolean(statusRank && statusRank > 0 && statusRank <= 2);
   }
 
   private selectBestPositionCandidate(
@@ -4376,6 +6193,18 @@ export class SuggestedTradesService {
     return normalized;
   }
 
+  private appendExecutionNote(existingNote: string | null | undefined, message: string): string {
+    const existing = String(existingNote || '').trim();
+    const next = String(message || '').trim();
+    if (!existing) {
+      return next;
+    }
+    if (!next || existing.includes(next)) {
+      return existing;
+    }
+    return `${existing} ${next}`.trim();
+  }
+
   private resolvePositionDirection(payload: Record<string, unknown>): 'long' | 'short' {
     const side = String(payload.side ?? '')
       .trim()
@@ -4387,7 +6216,13 @@ export class SuggestedTradesService {
       .trim()
       .toLowerCase();
 
-    if (side === 'short' || positionType === 'short' || orderType === 'sell') {
+    if (
+      side === 'short' ||
+      side === 'sell' ||
+      positionType === 'short' ||
+      orderType === 'sell' ||
+      orderType === 'short'
+    ) {
       return 'short';
     }
     return 'long';
@@ -4428,9 +6263,116 @@ export class SuggestedTradesService {
     return value as Record<string, unknown>;
   }
 
+  private parseJsonRecord(value: unknown): Record<string, unknown> | null {
+    if (!value) {
+      return null;
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    try {
+      const parsed = JSON.parse(String(value));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private extractTrackedBalanceFromFundsSnapshot(
+    snapshot: {
+      broker_key?: string | null;
+      wallet_funds_json?: unknown;
+      futures_funds_json?: unknown;
+    } | null
+  ): number | null {
+    if (!snapshot) {
+      return null;
+    }
+
+    const brokerKey = String(snapshot.broker_key || '')
+      .trim()
+      .toLowerCase();
+    const futuresFunds = this.parseJsonRecord(snapshot.futures_funds_json);
+    const walletFunds = this.parseJsonRecord(snapshot.wallet_funds_json);
+    const futuresBalance = this.extractFundsBalanceFromPayload(futuresFunds, brokerKey);
+    const walletBalance = this.extractFundsBalanceFromPayload(walletFunds, brokerKey);
+    return futuresBalance ?? walletBalance;
+  }
+
+  private extractFundsBalanceFromPayload(
+    payload: Record<string, unknown> | null,
+    brokerKey?: string
+  ): number | null {
+    if (!payload) {
+      return null;
+    }
+
+    const equityLikeBalance = this.readNumberValue(
+      payload.equity ??
+        payload.futures_equity ??
+        payload.futuresEquity ??
+        payload.margin_balance ??
+        payload.marginBalance ??
+        payload.total_balance ??
+        payload.totalBalance ??
+        payload.account_equity ??
+        payload.accountEquity
+    );
+    if (equityLikeBalance !== null) {
+      return equityLikeBalance;
+    }
+
+    const totalBalance = this.readNumberValue(
+      payload.total ?? payload.wallet_balance ?? payload.walletBalance
+    );
+    if (totalBalance !== null) {
+      return totalBalance;
+    }
+
+    const balance = this.readNumberValue(payload.balance);
+    const lockedAmount = this.readNumberValue(payload.locked_amount ?? payload.lockedAmount);
+    if (
+      String(brokerKey || '')
+        .trim()
+        .toLowerCase() === 'mudrex' &&
+      balance !== null
+    ) {
+      return Number((balance + Math.max(0, lockedAmount ?? 0)).toFixed(2));
+    }
+
+    return this.readNumberValue(
+      payload.balance ??
+        payload.available_balance ??
+        payload.availableBalance ??
+        payload.free_balance ??
+        payload.freeBalance
+    );
+  }
+
+  private readStringEnvOverride(name: string): string | null {
+    const raw = process.env[name];
+    return raw !== undefined ? String(raw).trim() : null;
+  }
+
   private readBooleanEnvOverride(name: string): boolean | null {
     const raw = process.env[name];
     return raw !== undefined ? this.readBooleanValue(raw) : null;
+  }
+
+  private resolveLiveAutoAdaptiveRoutingModeValue(value: unknown): LiveAutoAdaptiveRoutingMode {
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
+    if (!normalized || normalized === 'live') {
+      return 'live';
+    }
+    if (normalized === 'shadow' || normalized === 'off') {
+      return normalized;
+    }
+
+    return 'live';
   }
 
   private readArrayEnvOverride(name: string): string[] | null {

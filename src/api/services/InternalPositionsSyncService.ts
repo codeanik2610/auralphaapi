@@ -153,6 +153,47 @@ export class InternalPositionsSyncService {
     return raw;
   }
 
+  private toPositiveFiniteNumber(value: unknown): number | null {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+  }
+
+  private readPositiveLeverageValue(item: Record<string, unknown>): number | null {
+    for (const candidate of [
+      item.leverage,
+      item.position_leverage,
+      item.observed_position_leverage,
+      item.leverageValue,
+      item.confirmed_leverage,
+    ]) {
+      const numeric = this.toPositiveFiniteNumber(candidate);
+      if (numeric !== null) {
+        return numeric;
+      }
+    }
+    return null;
+  }
+
+  private readObservedPositionLeverageValue(item: Record<string, unknown>): number | null {
+    for (const candidate of [item.observed_position_leverage, item.leverage, item.position_leverage]) {
+      const numeric = this.toPositiveFiniteNumber(candidate);
+      if (numeric !== null) {
+        return numeric;
+      }
+    }
+    return null;
+  }
+
+  private resolvePositionAssetId(item: Record<string, unknown>): string | null {
+    for (const candidate of [item.id, item.asset_uuid, item.product_id]) {
+      const value = String(candidate || '').trim();
+      if (value) {
+        return value;
+      }
+    }
+    return null;
+  }
+
   private resolvePositionDirection(position: Record<string, unknown>): number {
     const side = String(position.side ?? '').trim().toLowerCase();
     const positionType = String(position.position_type ?? '').trim().toLowerCase();
@@ -240,6 +281,150 @@ export class InternalPositionsSyncService {
         record.unrealized_pnl = pnl;
       }
     }
+  }
+
+  private async enrichDeltaOpenPositionLeverageFromConfirmedOrders(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    items: unknown[]
+  ): Promise<void> {
+    const normalizedBrokerKey = String(brokerKey || '').trim().toLowerCase();
+    if (normalizedBrokerKey !== 'delta_exchange') {
+      return;
+    }
+
+    const openRecords = items
+      .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+      .map((item) => item as Record<string, unknown>)
+      .filter((item) => {
+        const status = this.normalizePositionStatus(String(item.status || '').trim() || null);
+        return status === 'OPEN' && this.readPositiveLeverageValue(item) === null;
+      });
+
+    if (!openRecords.length) {
+      return;
+    }
+
+    const assetIds = Array.from(
+      new Set(
+        openRecords
+          .map((item) => this.resolvePositionAssetId(item))
+          .filter((value): value is string => Boolean(value))
+      )
+    );
+
+    if (!assetIds.length) {
+      return;
+    }
+
+    const leverageByAssetId = await this.listLatestDeltaSubmissionLeverageContextByAssetId(
+      userId,
+      accountId,
+      normalizedBrokerKey,
+      assetIds
+    );
+
+    for (const item of openRecords) {
+      const assetId = this.resolvePositionAssetId(item);
+      const leverageContext = assetId ? leverageByAssetId.get(assetId) : null;
+      const observedLeverage = this.readObservedPositionLeverageValue(item);
+      const requestedLeverage = leverageContext?.requestedLeverage ?? null;
+      const confirmedOrderLeverage = leverageContext?.confirmedOrderLeverage ?? null;
+      const resolvedLeverage =
+        observedLeverage ?? confirmedOrderLeverage ?? requestedLeverage ?? null;
+
+      if (requestedLeverage !== null) {
+        item.requested_leverage = String(requestedLeverage);
+      }
+      if (confirmedOrderLeverage !== null) {
+        item.confirmed_order_leverage = String(confirmedOrderLeverage);
+      }
+      if (observedLeverage !== null) {
+        item.observed_position_leverage = String(observedLeverage);
+      }
+
+      if (resolvedLeverage === null) {
+        continue;
+      }
+      item.leverage = String(resolvedLeverage);
+      item.position_leverage = String(resolvedLeverage);
+      item.leverage_source =
+        observedLeverage !== null
+          ? 'broker_position'
+          : confirmedOrderLeverage !== null
+            ? 'confirmed_order_submission'
+            : 'requested_order_submission';
+    }
+  }
+
+  private async listLatestDeltaSubmissionLeverageContextByAssetId(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    assetIds: string[]
+  ): Promise<
+    Map<
+      string,
+      {
+        requestedLeverage: number | null;
+        confirmedOrderLeverage: number | null;
+      }
+    >
+  > {
+    const rows = (await coreDataSource.query(
+      `SELECT asset_id AS assetId,
+              NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.leverage')), 'null'), '') AS responseLeverage,
+              NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.data.leverage')), 'null'), '') AS responseLeverageNested,
+              NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(request_json, '$.leverage')), 'null'), '') AS requestLeverage,
+              NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(request_json, '$.order.leverage')), 'null'), '') AS requestLeverageNested
+         FROM order_submission_requests
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(COALESCE(broker_key, '')) = ?
+          AND asset_id IN (${assetIds.map(() => '?').join(', ')})
+          AND status = 'completed'
+          AND placement_state IN ('placed', 'replayed')
+          AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+        ORDER BY created_at DESC`,
+      [userId, accountId, brokerKey, ...assetIds, MAX_LOOKBACK_DAYS]
+    )) as Array<{
+      assetId?: string | null;
+      responseLeverage?: string | null;
+      responseLeverageNested?: string | null;
+      requestLeverage?: string | null;
+      requestLeverageNested?: string | null;
+    }>;
+
+    const leverageByAssetId = new Map<
+      string,
+      {
+        requestedLeverage: number | null;
+        confirmedOrderLeverage: number | null;
+      }
+    >();
+    for (const row of rows) {
+      const assetId = String(row.assetId || '').trim();
+      if (!assetId || leverageByAssetId.has(assetId)) {
+        continue;
+      }
+      const confirmedOrderLeverage =
+        this.toPositiveFiniteNumber(row.responseLeverage) ??
+        this.toPositiveFiniteNumber(row.responseLeverageNested) ??
+        null;
+      const requestedLeverage =
+        this.toPositiveFiniteNumber(row.requestLeverage) ??
+        this.toPositiveFiniteNumber(row.requestLeverageNested) ??
+        null;
+      if (confirmedOrderLeverage === null && requestedLeverage === null) {
+        continue;
+      }
+      leverageByAssetId.set(assetId, {
+        requestedLeverage,
+        confirmedOrderLeverage,
+      });
+    }
+    return leverageByAssetId;
   }
 
   // ── Status helpers ───────────────────────────────────────────
@@ -649,6 +834,13 @@ export class InternalPositionsSyncService {
     runLogId?: string
   ): Promise<{ inserted: number; updated: number; skipped: number; symbols: string[] }> {
     if (items.length === 0) return { inserted: 0, updated: 0, skipped: 0, symbols: [] };
+
+    await this.enrichDeltaOpenPositionLeverageFromConfirmedOrders(
+      userId,
+      accountId,
+      brokerKey,
+      items
+    );
 
     const prepared: Array<{
       userId: string;

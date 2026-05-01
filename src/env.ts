@@ -15,6 +15,19 @@ const defaultLocalSeedFullName = 'AurAlpha Admin';
 
 const normalizeEnvValue = (value: string | undefined): string => String(value || '').trim();
 
+const resolveEmailProvider = (value: string | undefined): 'smtp' | 'resend' => {
+  const normalized = normalizeEnvValue(value).toLowerCase();
+  if (!normalized || normalized === 'smtp') {
+    return 'smtp';
+  }
+
+  if (normalized === 'resend') {
+    return 'resend';
+  }
+
+  throw new Error('EMAIL_PROVIDER must be set to "smtp" or "resend"');
+};
+
 const getNumber = (key: string, fallback: number): number => {
   const value = process.env[key];
   const parsed = value ? Number(value) : fallback;
@@ -44,15 +57,29 @@ const getArray = (key: string): string[] => {
     .filter(Boolean);
 };
 
-const resolveActivityExportStorageMode = (
-  value: string | undefined
-): 'filesystem' => {
+const resolveActivityExportStorageMode = (value: string | undefined): 'filesystem' => {
   const normalized = normalizeEnvValue(value).toLowerCase();
   if (!normalized || normalized === 'filesystem') {
     return 'filesystem';
   }
 
   throw new Error('ACTIVITY_EXPORT_STORAGE_MODE must be set to "filesystem"');
+};
+
+const resolveSuggestedTradesAdaptiveRoutingMode = (
+  value: string | undefined
+): 'off' | 'shadow' | 'live' => {
+  const normalized = normalizeEnvValue(value).toLowerCase();
+  if (!normalized || normalized === 'live') {
+    return 'live';
+  }
+  if (normalized === 'shadow' || normalized === 'off') {
+    return normalized;
+  }
+
+  throw new Error(
+    'SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE must be set to "off", "shadow", or "live"'
+  );
 };
 
 const resolveStringWithLocalFallback = (
@@ -90,14 +117,13 @@ export function resolveAuthSeedConfig(
   return {
     enabled,
     email:
-      normalizeEnvValue(rawEnv.AUTH_SEED_EMAIL) ||
-      (localEnvironment ? defaultLocalSeedEmail : ''),
+      normalizeEnvValue(rawEnv.AUTH_SEED_EMAIL) || (localEnvironment ? defaultLocalSeedEmail : ''),
     password:
       normalizeEnvValue(rawEnv.AUTH_SEED_PASSWORD) ||
       (localEnvironment ? defaultLocalSeedPassword : ''),
     fullName:
       normalizeEnvValue(rawEnv.AUTH_SEED_FULL_NAME) ||
-      (localEnvironment ? defaultLocalSeedFullName : '')
+      (localEnvironment ? defaultLocalSeedFullName : ''),
   };
 }
 
@@ -131,7 +157,7 @@ type SecurityConfigValidationInput = {
   activityExportStorageDir: string;
 };
 
-function isUnsafeConfiguredValue(value: string, disallowed: string[] = []): boolean {
+function isUnsafeConfiguredValue(value: string | undefined, disallowed: string[] = []): boolean {
   const normalized = normalizeEnvValue(value);
   if (!normalized) {
     return true;
@@ -140,9 +166,7 @@ function isUnsafeConfiguredValue(value: string, disallowed: string[] = []): bool
   return disallowed.includes(normalized);
 }
 
-export function assertSecureEnvironmentConfig(
-  config: SecurityConfigValidationInput
-): void {
+export function assertSecureEnvironmentConfig(config: SecurityConfigValidationInput): void {
   if (config.node === 'test' || isLocalAppEnvironment(config.appEnvironment)) {
     return;
   }
@@ -150,7 +174,7 @@ export function assertSecureEnvironmentConfig(
   if (
     isUnsafeConfiguredValue(config.authAccessTokenSecret, [
       defaultLocalAccessTokenSecret,
-      'change-me'
+      'change-me',
     ])
   ) {
     throw new Error(
@@ -161,7 +185,7 @@ export function assertSecureEnvironmentConfig(
   if (
     isUnsafeConfiguredValue(config.discoverySchedulerSecret, [
       defaultLocalDiscoverySchedulerSecret,
-      'change-me'
+      'change-me',
     ])
   ) {
     throw new Error(
@@ -173,7 +197,7 @@ export function assertSecureEnvironmentConfig(
     isUnsafeConfiguredValue(config.brokerAccountSecretsKey, [
       defaultLocalBrokerAccountSecretsKey,
       'change-me',
-      'change-me-strong-random-secret'
+      'change-me-strong-random-secret',
     ])
   ) {
     throw new Error(
@@ -181,10 +205,7 @@ export function assertSecureEnvironmentConfig(
     );
   }
 
-  if (
-    config.appRequireApiKey &&
-    isUnsafeConfiguredValue(config.appApiKey, ['change-me'])
-  ) {
+  if (config.appRequireApiKey && isUnsafeConfiguredValue(config.appApiKey, ['change-me'])) {
     throw new Error(
       'APP_API_KEY must be set to a strong custom value when APP_REQUIRE_API_KEY is enabled outside localhost'
     );
@@ -206,7 +227,10 @@ export function assertSecureEnvironmentConfig(
     throw new Error('REDIS_AUTO_START must remain disabled outside localhost');
   }
 
-  if (config.schedulerExecutionMode === 'queue' && isUnsafeConfiguredValue(config.schedulerWorkerBaseUrl)) {
+  if (
+    config.schedulerExecutionMode === 'queue' &&
+    isUnsafeConfiguredValue(config.schedulerWorkerBaseUrl)
+  ) {
     throw new Error(
       'SCHEDULER_WORKER_BASE_URL must be explicitly set when SCHEDULER_EXECUTION_MODE=queue outside localhost'
     );
@@ -238,7 +262,9 @@ export function assertSecureEnvironmentConfig(
 
   if (config.pgEnabled) {
     if (isUnsafeConfiguredValue(config.pgHost)) {
-      throw new Error('PG_DB_HOST must be explicitly set when PG_DB_ENABLED=true outside localhost');
+      throw new Error(
+        'PG_DB_HOST must be explicitly set when PG_DB_ENABLED=true outside localhost'
+      );
     }
 
     if (isUnsafeConfiguredValue(config.pgUsername)) {
@@ -268,6 +294,26 @@ export function assertSecureEnvironmentConfig(
       'ACTIVITY_EXPORT_STORAGE_DIR must be explicitly set when ACTIVITY_EXPORT_STORAGE_MODE=filesystem outside localhost'
     );
   }
+
+  if (getBool('WHATSAPP_DELIVERY_ENABLED', false)) {
+    if (isUnsafeConfiguredValue(process.env.WHATSAPP_TWILIO_ACCOUNT_SID)) {
+      throw new Error(
+        'WHATSAPP_TWILIO_ACCOUNT_SID must be explicitly set when WHATSAPP_DELIVERY_ENABLED=true outside localhost'
+      );
+    }
+
+    if (isUnsafeConfiguredValue(process.env.WHATSAPP_TWILIO_AUTH_TOKEN)) {
+      throw new Error(
+        'WHATSAPP_TWILIO_AUTH_TOKEN must be explicitly set when WHATSAPP_DELIVERY_ENABLED=true outside localhost'
+      );
+    }
+
+    if (isUnsafeConfiguredValue(process.env.WHATSAPP_TWILIO_FROM)) {
+      throw new Error(
+        'WHATSAPP_TWILIO_FROM must be explicitly set when WHATSAPP_DELIVERY_ENABLED=true outside localhost'
+      );
+    }
+  }
 }
 
 const appEnvironment = process.env.APP_ENV || 'localhost';
@@ -276,10 +322,7 @@ const authSeedConfig = resolveAuthSeedConfig(process.env, appEnvironment);
 const schedulerExecutionMode: 'direct' | 'queue' =
   process.env.SCHEDULER_EXECUTION_MODE === 'queue' ? 'queue' : 'direct';
 const loginMaxAttempts = Math.max(1, getNumber('AUTH_LOGIN_MAX_ATTEMPTS', 5));
-const loginIpMaxAttempts = Math.max(
-  loginMaxAttempts,
-  getNumber('AUTH_LOGIN_IP_MAX_ATTEMPTS', 20)
-);
+const loginIpMaxAttempts = Math.max(loginMaxAttempts, getNumber('AUTH_LOGIN_IP_MAX_ATTEMPTS', 20));
 
 export const env = {
   node: process.env.NODE_ENV || 'development',
@@ -289,10 +332,7 @@ export const env = {
     schema: process.env.APP_SCHEMA || 'http',
     host: resolveStringWithLocalFallback(process.env.APP_HOST, 'localhost', localAppEnvironment),
     banner: getBool('APP_BANNER', true),
-    shutdownDrainTimeoutMs: Math.max(
-      5_000,
-      getNumber('APP_SHUTDOWN_DRAIN_TIMEOUT_MS', 20_000)
-    ),
+    shutdownDrainTimeoutMs: Math.max(5_000, getNumber('APP_SHUTDOWN_DRAIN_TIMEOUT_MS', 20_000)),
     routePrefix: process.env.APP_ROUTE_PREFIX || '/api/v1',
     environment: appEnvironment,
     apiKey: process.env.APP_API_KEY || '',
@@ -308,8 +348,7 @@ export const env = {
     level: process.env.LOG_LEVEL || 'info',
   },
   auth: {
-    accessTokenSecret:
-      process.env.AUTH_ACCESS_TOKEN_SECRET || defaultLocalAccessTokenSecret,
+    accessTokenSecret: process.env.AUTH_ACCESS_TOKEN_SECRET || defaultLocalAccessTokenSecret,
     accessTokenTtl: process.env.AUTH_ACCESS_TOKEN_TTL || '15m',
     refreshTokenDays: getNumber('AUTH_REFRESH_TOKEN_DAYS', 7),
     loginProtectionEnabled:
@@ -323,7 +362,7 @@ export const env = {
     seedEnabled: authSeedConfig.enabled,
     seedEmail: authSeedConfig.email,
     seedPassword: authSeedConfig.password,
-    seedFullName: authSeedConfig.fullName
+    seedFullName: authSeedConfig.fullName,
   },
   http: {
     requestTimeoutMs: getNumber('HTTP_REQUEST_TIMEOUT_MS', 10000),
@@ -365,20 +404,14 @@ export const env = {
       5_000,
       getNumber('ACTIVITY_EXPORT_PROCESSOR_INTERVAL_MS', 15_000)
     ),
-    exportProcessorBatchSize: Math.max(
-      1,
-      getNumber('ACTIVITY_EXPORT_PROCESSOR_BATCH_SIZE', 10)
-    ),
+    exportProcessorBatchSize: Math.max(1, getNumber('ACTIVITY_EXPORT_PROCESSOR_BATCH_SIZE', 10)),
     exportChunkSize: Math.max(100, getNumber('ACTIVITY_EXPORT_CHUNK_SIZE', 1000)),
-    exportStorageMode: resolveActivityExportStorageMode(
-      process.env.ACTIVITY_EXPORT_STORAGE_MODE
+    exportStorageMode: resolveActivityExportStorageMode(process.env.ACTIVITY_EXPORT_STORAGE_MODE),
+    exportStorageDir: resolveStringWithLocalFallback(
+      process.env.ACTIVITY_EXPORT_STORAGE_DIR,
+      path.resolve(process.cwd(), 'storage', 'activity-exports'),
+      localAppEnvironment
     ),
-    exportStorageDir:
-      resolveStringWithLocalFallback(
-        process.env.ACTIVITY_EXPORT_STORAGE_DIR,
-        path.resolve(process.cwd(), 'storage', 'activity-exports'),
-        localAppEnvironment
-      ),
   },
   email: {
     enabled: getBool('EMAIL_DELIVERY_ENABLED', false),
@@ -386,6 +419,7 @@ export const env = {
     batchSize: Math.max(1, getNumber('EMAIL_DELIVERY_BATCH_SIZE', 10)),
     maxAttempts: Math.max(1, getNumber('EMAIL_DELIVERY_MAX_ATTEMPTS', 5)),
     staleMinutes: Math.max(1, getNumber('EMAIL_DELIVERY_STALE_MINUTES', 10)),
+    provider: resolveEmailProvider(process.env.EMAIL_PROVIDER),
     smtp: {
       host: process.env.EMAIL_SMTP_HOST || '',
       port: getNumber('EMAIL_SMTP_PORT', 587),
@@ -395,22 +429,41 @@ export const env = {
       from: process.env.EMAIL_SMTP_FROM || '',
       replyTo: process.env.EMAIL_SMTP_REPLY_TO || '',
     },
+    resend: {
+      apiKey: process.env.EMAIL_RESEND_API_KEY || '',
+      apiBaseUrl: process.env.EMAIL_RESEND_API_BASE_URL || 'https://api.resend.com',
+      from: process.env.EMAIL_RESEND_FROM || '',
+      replyTo: process.env.EMAIL_RESEND_REPLY_TO || '',
+    },
+  },
+  whatsapp: {
+    enabled: getBool('WHATSAPP_DELIVERY_ENABLED', false),
+    pollIntervalMs: Math.max(1000, getNumber('WHATSAPP_DELIVERY_POLL_INTERVAL_MS', 5000)),
+    batchSize: Math.max(1, getNumber('WHATSAPP_DELIVERY_BATCH_SIZE', 10)),
+    maxAttempts: Math.max(1, getNumber('WHATSAPP_DELIVERY_MAX_ATTEMPTS', 5)),
+    staleMinutes: Math.max(1, getNumber('WHATSAPP_DELIVERY_STALE_MINUTES', 10)),
+    provider:
+      normalizeEnvValue(process.env.WHATSAPP_DELIVERY_PROVIDER).toLowerCase() === 'twilio'
+        ? 'twilio'
+        : 'twilio',
+    twilio: {
+      accountSid: process.env.WHATSAPP_TWILIO_ACCOUNT_SID || '',
+      authToken: process.env.WHATSAPP_TWILIO_AUTH_TOKEN || '',
+      from: process.env.WHATSAPP_TWILIO_FROM || '',
+      apiBaseUrl: process.env.WHATSAPP_TWILIO_API_BASE_URL || 'https://api.twilio.com/2010-04-01',
+    },
   },
   scheduler: {
     executionMode: schedulerExecutionMode,
     systemUserId: process.env.SCHEDULER_SYSTEM_USER_ID || 'system',
     discovery: {
       schedulerSecret:
-        process.env.DISCOVERY_SCHEDULER_SECRET ||
-        defaultLocalDiscoverySchedulerSecret,
+        process.env.DISCOVERY_SCHEDULER_SECRET || defaultLocalDiscoverySchedulerSecret,
       signatureMaxSkewSeconds: Math.max(
         30,
         getNumber('DISCOVERY_SCHEDULER_SIGNATURE_MAX_SKEW_SECONDS', 300)
       ),
-      nonceTtlSeconds: Math.max(
-        60,
-        getNumber('DISCOVERY_SCHEDULER_NONCE_TTL_SECONDS', 600)
-      ),
+      nonceTtlSeconds: Math.max(60, getNumber('DISCOVERY_SCHEDULER_NONCE_TTL_SECONDS', 600)),
     },
     worker: {
       schema: process.env.SCHEDULER_WORKER_SCHEMA || 'http',
@@ -444,7 +497,7 @@ export const env = {
         process.env.AUTOMATION_SIGNAL_DISCOVERY_ENGINE_ROOT || defaultDiscoveryEngineRoot,
         '.venv/bin/python'
       ),
-    timeoutMs: Math.max(1000, getNumber('AUTOMATION_SIGNAL_TIMEOUT_MS', 30000)),
+    timeoutMs: Math.max(1000, getNumber('AUTOMATION_SIGNAL_TIMEOUT_MS', 60000)),
     evalBars: Math.max(50, getNumber('AUTOMATION_SIGNAL_EVAL_BARS', 300)),
   },
   paperOrders: {
@@ -479,6 +532,9 @@ export const env = {
     liveAuto: {
       enabled: getBool('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', false),
       executionEnabled: getBool('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED', false),
+      adaptiveRoutingMode: resolveSuggestedTradesAdaptiveRoutingMode(
+        process.env.SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE
+      ),
       requireFixedRouting:
         process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING !== undefined
           ? getBool('SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING', true)
@@ -491,12 +547,18 @@ export const env = {
   },
   brokerCanaryMonitor: {
     enabled: getBool('BROKER_CANARY_MONITOR_ENABLED', true),
+    backgroundEnabled: getBool('BROKER_CANARY_MONITOR_BACKGROUND_ENABLED', true),
     lookbackHours: Math.max(1, getNumber('BROKER_CANARY_MONITOR_LOOKBACK_HOURS', 24 * 30)),
     maxSubmissions: Math.max(1, getNumber('BROKER_CANARY_MONITOR_MAX_SUBMISSIONS', 100)),
+    pollIntervalMs: Math.max(
+      60_000,
+      getNumber('BROKER_CANARY_MONITOR_POLL_INTERVAL_MS', 5 * 60 * 1000)
+    ),
     snapshotStaleAfterMs: Math.max(
       60_000,
       getNumber('BROKER_CANARY_MONITOR_SNAPSHOT_STALE_AFTER_MS', 15 * 60 * 1000)
     ),
+    autoFreezeOnCritical: getBool('BROKER_CANARY_MONITOR_AUTO_FREEZE_ON_CRITICAL', false),
   },
   positions: {
     liveSnapshotStaleAfterMs: Math.max(
@@ -550,13 +612,13 @@ export const env = {
         ? getBool('REDIS_AUTO_START', false)
         : process.env.NODE_ENV === 'development' && localAppEnvironment,
     workerHeartbeatKey: process.env.WORKER_HEARTBEAT_KEY || 'scheduler:worker:heartbeat',
-    emailWorkerHeartbeatKey:
-      process.env.EMAIL_WORKER_HEARTBEAT_KEY || 'email:worker:heartbeat',
+    emailWorkerHeartbeatKey: process.env.EMAIL_WORKER_HEARTBEAT_KEY || 'email:worker:heartbeat',
+    whatsappWorkerHeartbeatKey:
+      process.env.WHATSAPP_WORKER_HEARTBEAT_KEY || 'whatsapp:worker:heartbeat',
   },
   security: {
     brokerAccountSecretsKey:
-      process.env.BROKER_ACCOUNT_SECRETS_KEY ||
-      defaultLocalBrokerAccountSecretsKey,
+      process.env.BROKER_ACCOUNT_SECRETS_KEY || defaultLocalBrokerAccountSecretsKey,
   },
   db: {
     host: resolveStringWithLocalFallback(process.env.DB_HOST, '127.0.0.1', localAppEnvironment),
@@ -569,11 +631,7 @@ export const env = {
   },
   pg: {
     enabled: getBool('PG_DB_ENABLED', false),
-    host: resolveStringWithLocalFallback(
-      process.env.PG_DB_HOST,
-      '127.0.0.1',
-      localAppEnvironment
-    ),
+    host: resolveStringWithLocalFallback(process.env.PG_DB_HOST, '127.0.0.1', localAppEnvironment),
     port: getNumber('PG_DB_PORT', 5432),
     username: resolveStringWithLocalFallback(
       process.env.PG_DB_USERNAME,
@@ -618,5 +676,5 @@ assertSecureEnvironmentConfig({
   pgPassword: env.pg.password,
   pgDatabase: env.pg.database,
   activityExportStorageMode: env.activity.exportStorageMode,
-  activityExportStorageDir: env.activity.exportStorageDir
+  activityExportStorageDir: env.activity.exportStorageDir,
 });

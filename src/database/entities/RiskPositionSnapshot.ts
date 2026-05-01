@@ -69,6 +69,18 @@ export class RiskPositionSnapshot {
   @Column({ type: 'double', nullable: true })
   leverage!: number | null;
 
+  @Column({ name: 'requested_leverage', type: 'double', nullable: true })
+  requestedLeverage!: number | null;
+
+  @Column({ name: 'confirmed_order_leverage', type: 'double', nullable: true })
+  confirmedOrderLeverage!: number | null;
+
+  @Column({ name: 'observed_position_leverage', type: 'double', nullable: true })
+  observedPositionLeverage!: number | null;
+
+  @Column({ name: 'leverage_source', type: 'varchar', length: 64, nullable: true })
+  leverageSource!: string | null;
+
   @Column({ name: 'liquidation_price', type: 'double', nullable: true })
   liquidationPrice!: number | null;
 

@@ -39,18 +39,40 @@ export class MudrexConfigurationError extends Error {
 }
 
 export class MudrexApiError extends Error {
+  public readonly broker = 'mudrex';
+  public readonly brokerStatusCode?: number;
+  public readonly brokerRoutePath?: string;
+  public readonly brokerErrorCode?: string;
+  public readonly brokerErrorMessage?: string;
+  public readonly brokerErrorPayload?: unknown;
+
   constructor(
     public statusCode: number,
-    message: string
+    message: string,
+    context?: {
+      brokerStatusCode?: number;
+      brokerRoutePath?: string;
+      brokerErrorCode?: string;
+      brokerErrorMessage?: string;
+      brokerErrorPayload?: unknown;
+    }
   ) {
     super(message);
     this.name = 'MudrexApiError';
+    this.brokerStatusCode = context?.brokerStatusCode;
+    this.brokerRoutePath = context?.brokerRoutePath;
+    this.brokerErrorCode = context?.brokerErrorCode;
+    this.brokerErrorMessage = context?.brokerErrorMessage ?? message;
+    this.brokerErrorPayload = context?.brokerErrorPayload;
   }
 }
 
 interface MudrexParsedError {
   statusCode: number;
   message: string;
+  code?: string;
+  payload?: unknown;
+  rawBody?: string;
 }
 
 interface MudrexCredentials {
@@ -573,6 +595,7 @@ export class MudrexHttpClient {
       const timeout = setTimeout(() => controller.abort(), env.http.requestTimeoutMs);
 
       try {
+        const routePath = `${method} ${path}`;
         const response = await this.performRequest(url, {
           method,
           headers: {
@@ -584,11 +607,21 @@ export class MudrexHttpClient {
         });
 
         if (response.statusCode === 401 || response.statusCode === 403) {
-          throw new MudrexApiError(response.statusCode, 'Mudrex authentication failed');
+          throw this.buildApiError(response.statusCode, routePath, {
+            statusCode: response.statusCode,
+            message: 'Mudrex authentication failed',
+            code: String(response.statusCode),
+            rawBody: this.truncateRawBody(response.body),
+          });
         }
 
         if (response.statusCode === 429) {
-          throw new MudrexApiError(429, 'Mudrex rate limit exceeded');
+          throw this.buildApiError(429, routePath, {
+            statusCode: 429,
+            message: 'Mudrex rate limit exceeded',
+            code: '429',
+            rawBody: this.truncateRawBody(response.body),
+          });
         }
 
         if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -599,16 +632,20 @@ export class MudrexHttpClient {
             continue;
           }
 
-          throw new MudrexApiError(parsedError.statusCode, parsedError.message);
+          throw this.buildApiError(response.statusCode, routePath, parsedError);
         }
 
         const payload = JSON.parse(response.body) as MudrexEnvelope<T>;
         if (!payload.success) {
           const firstError = payload.errors?.[0];
-          throw new MudrexApiError(
-            firstError?.code || 502,
-            firstError?.text || payload.message || 'Mudrex returned an unsuccessful response'
-          );
+          throw this.buildApiError(response.statusCode, routePath, {
+            statusCode: Number(firstError?.code || 502),
+            message:
+              firstError?.text || payload.message || 'Mudrex returned an unsuccessful response',
+            code: firstError?.code === undefined ? undefined : String(firstError.code),
+            payload,
+            rawBody: this.truncateRawBody(response.body),
+          });
         }
 
         this.validatePayload(method, path, payload.data);
@@ -636,17 +673,55 @@ export class MudrexHttpClient {
             continue;
           }
 
-          throw new MudrexApiError(504, 'Mudrex request timed out');
+          throw this.buildApiError(504, `${method} ${path}`, {
+            statusCode: 504,
+            message: 'Mudrex request timed out',
+            code: '504',
+          });
         }
 
-        throw new MudrexApiError(
-          503,
-          `Mudrex request failed${error instanceof Error && error.message ? `: ${error.message}` : ''}`
-        );
+        throw this.buildApiError(503, `${method} ${path}`, {
+          statusCode: 503,
+          message: `Mudrex request failed${error instanceof Error && error.message ? `: ${error.message}` : ''}`,
+          code: '503',
+          payload:
+            error instanceof Error
+              ? {
+                  name: error.name,
+                  message: error.message,
+                }
+              : {
+                  value: String(error),
+                },
+        });
       } finally {
         clearTimeout(timeout);
       }
     }
+  }
+
+  private buildApiError(
+    httpStatusCode: number,
+    routePath: string,
+    parsed: MudrexParsedError
+  ): MudrexApiError {
+    return new MudrexApiError(parsed.statusCode, parsed.message, {
+      brokerStatusCode: httpStatusCode,
+      brokerRoutePath: routePath,
+      brokerErrorCode: parsed.code ?? String(parsed.statusCode),
+      brokerErrorMessage: parsed.message,
+      brokerErrorPayload:
+        parsed.payload ?? (parsed.rawBody ? { rawBody: parsed.rawBody } : undefined),
+    });
+  }
+
+  private truncateRawBody(body: string, maxLength = 2000): string | undefined {
+    const raw = String(body || '').trim();
+    if (!raw) {
+      return undefined;
+    }
+
+    return raw.length <= maxLength ? raw : `${raw.slice(0, maxLength)}...`;
   }
 
   private async sleep(durationMs: number): Promise<void> {
@@ -735,15 +810,20 @@ export class MudrexHttpClient {
 
       return {
         statusCode: firstError?.code || statusCode,
+        code: firstError?.code === undefined ? undefined : String(firstError.code),
         message:
           firstError?.text ||
           (typeof parsed.message === 'string' ? parsed.message : '') ||
           `Mudrex request failed with status ${statusCode}`,
+        payload: parsed,
+        rawBody: this.truncateRawBody(body),
       };
     } catch {
       return {
         statusCode,
         message: `Mudrex request failed with status ${statusCode}`,
+        code: String(statusCode),
+        rawBody: this.truncateRawBody(body),
       };
     }
   }

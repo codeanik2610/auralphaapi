@@ -52,8 +52,12 @@ import { StrategyLibraryService } from '../src/api/services/StrategyLibraryServi
 import { StrategyLabService } from '../src/api/services/StrategyLabService';
 import { StrategyService } from '../src/api/services/StrategyService';
 import { StrategyTemplatesService } from '../src/api/services/StrategyTemplatesService';
+import { WhatsappNotificationsService } from '../src/api/services/WhatsappNotificationsService';
 import { DeltaExchangeOrdersAdapter } from '../src/brokers/capabilities/orders';
 import { EmailDeliveryWorker } from '../src/email/EmailDeliveryWorker';
+import { ResendEmailTransport } from '../src/email/ResendEmailTransport';
+import { TwilioWhatsappTransport } from '../src/whatsapp/TwilioWhatsappTransport';
+import { WhatsappDeliveryWorker } from '../src/whatsapp/WhatsappDeliveryWorker';
 import { WalletService } from '../src/brokers/providers/mudrex';
 import { WatchlistsService } from '../src/api/services/WatchlistsService';
 import { validateUpdateBacktestResultBody } from '../src/api/validators/backtests.validator';
@@ -99,6 +103,7 @@ import { SuggestedTradeExecution } from '../src/database/entities/SuggestedTrade
 import { CreateAppSettingsTable1741474200000 } from './_fixtures/migrations/1741474200000-CreateAppSettingsTable';
 import { NormalizeAppSettingsPrimaryKey1765401000000 } from './_fixtures/migrations/1765401000000-NormalizeAppSettingsPrimaryKey';
 import { AddBacktestPromotionRulesToAppSettings1770715000000 } from './_fixtures/migrations/1770715000000-AddBacktestPromotionRulesToAppSettings';
+import { AddWhatsappSuggestionSettingsAndQueue1770716000000 } from './_fixtures/migrations/1770716000000-AddWhatsappSuggestionSettingsAndQueue';
 import { HardenSuggestedTradeExecutionStorage1767300010000 } from './_fixtures/migrations/1767300010000-HardenSuggestedTradeExecutionStorage';
 import { CleanupBrokerExchangeMasters1769800000000 } from './_fixtures/migrations/1769800000000-CleanupBrokerExchangeMasters';
 import { DropConnectionExchangeId1770000000000 } from './_fixtures/migrations/1770000000000-DropConnectionExchangeId';
@@ -124,6 +129,39 @@ type MigrationColumn = {
 
 function createSuccess<T>(data: T) {
   return { success: true as const, data };
+}
+
+async function assertTradeSuggestionRuntimeContract(
+  config: Record<string, unknown>,
+  expectations: { templateId: string; symbols: string[]; timeframe: string }
+): Promise<void> {
+  const executionService = new AutomationExecutionService() as any;
+  executionService.strategyTemplateRepository = {
+    getStrategyTemplateById: async (_userId: string, templateId: string) => {
+      assert.equal(templateId, expectations.templateId);
+      return {
+        id: templateId,
+        config: {
+          market: 'crypto-futures',
+          entryLogic: 'ema(20) > ema(50)',
+          exitLogic: 'ema(20) < ema(50)',
+          risk: {
+            stopLossPct: 2,
+            takeProfitTargetsPct: [4],
+          },
+          parameters: {
+            signalThreshold: '0.81',
+          },
+        },
+      };
+    },
+  };
+
+  const resolved = await executionService.resolveTradeSuggestionProfile('user-1', config);
+  assert.equal(resolved.sourceTemplateId, expectations.templateId);
+  assert.equal(resolved.profile.automationReady, true);
+  assert.deepEqual(executionService.resolveTradeSuggestionSymbols(config), expectations.symbols);
+  assert.equal(executionService.resolveTradeSuggestionTimeframe(config), expectations.timeframe);
 }
 
 const serviceConstructors: Array<[string, ServiceCtor]> = [
@@ -163,6 +201,7 @@ const serviceConstructors: Array<[string, ServiceCtor]> = [
   ['StrategyLabService', StrategyLabService],
   ['StrategyService', StrategyService],
   ['StrategyTemplatesService', StrategyTemplatesService],
+  ['WhatsappNotificationsService', WhatsappNotificationsService],
   ['WalletService', WalletService],
   ['WatchlistsService', WatchlistsService],
   ['OperationalEventService', OperationalEventService],
@@ -2308,6 +2347,322 @@ async function runEmailDeliveryWorkerAssertions(): Promise<void> {
 
   assert.deepEqual(processedIds, ['delivery-1']);
   assert.deepEqual(failedIds, ['delivery-2']);
+}
+
+async function runResendEmailTransportAssertions(): Promise<void> {
+  const originalEmailEnabled = env.email.enabled;
+  const originalEmailProvider = env.email.provider;
+  const originalResendConfig = { ...env.email.resend };
+  const originalFetch = globalThis.fetch;
+
+  env.email.enabled = true;
+  env.email.provider = 'resend';
+  env.email.resend.apiKey = 're_test_123';
+  env.email.resend.apiBaseUrl = 'https://api.resend.test';
+  env.email.resend.from = 'AurAlpha <noreply@auralpha.dev>';
+  env.email.resend.replyTo = 'support@auralpha.dev';
+
+  try {
+    const transport = new ResendEmailTransport();
+    const fetchCalls: Array<{
+      input: RequestInfo | URL;
+      init?: RequestInit;
+    }> = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      fetchCalls.push({ input, init });
+      return new Response(JSON.stringify({ id: 're_email_123' }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+    }) as typeof fetch;
+
+    await transport.verify();
+    await transport.send({
+      id: 'delivery-123',
+      recipientEmail: 'alerts@auralpha.com',
+      subject: 'Alert ready',
+      body: 'Body text',
+      alertId: 'alert-123',
+      userId: 'user-1',
+      channel: 'email',
+      severity: 'High',
+    } as any);
+
+    assert.equal(fetchCalls.length, 1);
+    const sendCall = fetchCalls[0];
+    const sendPayload = JSON.parse(String(sendCall?.init?.body || '{}'));
+    assert.equal(sendPayload.from, 'AurAlpha <noreply@auralpha.dev>');
+    assert.deepEqual(sendPayload.to, ['alerts@auralpha.com']);
+    assert.equal(sendPayload.reply_to, 'support@auralpha.dev');
+    assert.equal(sendPayload.subject, 'Alert ready');
+    assert.equal(sendPayload.text, 'Body text');
+    assert.equal(sendPayload.headers['X-AurAlpha-Email-Delivery-Id'], 'delivery-123');
+    assert.equal(sendPayload.headers['X-AurAlpha-Alert-Id'], 'alert-123');
+    assert.equal(sendPayload.tags[0].name, 'channel');
+    assert.equal(sendPayload.tags[0].value, 'email');
+    assert.equal(sendPayload.tags[1].name, 'severity');
+    assert.equal(sendPayload.tags[1].value, 'High');
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ message: 'invalid_api_key' }), {
+        status: 401,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })) as typeof fetch;
+
+    await assert.rejects(
+      () => transport.send({
+        id: 'delivery-124',
+        recipientEmail: 'alerts@auralpha.com',
+        subject: 'Alert fail',
+        body: 'Body text',
+        userId: 'user-1',
+        channel: 'email',
+        severity: 'High',
+      } as any),
+      /Resend send failed: invalid_api_key/
+    );
+  } finally {
+    env.email.enabled = originalEmailEnabled;
+    env.email.provider = originalEmailProvider;
+    env.email.resend = originalResendConfig;
+    globalThis.fetch = originalFetch;
+  }
+}
+
+async function runTwilioWhatsappTransportAssertions(): Promise<void> {
+  const originalWhatsappEnabled = env.whatsapp.enabled;
+  const originalTwilioConfig = { ...env.whatsapp.twilio };
+  const originalFetch = globalThis.fetch;
+
+  env.whatsapp.enabled = true;
+  env.whatsapp.twilio.accountSid = 'AC123';
+  env.whatsapp.twilio.authToken = 'token-123';
+  env.whatsapp.twilio.from = 'whatsapp:+14155238886';
+  env.whatsapp.twilio.apiBaseUrl = 'https://api.twilio.test/2010-04-01';
+
+  try {
+    const transport = new TwilioWhatsappTransport();
+    const fetchCalls: Array<{
+      input: RequestInfo | URL;
+      init?: RequestInit;
+    }> = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      fetchCalls.push({ input, init });
+      return new Response(JSON.stringify({ sid: 'SM123' }), {
+        status: 201,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+    }) as typeof globalThis.fetch;
+
+    const result = await transport.send({
+      id: 'wa-1',
+      recipientPhone: '+14155550123',
+      body: 'AurAlpha live trade suggestion',
+    } as any);
+
+    assert.equal(result.providerMessageId, 'SM123');
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(
+      String(fetchCalls[0]?.input),
+      'https://api.twilio.test/2010-04-01/Accounts/AC123/Messages.json'
+    );
+    assert.match(
+      String(
+        fetchCalls[0]?.init?.headers instanceof Headers
+          ? fetchCalls[0]?.init?.headers.get('Authorization')
+          : (fetchCalls[0]?.init?.headers as Record<string, string>)?.Authorization || ''
+      ),
+      /^Basic /
+    );
+    const requestBody = String(fetchCalls[0]?.init?.body || '');
+    assert.match(requestBody, /From=whatsapp%3A%2B14155238886/);
+    assert.match(requestBody, /To=whatsapp%3A%2B14155550123/);
+    assert.match(requestBody, /Body=AurAlpha\+live\+trade\+suggestion/);
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ message: 'Invalid recipient' }), {
+        status: 400,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })) as typeof globalThis.fetch;
+
+    await assert.rejects(async () => {
+      await transport.send({
+        id: 'wa-2',
+        recipientPhone: '+14155550999',
+        body: 'Body',
+      } as any);
+    }, /Twilio WhatsApp send failed \(400\): Invalid recipient/);
+  } finally {
+    env.whatsapp.enabled = originalWhatsappEnabled;
+    env.whatsapp.twilio.accountSid = originalTwilioConfig.accountSid;
+    env.whatsapp.twilio.authToken = originalTwilioConfig.authToken;
+    env.whatsapp.twilio.from = originalTwilioConfig.from;
+    env.whatsapp.twilio.apiBaseUrl = originalTwilioConfig.apiBaseUrl;
+    globalThis.fetch = originalFetch;
+  }
+}
+
+async function runWhatsappDeliveryWorkerAssertions(): Promise<void> {
+  const processed: Array<{ id: string; providerMessageId?: string | null }> = [];
+  const failedIds: string[] = [];
+  const releasedIds = new Array<string>();
+
+  const originalWhatsappConfig = {
+    enabled: env.whatsapp.enabled,
+    pollIntervalMs: env.whatsapp.pollIntervalMs,
+    batchSize: env.whatsapp.batchSize,
+    maxAttempts: env.whatsapp.maxAttempts,
+    staleMinutes: env.whatsapp.staleMinutes,
+  };
+
+  env.whatsapp.enabled = true;
+  env.whatsapp.pollIntervalMs = 5000;
+  env.whatsapp.batchSize = 10;
+  env.whatsapp.maxAttempts = 5;
+  env.whatsapp.staleMinutes = 10;
+
+  try {
+    const worker = new WhatsappDeliveryWorker(
+      {
+        async claimPendingDeliveries() {
+          return [
+            {
+              id: 'delivery-1',
+              recipientPhone: '+14155550123',
+              body: 'Body one',
+            },
+            {
+              id: 'delivery-2',
+              recipientPhone: '+14155550999',
+              body: 'Body two',
+            },
+          ];
+        },
+        async markSent(id: string, providerMessageId?: string | null) {
+          processed.push({ id, providerMessageId: providerMessageId ?? null });
+        },
+        async markFailed(id: string) {
+          failedIds.push(id);
+        },
+        async releaseClaimedDelivery(id: string) {
+          (releasedIds as string[]).push(id);
+        },
+      } as any,
+      {
+        async validateConfiguration() {
+          return;
+        },
+        async verify() {
+          return;
+        },
+        async send(delivery: { id: string }) {
+          if (delivery.id === 'delivery-2') {
+            throw new Error('twilio send failed');
+          }
+          return {
+            providerMessageId: 'SM-delivery-1',
+          };
+        },
+      } as any
+    );
+
+    (worker as any).log = {
+      info() {
+        return;
+      },
+      error() {
+        return;
+      },
+      warn() {
+        return;
+      },
+    };
+    (worker as any).writeHeartbeat = async () => undefined;
+    (worker as any).clearHeartbeat = async () => undefined;
+
+    await worker.processBatch();
+
+    assert.deepEqual(processed, [
+      {
+        id: 'delivery-1',
+        providerMessageId: 'SM-delivery-1',
+      },
+    ]);
+    assert.deepEqual(failedIds, ['delivery-2']);
+    assert.deepEqual(releasedIds, []);
+
+    let claimedSecondBatch = false;
+    const shutdownWorker = new WhatsappDeliveryWorker(
+      {
+        async claimPendingDeliveries() {
+          claimedSecondBatch = true;
+          return [
+            {
+              id: 'delivery-3',
+              recipientPhone: '+14155550123',
+              body: 'Body three',
+            },
+          ];
+        },
+        async releaseClaimedDelivery(id: string) {
+          (releasedIds as string[]).push(String(id));
+        },
+        async markSent() {
+          throw new Error('should not send during shutdown');
+        },
+        async markFailed() {
+          throw new Error('should not fail during shutdown');
+        },
+      } as any,
+      {
+        async validateConfiguration() {
+          return;
+        },
+        async verify() {
+          return;
+        },
+        async send() {
+          throw new Error('should not send during shutdown');
+        },
+      } as any
+    );
+
+    (shutdownWorker as any).log = {
+      info() {
+        return;
+      },
+      error() {
+        return;
+      },
+      warn() {
+        return;
+      },
+    };
+    (shutdownWorker as any).writeHeartbeat = async () => undefined;
+    (shutdownWorker as any).clearHeartbeat = async () => undefined;
+    (shutdownWorker as any).stopRequested = true;
+
+    await shutdownWorker.processBatch();
+
+    assert.equal(claimedSecondBatch, true);
+    assert.deepEqual(releasedIds, ['delivery-3']);
+  } finally {
+    env.whatsapp.enabled = originalWhatsappConfig.enabled;
+    env.whatsapp.pollIntervalMs = originalWhatsappConfig.pollIntervalMs;
+    env.whatsapp.batchSize = originalWhatsappConfig.batchSize;
+    env.whatsapp.maxAttempts = originalWhatsappConfig.maxAttempts;
+    env.whatsapp.staleMinutes = originalWhatsappConfig.staleMinutes;
+  }
 }
 
 async function runSchedulerOverviewUserScopeAssertions(): Promise<void> {
@@ -4769,7 +5124,7 @@ async function runBrokerDefinitionRuntimeSupportAssertions(): Promise<void> {
     category: 'broker',
     providerType: 'broker',
     linkedExchangeKey: 'delta_exchange',
-    capabilities: ['assets', 'orders', 'positions', 'wallet', 'diagnostics', 'market'],
+    capabilities: ['assets', 'orders', 'positions', 'wallet', 'diagnostics', 'market', 'leverage'],
     diagnostics: {
       executorKey: 'delta-exchange',
     },
@@ -5778,6 +6133,9 @@ function runSettingsValidationAssertions(): void {
     timezone: 'UTC',
     notifyEmail: true,
     notifyInApp: true,
+    notifyWhatsapp: false,
+    whatsappLiveTradeSuggestions: false,
+    whatsappNumber: null,
     confirmDestructive: true,
     notificationChannel: 'both' as const,
     notificationSeverity: 'all' as const,
@@ -5819,6 +6177,9 @@ function runSettingsValidationAssertions(): void {
   assert.deepEqual(
     validateUpdateSettingsBody(
       {
+        whatsappNumber: ' +14155550123 ',
+        notifyWhatsapp: true,
+        whatsappLiveTradeSuggestions: true,
         backtestPromotionRules: {
           minScore: 0.82,
           minTrades: 9,
@@ -5826,12 +6187,18 @@ function runSettingsValidationAssertions(): void {
         },
       },
       defaultSettings
-    ).backtestPromotionRules,
+    ),
     {
-      ...defaultPromotionRules,
-      minScore: 0.82,
-      minTrades: 9,
-      requireRobustness: false,
+      ...defaultSettings,
+      whatsappNumber: '+14155550123',
+      notifyWhatsapp: true,
+      whatsappLiveTradeSuggestions: true,
+      backtestPromotionRules: {
+        ...defaultPromotionRules,
+        minScore: 0.82,
+        minTrades: 9,
+        requireRobustness: false,
+      },
     }
   );
 
@@ -5846,6 +6213,41 @@ function runSettingsValidationAssertions(): void {
         defaultSettings
       ),
     /backtestPromotionRules.minScore must be a number between 0 and 1/
+  );
+
+  assert.throws(
+    () =>
+      validateUpdateSettingsBody(
+        {
+          notifyWhatsapp: true,
+        },
+        defaultSettings
+      ),
+    /whatsappNumber is required when WhatsApp notifications are enabled/
+  );
+
+  assert.throws(
+    () =>
+      validateUpdateSettingsBody(
+        {
+          whatsappNumber: '12345',
+        },
+        defaultSettings
+      ),
+    /whatsappNumber must be a valid E\.164 phone number/
+  );
+
+  assert.throws(
+    () =>
+      validateUpdateSettingsBody(
+        {
+          whatsappNumber: '+14155550123',
+          whatsappLiveTradeSuggestions: true,
+          notifyWhatsapp: false,
+        },
+        defaultSettings
+      ),
+    /notifyWhatsapp must be enabled when whatsappLiveTradeSuggestions is enabled/
   );
 }
 
@@ -6546,6 +6948,68 @@ async function runSettingsSchemaNormalizationAssertions(): Promise<void> {
     },
   } as any);
   assert.deepEqual(droppedColumns, ['backtestPromotionRules']);
+
+  const whatsappMigration = new AddWhatsappSuggestionSettingsAndQueue1770716000000();
+  const addedWhatsappColumns: string[] = [];
+  let createdWhatsappTableName: string | null = null;
+  let createdWhatsappIndices: string[] = [];
+
+  await whatsappMigration.up({
+    async hasTable(tableName: string) {
+      return tableName === 'app_settings';
+    },
+    async hasColumn() {
+      return false;
+    },
+    async addColumn(_tableName: string, column: { name: string }) {
+      addedWhatsappColumns.push(column.name);
+    },
+    async createTable(table: { name: string }) {
+      createdWhatsappTableName = table.name;
+    },
+    async createIndices(_tableName: string, indices: Array<{ name: string }>) {
+      createdWhatsappIndices = indices.map((index) => index.name);
+    },
+  } as any);
+
+  assert.deepEqual(addedWhatsappColumns, [
+    'notifyWhatsapp',
+    'whatsappLiveTradeSuggestions',
+    'whatsappNumber',
+    'whatsappVerifiedAt',
+  ]);
+  assert.equal(createdWhatsappTableName, 'whatsapp_deliveries');
+  assert.deepEqual(createdWhatsappIndices, [
+    'idx_whatsapp_deliveries_status_created_at',
+    'idx_whatsapp_deliveries_user_created_at',
+    'idx_whatsapp_deliveries_status_updated_at',
+    'uidx_whatsapp_deliveries_dedupe_key',
+  ]);
+
+  const droppedWhatsappColumns: string[] = [];
+  let droppedWhatsappTable = false;
+  await whatsappMigration.down({
+    async hasTable(tableName: string) {
+      return tableName === 'app_settings' || tableName === 'whatsapp_deliveries';
+    },
+    async hasColumn() {
+      return true;
+    },
+    async dropColumn(_tableName: string, columnName: string) {
+      droppedWhatsappColumns.push(columnName);
+    },
+    async dropTable(tableName: string) {
+      droppedWhatsappTable = tableName === 'whatsapp_deliveries';
+    },
+  } as any);
+
+  assert.equal(droppedWhatsappTable, true);
+  assert.deepEqual(droppedWhatsappColumns, [
+    'whatsappVerifiedAt',
+    'whatsappNumber',
+    'whatsappLiveTradeSuggestions',
+    'notifyWhatsapp',
+  ]);
 }
 
 async function runSuggestedTradeExecutionStorageMigrationAssertions(): Promise<void> {
@@ -10311,7 +10775,138 @@ async function runBacktestPromotionSnapshotAssertions(): Promise<void> {
     (normalizedSnapshot?.templateDiffSummary as Record<string, unknown>)?.changedCount,
     2
   );
+  await assertTradeSuggestionRuntimeContract(automationConfig, {
+    templateId: 'template-1',
+    symbols: ['BTCUSDT'],
+    timeframe: '15m',
+  });
   assert.equal(createdEvents.length, 1);
+}
+
+async function runBacktestPromotionGroupWorkflowContractAssertions(): Promise<void> {
+  const service = new BacktestPromotionService() as any;
+  const createdAutomations: Array<Record<string, unknown>> = [];
+  const createdEvents: Array<Record<string, unknown>> = [];
+
+  const createBacktest = (id: string, symbol: string) => ({
+    id,
+    name: `Grouped ${symbol}`,
+    strategy: 'Momentum Template',
+    symbol,
+    parameter: `Momentum Runner | ${symbol} | 15m`,
+    createdAt: new Date('2026-04-06T00:00:00.000Z'),
+    result: {
+      config: {
+        inputSnapshot: {
+          sourceType: 'strategy_library',
+          sourceId: 'library-1',
+          libraryId: 'library-1',
+          templateId: 'template-1',
+          templateVersion: 8,
+          market: 'crypto-futures',
+          assets: [{ symbol, brokerKey: 'paper' }],
+          timeframes: ['15m'],
+          template: {
+            id: 'template-1',
+            name: 'Momentum Template',
+            templateVersion: 8,
+            config: {
+              market: 'crypto-futures',
+              codeTarget: 'python',
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const createSetup = (backtestId: string, symbol: string) => ({
+    id: `setup-${symbol}`,
+    dedupeKey: `setup-${symbol}`,
+    backtestId,
+    backtestName: `Grouped ${symbol}`,
+    strategy: 'Momentum Template',
+    parameter: `Momentum Runner | ${symbol} | 15m`,
+    symbol,
+    timeframe: '15m',
+    score: 0.91,
+    trades: 11,
+    winRate: 61,
+    profitFactor: 1.82,
+    returnPct: 13.2,
+    maxDrawdownPct: 4.4,
+    hasIncompleteTradeHistory: false,
+    eligibleForAutomation: true,
+    automationEligibilityReasons: [],
+    templateAutomationReady: true,
+    templateAutomationReasons: [],
+    robustness: {
+      robustnessScore: 0.88,
+      walkForwardPassRate: 0.78,
+      averageOutOfSampleReturnPct: 9.6,
+      worstOutOfSampleReturnPct: 2.5,
+    },
+    createdAt: '2026-04-06T00:00:00.000Z',
+  });
+
+  service.automationRepository = {
+    findTradeSuggestionAutomationByScope: async () => null,
+    createAutomation: async (payload: Record<string, unknown>) => {
+      createdAutomations.push(payload);
+      return {
+        id: 'automation-group-1',
+        status: payload.status,
+        createdAt: new Date('2026-04-06T00:00:00.000Z'),
+      };
+    },
+    saveAutomation: async (automation: Record<string, unknown>) => automation,
+    createAutomationEvent: async (payload: Record<string, unknown>) => {
+      createdEvents.push(payload);
+      return payload;
+    },
+  };
+  service.operationalEventService = {
+    logActivity: async () => undefined,
+  };
+  service.userTimeZoneService = {
+    resolveUserTimeZone: async () => 'UTC',
+  };
+
+  const response = await service.promoteResolvedTopSetupGroup({
+    userId: 'user-1',
+    payload: {
+      status: 'Draft',
+    },
+    entries: [
+      {
+        backtest: createBacktest('backtest-group-1', 'BTCUSDT'),
+        selectedTopSetup: createSetup('backtest-group-1', 'BTCUSDT'),
+      },
+      {
+        backtest: createBacktest('backtest-group-2', 'ETHUSDT'),
+        selectedTopSetup: createSetup('backtest-group-2', 'ETHUSDT'),
+      },
+    ],
+  });
+
+  assert.equal(response.data.automation.id, 'automation-group-1');
+  assert.equal(createdAutomations.length, 1);
+  const automationPayload = createdAutomations[0];
+  const automationConfig = automationPayload?.config as Record<string, unknown>;
+  assert.equal(automationPayload?.automationType, 'trade-suggestion');
+  assert.deepEqual(automationConfig?.symbols, ['BTCUSDT', 'ETHUSDT']);
+  assert.deepEqual(automationConfig?.sourceBacktestIds, ['backtest-group-1', 'backtest-group-2']);
+  assert.equal(automationConfig?.sourceTemplateId, 'template-1');
+  await assertTradeSuggestionRuntimeContract(automationConfig, {
+    templateId: 'template-1',
+    symbols: ['BTCUSDT', 'ETHUSDT'],
+    timeframe: '15m',
+  });
+  assert.equal(createdEvents.length, 1);
+  assert.deepEqual((createdEvents[0]?.meta as Record<string, unknown>)?.symbols, [
+    'BTCUSDT',
+    'ETHUSDT',
+  ]);
 }
 
 async function runBacktestPromotionIdempotencyAssertions(): Promise<void> {
@@ -10742,6 +11337,101 @@ async function runBacktestPromotionFailureAlertAssertions(): Promise<void> {
   assert.equal(alerts[0].source, 'backtests:promotion');
   assert.equal(alerts[0].route, 'Backtests');
   assert.match(String(alerts[0].message || ''), /Automation persistence failed/);
+}
+
+async function runSignalAutomationPromotionContractAssertions(): Promise<void> {
+  const service = new SignalsService() as any;
+  const createdPayloads: Array<Record<string, unknown>> = [];
+
+  const automationsService = new AutomationsService() as any;
+  automationsService.resolveAutomationTimeZone = async () => 'UTC';
+  automationsService.mapAutomation = (automation: Record<string, unknown>) => automation;
+  automationsService.deriveAutomationCoreFields = (
+    _automationType: string,
+    _config: Record<string, unknown>,
+    fields: Record<string, unknown>
+  ) => fields;
+  automationsService.backtestRepository = {
+    getBacktestById: async () => null,
+  };
+  automationsService.strategyTemplateRepository = {
+    getStrategyTemplateById: async (_userId: string, templateId: string) => ({
+      id: templateId,
+      config: {
+        market: 'crypto-futures',
+        entryLogic: 'ema(20) > ema(50)',
+        exitLogic: 'ema(20) < ema(50)',
+        risk: {
+          stopLossPct: 2,
+          takeProfitTargetsPct: [4],
+        },
+        parameters: {
+          signalThreshold: '0.81',
+        },
+      },
+    }),
+  };
+  automationsService.automationRepository = {
+    createAutomation: async (payload: Record<string, unknown>) => {
+      createdPayloads.push(payload);
+      return {
+        id: 'signal-automation-1',
+        ...payload,
+        accounts: 0,
+        events: [],
+        alerts: [],
+        lastRun: null,
+        nextRun: null,
+        updatedAt: new Date('2026-04-06T00:00:00.000Z'),
+      };
+    },
+    saveAutomation: async (automation: Record<string, unknown>) => automation,
+    createAutomationEvent: async () => undefined,
+  };
+
+  service.automationsService = automationsService;
+
+  const signal = {
+    id: 'signal-1',
+    symbol: 'BTCUSDT',
+    source: 'Momentum Engine',
+    confidence: 0.91,
+    direction: 'Long',
+    timeframe: '1h',
+    market: 'crypto-futures',
+    signalTime: new Date('2026-04-06T10:00:00.000Z'),
+    sourceRefType: 'strategy_library',
+    sourceRefId: 'template-signal-1',
+    metadata: {
+      sourceTemplateId: 'template-signal-1',
+      sourceTemplateName: 'Momentum Engine',
+      sourceTemplateVersion: 3,
+    },
+    entryPrice: '100',
+    thesis: 'Breakout continuation',
+    riskNote: 'Keep size controlled',
+  };
+
+  const promotion = await service.createAutomationPromotion('user-1', signal);
+
+  assert.equal(promotion.promotionState, 'Automation draft created');
+  assert.equal(promotion.targetId, 'signal-automation-1');
+  assert.equal(createdPayloads.length, 1);
+
+  const automationPayload = createdPayloads[0];
+  const automationConfig = automationPayload?.config as Record<string, unknown>;
+  assert.equal(automationPayload?.automationType, 'trade-suggestion');
+  assert.equal(automationConfig?.sourceTemplateId, 'template-signal-1');
+  assert.equal(automationConfig?.templateId, 'template-signal-1');
+  assert.equal(
+    (automationConfig?.tradeSuggestion as Record<string, unknown> | undefined)?.sourceTemplateId,
+    'template-signal-1'
+  );
+  await assertTradeSuggestionRuntimeContract(automationConfig, {
+    templateId: 'template-signal-1',
+    symbols: ['BTCUSDT'],
+    timeframe: '1h',
+  });
 }
 
 function runAutomationLineageMappingAssertions(): void {
@@ -13134,6 +13824,9 @@ async function main(): Promise<void> {
   await runDiscoveryFeedServiceAssertions();
   await runSchedulerOverviewUserScopeAssertions();
   await runEmailDeliveryWorkerAssertions();
+  await runResendEmailTransportAssertions();
+  await runTwilioWhatsappTransportAssertions();
+  await runWhatsappDeliveryWorkerAssertions();
   await runEmailDeliveriesServiceAssertions();
   await runSettingsAtomicSaveAssertions();
   await runConnectionsCanonicalizationAssertions();
@@ -13200,6 +13893,7 @@ async function main(): Promise<void> {
   await runStrategyLibraryDerivedListFilteringAssertions();
   await runStrategyLibraryRecentRunHistoryAssertions();
   await runBacktestPromotionSnapshotAssertions();
+  await runBacktestPromotionGroupWorkflowContractAssertions();
   await runBacktestPromotionIdempotencyAssertions();
   await runBacktestPromotionServiceFailureAlertAssertions();
   runAutomationLineageMappingAssertions();
@@ -13219,6 +13913,7 @@ async function main(): Promise<void> {
   await runSuggestedTradesHealthServiceAssertions();
   await runSignalsOverviewServiceAssertions();
   await runSignalPresentationAssertions();
+  await runSignalAutomationPromotionContractAssertions();
   await runAutomationExecutionHardeningAssertions();
   await runAutomationOperationalSnapshotAssertions();
   console.log('Service smoke assertions passed.');

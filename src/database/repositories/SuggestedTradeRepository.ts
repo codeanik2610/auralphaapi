@@ -55,6 +55,20 @@ export interface SuggestedTradeSummaryQuery {
   search?: string;
 }
 
+export interface SuggestedTradeFreshnessAuditQuery {
+  userId?: string | null;
+  createdAfter: Date;
+  limit: number;
+  automationId?: string;
+  automationRunId?: string;
+  status?: string;
+  executionState?: string;
+  symbol?: string;
+  timeframe?: string;
+  side?: string;
+  search?: string;
+}
+
 export interface SuggestedTradeExecutionSyncQuery extends SuggestedTradeSummaryQuery {
   limit: number;
   staleBefore?: Date;
@@ -379,7 +393,7 @@ export class SuggestedTradeRepository {
         brokerKey.toLowerCase(),
         symbol.toLowerCase(),
         since,
-        Math.max(1, Math.floor(limit))
+        Math.max(1, Math.floor(limit)),
       ]
     )) as Array<{
       externalId?: string;
@@ -394,9 +408,7 @@ export class SuggestedTradeRepository {
       externalId: String(row.externalId || '').trim(),
       status: row.status ?? null,
       statusRank:
-        row.statusRank === undefined || row.statusRank === null
-          ? null
-          : Number(row.statusRank),
+        row.statusRank === undefined || row.statusRank === null ? null : Number(row.statusRank),
       firstSeenAt: row.firstSeenAt ?? null,
       lastSeenAt: row.lastSeenAt ?? null,
       payload: this.parsePayloadObject(row.payload),
@@ -427,9 +439,7 @@ export class SuggestedTradeRepository {
           WHERE execution_row.user_id = ?
             AND LOWER(COALESCE(execution_row.broker_key, '')) = ?
             AND COALESCE(execution_row.account_id, '') = ?
-            AND COALESCE(execution_row.order_id, '') IN (${chunk
-              .map(() => '?')
-              .join(',')})`,
+            AND COALESCE(execution_row.order_id, '') IN (${chunk.map(() => '?').join(',')})`,
         [userId, brokerKey.toLowerCase(), accountId, ...chunk]
       )) as Array<{ id?: string }>;
 
@@ -472,9 +482,7 @@ export class SuggestedTradeRepository {
           WHERE execution_row.user_id = ?
             AND LOWER(COALESCE(execution_row.broker_key, '')) = ?
             AND COALESCE(execution_row.account_id, '') = ?
-            AND COALESCE(execution_row.position_id, '') IN (${chunk
-              .map(() => '?')
-              .join(',')})`,
+            AND COALESCE(execution_row.position_id, '') IN (${chunk.map(() => '?').join(',')})`,
         [userId, brokerKey.toLowerCase(), accountId, ...chunk]
       )) as Array<{ id?: string }>;
 
@@ -496,7 +504,15 @@ export class SuggestedTradeRepository {
     symbols: string[]
   ): Promise<SuggestedTrade[]> {
     const normalizedSymbols = Array.from(
-      new Set(symbols.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean))
+      new Set(
+        symbols
+          .map((value) =>
+            String(value || '')
+              .trim()
+              .toLowerCase()
+          )
+          .filter(Boolean)
+      )
     );
     if (!normalizedSymbols.length) {
       return [];
@@ -537,7 +553,9 @@ export class SuggestedTradeRepository {
     symbol: string,
     limit = 6
   ): Promise<SuggestedTrade[]> {
-    const normalizedSymbol = String(symbol || '').trim().toLowerCase();
+    const normalizedSymbol = String(symbol || '')
+      .trim()
+      .toLowerCase();
     if (!normalizedSymbol) {
       return [];
     }
@@ -560,13 +578,7 @@ export class SuggestedTradeRepository {
           suggested_trade.created_at
         ) DESC
         LIMIT ?`,
-      [
-        userId,
-        brokerKey.toLowerCase(),
-        accountId,
-        normalizedSymbol,
-        Math.max(1, Math.floor(limit)),
-      ]
+      [userId, brokerKey.toLowerCase(), accountId, normalizedSymbol, Math.max(1, Math.floor(limit))]
     )) as Array<{ id?: string }>;
 
     return this.loadSuggestedTradesByIds(
@@ -600,9 +612,7 @@ export class SuggestedTradeRepository {
                    ON suggested_trade.id = execution_row.suggested_trade_id
           WHERE execution_row.user_id = ?
             AND LOWER(COALESCE(execution_row.execution_mode, '')) = 'paper'
-            AND COALESCE(execution_row.paper_order_id, '') IN (${chunk
-              .map(() => '?')
-              .join(',')})`,
+            AND COALESCE(execution_row.paper_order_id, '') IN (${chunk.map(() => '?').join(',')})`,
         [userId, ...chunk]
       )) as Array<{ id?: string }>;
 
@@ -631,6 +641,7 @@ export class SuggestedTradeRepository {
       })
       .andWhere("LOWER(COALESCE(execution_record.acceptedBy, '')) = 'system'")
       .andWhere('execution_record.acceptedAt >= :since', { since })
+      .andWhere("LOWER(COALESCE(execution_record.executionState, '')) <> 'failed'")
       .getCount();
   }
 
@@ -700,14 +711,31 @@ export class SuggestedTradeRepository {
     filled: number;
     closed: number;
   }> {
-    const baseQuery = this.buildFilteredSuggestedTradesQuery({
-      userId,
-      ...query,
-    }, {
-      withExecution: true,
-    });
+    const baseQuery = this.buildFilteredSuggestedTradesQuery(
+      {
+        userId,
+        ...query,
+      },
+      {
+        withExecution: true,
+      }
+    );
 
-    const [open, reviewed, accepted, dismissed, actionable, buySide, sellSide, queued, submitting, linked, working, filled, closed] = await Promise.all([
+    const [
+      open,
+      reviewed,
+      accepted,
+      dismissed,
+      actionable,
+      buySide,
+      sellSide,
+      queued,
+      submitting,
+      linked,
+      working,
+      filled,
+      closed,
+    ] = await Promise.all([
       baseQuery
         .clone()
         .andWhere('suggested_trade.status = :openStatus', { openStatus: 'Open' })
@@ -730,47 +758,44 @@ export class SuggestedTradeRepository {
           statuses: ['Open', 'Reviewed', 'Accepted'],
         })
         .getCount(),
-      baseQuery
-        .clone()
-        .andWhere('suggested_trade.side = :buySide', { buySide: 'BUY' })
-        .getCount(),
+      baseQuery.clone().andWhere('suggested_trade.side = :buySide', { buySide: 'BUY' }).getCount(),
       baseQuery
         .clone()
         .andWhere('suggested_trade.side = :sellSide', { sellSide: 'SELL' })
         .getCount(),
       baseQuery
         .clone()
-        .andWhere('LOWER(COALESCE(execution_record.executionState, \'\')) = :queuedState', {
+        .andWhere("LOWER(COALESCE(execution_record.executionState, '')) = :queuedState", {
           queuedState: 'queued',
         })
         .getCount(),
       baseQuery
         .clone()
-        .andWhere('LOWER(COALESCE(execution_record.executionState, \'\')) = :submittingState', {
+        .andWhere("LOWER(COALESCE(execution_record.executionState, '')) = :submittingState", {
           submittingState: 'submitting',
         })
         .getCount(),
       baseQuery
         .clone()
-        .andWhere('LOWER(COALESCE(execution_record.executionState, \'\')) = :linkedState', {
+        .andWhere("LOWER(COALESCE(execution_record.executionState, '')) = :linkedState", {
           linkedState: 'linked',
         })
         .getCount(),
       baseQuery
         .clone()
-        .andWhere('LOWER(COALESCE(execution_record.executionState, \'\')) = :workingState', {
+        .andWhere("LOWER(COALESCE(execution_record.executionState, '')) = :workingState", {
           workingState: 'working',
         })
         .getCount(),
       baseQuery
         .clone()
-        .andWhere('LOWER(COALESCE(execution_record.executionState, \'\')) = :filledState', {
+        .andWhere("LOWER(COALESCE(execution_record.executionState, '')) = :filledState", {
           filledState: 'filled',
         })
         .getCount(),
       baseQuery
         .clone()
-        .andWhere('LOWER(COALESCE(execution_record.executionState, \'\')) = :closedState', {
+        .andWhere("LOWER(COALESCE(execution_record.executionState, '')) = :closedState", {
           closedState: 'closed',
         })
         .getCount(),
@@ -812,10 +837,7 @@ export class SuggestedTradeRepository {
     return builder.take(query.limit).getMany();
   }
 
-  async listStaleTrackedTradesGlobal(
-    limit: number,
-    staleBefore: Date
-  ): Promise<SuggestedTrade[]> {
+  async listStaleTrackedTradesGlobal(limit: number, staleBefore: Date): Promise<SuggestedTrade[]> {
     const builder = this.repository
       .createQueryBuilder('suggested_trade')
       .leftJoinAndSelect('suggested_trade.executionRecord', 'execution_record');
@@ -846,10 +868,11 @@ export class SuggestedTradeRepository {
     this.applyExecutionTrackingFilter(baseQuery);
 
     const trackedQuery = baseQuery.clone();
-    const terminalQuery = baseQuery.clone().andWhere(
-      'LOWER(COALESCE(execution_record.executionState, \'\')) IN (:...terminalStates)',
-      { terminalStates: TERMINAL_EXECUTION_STATES }
-    );
+    const terminalQuery = baseQuery
+      .clone()
+      .andWhere("LOWER(COALESCE(execution_record.executionState, '')) IN (:...terminalStates)", {
+        terminalStates: TERMINAL_EXECUTION_STATES,
+      });
 
     const activeQuery = baseQuery.clone();
     this.applyActiveExecutionFilter(activeQuery);
@@ -880,10 +903,11 @@ export class SuggestedTradeRepository {
     this.applyExecutionTrackingFilter(baseQuery);
 
     const trackedQuery = baseQuery.clone();
-    const terminalQuery = baseQuery.clone().andWhere(
-      'LOWER(COALESCE(execution_record.executionState, \'\')) IN (:...terminalStates)',
-      { terminalStates: TERMINAL_EXECUTION_STATES }
-    );
+    const terminalQuery = baseQuery
+      .clone()
+      .andWhere("LOWER(COALESCE(execution_record.executionState, '')) IN (:...terminalStates)", {
+        terminalStates: TERMINAL_EXECUTION_STATES,
+      });
 
     const activeQuery = baseQuery.clone();
     this.applyActiveExecutionFilter(activeQuery);
@@ -1004,6 +1028,36 @@ export class SuggestedTradeRepository {
     };
   }
 
+  async listSuggestedTradesForFreshnessAudit(
+    query: SuggestedTradeFreshnessAuditQuery
+  ): Promise<{ items: SuggestedTrade[]; sampled: number; total: number }> {
+    const builder = this.repository
+      .createQueryBuilder('suggested_trade')
+      .leftJoinAndSelect('suggested_trade.executionRecord', 'execution_record')
+      .where('suggested_trade.createdAt >= :createdAfter', {
+        createdAfter: query.createdAfter,
+      });
+
+    if (query.userId) {
+      builder.andWhere('suggested_trade.userId = :userId', { userId: query.userId });
+    }
+
+    this.applyFilters(builder, query);
+
+    const total = await builder.clone().getCount();
+    const items = await builder
+      .orderBy('suggested_trade.createdAt', 'DESC')
+      .addOrderBy('suggested_trade.signalTime', 'DESC')
+      .take(Math.max(1, Math.floor(query.limit)))
+      .getMany();
+
+    return {
+      items,
+      sampled: items.length,
+      total,
+    };
+  }
+
   async insertSuggestedTrades(
     payloads: SuggestedTradeInsertPayload[]
   ): Promise<{ inserted: number; duplicates: number }> {
@@ -1045,8 +1099,7 @@ export class SuggestedTradeRepository {
           payload.confidence === undefined || payload.confidence === null
             ? null
             : Number(payload.confidence),
-        score:
-          payload.score === undefined || payload.score === null ? null : Number(payload.score),
+        score: payload.score === undefined || payload.score === null ? null : Number(payload.score),
         entryPrice: normalizeDecimal(payload.entryPrice),
         stopLossPrice: normalizeDecimal(payload.stopLossPrice),
         takeProfitTargets: payload.takeProfitTargets ?? null,
@@ -1099,8 +1152,7 @@ export class SuggestedTradeRepository {
         payload.confidence === undefined || payload.confidence === null
           ? null
           : Number(payload.confidence),
-      score:
-        payload.score === undefined || payload.score === null ? null : Number(payload.score),
+      score: payload.score === undefined || payload.score === null ? null : Number(payload.score),
       entryPrice: normalizeDecimal(payload.entryPrice),
       stopLossPrice: normalizeDecimal(payload.stopLossPrice),
       takeProfitTargets: payload.takeProfitTargets ?? null,
@@ -1121,11 +1173,10 @@ export class SuggestedTradeRepository {
     });
   }
 
-  private async loadSuggestedTradesByIds(
-    userId: string,
-    ids: string[]
-  ): Promise<SuggestedTrade[]> {
-    const normalizedIds = Array.from(new Set(ids.map((value) => String(value || '').trim()).filter(Boolean)));
+  private async loadSuggestedTradesByIds(userId: string, ids: string[]): Promise<SuggestedTrade[]> {
+    const normalizedIds = Array.from(
+      new Set(ids.map((value) => String(value || '').trim()).filter(Boolean))
+    );
     if (!normalizedIds.length) {
       return [];
     }
@@ -1175,7 +1226,7 @@ export class SuggestedTradeRepository {
       builder.andWhere('suggested_trade.status = :status', { status: query.status });
     }
     if (query.executionState) {
-      builder.andWhere('LOWER(COALESCE(execution_record.executionState, \'\')) = :executionState', {
+      builder.andWhere("LOWER(COALESCE(execution_record.executionState, '')) = :executionState", {
         executionState: query.executionState.toLowerCase(),
       });
     }
@@ -1202,17 +1253,13 @@ export class SuggestedTradeRepository {
     }
   }
 
-  private applyExecutionTrackingFilter(
-    builder: SelectQueryBuilder<SuggestedTrade>
-  ): void {
+  private applyExecutionTrackingFilter(builder: SelectQueryBuilder<SuggestedTrade>): void {
     builder.andWhere(this.getExecutionTrackingSql());
   }
 
-  private applyActiveExecutionFilter(
-    builder: SelectQueryBuilder<SuggestedTrade>
-  ): void {
+  private applyActiveExecutionFilter(builder: SelectQueryBuilder<SuggestedTrade>): void {
     builder.andWhere(
-      'LOWER(COALESCE(execution_record.executionState, \'\')) NOT IN (:...terminalStates)',
+      "LOWER(COALESCE(execution_record.executionState, '')) NOT IN (:...terminalStates)",
       { terminalStates: TERMINAL_EXECUTION_STATES }
     );
   }
@@ -1233,9 +1280,7 @@ export class SuggestedTradeRepository {
     );
   }
 
-  private applyExecutionSyncOrdering(
-    builder: SelectQueryBuilder<SuggestedTrade>
-  ): void {
+  private applyExecutionSyncOrdering(builder: SelectQueryBuilder<SuggestedTrade>): void {
     builder.addSelect(
       `COALESCE(
         execution_record.last_seen_at,

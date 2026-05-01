@@ -9,6 +9,7 @@ import path from 'node:path';
 import { ConnectionsService } from '../src/api/services/ConnectionsService';
 import { ExchangeAssetsService } from '../src/api/services/ExchangeAssetsService';
 import { DeltaExchangeOrdersAdapter } from '../src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter';
+import { MudrexOrdersAdapter } from '../src/brokers/capabilities/orders/MudrexOrdersAdapter';
 import { DeltaExchangeHttpClient } from '../src/brokers/providers/delta_exchange/DeltaExchangeHttpClient';
 import { DropBrokerAssetLegacyUserOwnership1770709000000 } from './_fixtures/migrations/1770709000000-DropBrokerAssetLegacyUserOwnership';
 import {
@@ -1012,6 +1013,8 @@ async function runDeltaLookupAssertions(): Promise<void> {
   const adapter = new DeltaExchangeOrdersAdapter() as any;
   const lookupCalls: string[] = [];
   const submittedPayloads: Record<string, unknown>[] = [];
+  const leveragePayloads: Record<string, unknown>[] = [];
+  const detailRequests: { accountId: string; routePath: string; userId?: string }[] = [];
   const publicProductRequests: string[] = [];
   const expectedClientOrderId = (key: string) =>
     `aur_${createHash('sha256').update(key).digest('hex').slice(0, 28)}`;
@@ -1059,16 +1062,54 @@ async function runDeltaLookupAssertions(): Promise<void> {
         payload: Record<string, unknown>,
         userId?: string
       ) {
+        if (routePath === '/v2/products/45678/orders/leverage') {
+          leveragePayloads.push({
+            accountId,
+            routePath,
+            payload,
+            userId,
+          });
+          return {
+            leverage: payload.leverage,
+            order_margin: '1.23',
+            product_id: 45678,
+          };
+        }
         submittedPayloads.push({
           accountId,
           routePath,
           payload,
           userId,
         });
+        if ((payload.client_order_id as string | undefined) === expectedClientOrderId('live-auto:delta-market-short')) {
+          return {
+            id: `delta-order-${submittedPayloads.length}`,
+            state: 'closed',
+          };
+        }
         return {
           id: `delta-order-${submittedPayloads.length}`,
           state: 'open',
         };
+      },
+      async signedGet(
+        accountId: string,
+        routePath: string,
+        _query?: Record<string, string | number | boolean | undefined>,
+        userId?: string
+      ) {
+        detailRequests.push({ accountId, routePath, userId });
+        if (routePath === '/v2/positions/margined') {
+          return [];
+        }
+        if (routePath === '/v2/orders/delta-order-4') {
+          return {
+            id: 'delta-order-4',
+            state: 'closed',
+            average_fill_price: '97',
+          };
+        }
+        throw new Error(`Unexpected Delta signedGet ${routePath}`);
       },
     }),
   });
@@ -1101,6 +1142,14 @@ async function runDeltaLookupAssertions(): Promise<void> {
     'asset:delta_exchange:BTCUSDT',
     'symbol:delta_exchange:BTCUSDT',
   ]);
+  assert.deepEqual(leveragePayloads[0], {
+    accountId: 'acct-1',
+    routePath: '/v2/products/45678/orders/leverage',
+    payload: {
+      leverage: '3',
+    },
+    userId: 'user-1',
+  });
   assert.deepEqual(submittedPayloads[0], {
     accountId: 'acct-1',
     routePath: '/v2/orders',
@@ -1154,6 +1203,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
   assert.equal(response.protection_status, 'attached');
   assert.equal(response.stop_loss_order_id, 'delta-order-2');
   assert.equal(response.take_profit_order_id, 'delta-order-3');
+  assert.equal(response.leverage, '3');
   assert.deepEqual(publicProductRequests, ['/v2/products']);
 
   const marketResponse = await adapter.createOrder(
@@ -1201,7 +1251,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
       order_type: 'market_order',
       time_in_force: 'gtc',
       stop_order_type: 'stop_loss_order',
-      stop_price: '105',
+      stop_price: '102',
       stop_trigger_method: 'mark_price',
       reduce_only: true,
       client_order_id: expectedClientOrderId('live-auto:delta-market-short:stop_loss'),
@@ -1218,7 +1268,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
       order_type: 'market_order',
       time_in_force: 'gtc',
       stop_order_type: 'take_profit_order',
-      stop_price: '90',
+      stop_price: '87',
       stop_trigger_method: 'mark_price',
       reduce_only: true,
       client_order_id: expectedClientOrderId('live-auto:delta-market-short:take_profit'),
@@ -1228,6 +1278,24 @@ async function runDeltaLookupAssertions(): Promise<void> {
   assert.equal(marketResponse.order_id, 'delta-order-4');
   assert.equal(marketResponse.stop_loss_order_id, 'delta-order-5');
   assert.equal(marketResponse.take_profit_order_id, 'delta-order-6');
+  assert.equal(marketResponse.leverage, '15');
+  assert.equal(marketResponse.protection_reference_price, '97');
+  assert.equal(marketResponse.protection_rebased, true);
+  assert.equal(marketResponse.filled_price, '97');
+  assert.equal(
+    detailRequests.filter((request) => request.routePath === '/v2/positions/margined').length,
+    2
+  );
+  assert.deepEqual(
+    detailRequests.filter((request) => request.routePath !== '/v2/positions/margined'),
+    [
+      {
+        accountId: 'acct-1',
+        routePath: '/v2/orders/delta-order-4',
+        userId: 'user-1',
+      },
+    ]
+  );
 
   await adapter.createOrder(
     'BTCUSDT',
@@ -1340,10 +1408,151 @@ async function runDeltaLookupAssertions(): Promise<void> {
   assert.equal(convertedResponse.order_id, 'delta-order-8');
   assert.equal(convertedResponse.stop_loss_order_id, 'delta-order-9');
   assert.equal(convertedResponse.take_profit_order_id, 'delta-order-10');
+  assert.equal(convertedResponse.leverage, '15');
   assert.equal(convertedResponse.quantity, '1');
   assert.equal(convertedResponse.base_quantity, '0.001');
   assert.equal(convertedResponse.contract_value, '0.001');
   assert.equal(convertedResponse.amount, '74.7392');
+
+  const conflictSignedGetCalls: Array<{
+    accountId: string;
+    routePath: string;
+    userId?: string;
+  }> = [];
+  const conflictSubmittedPayloads: Record<string, unknown>[] = [];
+  const conflictAdapter = new DeltaExchangeOrdersAdapter() as any;
+  Object.defineProperty(conflictAdapter, 'exchangeAssetRepository', {
+    get: () => ({
+      async getSystemAssetBySourceAndExternalId() {
+        return null;
+      },
+      async getSystemAssetBySourceAndAssetId() {
+        return null;
+      },
+      async getSystemAssetBySourceAndSymbol(_source: string, symbol: string) {
+        return {
+          externalId: '45678',
+          symbol,
+        };
+      },
+    }),
+  });
+  Object.defineProperty(conflictAdapter, 'deltaHttpClient', {
+    get: () => ({
+      async publicGet(routePath: string) {
+        assert.equal(routePath, '/v2/products');
+        return [
+          {
+            id: 45678,
+            symbol: 'BTCUSD',
+            contract_value: '0.001',
+            contract_unit_currency: 'BTC',
+            contract_type: 'perpetual_futures',
+            notional_type: 'vanilla',
+            state: 'live',
+            trading_status: 'operational',
+          },
+        ];
+      },
+      async signedGet(
+        accountId: string,
+        routePath: string,
+        _query?: Record<string, string | number | boolean | undefined>,
+        userId?: string
+      ) {
+        conflictSignedGetCalls.push({ accountId, routePath, userId });
+        if (routePath === '/v2/positions/margined') {
+          return [
+            {
+              product_id: 45678,
+              product_symbol: 'BTCUSD',
+              size: '-2',
+            },
+          ];
+        }
+        throw new Error(`Unexpected Delta signedGet ${routePath}`);
+      },
+      async signedPost(
+        accountId: string,
+        routePath: string,
+        payload: Record<string, unknown>,
+        userId?: string
+      ) {
+        conflictSubmittedPayloads.push({
+          accountId,
+          routePath,
+          payload,
+          userId,
+        });
+        return {
+          id: 'delta-conflict-order',
+          state: 'open',
+        };
+      },
+    }),
+  });
+
+  await assert.rejects(
+    () =>
+      conflictAdapter.createOrder(
+        'BTCUSDT',
+        {
+          idempotency_key: 'live-auto:delta-existing-net-position',
+          side: 'long',
+          quantity: 1,
+          reduce_only: false,
+          order_type: 'market',
+          order_price: 100,
+          leverage: 15,
+          trigger_type: 'immediate',
+          execution_mode: 'live',
+          is_stoploss: false,
+          is_takeprofit: false,
+          stoploss_price: 95,
+          takeprofit_price: 110,
+        },
+        {
+          userId: 'user-1',
+          accountId: 'acct-1',
+        }
+      ),
+    /already has an open net position on this symbol/
+  );
+  assert.deepEqual(conflictSignedGetCalls, [
+    {
+      accountId: 'acct-1',
+      routePath: '/v2/positions/margined',
+      userId: 'user-1',
+    },
+  ]);
+  assert.deepEqual(conflictSubmittedPayloads, []);
+
+  assert.deepEqual(leveragePayloads, [
+    {
+      accountId: 'acct-1',
+      routePath: '/v2/products/45678/orders/leverage',
+      payload: {
+        leverage: '3',
+      },
+      userId: 'user-1',
+    },
+    {
+      accountId: 'acct-1',
+      routePath: '/v2/products/45678/orders/leverage',
+      payload: {
+        leverage: '15',
+      },
+      userId: 'user-1',
+    },
+    {
+      accountId: 'acct-1',
+      routePath: '/v2/products/45678/orders/leverage',
+      payload: {
+        leverage: '15',
+      },
+      userId: 'user-1',
+    },
+  ]);
   for (const submittedPayload of submittedPayloads) {
     const clientOrderId = (submittedPayload.payload as Record<string, unknown>).client_order_id;
     if (clientOrderId) {
@@ -1357,6 +1566,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
 
   const indiaAdapter = new DeltaExchangeOrdersAdapter() as any;
   const indiaSubmittedPayloads: Record<string, unknown>[] = [];
+  const indiaLeveragePayloads: Record<string, unknown>[] = [];
   Object.defineProperty(indiaAdapter, 'deltaHttpClient', {
     get: () => ({
       async publicGet(routePath: string) {
@@ -1380,6 +1590,19 @@ async function runDeltaLookupAssertions(): Promise<void> {
         payload: Record<string, unknown>,
         userId?: string
       ) {
+        if (routePath === '/v2/products/27/orders/leverage') {
+          indiaLeveragePayloads.push({
+            accountId,
+            routePath,
+            payload,
+            userId,
+          });
+          return {
+            leverage: payload.leverage,
+            order_margin: '4.56',
+            product_id: 27,
+          };
+        }
         indiaSubmittedPayloads.push({
           accountId,
           routePath,
@@ -1390,6 +1613,9 @@ async function runDeltaLookupAssertions(): Promise<void> {
           id: `delta-india-order-${indiaSubmittedPayloads.length}`,
           state: 'open',
         };
+      },
+      async signedGet() {
+        return [];
       },
     }),
   });
@@ -1416,6 +1642,16 @@ async function runDeltaLookupAssertions(): Promise<void> {
       accountId: 'acct-1',
     }
   );
+  assert.deepEqual(indiaLeveragePayloads, [
+    {
+      accountId: 'acct-1',
+      routePath: '/v2/products/27/orders/leverage',
+      payload: {
+        leverage: '15',
+      },
+      userId: 'user-1',
+    },
+  ]);
   assert.equal(indiaSubmittedPayloads[0].routePath, '/v2/orders');
   assert.deepEqual(indiaSubmittedPayloads.map((payload) => (payload.payload as any).product_id), [
     27,
@@ -1549,6 +1785,175 @@ async function runDeltaLookupAssertions(): Promise<void> {
   );
 }
 
+async function runMudrexLeverageVerificationAssertions(): Promise<void> {
+  const adapter = new MudrexOrdersAdapter() as any;
+  const createCalls: Array<{
+    assetId: string;
+    userId?: string;
+    accountId?: string;
+    leverage: unknown;
+    orderType: unknown;
+    triggerType: unknown;
+    reduceOnly: unknown;
+  }> = [];
+
+  Object.defineProperty(adapter, 'ordersService', {
+    get: () => ({
+      async createFuturesOrder(
+        assetId: string,
+        body: Record<string, unknown>,
+        userId?: string,
+        accountId?: string
+      ) {
+        createCalls.push({
+          assetId,
+          userId,
+          accountId,
+          leverage: body.leverage,
+          orderType: body.order_type,
+          triggerType: body.trigger_type,
+          reduceOnly: body.reduce_only,
+        });
+        return {
+          success: true,
+          data: {
+            leverage: '12',
+            amount: '100',
+            quantity: '1',
+            price: '2500',
+            order_id: 'mudrex-order-1',
+            status: 'OPEN',
+            message: 'Order submitted',
+          },
+        };
+      },
+    }),
+  });
+
+  const response = await adapter.createOrder(
+    'ETHUSDT',
+    {
+      side: 'long',
+      quantity: 1,
+      reduce_only: false,
+      order_type: 'market',
+      order_price: 2500,
+      leverage: 12,
+      trigger_type: 'immediate',
+      execution_mode: 'live',
+      is_stoploss: false,
+      is_takeprofit: false,
+      stoploss_price: 2450,
+      takeprofit_price: 2600,
+    },
+    {
+      userId: 'user-1',
+      accountId: 'acct-1',
+    }
+  );
+
+  assert.equal(createCalls.length, 1);
+  assert.deepEqual(createCalls[0], {
+    assetId: 'ETHUSDT',
+    userId: 'user-1',
+    accountId: 'acct-1',
+    leverage: 12,
+    orderType: 'LONG',
+    triggerType: 'MARKET',
+    reduceOnly: false,
+  });
+  assert.equal((response as any).data.leverage, '12');
+
+  await assert.rejects(
+    () =>
+      adapter.createOrder(
+        'ETHUSDT',
+        {
+          side: 'long',
+          quantity: 1,
+          reduce_only: false,
+          order_type: 'market',
+          order_price: 2500,
+          leverage: 15,
+          trigger_type: 'immediate',
+          execution_mode: 'live',
+          is_stoploss: false,
+          is_takeprofit: false,
+          stoploss_price: 2450,
+          takeprofit_price: 2600,
+        },
+        {
+          userId: 'user-1',
+          accountId: 'acct-1',
+        }
+      ),
+    /Mudrex confirmed leverage 12 instead of requested leverage 15/
+  );
+
+  const reduceOnlyResponse = await adapter.createOrder(
+    'ETHUSDT',
+    {
+      side: 'short',
+      quantity: 1,
+      reduce_only: true,
+      order_type: 'market',
+      order_price: 2500,
+      leverage: 50,
+      trigger_type: 'immediate',
+      execution_mode: 'live',
+      is_stoploss: false,
+      is_takeprofit: false,
+      stoploss_price: 2550,
+      takeprofit_price: 2400,
+    },
+    {
+      userId: 'user-1',
+      accountId: 'acct-1',
+    }
+  );
+  assert.equal((reduceOnlyResponse as any).data.order_id, 'mudrex-order-1');
+  assert.deepEqual(createCalls[2], {
+    assetId: 'ETHUSDT',
+    userId: 'user-1',
+    accountId: 'acct-1',
+    leverage: 50,
+    orderType: 'SHORT',
+    triggerType: 'MARKET',
+    reduceOnly: true,
+  });
+
+  await adapter.createOrder(
+    'ETHUSDT',
+    {
+      side: 'long',
+      quantity: 1,
+      reduce_only: false,
+      order_type: 'limit',
+      order_price: 2500,
+      leverage: 12,
+      trigger_type: 'gtc',
+      execution_mode: 'live',
+      is_stoploss: false,
+      is_takeprofit: false,
+      stoploss_price: 2450,
+      takeprofit_price: 2600,
+    },
+    {
+      userId: 'user-1',
+      accountId: 'acct-1',
+    }
+  );
+  assert.deepEqual(createCalls[3], {
+    assetId: 'ETHUSDT',
+    userId: 'user-1',
+    accountId: 'acct-1',
+    leverage: 12,
+    orderType: 'LONG',
+    triggerType: 'LIMIT',
+    reduceOnly: false,
+  });
+}
+
 async function runDeltaHttpClientErrorTransparencyAssertions(): Promise<void> {
   const client = new DeltaExchangeHttpClient() as any;
 
@@ -1632,6 +2037,7 @@ async function runFlowAssertions(): Promise<void> {
   await runVisibilityFlowAssertions();
   await runProductMapVisibilityAssertions();
   await runDeltaLookupAssertions();
+  await runMudrexLeverageVerificationAssertions();
   await runDeltaHttpClientErrorTransparencyAssertions();
 }
 

@@ -6,6 +6,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/platform-common.sh"
 
 WITH_EMAIL=false
+WITH_WHATSAPP=false
 SKIP_BUILD=false
 SKIP_MIGRATE=false
 RUN_SEED=false
@@ -14,6 +15,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --with-email)
       WITH_EMAIL=true
+      shift
+      ;;
+    --with-whatsapp)
+      WITH_WHATSAPP=true
       shift
       ;;
     --skip-build)
@@ -30,7 +35,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Supported arguments: --with-email --skip-build --skip-migrate --seed" >&2
+      echo "Supported arguments: --with-email --with-whatsapp --skip-build --skip-migrate --seed" >&2
       exit 1
       ;;
   esac
@@ -43,6 +48,9 @@ ensure_selfhosted_db_services
 profile_args=()
 if [[ "${WITH_EMAIL}" == "true" ]]; then
   profile_args+=(--profile email)
+fi
+if [[ "${WITH_WHATSAPP}" == "true" ]]; then
+  profile_args+=(--profile whatsapp)
 fi
 
 if [[ "${SKIP_BUILD}" != "true" ]]; then

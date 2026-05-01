@@ -5,10 +5,7 @@ import { OrdersOverviewController } from '../src/api/controllers/OrdersOverviewC
 import { BrokerOrdersFacadeService } from '../src/api/services/BrokerOrdersFacadeService';
 import { OrdersOverviewService } from '../src/api/services/OrdersOverviewService';
 import { coreDataSource } from '../src/database/data-source';
-import {
-  buildApiTimeContract,
-  formatApiDisplayTime,
-} from '../src/api/utils/apiTimeContract';
+import { buildApiTimeContract, formatApiDisplayTime } from '../src/api/utils/apiTimeContract';
 import {
   validateCreateOrderBody,
   validateOrderSubmissionAttemptsQuery,
@@ -209,6 +206,461 @@ async function runValidatorAssertions(): Promise<void> {
   );
 }
 
+async function runOrderKillSwitchAssertions(): Promise<void> {
+  const service = new BrokerOrdersFacadeService() as any;
+  let adapterCalls = 0;
+  let riskCalls = 0;
+  let killSwitchContext: Record<string, unknown> | null = null;
+  const activities: Array<Record<string, unknown>> = [];
+  const alerts: Array<Record<string, unknown>> = [];
+
+  service.brokerAccountRoutingService = {
+    async resolve(userId: string, brokerKey?: string, accountId?: string) {
+      return {
+        userId,
+        brokerKey: brokerKey || 'mudrex',
+        accountId: accountId || 'acct-1',
+      };
+    },
+  };
+  service.riskKillSwitchService = {
+    async assertLiveTradingAllowed(userId: string, context: Record<string, unknown>) {
+      killSwitchContext = { userId, ...context };
+      throw new Error('Risk kill switch is active for workspace');
+    },
+  };
+  service.riskService = {
+    async evaluatePreTradeOrder() {
+      riskCalls += 1;
+      return {
+        blocked: false,
+        reason: '',
+        policyId: null,
+        breaches: [],
+      };
+    },
+  };
+  service.brokerRuntimeRegistry = {
+    getOrdersAdapter() {
+      return {
+        async createOrder() {
+          adapterCalls += 1;
+          return createSuccess({ order_id: 'live-1' });
+        },
+      };
+    },
+  };
+  service.operationalEventService = {
+    async logActivity(_userId: string, payload: Record<string, unknown>) {
+      activities.push(payload);
+    },
+    async emitFailureAlert(_userId: string, payload: Record<string, unknown>) {
+      alerts.push(payload);
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      service.createFuturesOrder('user-1', 'asset-1', {
+        brokerKey: 'mudrex',
+        accountId: 'acct-1',
+        symbol: 'BTCUSDT',
+        side: 'long',
+        execution_mode: 'live',
+        leverage: 5,
+        quantity: 1,
+        order_price: 64000,
+        order_type: 'market',
+        trigger_type: 'immediate',
+        is_takeprofit: false,
+        is_stoploss: false,
+        stoploss_price: 62000,
+        takeprofit_price: 66000,
+        reduce_only: false,
+      }),
+    /Risk kill switch is active/
+  );
+
+  assert.deepEqual(killSwitchContext, {
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+  });
+  assert.equal(riskCalls, 0);
+  assert.equal(adapterCalls, 0);
+  assert.equal(activities[0]?.title, 'Order create failed');
+  assert.equal(alerts[0]?.channel, 'Trading');
+}
+
+async function runDirectLivePreTradeBlockAssertions(): Promise<void> {
+  const service = new BrokerOrdersFacadeService() as any;
+  let adapterCalls = 0;
+  let riskCalls = 0;
+  let preTradeRequest: Record<string, unknown> | null = null;
+  const activities: Array<Record<string, unknown>> = [];
+  const alerts: Array<Record<string, unknown>> = [];
+
+  service.brokerAccountRoutingService = {
+    async resolve(userId: string, brokerKey?: string, accountId?: string) {
+      return {
+        userId,
+        brokerKey: brokerKey || 'mudrex',
+        accountId: accountId || 'acct-1',
+      };
+    },
+  };
+  service.riskKillSwitchService = {
+    async assertLiveTradingAllowed() {
+      return undefined;
+    },
+  };
+  service.riskPreTradeService = {
+    async createPreTradeCheck(userId: string, body: Record<string, unknown>) {
+      preTradeRequest = { userId, body };
+      return createSuccess({
+        checkId: 'pretrade-block-1',
+        status: 'blocked',
+        decision: {
+          allowed: false,
+          blocked: true,
+          approvalRequired: false,
+          blockingRuleCount: 1,
+          warningRuleCount: 0,
+          summary: 'Snapshot-backed source coverage is incomplete for the selected route.',
+        },
+      });
+    },
+  };
+  service.riskService = {
+    async evaluatePreTradeOrder() {
+      riskCalls += 1;
+      return {
+        blocked: false,
+        reason: '',
+        policyId: null,
+        breaches: [],
+      };
+    },
+  };
+  service.brokerRuntimeRegistry = {
+    getOrdersAdapter() {
+      return {
+        async createOrder() {
+          adapterCalls += 1;
+          return createSuccess({ order_id: 'live-1' });
+        },
+      };
+    },
+  };
+  service.operationalEventService = {
+    async logActivity(_userId: string, payload: Record<string, unknown>) {
+      activities.push(payload);
+    },
+    async emitFailureAlert(_userId: string, payload: Record<string, unknown>) {
+      alerts.push(payload);
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      service.createFuturesOrder('user-1', 'asset-1', {
+        brokerKey: 'mudrex',
+        accountId: 'acct-1',
+        symbol: 'BTCUSDT',
+        side: 'long',
+        execution_mode: 'live',
+        leverage: 5,
+        quantity: 1,
+        order_price: 64000,
+        order_type: 'market_order',
+        trigger_type: 'immediate',
+        is_takeprofit: false,
+        is_stoploss: false,
+        stoploss_price: 62000,
+        takeprofit_price: 66000,
+        reduce_only: false,
+      }),
+    /Snapshot-backed source coverage is incomplete/
+  );
+
+  assert.equal(riskCalls, 0);
+  assert.equal(adapterCalls, 0);
+  assert.deepEqual(preTradeRequest, {
+    userId: 'user-1',
+    body: {
+      snapshotId: undefined,
+      suggestedTradeId: undefined,
+      automationId: undefined,
+      automationRunId: undefined,
+      sourceType: 'direct_live_order',
+      executionMode: 'live',
+      approvalMode: 'auto_if_safe',
+      routing: {
+        routeMode: 'fixed',
+        brokerKey: 'mudrex',
+        accountId: 'acct-1',
+      },
+      order: {
+        symbol: 'BTCUSDT',
+        timeframe: null,
+        side: 'BUY',
+        orderType: 'market',
+        timeInForce: null,
+        quantityMode: 'quantity',
+        quantity: 1,
+        notional: null,
+        riskPercent: null,
+        entryPrice: 64000,
+        stopLossPrice: 62000,
+        takeProfitTargets: [66000],
+        leverage: 5,
+        reduceOnly: false,
+      },
+    },
+  });
+  assert.equal(activities[0]?.title, 'Live order blocked by pre-trade check');
+  assert.equal(activities[1]?.title, 'Order create failed');
+  assert.equal(alerts[0]?.channel, 'Risk');
+  assert.equal(alerts[1]?.channel, 'Trading');
+}
+
+async function runOrderSubmissionProtectionStateAssertions(): Promise<void> {
+  const service = new BrokerOrdersFacadeService() as any;
+  const baseSubmission = {
+    id: 'submission-protection-1',
+    userId: 'user-1',
+    idempotencyKey: 'order-protection-1',
+    requestHash: 'hash',
+    executionMode: 'live',
+    assetId: 'asset-1',
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+    suggestedTradeId: null,
+    status: 'completed',
+    placementState: 'placed',
+    brokerOrderId: 'live-1',
+    brokerOrderStatus: 'OPEN',
+    reconciliationState: 'pending',
+    requestPayload: {
+      order: {
+        executionMode: 'live',
+        reduceOnly: false,
+        stopLossPrice: 62000,
+        takeProfitPrice: 66000,
+      },
+    },
+    errorPayload: null,
+    lifecyclePayload: [
+      {
+        type: 'broker_order_accepted',
+        details: {
+          protectionExpected: true,
+        },
+      },
+    ],
+    completedAt: new Date('2026-04-09T12:00:00.000Z'),
+    failedAt: null,
+    createdAt: new Date('2026-04-09T11:59:00.000Z'),
+    updatedAt: new Date('2026-04-09T12:00:00.000Z'),
+  };
+
+  service.orderSubmissionRequestRepository = {
+    async findByUserAndId(_userId: string, submissionId: string) {
+      if (submissionId === 'attached') {
+        return {
+          ...baseSubmission,
+          id: 'attached',
+          responsePayload: {
+            success: true,
+            data: {
+              protection_status: 'attached',
+              stop_loss_order_id: 'sl-1',
+              take_profit_order_id: 'tp-1',
+              protective_orders: [{ kind: 'stop_loss' }, { kind: 'take_profit' }],
+            },
+          },
+        };
+      }
+      if (submissionId === 'missing') {
+        return {
+          ...baseSubmission,
+          id: 'missing',
+          responsePayload: {
+            success: true,
+            data: {
+              protection_status: 'not_requested',
+            },
+          },
+        };
+      }
+      return null;
+    },
+  };
+
+  const attached = await service.getOrderSubmissionAttempt('user-1', 'attached');
+  assert.deepEqual(attached.protectionState, {
+    expected: true,
+    status: 'attached',
+    attached: true,
+    summary: 'Native SL/TP protection was reported by the broker response.',
+    brokerStatus: 'attached',
+    stopLossOrderId: 'sl-1',
+    takeProfitOrderId: 'tp-1',
+    protectiveOrderCount: 2,
+  });
+  assert.equal(attached.operatorState.label, 'Pending reconciliation');
+
+  const missing = await service.getOrderSubmissionAttempt('user-1', 'missing');
+  assert.equal(missing.protectionState.status, 'missing');
+  assert.equal(missing.operatorState.label, 'Protection missing');
+  assert.equal(missing.operatorState.recommendedAction, 'verify_protection');
+}
+
+async function runOrderSubmissionProactiveSyncAssertions(): Promise<void> {
+  const service = new BrokerOrdersFacadeService() as any;
+  service.orderSubmissionReconciliationMissingAfterMs = 1000;
+
+  const makeSubmission = (id: string) => ({
+    id,
+    userId: 'user-1',
+    idempotencyKey: `key-${id}`,
+    requestHash: 'hash',
+    executionMode: 'live',
+    assetId: 'asset-1',
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+    suggestedTradeId: null,
+    status: 'completed',
+    placementState: 'placed',
+    brokerOrderId: `live-${id}`,
+    brokerOrderStatus: 'OPEN',
+    reconciliationState: 'pending',
+    requestPayload: null,
+    responsePayload: { success: true, data: { order_id: `live-${id}` } },
+    errorPayload: null,
+    lifecyclePayload: [],
+    completedAt: new Date('2026-04-09T12:00:00.000Z'),
+    failedAt: null,
+    createdAt: new Date('2026-04-09T11:59:00.000Z'),
+    updatedAt: new Date('2026-04-09T12:00:00.000Z'),
+  });
+
+  let current: Record<string, any> = makeSubmission('matched');
+  let syncRequest: Record<string, unknown> | null = null;
+  let snapshotLookups = 0;
+
+  service.userTimeZoneService = {
+    async resolveUserTimeZone() {
+      return 'UTC';
+    },
+  };
+  service.internalOrdersSyncService = {
+    async runBatch(request: Record<string, unknown>) {
+      syncRequest = request;
+      return {
+        processedAccounts: 1,
+        failedAccounts: 0,
+        fetchedRecords: 3,
+        insertedRecords: 1,
+        updatedRecords: 2,
+        skippedRecords: 0,
+        failures: [],
+      };
+    },
+  };
+  service.orderSubmissionRequestRepository = {
+    async findByUserAndId() {
+      return current;
+    },
+    async recordLifecycleEvent(record: Record<string, any>, event: Record<string, unknown>) {
+      current = {
+        ...record,
+        lifecyclePayload: [...(record.lifecyclePayload ?? []), event],
+      };
+      return current;
+    },
+    async markReconciliationMatched(record: Record<string, any>, options: Record<string, any>) {
+      current = {
+        ...record,
+        brokerOrderStatus: options.brokerOrderStatus ?? record.brokerOrderStatus,
+        reconciliationState: 'matched',
+        lifecyclePayload: [...(record.lifecyclePayload ?? []), options.lifecycleEvent],
+      };
+      return current;
+    },
+    async markReconciliationMissing(record: Record<string, any>, options: Record<string, any>) {
+      current = {
+        ...record,
+        reconciliationState: 'missing',
+        lifecyclePayload: [...(record.lifecyclePayload ?? []), options.lifecycleEvent],
+      };
+      return current;
+    },
+  };
+  service.ordersSnapshotSourceRepository = {
+    async findOrderByExternalId() {
+      snapshotLookups += 1;
+      if (snapshotLookups === 2) {
+        return {
+          externalId: 'live-matched',
+          orderStatus: 'OPEN',
+          statusRank: 1,
+          firstSeenAt: new Date('2026-04-09T12:00:20.000Z'),
+          lastSeenAt: new Date('2026-04-09T12:00:30.000Z'),
+          payloadJson: {},
+        };
+      }
+      return null;
+    },
+  };
+  service.operationalEventService = {
+    async emitFailureAlert() {
+      throw new Error('sync success should not emit a failure alert');
+    },
+  };
+
+  const matched = await service.reconcileOrderSubmissionAttempt('user-1', 'matched');
+  assert.equal(matched.decision, 'matched');
+  assert.deepEqual(syncRequest, {
+    executionScope: 'product_user',
+    requestUserId: 'user-1',
+    targetUserIds: ['user-1'],
+    brokerKeys: ['mudrex'],
+    accountIds: ['acct-1'],
+  });
+  assert.equal(
+    current.lifecyclePayload.some(
+      (event: Record<string, unknown>) =>
+        event.type === 'broker_order_reconciliation_sync_requested'
+    ),
+    true
+  );
+  assert.equal(
+    current.lifecyclePayload.some(
+      (event: Record<string, unknown>) => event.type === 'broker_order_snapshot_matched'
+    ),
+    true
+  );
+
+  current = makeSubmission('missing');
+  snapshotLookups = 0;
+  service.ordersSnapshotSourceRepository = {
+    async findOrderByExternalId() {
+      snapshotLookups += 1;
+      return null;
+    },
+  };
+
+  const missing = await service.reconcileOrderSubmissionAttempt('user-1', 'missing');
+  assert.equal(missing.decision, 'missing');
+  assert.equal(current.reconciliationState, 'missing');
+  const missingEvent = current.lifecyclePayload.find(
+    (event: Record<string, unknown>) => event.type === 'broker_order_snapshot_missing'
+  );
+  assert.equal(missingEvent?.details?.reconciliationSync?.attempted, true);
+  assert.equal(snapshotLookups, 2);
+}
+
 async function runOrdersOverviewServiceAssertions(): Promise<void> {
   const originalDateNow = Date.now;
   Date.now = () => new Date('2026-04-09T12:00:00.000Z').getTime();
@@ -227,10 +679,7 @@ async function runOrdersOverviewServiceAssertions(): Promise<void> {
     };
 
     service.ordersService = {
-      async getFuturesOrdersForActiveAccounts(
-        userId: string,
-        query: Record<string, unknown>
-      ) {
+      async getFuturesOrdersForActiveAccounts(userId: string, query: Record<string, unknown>) {
         assert.equal(userId, 'user-1');
         openQueries.push(query);
         return createSuccess({
@@ -444,22 +893,10 @@ async function runOrdersOverviewServiceAssertions(): Promise<void> {
       'brokerKey,accountId,startDate,endDate'
     );
     assert.equal(response.data.meta.query.unsupported.join(','), 'limit');
-    assert.equal(
-      response.data.meta.query.behavior.defaultScope,
-      'all_active_connected_accounts'
-    );
-    assert.equal(
-      response.data.meta.query.behavior.accountId,
-      'post_aggregation_row_filter'
-    );
-    assert.equal(
-      response.data.meta.query.behavior.startDate,
-      'applies_to_history_and_paper_only'
-    );
-    assert.equal(
-      response.data.meta.query.behavior.endDate,
-      'applies_to_history_and_paper_only'
-    );
+    assert.equal(response.data.meta.query.behavior.defaultScope, 'all_active_connected_accounts');
+    assert.equal(response.data.meta.query.behavior.accountId, 'post_aggregation_row_filter');
+    assert.equal(response.data.meta.query.behavior.startDate, 'applies_to_history_and_paper_only');
+    assert.equal(response.data.meta.query.behavior.endDate, 'applies_to_history_and_paper_only');
     assert.equal(
       response.data.meta.query.behavior.syncStatus,
       'follows_desk_broker_or_selected_route_scope_without_failing_on_empty_account_post_filter'
@@ -472,10 +909,7 @@ async function runOrdersOverviewServiceAssertions(): Promise<void> {
     });
     assert.equal(response.data.meta.sources.openOrders, 'scheduler_orders_snapshots');
     assert.equal(response.data.meta.sources.paperOrders, 'paper_orders');
-    assert.equal(
-      response.data.meta.sources.createSubmissionLedger,
-      'order_submission_requests'
-    );
+    assert.equal(response.data.meta.sources.createSubmissionLedger, 'order_submission_requests');
     assert.equal(
       response.data.meta.sources.syncStatus,
       'scheduler_orders_snapshots + scheduler_sync_checkpoints + scheduler_sync_pending_records'
@@ -496,10 +930,7 @@ async function runOrdersOverviewServiceAssertions(): Promise<void> {
       response.data.meta.pageTruth.liveWriteFlow,
       'broker_write_with_snapshot_ack_polling'
     );
-    assert.equal(
-      response.data.meta.pageTruth.paperWriteFlow,
-      'db_write_with_local_reconciliation'
-    );
+    assert.equal(response.data.meta.pageTruth.paperWriteFlow, 'db_write_with_local_reconciliation');
     assert.equal(
       response.data.meta.pageTruth.createMutationHardening,
       'server_idempotency_keys_and_normalized_rejections'
@@ -513,27 +944,12 @@ async function runOrdersOverviewServiceAssertions(): Promise<void> {
     assert.equal(response.data.meta.capabilities.liveSnapshotFreshnessExposed, true);
     assert.equal(response.data.meta.capabilities.canonicalDetailFetchUsedByPage, true);
     assert.equal(response.data.meta.capabilities.paperExecutionScheduler, true);
-    assert.equal(
-      response.data.meta.capabilities.localPaperWriteReconciliationUsedByPage,
-      true
-    );
-    assert.equal(
-      response.data.meta.capabilities.targetedLiveSyncPollingUsedByPage,
-      true
-    );
+    assert.equal(response.data.meta.capabilities.localPaperWriteReconciliationUsedByPage, true);
+    assert.equal(response.data.meta.capabilities.targetedLiveSyncPollingUsedByPage, true);
     assert.equal(response.data.meta.capabilities.embeddedSyncStatus, true);
-    assert.equal(
-      response.data.meta.capabilities.executionSurfaceSplitByMode,
-      true
-    );
-    assert.equal(
-      response.data.meta.capabilities.executionActivityTrailUsedByPage,
-      true
-    );
-    assert.equal(
-      response.data.meta.capabilities.pageModulesSplitByConcern,
-      true
-    );
+    assert.equal(response.data.meta.capabilities.executionSurfaceSplitByMode, true);
+    assert.equal(response.data.meta.capabilities.executionActivityTrailUsedByPage, true);
+    assert.equal(response.data.meta.capabilities.pageModulesSplitByConcern, true);
     assert.equal(response.data.meta.capabilities.createSubmitIdempotency, true);
     assert.equal(response.data.meta.capabilities.normalizedBrokerRejectCodes, true);
     assert.equal(response.data.syncStatus.state, 'healthy');
@@ -569,7 +985,10 @@ async function runOrdersOverviewServiceAssertions(): Promise<void> {
       response.data.openOrders.items[0]?.snapshot.lastSeenAt,
       formatApiDisplayTime('2026-04-09T11:55:00.000Z', timeZone)
     );
-    assert.equal(response.data.openOrders.items[0]?.snapshot.lastSeenAtIso, '2026-04-09T11:55:00.000Z');
+    assert.equal(
+      response.data.openOrders.items[0]?.snapshot.lastSeenAtIso,
+      '2026-04-09T11:55:00.000Z'
+    );
     assert.equal(response.data.openOrders.items[0]?.snapshot.state, 'open');
     assert.equal(response.data.openOrders.items[0]?.route.accountKey, 'desk-two');
     assert.equal(response.data.history.source, 'scheduler_orders_snapshots');
@@ -594,7 +1013,10 @@ async function runOrdersOverviewServiceAssertions(): Promise<void> {
       response.data.history.items[0]?.snapshot.firstSeenAt,
       formatApiDisplayTime('2026-04-08T12:00:00.000Z', timeZone)
     );
-    assert.equal(response.data.history.items[0]?.snapshot.firstSeenAtIso, '2026-04-08T12:00:00.000Z');
+    assert.equal(
+      response.data.history.items[0]?.snapshot.firstSeenAtIso,
+      '2026-04-08T12:00:00.000Z'
+    );
 
     const fallbackService = new OrdersOverviewService() as any;
     fallbackService.userTimeZoneService = {
@@ -766,20 +1188,11 @@ async function runOrdersDetailServiceAssertions(): Promise<void> {
     assert.equal(paperResponse.data.mode, 'paper');
     assert.equal(paperResponse.data.source, 'paper_orders');
     assert.equal(paperResponse.data.detailMeta.sourceKind, 'paper_simulation');
-    assert.equal(
-      paperResponse.data.detailMeta.freshnessModel,
-      'db_backed_simulation'
-    );
+    assert.equal(paperResponse.data.detailMeta.freshnessModel, 'db_backed_simulation');
     assert.equal(paperResponse.data.lifecycle_stage, 'open_order');
     assert.equal(paperResponse.data.lifecycle_can_cancel, true);
-    assert.equal(
-      paperResponse.data.lifecycle_last_transition_type,
-      'created'
-    );
-    assert.equal(
-      paperResponse.data.last_observation_source,
-      'snapshot'
-    );
+    assert.equal(paperResponse.data.lifecycle_last_transition_type, 'created');
+    assert.equal(paperResponse.data.last_observation_source, 'snapshot');
     assert.equal(paperResponse.data.execution_history.length, 1);
     assert.equal(paperResponse.data.execution_history[0].type, 'created');
 
@@ -789,13 +1202,160 @@ async function runOrdersDetailServiceAssertions(): Promise<void> {
     });
     assert.equal(liveResponse.data.mode, 'live');
     assert.equal(liveResponse.data.source, 'scheduler_orders_snapshots');
-    assert.equal(
-      liveResponse.data.detailMeta.sourceKind,
-      'snapshot_backed_live'
-    );
+    assert.equal(liveResponse.data.detailMeta.sourceKind, 'snapshot_backed_live');
     assert.equal(liveResponse.data.snapshot.lastSeenAt, '2026-04-09T12:28:00.000Z');
   } finally {
     Date.now = originalDateNow;
+  }
+}
+
+async function runOrdersSnapshotDisplayNormalizationAssertions(): Promise<void> {
+  const originalQuery = coreDataSource.query.bind(coreDataSource);
+  const timeZone = 'Asia/Calcutta';
+
+  try {
+    const service = new BrokerOrdersFacadeService() as any;
+    service.userTimeZoneService = {
+      async resolveUserTimeZone() {
+        return timeZone;
+      },
+    };
+
+    coreDataSource.query = (async (sql: string, params?: unknown[]) => {
+      if (sql.includes('FROM position_read_models')) {
+        assert.ok(
+          JSON.stringify(params) === JSON.stringify(['user-1', 'acct-delta', 'acct-mudrex']) ||
+            JSON.stringify(params) === JSON.stringify(['user-1', 'acct-mudrex'])
+        );
+        return [
+          {
+            accountId: 'acct-delta',
+            brokerKey: 'delta_exchange',
+            symbol: 'AIXBTUSD',
+            side: 'Long',
+            quantity: '970',
+            stoplossOrderId: null,
+            takeprofitOrderId: null,
+            payloadJson: JSON.stringify({
+              quantity_contracts: '97',
+              contract_value: '10',
+            }),
+          },
+          {
+            accountId: 'acct-mudrex',
+            brokerKey: 'mudrex',
+            symbol: 'ETHUSDT',
+            side: 'Short',
+            quantity: '0.01',
+            stoplossOrderId: 'mudrex-sl-1',
+            takeprofitOrderId: 'mudrex-tp-1',
+            payloadJson: JSON.stringify({}),
+          },
+        ];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots') && sql.includes('account_id IN')) {
+        assert.deepEqual(params, ['user-1', 'acct-delta', 'acct-mudrex']);
+        return [
+          {
+            accountId: 'acct-delta',
+            externalId: 'delta-sl-1',
+            statusRank: 1,
+            firstSeenAt: '2026-04-10T11:55:00.000Z',
+            lastSeenAt: '2026-04-10T11:59:00.000Z',
+            payload: JSON.stringify({
+              id: 'delta-sl-1',
+              symbol: 'AIXBTUSD',
+              status: 'PENDING',
+              quantity: '97',
+              side: 'sell',
+              order_type: 'market_order',
+              stop_order_type: 'stop_loss_order',
+              reduce_only: true,
+            }),
+          },
+          {
+            accountId: 'acct-mudrex',
+            externalId: 'mudrex-sl-1',
+            statusRank: 1,
+            firstSeenAt: '2026-04-10T11:54:00.000Z',
+            lastSeenAt: '2026-04-10T11:58:00.000Z',
+            payload: JSON.stringify({
+              id: 'mudrex-sl-1',
+              symbol: 'ETHUSDT',
+              status: 'OPEN',
+              quantity: 0,
+              order_type: 'STOPLOSS',
+            }),
+          },
+        ];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots') && sql.includes('external_id = ?')) {
+        assert.deepEqual(params, ['user-1', 'acct-mudrex', 'mudrex', 'mudrex-sl-1']);
+        return [
+          {
+            externalId: 'mudrex-sl-1',
+            statusRank: 1,
+            firstSeenAt: '2026-04-10T11:54:00.000Z',
+            lastSeenAt: '2026-04-10T11:58:00.000Z',
+            payload: JSON.stringify({
+              id: 'mudrex-sl-1',
+              symbol: 'ETHUSDT',
+              status: 'OPEN',
+              quantity: 0,
+              order_type: 'STOPLOSS',
+            }),
+          },
+        ];
+      }
+      throw new Error(`Unexpected SQL in snapshot display normalization test: ${sql}`);
+    }) as typeof coreDataSource.query;
+
+    const grouped = await service.getFuturesOrdersForActiveAccountsFromSnapshot(
+      'user-1',
+      [
+        {
+          id: 'acct-delta',
+          accountName: 'Delta Prod',
+          accountKey: 'delta-prod',
+          brokerKey: 'delta_exchange',
+          status: 'Connected',
+        },
+        {
+          id: 'acct-mudrex',
+          accountName: 'Mudrex Prod',
+          accountKey: 'mudrex-prod',
+          brokerKey: 'mudrex',
+          status: 'Connected',
+        },
+      ],
+      {},
+      true
+    );
+
+    assert.equal(grouped.items.length, 2);
+    assert.equal(grouped.items[0]?.data[0]?.quantity, '97');
+    assert.equal(grouped.items[0]?.data[0]?.display_quantity, 970);
+    assert.equal(grouped.items[0]?.data[0]?.display_side, 'Long');
+    assert.equal(grouped.items[1]?.data[0]?.quantity, 0);
+    assert.equal(grouped.items[1]?.data[0]?.display_quantity, 0.01);
+    assert.equal(grouped.items[1]?.data[0]?.display_side, 'Short');
+    assert.equal(grouped.items[1]?.data[0]?.is_stoploss, true);
+
+    const detail = await service.getOrderSnapshotByExternalId(
+      'user-1',
+      'mudrex',
+      'acct-mudrex',
+      'mudrex-sl-1',
+      {},
+      timeZone
+    );
+
+    assert.equal(detail.quantity, 0);
+    assert.equal(detail.display_quantity, 0.01);
+    assert.equal(detail.display_side, 'Short');
+    assert.equal(detail.snapshot?.statusRank, 1);
+  } finally {
+    coreDataSource.query = originalQuery;
   }
 }
 
@@ -874,10 +1434,7 @@ async function runOrdersRefreshServiceAssertions(): Promise<void> {
   assert.equal(successResponse.updatedRecords, 5);
   assert.equal(successResponse.skippedRecords, 3);
   assert.deepEqual(successResponse.failures, []);
-  assert.equal(
-    successResponse.summary,
-    'Reconciled 1 route for the live orders desk.'
-  );
+  assert.equal(successResponse.summary, 'Reconciled 1 route for the live orders desk.');
 
   const warningService = new BrokerOrdersFacadeService() as any;
   let idleRunBatchCalled = false;
@@ -1275,29 +1832,22 @@ async function runOrdersControllerAssertions(): Promise<void> {
     },
   };
 
-  await controller.createPaperOrder(
-    { authUser: { sub: 'user-1' } },
-    'asset-1',
-    {
-      leverage: 5,
-      quantity: 2,
-      order_price: 64000,
-      order_type: 'market',
-      trigger_type: 'immediate',
-      is_takeprofit: false,
-      is_stoploss: false,
-      stoploss_price: 62000,
-      takeprofit_price: 66000,
-      reduce_only: false,
-    }
-  );
+  await controller.createPaperOrder({ authUser: { sub: 'user-1' } }, 'asset-1', {
+    leverage: 5,
+    quantity: 2,
+    order_price: 64000,
+    order_type: 'market',
+    trigger_type: 'immediate',
+    is_takeprofit: false,
+    is_stoploss: false,
+    stoploss_price: 62000,
+    takeprofit_price: 66000,
+    reduce_only: false,
+  });
 
   assert.equal(createPaperArgs[0], 'user-1');
   assert.equal(createPaperArgs[1], 'asset-1');
-  assert.equal(
-    (createPaperArgs[2] as { execution_mode?: string }).execution_mode,
-    'paper'
-  );
+  assert.equal((createPaperArgs[2] as { execution_mode?: string }).execution_mode, 'paper');
 
   await controller.getPaperOrders(
     { authUser: { sub: 'user-1' } },
@@ -1335,11 +1885,7 @@ async function runOrdersControllerAssertions(): Promise<void> {
     },
   ]);
 
-  await controller.getFuturesOrdersSyncStatus(
-    { authUser: { sub: 'user-1' } },
-    'mudrex',
-    'acct-2'
-  );
+  await controller.getFuturesOrdersSyncStatus({ authUser: { sub: 'user-1' } }, 'mudrex', 'acct-2');
 
   assert.deepEqual(syncStatusArgs, [
     'user-1',
@@ -1375,17 +1921,11 @@ async function runOrdersControllerAssertions(): Promise<void> {
     },
   ]);
 
-  await controller.getOrderSubmissionAttempt(
-    { authUser: { sub: 'user-1' } },
-    'submission-1'
-  );
+  await controller.getOrderSubmissionAttempt({ authUser: { sub: 'user-1' } }, 'submission-1');
 
   assert.deepEqual(submissionDetailArgs, ['user-1', 'submission-1']);
 
-  await controller.reconcileOrderSubmissionAttempt(
-    { authUser: { sub: 'user-1' } },
-    'submission-1'
-  );
+  await controller.reconcileOrderSubmissionAttempt({ authUser: { sub: 'user-1' } }, 'submission-1');
 
   assert.deepEqual(submissionReconcileArgs, ['user-1', 'submission-1']);
 
@@ -1408,8 +1948,13 @@ async function runOrdersControllerAssertions(): Promise<void> {
 
 async function main(): Promise<void> {
   await runValidatorAssertions();
+  await runOrderKillSwitchAssertions();
+  await runDirectLivePreTradeBlockAssertions();
+  await runOrderSubmissionProtectionStateAssertions();
+  await runOrderSubmissionProactiveSyncAssertions();
   await runOrdersOverviewServiceAssertions();
   await runOrdersDetailServiceAssertions();
+  await runOrdersSnapshotDisplayNormalizationAssertions();
   await runOrdersRefreshServiceAssertions();
   await runOrdersSyncStatusServiceAssertions();
   await runOrdersOverviewControllerAssertions();

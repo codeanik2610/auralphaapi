@@ -434,6 +434,7 @@ export class SignalScanService {
         side: 'long',
         signalTime: item.signalTime,
         entryPrice: item.entryPrice ?? null,
+        tradePlan: null,
       });
     }
     if (
@@ -446,6 +447,7 @@ export class SignalScanService {
         side: 'short',
         signalTime: item.signalTime,
         entryPrice: item.entryPrice ?? null,
+        tradePlan: null,
       });
     }
     return events;

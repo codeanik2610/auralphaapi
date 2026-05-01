@@ -27,6 +27,17 @@ interface FailureAlertPayload {
   urgency?: string;
 }
 
+interface NotificationAlertPayload {
+  channel: string;
+  source: string;
+  message: string;
+  route?: string;
+  severity?: string;
+  symbol?: string;
+  urgency?: string;
+  status?: string;
+}
+
 @Service()
 export class OperationalEventService {
   @Inject(() => ActivityRepository)
@@ -95,6 +106,32 @@ export class OperationalEventService {
         source: payload.source,
         urgency: payload.urgency ?? null,
         applyEscalationPolicy: true,
+      });
+    } catch {
+      // Keep primary operations non-blocking if alert emission fails.
+    }
+  }
+
+  async emitNotificationAlert(
+    userId: string,
+    payload: NotificationAlertPayload
+  ): Promise<void> {
+    try {
+      if (!userId) {
+        return;
+      }
+      const message = String(payload.message || '').slice(0, 255);
+      await this.alertRepository.createAlert({
+        userId,
+        severity: payload.severity || 'Medium',
+        channel: payload.channel,
+        symbol: payload.symbol || 'SYSTEM',
+        message,
+        route: payload.route ?? null,
+        status: payload.status || 'Closed',
+        source: payload.source,
+        urgency: payload.urgency ?? null,
+        applyEscalationPolicy: false,
       });
     } catch {
       // Keep primary operations non-blocking if alert emission fails.

@@ -37,6 +37,7 @@ import { RiskSnapshotPolicyContext } from '../../database/entities/RiskSnapshotP
 import { RiskSnapshotSourceCoverage } from '../../database/entities/RiskSnapshotSourceCoverage';
 import { SuggestedTrade } from '../../database/entities/SuggestedTrade';
 import { UserTimeZoneService } from './UserTimeZoneService';
+import { OperationalEventService } from './OperationalEventService';
 import {
   buildApiTimeContract,
   formatApiDisplayTime,
@@ -53,6 +54,7 @@ interface ThresholdProfile {
   monthlyLossLimitPct: number;
   minLeverage: number | null;
   maxLeverage: number;
+  tradeSizePctOfBalance: number | null;
   minNotionalPerTrade: number | null;
   maxOrderAllocation: number | null;
   maxTotalAllocation: number;
@@ -219,78 +221,88 @@ export class RiskPreTradeService {
   @Inject(() => UserTimeZoneService)
   private userTimeZoneService!: UserTimeZoneService;
 
+  @Inject(() => OperationalEventService)
+  private operationalEventService!: OperationalEventService;
+
   async createPreTradeCheck(
     userId: string,
     body: ValidatedRiskPreTradeCheckBody
   ): Promise<ApiSuccessResponse<RiskPreTradeCheckResult>> {
-    const evaluation = await this.preparePreTradeEvaluation(userId, body);
+    try {
+      const evaluation = await this.preparePreTradeEvaluation(userId, body);
 
-    const createdCheck = await this.riskRequestCheckRepository.createCheck({
-      userId,
-      snapshotId: evaluation.snapshot?.id ?? null,
-      suggestedTradeId: evaluation.request.suggestedTradeId,
-      automationId: evaluation.request.automationId,
-      automationRunId: evaluation.request.automationRunId,
-      sourceType: evaluation.request.sourceType,
-      executionMode: evaluation.request.executionMode,
-      approvalMode: evaluation.request.approvalMode,
-      routeMode: evaluation.route.routeMode,
-      brokerKey: evaluation.route.brokerKey,
-      accountId: evaluation.route.accountId,
-      symbol: evaluation.request.order.symbol,
-      timeframe: evaluation.request.order.timeframe,
-      side: evaluation.request.order.side,
-      orderType: evaluation.request.order.orderType,
-      timeInForce: evaluation.request.order.timeInForce,
-      quantityMode: evaluation.request.order.quantityMode,
-      quantity: evaluation.request.order.quantity,
-      notional: evaluation.request.order.notional,
-      riskPercent: evaluation.request.order.riskPercent,
-      entryPrice: evaluation.request.order.entryPrice,
-      stopLossPrice: evaluation.request.order.stopLossPrice,
-      takeProfitTargetsJson: evaluation.request.order.takeProfitTargets,
-      leverage: evaluation.request.order.leverage,
-      reduceOnly: evaluation.request.order.reduceOnly,
-      status: evaluation.status,
-      freshnessState: evaluation.freshness.freshnessState,
-      snapshotLagMinutes: evaluation.freshness.snapshotLagMinutes,
-      checkedAt: evaluation.checkedAt,
-      expiresAt: evaluation.expiresAt,
-      allowed: !evaluation.blocked,
-      blocked: evaluation.blocked,
-      approvalRequired: evaluation.approvalRequired,
-      blockingRuleCount: evaluation.blockingRuleCount,
-      warningRuleCount: evaluation.warningRuleCount,
-      summary: evaluation.summary,
-      grossExposureDelta: evaluation.grossExposureDelta,
-      netExposureDelta: evaluation.netExposureDelta,
-      openOrderExposureDelta: evaluation.openOrderExposureDelta,
-      reservedOrderMarginDelta: evaluation.reservedOrderMarginDelta,
-    });
+      const createdCheck = await this.riskRequestCheckRepository.createCheck({
+        userId,
+        snapshotId: evaluation.snapshot?.id ?? null,
+        suggestedTradeId: evaluation.request.suggestedTradeId,
+        automationId: evaluation.request.automationId,
+        automationRunId: evaluation.request.automationRunId,
+        sourceType: evaluation.request.sourceType,
+        executionMode: evaluation.request.executionMode,
+        approvalMode: evaluation.request.approvalMode,
+        routeMode: evaluation.route.routeMode,
+        brokerKey: evaluation.route.brokerKey,
+        accountId: evaluation.route.accountId,
+        symbol: evaluation.request.order.symbol,
+        timeframe: evaluation.request.order.timeframe,
+        side: evaluation.request.order.side,
+        orderType: evaluation.request.order.orderType,
+        timeInForce: evaluation.request.order.timeInForce,
+        quantityMode: evaluation.request.order.quantityMode,
+        quantity: evaluation.request.order.quantity,
+        notional: evaluation.request.order.notional,
+        riskPercent: evaluation.request.order.riskPercent,
+        entryPrice: evaluation.request.order.entryPrice,
+        stopLossPrice: evaluation.request.order.stopLossPrice,
+        takeProfitTargetsJson: evaluation.request.order.takeProfitTargets,
+        leverage: evaluation.request.order.leverage,
+        reduceOnly: evaluation.request.order.reduceOnly,
+        status: evaluation.status,
+        freshnessState: evaluation.freshness.freshnessState,
+        snapshotLagMinutes: evaluation.freshness.snapshotLagMinutes,
+        checkedAt: evaluation.checkedAt,
+        expiresAt: evaluation.expiresAt,
+        allowed: !evaluation.blocked,
+        blocked: evaluation.blocked,
+        approvalRequired: evaluation.approvalRequired,
+        blockingRuleCount: evaluation.blockingRuleCount,
+        warningRuleCount: evaluation.warningRuleCount,
+        summary: evaluation.summary,
+        grossExposureDelta: evaluation.grossExposureDelta,
+        netExposureDelta: evaluation.netExposureDelta,
+        openOrderExposureDelta: evaluation.openOrderExposureDelta,
+        reservedOrderMarginDelta: evaluation.reservedOrderMarginDelta,
+      });
 
-    const scopeRows = await this.riskRequestScopeImpactRepository.createScopeImpacts(
-      userId,
-      createdCheck.id,
-      evaluation.snapshot?.id ?? null,
-      evaluation.scopeImpactDrafts
-    );
-    const ruleRows = await this.riskRequestRuleEvaluationRepository.createRuleEvaluations(
-      userId,
-      createdCheck.id,
-      evaluation.snapshot?.id ?? null,
-      evaluation.ruleDrafts
-    );
+      const scopeRows = await this.riskRequestScopeImpactRepository.createScopeImpacts(
+        userId,
+        createdCheck.id,
+        evaluation.snapshot?.id ?? null,
+        evaluation.scopeImpactDrafts
+      );
+      const ruleRows = await this.riskRequestRuleEvaluationRepository.createRuleEvaluations(
+        userId,
+        createdCheck.id,
+        evaluation.snapshot?.id ?? null,
+        evaluation.ruleDrafts
+      );
 
-    return successResponse(
-      this.mapPreTradeCheckResult(
-        createdCheck,
-        scopeRows,
-        ruleRows,
-        evaluation.snapshot,
-        evaluation.policyContexts,
-        evaluation.timeZone
-      )
-    );
+      await this.logPreTradeActivity(userId, createdCheck.id, evaluation);
+
+      return successResponse(
+        this.mapPreTradeCheckResult(
+          createdCheck,
+          scopeRows,
+          ruleRows,
+          evaluation.snapshot,
+          evaluation.policyContexts,
+          evaluation.timeZone
+        )
+      );
+    } catch (error) {
+      await this.emitPreTradeFailureAlert(userId, body, error);
+      throw error;
+    }
   }
 
   async previewPreTradeCheck(
@@ -325,6 +337,61 @@ export class RiskPreTradeService {
     return successResponse(
       this.mapPreTradeCheckResult(check, scopeRows, ruleRows, snapshot, policyContexts, timeZone)
     );
+  }
+
+  private async logPreTradeActivity(
+    userId: string,
+    checkId: string,
+    evaluation: PreparedPreTradeEvaluation
+  ): Promise<void> {
+    if (!this.operationalEventService) {
+      return;
+    }
+    const symbol = evaluation.request.order.symbol;
+    await this.operationalEventService.logActivity(userId, {
+      type: 'Risk pre-trade',
+      title: `Pre-trade check ${evaluation.blocked ? 'blocked' : 'created'}: ${symbol}`,
+      status: evaluation.blocked
+        ? 'Blocked'
+        : evaluation.warningRuleCount > 0
+          ? 'Warning'
+          : 'Success',
+      route: 'Risk',
+      stream: 'Pre-trade',
+      related:
+        [evaluation.route.brokerKey, evaluation.route.accountId].filter(Boolean).join(' · ') ||
+        undefined,
+      referenceId: checkId,
+      correlationId: checkId,
+      symbol,
+      description: evaluation.summary,
+    });
+  }
+
+  private async emitPreTradeFailureAlert(
+    userId: string,
+    body: ValidatedRiskPreTradeCheckBody,
+    error: unknown
+  ): Promise<void> {
+    if (!this.operationalEventService) {
+      return;
+    }
+    const symbol = String(body.order?.symbol || body.suggestedTradeId || 'unknown')
+      .trim()
+      .toUpperCase();
+    await this.operationalEventService.emitFailureAlert(userId, {
+      channel: 'risk-pre-trade',
+      source: `risk-pre-trade.create.${symbol || 'unknown'}`,
+      message: `Pre-trade check failed: ${this.readErrorMessage(error)}`,
+      route: 'Risk',
+      severity: 'High',
+      symbol: symbol || 'SYSTEM',
+      urgency: 'Review risk snapshot freshness and request inputs before order submission.',
+    });
+  }
+
+  private readErrorMessage(error: unknown): string {
+    return error instanceof Error && error.message ? error.message : 'Unknown error';
   }
 
   private async preparePreTradeEvaluation(
@@ -701,6 +768,7 @@ export class RiskPreTradeService {
           monthlyLossLimitPct?: number | null;
           minLeverage?: number | null;
           maxLeverage?: number | null;
+          tradeSizePctOfBalance?: number | null;
           minNotionalPerTrade?: number | null;
           maxOrderAllocation?: number | null;
           maxTotalAllocation?: number | null;
@@ -719,6 +787,7 @@ export class RiskPreTradeService {
       monthlyLossLimitPct: this.toFiniteNumber(value?.monthlyLossLimitPct, 20) ?? 20,
       minLeverage: this.toFiniteNumber(value?.minLeverage, null),
       maxLeverage: this.toFiniteNumber(value?.maxLeverage, 5) ?? 5,
+      tradeSizePctOfBalance: this.toFiniteNumber(value?.tradeSizePctOfBalance, null),
       minNotionalPerTrade: this.toFiniteNumber(value?.minNotionalPerTrade, null),
       maxOrderAllocation: this.toFiniteNumber(value?.maxOrderAllocation, null),
       maxTotalAllocation: this.toFiniteNumber(value?.maxTotalAllocation, 80) ?? 80,
@@ -757,6 +826,12 @@ export class RiskPreTradeService {
               ? accumulator.minLeverage
               : Math.max(accumulator.minLeverage, next.minLeverage),
         maxLeverage: Math.min(accumulator.maxLeverage, next.maxLeverage),
+        tradeSizePctOfBalance:
+          accumulator.tradeSizePctOfBalance === null
+            ? next.tradeSizePctOfBalance
+            : next.tradeSizePctOfBalance === null
+              ? accumulator.tradeSizePctOfBalance
+              : Math.min(accumulator.tradeSizePctOfBalance, next.tradeSizePctOfBalance),
         minNotionalPerTrade:
           accumulator.minNotionalPerTrade === null
             ? next.minNotionalPerTrade
@@ -1413,84 +1488,6 @@ export class RiskPreTradeService {
                 : 'Projected account margin usage remains within tolerance.',
         });
       }
-
-      if (
-        trackedBalance &&
-        trackedBalance > 0 &&
-        input.routeThresholds.maxOrderAllocation !== null
-      ) {
-        const orderAllocationPct = this.toRatioPct(input.reservedOrderMarginDelta, trackedBalance);
-        if (orderAllocationPct !== null) {
-          const warnThresholdValue = this.roundNumber(
-            input.routeThresholds.maxOrderAllocation * 0.8,
-            2
-          );
-          const status = this.resolveThresholdStatus(
-            orderAllocationPct,
-            warnThresholdValue,
-            input.routeThresholds.maxOrderAllocation
-          );
-          pushRule({
-            scopeType: 'account',
-            scopeKey: input.route.accountId,
-            scopeLabel: input.route.accountName || input.route.accountId,
-            brokerKey: input.route.brokerKey,
-            accountId: input.route.accountId,
-            policyContextId: input.routePolicyContext?.id ?? null,
-            ruleCode: 'order_allocation',
-            metricName: 'orderAllocationPct',
-            actualValue: orderAllocationPct,
-            basisValue: trackedBalance,
-            warnThresholdValue,
-            criticalThresholdValue: input.routeThresholds.maxOrderAllocation,
-            status,
-            blocking: status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
-            message:
-              status === 'critical'
-                ? 'Requested order margin allocation exceeds the configured maximum for this account.'
-                : status === 'warning'
-                  ? 'Requested order margin allocation is approaching the configured maximum for this account.'
-                  : 'Requested order margin allocation remains within tolerance.',
-          });
-        }
-      }
-    }
-
-    if (input.routeThresholds.minNotionalPerTrade !== null) {
-      const status = input.notional < input.routeThresholds.minNotionalPerTrade ? 'critical' : 'ok';
-      pushRule({
-        scopeType: input.route.accountId
-          ? 'account'
-          : input.route.brokerKey
-            ? 'broker_asset'
-            : 'asset',
-        scopeKey:
-          input.route.accountId ||
-          (input.route.brokerKey
-            ? `${input.route.brokerKey}|${input.order.symbol}`
-            : input.order.symbol),
-        scopeLabel:
-          input.route.accountName ||
-          (input.route.brokerKey
-            ? `${input.route.brokerKey} / ${input.order.symbol}`
-            : input.order.symbol),
-        brokerKey: input.route.brokerKey,
-        accountId: input.route.accountId,
-        symbol: input.order.symbol,
-        policyContextId: input.routePolicyContext?.id ?? null,
-        ruleCode: 'order_min_notional',
-        metricName: 'notional',
-        actualValue: input.notional,
-        basisValue: null,
-        warnThresholdValue: null,
-        criticalThresholdValue: input.routeThresholds.minNotionalPerTrade,
-        status,
-        blocking: status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
-        message:
-          status === 'critical'
-            ? 'Requested order notional is below the configured minimum per trade.'
-            : 'Requested order notional meets the configured minimum per trade.',
-      });
     }
 
     const afterAssetAllocation = this.toRatioPct(

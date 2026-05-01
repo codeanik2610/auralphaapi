@@ -133,10 +133,9 @@ export class BacktestRepository {
     }
 
     if (query.search) {
-      builder.andWhere(
-        this.buildSearchDocumentClause('backtest'),
-        { search: this.buildSearchPattern(query.search) }
-      );
+      builder.andWhere(this.buildSearchDocumentClause('backtest'), {
+        search: this.buildSearchPattern(query.search),
+      });
     }
 
     const [data, total] = await builder.getManyAndCount();
@@ -163,14 +162,14 @@ export class BacktestRepository {
 
   async listTopSetupCandidateBacktests(
     userId: string,
-    query: BacktestTopSetupCandidateQuery = {}
+    _query: BacktestTopSetupCandidateQuery = {}
   ): Promise<Backtest[]> {
     const builder = this.backtestRepository
       .createQueryBuilder('backtest')
       .leftJoinAndSelect('backtest.result', 'result')
       .where('backtest.userId = :userId', { userId })
       .andWhere('result.id IS NOT NULL')
-      .andWhere('LOWER(COALESCE(backtest.status, \'\')) IN (:...completedStatuses)', {
+      .andWhere("LOWER(COALESCE(backtest.status, '')) IN (:...completedStatuses)", {
         completedStatuses: BacktestRepository.COMPLETED_RUN_STATUSES,
       })
       .andWhere(`${this.buildPerformanceSurfaceResultCountSql('result')} > 0`)
@@ -186,7 +185,9 @@ export class BacktestRepository {
     bestSharpe: number | null;
     maxDrawdown: number | null;
   }> {
-    const activeStatuses = BacktestRepository.ACTIVE_RUN_STATUSES.map((status) => `'${status}'`).join(', ');
+    const activeStatuses = BacktestRepository.ACTIVE_RUN_STATUSES.map(
+      (status) => `'${status}'`
+    ).join(', ');
     const rows = (await strategyDataSource.query(
       `
         WITH scoped_backtests AS (
@@ -466,9 +467,7 @@ export class BacktestRepository {
         backtestId,
         status,
         parameter:
-          typeof row.parameter === 'string' && row.parameter.trim()
-            ? row.parameter.trim()
-            : null,
+          typeof row.parameter === 'string' && row.parameter.trim() ? row.parameter.trim() : null,
         createdAt,
         updatedAt,
       } satisfies StrategyLibraryRecentBacktest;
@@ -717,9 +716,7 @@ export class BacktestRepository {
       result.config = Object.keys(currentConfig).length ? currentConfig : null;
       Object.assign(
         result,
-        this.buildOperationalResultColumns(
-          Object.keys(currentConfig).length ? currentConfig : null
-        )
+        this.buildOperationalResultColumns(Object.keys(currentConfig).length ? currentConfig : null)
       );
     }
 
@@ -734,7 +731,9 @@ export class BacktestRepository {
   }
 
   private buildSearchPattern(search: string): string {
-    const normalized = String(search || '').trim().toLowerCase();
+    const normalized = String(search || '')
+      .trim()
+      .toLowerCase();
     const escaped = normalized.replace(/[\\%_]/g, '\\$&');
     return `%${escaped}%`;
   }

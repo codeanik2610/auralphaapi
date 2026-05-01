@@ -116,7 +116,20 @@ export interface OrderSubmissionOperatorState {
   label: string;
   tone: 'neutral' | 'info' | 'success' | 'warning' | 'danger';
   summary: string;
-  recommendedAction?: 'wait' | 'reconcile_execution' | 'review_error' | null;
+  recommendedAction?: 'wait' | 'reconcile_execution' | 'review_error' | 'verify_protection' | null;
+}
+
+export type OrderSubmissionProtectionStatus = 'not_required' | 'attached' | 'missing' | 'unknown';
+
+export interface OrderSubmissionProtectionState {
+  expected: boolean;
+  status: OrderSubmissionProtectionStatus;
+  attached: boolean;
+  summary: string;
+  brokerStatus?: string | null;
+  stopLossOrderId?: string | null;
+  takeProfitOrderId?: string | null;
+  protectiveOrderCount: number;
 }
 
 export interface OrderSubmissionAttempt {
@@ -139,6 +152,7 @@ export interface OrderSubmissionAttempt {
   completedAt?: string | null;
   failedAt?: string | null;
   lifecycle: OrderSubmissionLifecycleEvent[];
+  protectionState: OrderSubmissionProtectionState;
   operatorState: OrderSubmissionOperatorState;
 }
 

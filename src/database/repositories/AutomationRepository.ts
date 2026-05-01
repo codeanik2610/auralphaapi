@@ -5,7 +5,10 @@ import { Automation } from '../entities/Automation';
 import { AutomationAlert } from '../entities/AutomationAlert';
 import { AutomationEvent } from '../entities/AutomationEvent';
 import { extractAutomationLineage } from '../../api/utils/automationLineage';
-import { normalizeAutomationConfig, normalizeAutomationType } from '../../api/utils/automationType';
+import { deriveAutomationPersistenceFields } from '../utils/automationPersistence';
+
+const AUTOMATION_DETAIL_ALERT_LIMIT = 10;
+const AUTOMATION_DETAIL_EVENT_LIMIT = 10;
 
 export interface AutomationListQuery {
   limit: number;
@@ -100,20 +103,34 @@ export class AutomationRepository {
   }
 
   async getAutomationById(userId: string, automationId: string): Promise<Automation | null> {
+    const automation = await this.getAutomationCoreById(userId, automationId);
+
+    if (!automation) {
+      return null;
+    }
+
+    const [events, alerts] = await Promise.all([
+      this.automationEventRepository.find({
+        where: { automationId: automation.id },
+        order: { createdAt: 'DESC' },
+        take: AUTOMATION_DETAIL_EVENT_LIMIT,
+      }),
+      this.automationAlertRepository.find({
+        where: { automationId: automation.id },
+        order: { createdAt: 'DESC' },
+        take: AUTOMATION_DETAIL_ALERT_LIMIT,
+      }),
+    ]);
+
+    automation.events = events;
+    automation.alerts = alerts;
+
+    return automation;
+  }
+
+  async getAutomationCoreById(userId: string, automationId: string): Promise<Automation | null> {
     return this.automationRepository.findOne({
       where: { id: automationId, userId },
-      relations: {
-        events: true,
-        alerts: true,
-      },
-      order: {
-        events: {
-          createdAt: 'DESC',
-        },
-        alerts: {
-          createdAt: 'DESC',
-        },
-      },
     });
   }
 
@@ -183,17 +200,39 @@ export class AutomationRepository {
     overlapSkips24h: number;
   }> {
     const normalizedUserId = this.readString(userId);
-    const builder = this.automationEventRepository
-      .createQueryBuilder('event')
-      .innerJoin(Automation, 'automation', 'automation.id = event.automationId')
-      .where('event.createdAt >= :since', { since })
-      .andWhere('event.type = :type', { type: 'Run skipped' });
-
     if (normalizedUserId) {
-      builder.andWhere('automation.userId = :userId', { userId: normalizedUserId });
+      const automationIds = await this.automationRepository
+        .createQueryBuilder('automation')
+        .select('automation.id', 'id')
+        .where('automation.userId = :userId', { userId: normalizedUserId })
+        .getRawMany<{ id: string }>();
+
+      const ids = automationIds
+        .map((row) => this.readString(row?.id))
+        .filter((value): value is string => Boolean(value));
+
+      if (!ids.length) {
+        return {
+          overlapSkips24h: 0,
+        };
+      }
+
+      const overlapSkips24h = await this.automationEventRepository
+        .createQueryBuilder('event')
+        .where('event.automationId IN (:...automationIds)', { automationIds: ids })
+        .andWhere('event.createdAt >= :since', { since })
+        .andWhere('event.type = :type', { type: 'Run skipped' })
+        .getCount();
+
+      return {
+        overlapSkips24h,
+      };
     }
 
-    const overlapSkips24h = await builder
+    const overlapSkips24h = await this.automationEventRepository
+      .createQueryBuilder('event')
+      .where('event.createdAt >= :since', { since })
+      .andWhere('event.type = :type', { type: 'Run skipped' })
       .getCount();
 
     return {
@@ -217,7 +256,7 @@ export class AutomationRepository {
   }
 
   async createAutomation(payload: CreateAutomationPayload): Promise<Automation> {
-    const indexing = this.buildAutomationIndexFields({
+    const persistence = deriveAutomationPersistenceFields({
       name: payload.name,
       strategy: payload.strategy,
       broker: payload.broker,
@@ -236,16 +275,16 @@ export class AutomationRepository {
       market: payload.market,
       trigger: payload.trigger,
       status: payload.status,
-      automationType: payload.automationType ?? null,
+      automationType: persistence.automationType,
       timeZone: payload.timeZone ?? null,
       riskMode: payload.riskMode ?? null,
       schedule: payload.schedule ?? null,
-      config: payload.config ?? null,
-      searchText: indexing.searchText,
-      sourceBacktestId: indexing.sourceBacktestId,
-      scopeSymbol: indexing.scopeSymbol,
-      scopeTimeframe: indexing.scopeTimeframe,
-      sourceTemplateId: indexing.sourceTemplateId,
+      config: persistence.normalizedConfig,
+      searchText: persistence.searchText,
+      sourceBacktestId: persistence.sourceBacktestId,
+      scopeSymbol: persistence.scopeSymbol,
+      scopeTimeframe: persistence.scopeTimeframe,
+      sourceTemplateId: persistence.sourceTemplateId,
     });
 
     return this.automationRepository.save(automation);
@@ -280,13 +319,58 @@ export class AutomationRepository {
   }
 
   async saveAutomation(automation: Automation): Promise<Automation> {
-    const indexing = this.buildAutomationIndexFields(automation);
-    automation.searchText = indexing.searchText;
-    automation.sourceBacktestId = indexing.sourceBacktestId;
-    automation.scopeSymbol = indexing.scopeSymbol;
-    automation.scopeTimeframe = indexing.scopeTimeframe;
-    automation.sourceTemplateId = indexing.sourceTemplateId;
+    const persistence = deriveAutomationPersistenceFields(automation);
+    automation.automationType = persistence.automationType;
+    automation.config = persistence.normalizedConfig;
+    automation.searchText = persistence.searchText;
+    automation.sourceBacktestId = persistence.sourceBacktestId;
+    automation.scopeSymbol = persistence.scopeSymbol;
+    automation.scopeTimeframe = persistence.scopeTimeframe;
+    automation.sourceTemplateId = persistence.sourceTemplateId;
     return this.automationRepository.save(automation);
+  }
+
+  async backfillTradeSuggestionAutomationContracts(): Promise<{
+    inspected: number;
+    updated: number;
+  }> {
+    const automations = await this.automationRepository.find();
+    let inspected = 0;
+    let updated = 0;
+
+    for (const automation of automations) {
+      const persistence = deriveAutomationPersistenceFields(automation);
+      if (persistence.automationType !== 'trade-suggestion') {
+        continue;
+      }
+
+      inspected += 1;
+      const nextConfig = persistence.normalizedConfig ?? null;
+      const changed =
+        automation.automationType !== persistence.automationType ||
+        JSON.stringify(automation.config ?? null) !== JSON.stringify(nextConfig) ||
+        automation.searchText !== persistence.searchText ||
+        automation.sourceBacktestId !== persistence.sourceBacktestId ||
+        automation.scopeSymbol !== persistence.scopeSymbol ||
+        automation.scopeTimeframe !== persistence.scopeTimeframe ||
+        automation.sourceTemplateId !== persistence.sourceTemplateId;
+
+      if (!changed) {
+        continue;
+      }
+
+      automation.automationType = persistence.automationType;
+      automation.config = nextConfig;
+      automation.searchText = persistence.searchText;
+      automation.sourceBacktestId = persistence.sourceBacktestId;
+      automation.scopeSymbol = persistence.scopeSymbol;
+      automation.scopeTimeframe = persistence.scopeTimeframe;
+      automation.sourceTemplateId = persistence.sourceTemplateId;
+      await this.automationRepository.save(automation);
+      updated += 1;
+    }
+
+    return { inspected, updated };
   }
 
   async createAutomationEvent(payload: {
@@ -348,107 +432,6 @@ export class AutomationRepository {
     return Object.keys(meta).length ? meta : null;
   }
 
-  private buildAutomationIndexFields(value: {
-    name?: string | null;
-    strategy?: string | null;
-    broker?: string | null;
-    market?: string | null;
-    trigger?: string | null;
-    status?: string | null;
-    automationType?: string | null;
-    timeZone?: string | null;
-    config?: unknown;
-  }): {
-    searchText: string | null;
-    sourceBacktestId: string | null;
-    scopeSymbol: string | null;
-    scopeTimeframe: string | null;
-    sourceTemplateId: string | null;
-  } {
-    const root = this.parseRecord(value.config) ?? {};
-    const rootTradeSuggestion = this.parseRecord(root.tradeSuggestion) ?? {};
-    const automationType = normalizeAutomationType(value.automationType, root);
-    const normalized = normalizeAutomationConfig(automationType, root) ?? root;
-    const normalizedRoot = this.parseRecord(normalized) ?? {};
-    const tradeSuggestion = this.parseRecord(normalizedRoot.tradeSuggestion) ?? {};
-    const setupScope =
-      this.parseRecord(tradeSuggestion.setupScope) ??
-      this.parseRecord(normalizedRoot.setupScope) ??
-      {};
-    const lineage = extractAutomationLineage(normalizedRoot);
-
-    const sourceBacktestId =
-      this.readString(
-        normalizedRoot.backtestId,
-        tradeSuggestion.backtestId,
-        lineage?.backtestId
-      ) ?? null;
-    const scopeSymbol =
-      this.normalizeAssetSymbol(
-        this.readString(tradeSuggestion.symbol, normalizedRoot.symbol, setupScope.symbol)
-      ) || null;
-    const scopeTimeframe =
-      this.normalizeTimeframe(
-        this.readString(tradeSuggestion.timeframe, normalizedRoot.timeframe, setupScope.timeframe)
-      ) || null;
-    const sourceTemplateId =
-      this.readString(
-        root.sourceTemplateId,
-        root.templateId,
-        rootTradeSuggestion.sourceTemplateId,
-        rootTradeSuggestion.templateId,
-        normalizedRoot.sourceTemplateId,
-        normalizedRoot.templateId,
-        tradeSuggestion.sourceTemplateId,
-        tradeSuggestion.templateId,
-        lineage?.sourceTemplateId,
-        lineage?.templateId
-      ) ?? null;
-
-    const searchText = this.buildSearchText([
-      value.name,
-      value.strategy,
-      value.broker,
-      value.market,
-      value.trigger,
-      value.status,
-      value.automationType,
-      value.timeZone,
-      sourceBacktestId,
-      sourceTemplateId,
-      scopeSymbol,
-      scopeTimeframe,
-    ]);
-
-    return {
-      searchText,
-      sourceBacktestId,
-      scopeSymbol,
-      scopeTimeframe,
-      sourceTemplateId,
-    };
-  }
-
-  private parseRecord(value: unknown): Record<string, unknown> | null {
-    if (!value) {
-      return null;
-    }
-    if (typeof value === 'object' && !Array.isArray(value)) {
-      return value as Record<string, unknown>;
-    }
-    if (typeof value === 'string') {
-      try {
-        const parsed = JSON.parse(value);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          return parsed as Record<string, unknown>;
-        }
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
-
   private readString(...values: unknown[]): string | null {
     for (const value of values) {
       if (typeof value === 'string' && value.trim()) {
@@ -483,12 +466,4 @@ export class AutomationRepository {
     return tokens.length ? tokens.map((token) => `+${token}*`).join(' ') : '';
   }
 
-  private buildSearchText(values: Array<unknown>): string | null {
-    const normalized = values
-      .map((value) => this.readString(value))
-      .filter((value): value is string => Boolean(value))
-      .join(' ')
-      .trim();
-    return normalized || null;
-  }
 }

@@ -2,6 +2,12 @@ import { Inject, Service } from 'typedi';
 import { AlertRepository } from '../../database';
 import { coreDataSource } from '../../database/data-source';
 import { env } from '../../env';
+import { BrokerOrdersFacadeService } from './BrokerOrdersFacadeService';
+import { RiskKillSwitchService } from './RiskKillSwitchService';
+import { Logger } from '../../lib/logger';
+
+const log = new Logger(__filename);
+const MONITOR_LOOP_KEY = 'broker-canary-monitor';
 
 type MonitorStatus = 'ok' | 'degraded' | 'disabled';
 type IssueSeverity = 'warning' | 'critical';
@@ -94,7 +100,13 @@ export interface BrokerCanaryProtectionItem {
   reconciliationState: string | null;
   latestSnapshotAt: string | null;
   issues: BrokerCanaryProtectionIssue[];
+  autoCancelledOrderIds?: string[];
   alertEmitted: boolean;
+  killSwitchTriggered: boolean;
+  killSwitchActive: boolean;
+  killSwitchIssueCode: BrokerCanaryProtectionIssue['code'] | null;
+  killSwitchReason: string | null;
+  killSwitchError?: string;
 }
 
 export interface BrokerCanaryProtectionMonitorResponse {
@@ -108,6 +120,8 @@ export interface BrokerCanaryProtectionMonitorResponse {
   criticalIssues: number;
   warningIssues: number;
   alertsEmitted: number;
+  freezeOnCritical: boolean;
+  killSwitchTriggers: number;
   items: BrokerCanaryProtectionItem[];
   detail?: string;
 }
@@ -117,15 +131,67 @@ export class BrokerCanaryProtectionMonitorService {
   @Inject(() => AlertRepository)
   private alertRepository!: AlertRepository;
 
-  async runMonitor(options: {
-    emitAlerts?: boolean;
-    lookbackHours?: number;
-    maxSubmissions?: number;
-    brokerKey?: string;
-    now?: Date;
-  } = {}): Promise<BrokerCanaryProtectionMonitorResponse> {
+  @Inject(() => BrokerOrdersFacadeService)
+  private brokerOrdersFacadeService!: BrokerOrdersFacadeService;
+
+  @Inject(() => RiskKillSwitchService)
+  private riskKillSwitchService!: RiskKillSwitchService;
+
+  private timer: NodeJS.Timeout | null = null;
+  private running = false;
+  private stopRequested = false;
+  private activeRunPromise: Promise<void> | null = null;
+
+  async start(): Promise<void> {
+    if (
+      env.isTest ||
+      !env.brokerCanaryMonitor.enabled ||
+      !env.brokerCanaryMonitor.backgroundEnabled
+    ) {
+      log.info(
+        `Broker canary protection background loop is disabled (enabled=${env.brokerCanaryMonitor.enabled}, backgroundEnabled=${env.brokerCanaryMonitor.backgroundEnabled}, test=${env.isTest})`
+      );
+      return;
+    }
+
+    if (this.timer) {
+      return;
+    }
+
+    this.stopRequested = false;
+    log.info(
+      `Starting ${MONITOR_LOOP_KEY} background loop with poll interval ${env.brokerCanaryMonitor.pollIntervalMs}ms`
+    );
+    void this.tick();
+    this.timer = setInterval(() => {
+      void this.tick();
+    }, env.brokerCanaryMonitor.pollIntervalMs);
+    this.timer.unref?.();
+  }
+
+  async stop(): Promise<void> {
+    this.stopRequested = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    await this.activeRunPromise;
+  }
+
+  async runMonitor(
+    options: {
+      emitAlerts?: boolean;
+      lookbackHours?: number;
+      maxSubmissions?: number;
+      brokerKey?: string;
+      freezeOnCritical?: boolean;
+      now?: Date;
+    } = {}
+  ): Promise<BrokerCanaryProtectionMonitorResponse> {
     const now = options.now ?? new Date();
     const emitAlerts = options.emitAlerts !== false;
+    const freezeOnCritical =
+      options.freezeOnCritical ?? env.brokerCanaryMonitor.autoFreezeOnCritical;
     const lookbackHours = this.normalizePositiveInteger(
       options.lookbackHours ?? env.brokerCanaryMonitor.lookbackHours,
       env.brokerCanaryMonitor.lookbackHours,
@@ -151,6 +217,8 @@ export class BrokerCanaryProtectionMonitorService {
         criticalIssues: 0,
         warningIssues: 0,
         alertsEmitted: 0,
+        freezeOnCritical,
+        killSwitchTriggers: 0,
         items: [],
         detail: 'Broker canary protection monitor is disabled by configuration.',
       };
@@ -163,14 +231,27 @@ export class BrokerCanaryProtectionMonitorService {
     });
     const items: BrokerCanaryProtectionItem[] = [];
     let alertsEmitted = 0;
+    let killSwitchTriggers = 0;
 
     for (const candidate of candidates) {
-      const item = await this.evaluateCandidate(candidate, now);
-      if (emitAlerts && item.issues.length > 0) {
+      const item = await this.evaluateCandidate(candidate, now, emitAlerts);
+      const remediationOnly =
+        item.autoCancelledOrderIds?.length &&
+        item.issues.length > 0 &&
+        item.issues.every((issue) => issue.code === 'orphan_active_protection');
+      if (emitAlerts && item.issues.length > 0 && !remediationOnly) {
         item.alertEmitted = await this.emitIssueAlert(item);
         if (item.alertEmitted) {
           alertsEmitted += 1;
         }
+      }
+      if (
+        await this.maybeFreezeUnsafeLiveTrading(item, {
+          emitAlerts,
+          freezeOnCritical,
+        })
+      ) {
+        killSwitchTriggers += 1;
       }
       items.push(item);
     }
@@ -197,6 +278,8 @@ export class BrokerCanaryProtectionMonitorService {
       criticalIssues,
       warningIssues,
       alertsEmitted,
+      freezeOnCritical,
+      killSwitchTriggers,
       items,
       ...(items.length === 0
         ? {
@@ -261,7 +344,8 @@ export class BrokerCanaryProtectionMonitorService {
 
   private async evaluateCandidate(
     candidate: SubmissionCandidateRow,
-    now: Date
+    now: Date,
+    autoRemediate: boolean
   ): Promise<BrokerCanaryProtectionItem> {
     const submissionId = this.readString(candidate.id);
     const userId = this.readString(candidate.userId);
@@ -280,14 +364,26 @@ export class BrokerCanaryProtectionMonitorService {
       (value): value is string => Boolean(value)
     );
 
-    const orderSnapshots = await this.listOrderSnapshots(userId, accountId, brokerKey, trackedOrderIds);
+    const orderSnapshots = await this.listOrderSnapshots(
+      userId,
+      accountId,
+      brokerKey,
+      trackedOrderIds
+    );
     const orderById = new Map(
       orderSnapshots.map((row) => [this.readString(row.externalId), row] as const)
     );
     const entrySnapshot = orderById.get(entryOrderId) ?? null;
-    const stopLossSnapshot = stopLossOrderId ? orderById.get(stopLossOrderId) ?? null : null;
-    const takeProfitSnapshot = takeProfitOrderId ? orderById.get(takeProfitOrderId) ?? null : null;
-    const symbol = this.resolveSymbol(candidate, entrySnapshot, stopLossSnapshot, takeProfitSnapshot);
+    const stopLossSnapshot = stopLossOrderId ? (orderById.get(stopLossOrderId) ?? null) : null;
+    const takeProfitSnapshot = takeProfitOrderId
+      ? (orderById.get(takeProfitOrderId) ?? null)
+      : null;
+    const symbol = this.resolveSymbol(
+      candidate,
+      entrySnapshot,
+      stopLossSnapshot,
+      takeProfitSnapshot
+    );
     const assetIdentifiers = this.resolvePositionIdentifiers(entrySnapshot, orderSnapshots);
     const positions = (
       await this.listOpenPositionSnapshots({
@@ -301,7 +397,10 @@ export class BrokerCanaryProtectionMonitorService {
     const positionProtection = this.resolvePositionProtection(positions);
     const resolvedStopLossOrderId = stopLossOrderId ?? positionProtection.stopLossOrderId;
     const resolvedTakeProfitOrderId = takeProfitOrderId ?? positionProtection.takeProfitOrderId;
-    const positionOpen = positions.length > 0;
+    const positionClosedByProtection =
+      this.isClosedOrderSnapshot(stopLossSnapshot) ||
+      this.isClosedOrderSnapshot(takeProfitSnapshot);
+    const positionOpen = positions.length > 0 && !positionClosedByProtection;
     const stopLossActive =
       (stopLossSnapshot ? this.isActiveOrderSnapshot(stopLossSnapshot) : false) ||
       positionProtection.stopLossActive;
@@ -346,7 +445,9 @@ export class BrokerCanaryProtectionMonitorService {
       issues.push({
         code: 'orphan_active_protection',
         severity: 'critical',
-        message: 'Protective order is still active but no matching open position snapshot is visible.',
+        message: positionClosedByProtection
+          ? 'Protective sibling order is still active even though the submission leg has already been closed by another protective fill.'
+          : 'Protective order is still active but no matching open position snapshot is visible.',
       });
     }
 
@@ -378,6 +479,19 @@ export class BrokerCanaryProtectionMonitorService {
       }
     }
 
+    const autoCancelledOrderIds =
+      autoRemediate && !positionOpen && activeProtectionCount > 0
+        ? await this.autoCancelOrphanProtection({
+            userId,
+            brokerKey,
+            accountId,
+            stopLossOrderId: resolvedStopLossOrderId,
+            takeProfitOrderId: resolvedTakeProfitOrderId,
+            stopLossActive,
+            takeProfitActive,
+          })
+        : [];
+
     return {
       submissionId,
       userId,
@@ -395,8 +509,166 @@ export class BrokerCanaryProtectionMonitorService {
       reconciliationState: this.readNullableString(candidate.reconciliationState),
       latestSnapshotAt: this.pickLatestSnapshotAt([...orderSnapshots, ...positions]),
       issues,
+      autoCancelledOrderIds,
       alertEmitted: false,
+      killSwitchTriggered: false,
+      killSwitchActive: false,
+      killSwitchIssueCode: null,
+      killSwitchReason: null,
     };
+  }
+
+  private async tick(): Promise<void> {
+    if (this.running || this.stopRequested) {
+      return;
+    }
+
+    const runPromise = (async () => {
+      this.running = true;
+      try {
+        const response = await this.runMonitor({ emitAlerts: true });
+        if (response.issueSubmissions > 0) {
+          log.warn(
+            `Broker canary protection monitor found ${response.issueSubmissions} issue submission(s) with ${response.criticalIssues} critical and ${response.warningIssues} warning issue(s).`
+          );
+        }
+      } catch (error) {
+        log.error(
+          `Broker canary protection monitor run failed: ${
+            error instanceof Error ? error.stack || error.message : String(error)
+          }`
+        );
+      } finally {
+        this.running = false;
+      }
+    })();
+
+    this.activeRunPromise = runPromise;
+    try {
+      await runPromise;
+    } finally {
+      if (this.activeRunPromise === runPromise) {
+        this.activeRunPromise = null;
+      }
+    }
+  }
+
+  private async autoCancelOrphanProtection(input: {
+    userId: string;
+    brokerKey: string;
+    accountId: string;
+    stopLossOrderId: string | null;
+    takeProfitOrderId: string | null;
+    stopLossActive: boolean;
+    takeProfitActive: boolean;
+  }): Promise<string[]> {
+    const cancelledOrderIds: string[] = [];
+    const attempts: Array<{ orderId: string | null; active: boolean }> = [
+      { orderId: input.stopLossOrderId, active: input.stopLossActive },
+      { orderId: input.takeProfitOrderId, active: input.takeProfitActive },
+    ];
+
+    for (const attempt of attempts) {
+      const orderId = this.readString(attempt.orderId);
+      if (!attempt.active || !orderId) {
+        continue;
+      }
+
+      try {
+        await this.brokerOrdersFacadeService.cancelFuturesOrder(input.userId, orderId, {
+          brokerKey: input.brokerKey,
+          accountId: input.accountId,
+        });
+        cancelledOrderIds.push(orderId);
+      } catch {
+        // Leave the monitor issue in place; the next run will retry and can emit an alert.
+      }
+    }
+
+    return cancelledOrderIds;
+  }
+
+  private async maybeFreezeUnsafeLiveTrading(
+    item: BrokerCanaryProtectionItem,
+    input: { emitAlerts: boolean; freezeOnCritical: boolean }
+  ): Promise<boolean> {
+    if (!input.emitAlerts || !input.freezeOnCritical) {
+      return false;
+    }
+    if (!item.userId || !item.brokerKey || !item.accountId) {
+      return false;
+    }
+
+    const freezeIssue = this.pickLiveExposureFreezeIssue(item);
+    if (!freezeIssue) {
+      return false;
+    }
+    item.killSwitchIssueCode = freezeIssue.code;
+
+    try {
+      const activeBlock = await this.riskKillSwitchService.findActiveLiveTradingBlock(item.userId, {
+        brokerKey: item.brokerKey,
+        accountId: item.accountId,
+      });
+      if (activeBlock) {
+        item.killSwitchActive = true;
+        item.killSwitchReason = activeBlock.reason;
+        return false;
+      }
+
+      const reason = this.buildAutoFreezeReason(item, freezeIssue);
+      await this.riskKillSwitchService.trigger(item.userId, {
+        scope: 'broker',
+        brokerKey: item.brokerKey,
+        accountId: item.accountId,
+        reason,
+      });
+      item.killSwitchTriggered = true;
+      item.killSwitchActive = true;
+      item.killSwitchReason = reason;
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      item.killSwitchError = message;
+      item.killSwitchReason = `Kill switch trigger failed: ${message}`;
+      log.error(
+        `Broker canary monitor failed to freeze live trading for ${item.userId}/${item.brokerKey}/${item.accountId}: ${message}`
+      );
+      return false;
+    }
+  }
+
+  private pickLiveExposureFreezeIssue(
+    item: BrokerCanaryProtectionItem
+  ): BrokerCanaryProtectionIssue | null {
+    if (!item.positionOpen) {
+      return null;
+    }
+    return (
+      item.issues.find(
+        (issue) => issue.severity === 'critical' && this.isLiveExposureFreezeIssue(issue)
+      ) ?? null
+    );
+  }
+
+  private isLiveExposureFreezeIssue(issue: BrokerCanaryProtectionIssue): boolean {
+    return (
+      issue.code === 'open_position_unprotected' ||
+      issue.code === 'protective_snapshot_missing' ||
+      issue.code === 'snapshot_stale'
+    );
+  }
+
+  private buildAutoFreezeReason(
+    item: BrokerCanaryProtectionItem,
+    issue: BrokerCanaryProtectionIssue
+  ): string {
+    const symbol = item.symbol || item.entryOrderId || 'unknown symbol';
+    const issueMessage = issue.message.replace(/\s+/g, ' ').trim();
+    return `Auto-freeze: open live position ${symbol} on ${item.brokerKey}/${item.accountId} has critical canary issue ${issue.code}: ${issueMessage} Submission ${item.submissionId}.`.slice(
+      0,
+      500
+    );
   }
 
   private async listOrderSnapshots(
@@ -514,9 +786,7 @@ export class BrokerCanaryProtectionMonitorService {
     }
     const channel = 'Broker Canary';
     const source = `broker-canary-monitor:${item.submissionId}`.slice(0, 100);
-    const severity = item.issues.some((issue) => issue.severity === 'critical')
-      ? 'High'
-      : 'Medium';
+    const severity = item.issues.some((issue) => issue.severity === 'critical') ? 'High' : 'Medium';
     const symbol = (item.symbol || 'SYSTEM').slice(0, 50);
     const route = 'Orders';
     const urgency = item.issues.some((issue) => issue.code === 'open_position_unprotected')
@@ -526,10 +796,11 @@ export class BrokerCanaryProtectionMonitorService {
       .slice(0, 3)
       .map((issue) => issue.message)
       .join(' ');
-    const message = `Broker canary protection issue for ${item.symbol || item.brokerKey}: ${issueSummary}`.slice(
-      0,
-      255
-    );
+    const message =
+      `Broker canary protection issue for ${item.symbol || item.brokerKey}: ${issueSummary}`.slice(
+        0,
+        255
+      );
     const existingBySource = await this.alertRepository.findOpenAlertBySource({
       userId: item.userId,
       channel,
@@ -636,6 +907,20 @@ export class BrokerCanaryProtectionMonitorService {
       return true;
     }
     return Number.isFinite(rank) && rank > 0 && rank < 4;
+  }
+
+  private isClosedOrderSnapshot(snapshot: OrderSnapshotRow | null | undefined): boolean {
+    if (!snapshot) {
+      return false;
+    }
+
+    const status = this.readString(snapshot.orderStatus).toUpperCase();
+    if (status === 'CLOSED' || status === 'FILLED') {
+      return true;
+    }
+
+    const rank = Number(snapshot.statusRank);
+    return Number.isFinite(rank) && rank >= 4 && status === 'CLOSED';
   }
 
   private resolvePositionProtection(positions: PositionSnapshotRow[]): {

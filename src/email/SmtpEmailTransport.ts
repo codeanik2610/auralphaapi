@@ -1,8 +1,9 @@
 import nodemailer from 'nodemailer';
 import { EmailDelivery } from '../database/entities/EmailDelivery';
 import { env } from '../env';
+import { EmailTransport } from './EmailTransport';
 
-export class SmtpEmailTransport {
+export class SmtpEmailTransport implements EmailTransport {
   private transporter = nodemailer.createTransport({
     host: env.email.smtp.host,
     port: env.email.smtp.port,

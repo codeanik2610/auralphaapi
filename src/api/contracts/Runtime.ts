@@ -76,7 +76,24 @@ export interface RuntimeOverviewResponse {
   emailWorker: {
     status: RuntimeStatus;
     enabled: boolean;
+    provider: string;
+    providerConfigured: boolean;
     smtpConfigured: boolean;
+    workerId?: string | null;
+    workerStatus?: string | null;
+    queuedCount?: number | null;
+    sendingCount?: number | null;
+    failedCount?: number | null;
+    activeCount?: number | null;
+    lastHeartbeatAt?: string | null;
+    heartbeatAgeMs?: number | null;
+    detail?: string | null;
+  };
+  whatsappWorker: {
+    status: RuntimeStatus;
+    enabled: boolean;
+    provider: string;
+    providerConfigured: boolean;
     workerId?: string | null;
     workerStatus?: string | null;
     queuedCount?: number | null;

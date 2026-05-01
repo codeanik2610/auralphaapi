@@ -1,4 +1,5 @@
 import type { AutomationType, LegacyAutomationType } from '../contracts/Automation';
+import { normalizeTradeSuggestionFreshnessPolicy } from './signalFreshness';
 
 const LEGACY_AUTOMATION_TYPE_MAP: Record<LegacyAutomationType, AutomationType> = {
   strategy: 'trade-suggestion',
@@ -20,6 +21,20 @@ const parseRecord = (value: unknown): Record<string, unknown> | null => {
     return null;
   }
   return value as Record<string, unknown>;
+};
+
+const readNestedRecord = (
+  root: Record<string, unknown> | null,
+  ...keys: string[]
+): Record<string, unknown> | null => {
+  let current = root;
+  for (const key of keys) {
+    current = parseRecord(current?.[key]);
+    if (!current) {
+      return null;
+    }
+  }
+  return current;
 };
 
 const readString = (...values: unknown[]): string | null => {
@@ -113,6 +128,27 @@ const normalizeNullableNumeric = (
   return normalized;
 };
 
+const normalizeClampedNumeric = (
+  value: number | null,
+  fallback: number,
+  {
+    min = Number.NEGATIVE_INFINITY,
+    max = Number.POSITIVE_INFINITY,
+    integer = false,
+  }: {
+    min?: number;
+    max?: number;
+    integer?: boolean;
+  } = {}
+): number => {
+  if (value === null || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const normalized = integer ? Math.trunc(value) : value;
+  return Math.min(max, Math.max(min, normalized));
+};
+
 const normalizeEnum = <T extends readonly string[]>(
   value: string | null,
   allowed: T,
@@ -146,6 +182,68 @@ export const TRADE_SUGGESTION_QUANTITY_MODES = [
 ] as const;
 export const TRADE_SUGGESTION_TIME_IN_FORCE = ['GTC', 'IOC', 'FOK'] as const;
 
+export const TRADE_SUGGESTION_EXECUTION_LIMIT_RULES = {
+  maxOrdersPerRun: {
+    fallback: 1,
+    min: 1,
+    max: 100,
+    integer: true,
+  },
+  maxOrdersPerDay: {
+    fallback: 3,
+    min: 1,
+    max: 1000,
+    integer: true,
+  },
+  maxConcurrentOpenTrades: {
+    fallback: 1,
+    min: 1,
+    max: 1000,
+    integer: true,
+  },
+  dedupeWindowSeconds: {
+    fallback: 3600,
+    min: 0,
+    max: 604800,
+    integer: true,
+  },
+} as const;
+
+export const normalizeTradeSuggestionExecutionLimits = (
+  value: unknown
+): Record<string, unknown> => {
+  const limits = parseRecord(value) ?? {};
+
+  return {
+    maxOrdersPerRun: normalizeClampedNumeric(
+      readNumber(limits.maxOrdersPerRun),
+      TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.fallback,
+      TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun
+    ),
+    maxOrdersPerDay: normalizeClampedNumeric(
+      readNumber(limits.maxOrdersPerDay),
+      TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerDay.fallback,
+      TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerDay
+    ),
+    maxConcurrentOpenTrades: normalizeClampedNumeric(
+      readNumber(limits.maxConcurrentOpenTrades),
+      TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxConcurrentOpenTrades.fallback,
+      TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxConcurrentOpenTrades
+    ),
+    maxNotionalPerTrade: normalizeNullableNumeric(readNumber(limits.maxNotionalPerTrade), {
+      min: 0,
+    }),
+    maxNotionalPerDay: normalizeNullableNumeric(readNumber(limits.maxNotionalPerDay), {
+      min: 0,
+    }),
+    dedupeWindowSeconds: normalizeClampedNumeric(
+      readNumber(limits.dedupeWindowSeconds),
+      TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.dedupeWindowSeconds.fallback,
+      TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.dedupeWindowSeconds
+    ),
+  };
+};
+
 export const normalizeTradeSuggestionExecutionPolicy = (
   value: unknown
 ): Record<string, unknown> => {
@@ -153,8 +251,8 @@ export const normalizeTradeSuggestionExecutionPolicy = (
   const preTrade = parseRecord(root.preTrade) ?? {};
   const routing = parseRecord(root.routing) ?? {};
   const orderTemplate = parseRecord(root.orderTemplate) ?? {};
-  const limits = parseRecord(root.limits) ?? {};
   const liveConsent = parseRecord(root.liveConsent) ?? {};
+  const freshness = parseRecord(root.freshness) ?? parseRecord(root.signalFreshness) ?? {};
 
   const executionMode = normalizeEnum(
     readString(root.executionMode, root.mode),
@@ -212,6 +310,7 @@ export const normalizeTradeSuggestionExecutionPolicy = (
       blockOnInsufficientFunds: readBoolean(preTrade.blockOnInsufficientFunds) ?? true,
       blockOnDuplicateSignal: readBoolean(preTrade.blockOnDuplicateSignal) ?? true,
     },
+    freshness: normalizeTradeSuggestionFreshnessPolicy(freshness),
     routing: {
       routeMode,
       brokerKey: readString(routing.brokerKey, root.brokerKey),
@@ -238,38 +337,7 @@ export const normalizeTradeSuggestionExecutionPolicy = (
         integer: true,
       }),
     },
-    limits: {
-      maxOrdersPerRun: normalizeNumeric(readNumber(limits.maxOrdersPerRun), 1, {
-        min: 1,
-        max: 100,
-        integer: true,
-      }),
-      maxOrdersPerDay: normalizeNumeric(readNumber(limits.maxOrdersPerDay), 3, {
-        min: 1,
-        max: 1000,
-        integer: true,
-      }),
-      maxConcurrentOpenTrades: normalizeNumeric(
-        readNumber(limits.maxConcurrentOpenTrades),
-        1,
-        {
-          min: 1,
-          max: 1000,
-          integer: true,
-        }
-      ),
-      maxNotionalPerTrade: normalizeNullableNumeric(readNumber(limits.maxNotionalPerTrade), {
-        min: 0,
-      }),
-      maxNotionalPerDay: normalizeNullableNumeric(readNumber(limits.maxNotionalPerDay), {
-        min: 0,
-      }),
-      dedupeWindowSeconds: normalizeNumeric(readNumber(limits.dedupeWindowSeconds), 3600, {
-        min: 0,
-        max: 604800,
-        integer: true,
-      }),
-    },
+    limits: normalizeTradeSuggestionExecutionLimits(root.limits),
     liveConsent: {
       enabled: liveConsentEnabled,
       confirmedByUserId: readString(liveConsent.confirmedByUserId),
@@ -462,6 +530,10 @@ export const normalizeAutomationConfig = (
     parseRecord(suggestion.execution) ??
     rawConfig ??
     null;
+  const nestedConfig = readNestedRecord(rawExecution, 'config');
+  const executionInputSnapshot =
+    parseRecord(rawExecution?.inputSnapshot) ??
+    readNestedRecord(rawExecution, 'config', 'inputSnapshot');
   const execution = normalizeTradeSuggestionExecutionPolicy(rawExecution);
   const setupScope = parseRecord(suggestion.setupScope) ?? parseRecord(root.setupScope) ?? null;
   const source =
@@ -478,18 +550,25 @@ export const normalizeAutomationConfig = (
 
   // Extract template IDs with clear precedence:
   // Priority: explicit top-level > nested config > tradeSuggestion > execution
-  const executionTemplate = parseRecord(rawExecution?.template);
+  const executionTemplate =
+    parseRecord(rawExecution?.template) ??
+    parseRecord(nestedConfig?.template) ??
+    parseRecord(executionInputSnapshot?.template);
   const sourceTemplateId = readString(
     root.sourceTemplateId,              // 1. Explicit top-level (highest priority)
     rawExecution?.sourceTemplateId,      // 2. Nested in execution/config
+    nestedConfig?.sourceTemplateId,      // 3. Double-nested legacy execution config
     suggestion.sourceTemplateId,         // 3. Nested in tradeSuggestion
+    executionInputSnapshot?.sourceTemplateId,
     executionTemplate?.id                // 4. Nested template object
   ) ?? null;
 
   const templateId = readString(
     root.templateId,                     // 1. Explicit top-level (highest priority)
     rawExecution?.templateId,            // 2. Nested in execution/config
+    nestedConfig?.templateId,            // 3. Double-nested legacy execution config
     suggestion.templateId,               // 3. Nested in tradeSuggestion
+    executionInputSnapshot?.templateId,
     executionTemplate?.id,               // 4. Nested template object
     executionTemplate?.templateId        // 5. Template object's templateId field
   ) ?? null;
@@ -516,6 +595,8 @@ export const normalizeAutomationConfig = (
       timeframe,
       market,
       setupScope,
+      ...(sourceTemplateId ? { sourceTemplateId } : {}),
+      ...(templateId ? { templateId } : {}),
       execution,
     },
   };

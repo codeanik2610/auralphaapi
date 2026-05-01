@@ -2458,6 +2458,91 @@ async function run(): Promise<void> {
   await run();
 }
 
+async function positions_schedulerGuard11(): Promise<void> {
+  const { InternalPositionsSyncService } = await import("../src/api/services/InternalPositionsSyncService");
+
+async function runDeltaLeverageFallbackAssertions(): Promise<void> {
+  const service = new InternalPositionsSyncService() as any;
+  const capturedPreparedRows: Array<Record<string, unknown>> = [];
+  let capturedReadModelRows: Array<Record<string, unknown>> = [];
+
+  service.positionReadModelRepository = {
+    async upsertReadModels(rows: Array<Record<string, unknown>>) {
+      capturedReadModelRows = rows;
+    },
+  };
+  service.upsertPositionSnapshotBatch = async (rows: Array<Record<string, unknown>>) => {
+    capturedPreparedRows.push(...rows);
+    return {
+      inserted: rows.length,
+      updated: 0,
+      skipped: 0,
+      symbols: rows.map((row) => String(row.symbol || '')).filter(Boolean),
+    };
+  };
+  service.listLatestDeltaSubmissionLeverageContextByAssetId = async (
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    assetIds: string[]
+  ) => {
+    assert.equal(userId, 'user-1');
+    assert.equal(accountId, 'acct-delta');
+    assert.equal(brokerKey, 'delta_exchange');
+    assert.deepEqual(assetIds, ['19616']);
+    return new Map([
+      [
+        '19616',
+        {
+          requestedLeverage: 10,
+          confirmedOrderLeverage: 10,
+        },
+      ],
+    ]);
+  };
+
+  const result = await service.upsertPositionSnapshotsFromItems(
+    'user-1',
+    'acct-delta',
+    'delta_exchange',
+    [
+      {
+        id: '19616',
+        symbol: 'LDOUSD',
+        status: 'open',
+        order_type: 'sell',
+        side: 'Short',
+        position_type: 'short',
+        entry_price: '0.3895',
+        mark_price: '0.3867',
+        quantity: '76',
+        leverage: null,
+        created_at: '2026-04-28T11:45:41.000Z',
+        updated_at: '2026-04-28T12:38:23.000Z',
+      },
+    ]
+  );
+
+  assert.equal(result.inserted, 1);
+  assert.equal(capturedPreparedRows.length, 1);
+  const payload = JSON.parse(String(capturedPreparedRows[0].payloadJson || '{}'));
+  assert.equal(payload.leverage, '10');
+  assert.equal(payload.position_leverage, '10');
+  assert.equal(payload.requested_leverage, '10');
+  assert.equal(payload.confirmed_order_leverage, '10');
+  assert.equal(payload.leverage_source, 'confirmed_order_submission');
+  assert.equal(capturedReadModelRows.length, 1);
+  assert.equal(capturedReadModelRows[0].leverage, 10);
+}
+
+async function run(): Promise<void> {
+  await runDeltaLeverageFallbackAssertions();
+  console.log('Positions scheduler phase 11 assertions passed.');
+}
+
+  await run();
+}
+
 const suiteSteps = {
   "01": positions_schedulerGuard01,
   "02": positions_schedulerGuard02,
@@ -2469,10 +2554,11 @@ const suiteSteps = {
   "08": positions_schedulerGuard08,
   "09": positions_schedulerGuard09,
   "10": positions_schedulerGuard10,
+  "11": positions_schedulerGuard11,
 } as const;
 
 export async function runPositionsSchedulerSuite(): Promise<void> {
-  await runSuiteSteps("Positions scheduler module", "scripts/test-positions-scheduler.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]);
+  await runSuiteSteps("Positions scheduler module", "scripts/test-positions-scheduler.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11"]);
   console.log("Positions scheduler module assertions passed.");
 }
 

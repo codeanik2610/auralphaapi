@@ -375,6 +375,87 @@ export class BrokerPositionsFacadeService {
     }
   }
 
+  private getPositionActionPayload(
+    snapshot: PositionRecord | null
+  ): Record<string, unknown> | null {
+    if (!snapshot) {
+      return null;
+    }
+    return this.toRecord((snapshot as Record<string, unknown>).rawPayload);
+  }
+
+  private resolveBrokerActionPositionId(
+    requestedPositionId: string,
+    snapshot: PositionRecord | null,
+    route: { brokerKey?: string | null }
+  ): string {
+    const resolvedBrokerKey = this.readString(route.brokerKey).toLowerCase();
+    if (resolvedBrokerKey !== 'mudrex') {
+      return requestedPositionId;
+    }
+
+    const payload = this.getPositionActionPayload(snapshot);
+    const nativePositionId = this.readString(
+      this.pickFirst(payload || {}, ['id', 'position_id', 'positionId'])
+    );
+    return nativePositionId || requestedPositionId;
+  }
+
+  private isIgnorableProtectionCancelError(error: unknown): boolean {
+    const message = String(error instanceof Error ? error.message : error || '')
+      .trim()
+      .toLowerCase();
+    if (!message) {
+      return false;
+    }
+    return (
+      message.includes('not found') ||
+      message.includes('open_order_not_found') ||
+      message.includes('already') ||
+      message.includes('closed') ||
+      message.includes('cancelled') ||
+      message.includes('canceled') ||
+      message.includes('terminal')
+    );
+  }
+
+  private async cleanupProtectionOrdersAfterPositionClose(
+    route: { brokerKey?: string; accountId?: string; userId?: string },
+    snapshot: PositionRecord | null
+  ): Promise<string[]> {
+    const resolvedBrokerKey = this.readString(route.brokerKey);
+    const trackedOrderIds = snapshot ? this.getTrackedOrderIds(snapshot) : [];
+    if (!resolvedBrokerKey || !trackedOrderIds.length) {
+      return [];
+    }
+
+    const messages: string[] = [];
+    const ordersAdapter = this.brokerRuntimeRegistry.getOrdersAdapter(
+      resolvedBrokerKey
+    );
+
+    for (const orderId of trackedOrderIds) {
+      try {
+        await ordersAdapter.cancelOrder(orderId, route);
+        messages.push(`Protection cancel submitted ${orderId}`);
+      } catch (error) {
+        if (this.isIgnorableProtectionCancelError(error)) {
+          messages.push(`Protection already inactive ${orderId}`);
+          continue;
+        }
+
+        const message = this.readString(
+          error instanceof Error ? error.message : error
+        );
+        if (message) {
+          messages.push(`Protection cleanup pending ${orderId}: ${message}`);
+        }
+      }
+    }
+
+    return messages;
+  }
+
   private async executePositionActionWithAudit(params: {
     actionKey:
       | 'add-margin'
@@ -392,7 +473,11 @@ export class BrokerPositionsFacadeService {
     userId: string;
     brokerKey?: string;
     accountId?: string;
-    execute: (route: { brokerKey?: string; accountId?: string; userId?: string }) => Promise<unknown>;
+    execute: (
+      route: { brokerKey?: string; accountId?: string; userId?: string },
+      resolvedPositionId: string,
+      snapshot: PositionRecord | null
+    ) => Promise<unknown>;
   }): Promise<unknown> {
     const route = await this.brokerAccountRoutingService.resolve(
       params.userId,
@@ -409,10 +494,30 @@ export class BrokerPositionsFacadeService {
       params.positionId,
       route
     );
+    const executionRoute = {
+      ...route,
+      userId: params.userId,
+    };
+    const resolvedPositionId = this.resolveBrokerActionPositionId(
+      params.positionId,
+      snapshot,
+      executionRoute
+    );
     const symbol = this.readString(snapshot?.symbol);
 
     try {
-      const result = await params.execute(route);
+      const result = await params.execute(
+        executionRoute,
+        resolvedPositionId,
+        snapshot
+      );
+      const protectionCleanupMessages =
+        params.actionKey === 'close'
+          ? await this.cleanupProtectionOrdersAfterPositionClose(
+              executionRoute,
+              snapshot
+            )
+          : [];
       const flags = [
         this.buildPositionActionFlag('route', 'Route', routeTarget, 'Success'),
         this.buildPositionActionFlag(
@@ -430,8 +535,16 @@ export class BrokerPositionsFacadeService {
               'Success'
             )
         ),
-        ...this.buildPositionActionResultMessages(result).map((message, index) =>
-          this.buildPositionActionFlag(`result-${index + 1}`, 'Result', message, 'Success')
+        ...[
+          ...this.buildPositionActionResultMessages(result),
+          ...protectionCleanupMessages,
+        ].map((message, index) =>
+          this.buildPositionActionFlag(
+            `result-${index + 1}`,
+            'Result',
+            message,
+            'Success'
+          )
         ),
       ].filter(
         (
@@ -810,7 +923,7 @@ export class BrokerPositionsFacadeService {
       return null;
     }
 
-    const accountFreshness = this.buildFreshnessIndicator(
+    let accountFreshness = this.buildFreshnessIndicator(
       freshnessRow?.observedAt || null,
       env.positions.liveSnapshotStaleAfterMs,
       env.positions.liveSnapshotCriticalAfterMs,
@@ -822,11 +935,23 @@ export class BrokerPositionsFacadeService {
       env.positions.syncCheckpointCriticalAfterMs,
       'sync_checkpoint'
     );
+    const openPositions = Number(freshnessRow?.openPositions);
+    const hasNoOpenPositions = Number.isFinite(openPositions) && openPositions <= 0;
+    const syncedNoOpenPositions =
+      hasNoOpenPositions && checkpointFreshness.state === 'fresh';
+    if (syncedNoOpenPositions) {
+      accountFreshness = {
+        ...checkpointFreshness,
+        source: 'sync_checkpoint_no_open_positions',
+      };
+    }
     const accountLabel =
       account.accountName || account.accountKey || 'this account';
     let warning: string | null = null;
 
-    if (accountFreshness.state === 'critical') {
+    if (syncedNoOpenPositions) {
+      warning = null;
+    } else if (accountFreshness.state === 'critical') {
       const age = this.formatRelativeAge(accountFreshness.freshnessMs) || 'a while ago';
       warning = `Live snapshot for ${accountLabel} was last observed ${age}. This desk may be materially behind the broker route.`;
     } else if (accountFreshness.state === 'stale') {
@@ -1327,6 +1452,11 @@ export class BrokerPositionsFacadeService {
 
   private mapLifecycleSuggestedTrade(item: SuggestedTrade): PositionLifecycleSuggestedTradeItem {
     const execution = item.executionRecord || null;
+    const fallbackTarget = Array.isArray(item.takeProfitTargets)
+      ? item.takeProfitTargets
+          .map((value) => this.toNumber(value))
+          .find((value): value is number => value !== null) ?? null
+      : null;
     return {
       id: item.id,
       symbol: item.symbol,
@@ -1346,6 +1476,8 @@ export class BrokerPositionsFacadeService {
       linkedPaperOrderId: execution?.paperOrderId ?? null,
       sourceTemplateId: item.sourceTemplateId ?? null,
       sourceBacktestId: item.sourceBacktestId ?? null,
+      stopLossPrice: this.toNumber(execution?.stopLossPrice ?? item.stopLossPrice),
+      targetPrice: this.toNumber(execution?.takeProfitPrice) ?? fallbackTarget,
       detailUrl: `/suggested-trades?selected=${encodeURIComponent(item.id)}`,
       linkedEntities: this.buildSuggestedTradeLinks(item),
     };
@@ -2150,10 +2282,10 @@ export class BrokerPositionsFacadeService {
       userId,
       brokerKey,
       accountId,
-      execute: async (route) =>
+      execute: async (route, resolvedPositionId) =>
         this.brokerRuntimeRegistry
           .getPositionsAdapter(route.brokerKey)
-          .addMargin(positionId, body, route),
+          .addMargin(resolvedPositionId, body, route),
     });
   }
 
@@ -2169,10 +2301,10 @@ export class BrokerPositionsFacadeService {
       userId,
       brokerKey,
       accountId,
-      execute: async (route) =>
+      execute: async (route, resolvedPositionId) =>
         this.brokerRuntimeRegistry
           .getPositionsAdapter(route.brokerKey)
-          .createRiskOrder(positionId, body, route),
+          .createRiskOrder(resolvedPositionId, body, route),
     });
   }
 
@@ -2188,10 +2320,10 @@ export class BrokerPositionsFacadeService {
       userId,
       brokerKey,
       accountId,
-      execute: async (route) =>
+      execute: async (route, resolvedPositionId) =>
         this.brokerRuntimeRegistry
           .getPositionsAdapter(route.brokerKey)
-          .updateRiskOrder(positionId, body, route),
+          .updateRiskOrder(resolvedPositionId, body, route),
     });
   }
 
@@ -2207,10 +2339,10 @@ export class BrokerPositionsFacadeService {
       userId,
       brokerKey,
       accountId,
-      execute: async (route) =>
+      execute: async (route, resolvedPositionId) =>
         this.brokerRuntimeRegistry
           .getPositionsAdapter(route.brokerKey)
-          .reversePosition(positionId, route),
+          .reversePosition(resolvedPositionId, route),
     });
   }
 
@@ -2226,10 +2358,10 @@ export class BrokerPositionsFacadeService {
       userId,
       brokerKey,
       accountId,
-      execute: async (route) =>
+      execute: async (route, resolvedPositionId) =>
         this.brokerRuntimeRegistry
           .getPositionsAdapter(route.brokerKey)
-          .closePartial(positionId, body, route),
+          .closePartial(resolvedPositionId, body, route),
     });
   }
 
@@ -2245,10 +2377,10 @@ export class BrokerPositionsFacadeService {
       userId,
       brokerKey,
       accountId,
-      execute: async (route) =>
+      execute: async (route, resolvedPositionId) =>
         this.brokerRuntimeRegistry
           .getPositionsAdapter(route.brokerKey)
-          .closePosition(positionId, route),
+          .closePosition(resolvedPositionId, route),
     });
   }
 

@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import {
   normalizeAutomationConfig,
+  TRADE_SUGGESTION_EXECUTION_LIMIT_RULES,
   normalizeTradeSuggestionExecutionPolicy,
 } from '../src/api/utils/automationType';
+import {
+  DEFAULT_TRADE_SUGGESTION_FRESHNESS_GRACE_SECONDS,
+  evaluateSignalFreshness,
+} from '../src/api/utils/signalFreshness';
 
 // Test Suite 1: Basic Template ID Promotion
 function runTemplateIdPromotionTests(): void {
@@ -70,6 +75,36 @@ function runTemplateIdPromotionTests(): void {
     'Should extract templateId from nested template object'
   );
   console.log('  ✓ Extracts templateId from template object\n');
+
+  // Test 1.4: Promote from legacy config.config.templateId shape
+  const case4 = {
+    kind: 'trade-suggestion',
+    config: {
+      config: {
+        templateId: 'template-legacy',
+        sourceTemplateId: 'template-legacy',
+        inputSnapshot: {
+          template: {
+            id: 'template-legacy',
+          },
+        },
+      },
+    },
+  };
+
+  const result4 = normalizeAutomationConfig('trade-suggestion', case4);
+
+  assert.strictEqual(
+    result4?.templateId,
+    'template-legacy',
+    'Should promote templateId from legacy config.config shape'
+  );
+  assert.strictEqual(
+    result4?.sourceTemplateId,
+    'template-legacy',
+    'Should promote sourceTemplateId from legacy config.config shape'
+  );
+  console.log('  ✓ Promotes template IDs from legacy double-nested config\n');
 }
 
 // Test Suite 2: Precedence Logic
@@ -363,6 +398,76 @@ function runExecutionPolicyNormalizationTests(): void {
     'Live auto should default to 1x leverage when no safe leverage is supplied'
   );
   console.log('  ✓ Defaults live-auto leverage to 1x');
+
+  const normalizedLimits = normalizeTradeSuggestionExecutionPolicy({
+    executionMode: 'live_trade_auto',
+    approvalMode: 'auto_if_safe',
+    limits: {
+      maxOrdersPerRun: 999999,
+      maxOrdersPerDay: 999999,
+      maxConcurrentOpenTrades: 999999,
+      dedupeWindowSeconds: -5,
+    },
+  });
+  const limits = (normalizedLimits.limits as Record<string, unknown>) || {};
+  assert.equal(
+    limits.maxOrdersPerRun,
+    TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.max,
+    'Per-run limit should normalize from the shared rule definition'
+  );
+  assert.equal(
+    limits.maxOrdersPerDay,
+    TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerDay.max,
+    'Per-day limit should normalize from the shared rule definition'
+  );
+  assert.equal(
+    limits.maxConcurrentOpenTrades,
+    TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxConcurrentOpenTrades.max,
+    'Concurrent-open-trades limit should normalize from the shared rule definition'
+  );
+  assert.equal(
+    limits.dedupeWindowSeconds,
+    TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.dedupeWindowSeconds.min,
+    'Dedupe window should normalize from the shared rule definition'
+  );
+  console.log('  ✓ Centralizes trade-suggestion execution limit normalization');
+
+  const freshness = (normalizedLimits.freshness as Record<string, unknown>) || {};
+  const timeframeGraceSeconds =
+    (freshness.timeframeGraceSeconds as Record<string, unknown>) || {};
+  assert.equal(freshness.enabled, true);
+  assert.equal(
+    timeframeGraceSeconds['15m'],
+    DEFAULT_TRADE_SUGGESTION_FRESHNESS_GRACE_SECONDS['15m'],
+    'Freshness policy should expose timeframe-aware defaults for UI editing'
+  );
+
+  const customFreshnessPolicy = normalizeTradeSuggestionExecutionPolicy({
+    freshness: {
+      enabled: true,
+      timeframeGraceSeconds: {
+        '5m': 180,
+        '15m': 600,
+      },
+    },
+  });
+  const customFreshness =
+    (customFreshnessPolicy.freshness as Record<string, unknown>) || {};
+  const customTimeframes =
+    (customFreshness.timeframeGraceSeconds as Record<string, unknown>) || {};
+  assert.equal(customTimeframes['5m'], 180);
+  assert.equal(customTimeframes['15m'], 600);
+
+  const staleEvaluation = evaluateSignalFreshness({
+    signalTime: '2026-04-30T09:30:00.000Z',
+    timeframe: '15m',
+    policy: customFreshness as any,
+    evaluatedAt: new Date('2026-04-30T09:56:00.000Z'),
+  });
+  assert.equal(staleEvaluation.allowed, false);
+  assert.equal(staleEvaluation.ageAfterCloseSeconds, 660);
+  assert.equal(staleEvaluation.maxAgeAfterCloseSeconds, 600);
+  console.log('  ✓ Normalizes configurable timeframe-aware signal freshness guard');
 
   const liveConfig = normalizeAutomationConfig('trade-suggestion', {
     kind: 'trade-suggestion',

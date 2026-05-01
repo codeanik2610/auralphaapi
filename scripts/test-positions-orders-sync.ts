@@ -4375,6 +4375,10 @@ async function runSourceMarkerAssertions(): Promise<void> {
     path.join(process.cwd(), 'src', 'api', 'services', 'InternalOrdersSyncService.ts'),
     'utf8'
   );
+  const internalPositionsSyncServiceSource = await readFile(
+    path.join(process.cwd(), 'src', 'api', 'services', 'InternalPositionsSyncService.ts'),
+    'utf8'
+  );
 
   assert.equal(
     packageSource.includes('"test:positions-orders-sync"'),
@@ -4493,6 +4497,35 @@ async function runSourceMarkerAssertions(): Promise<void> {
     internalOrdersSyncServiceSource.includes('order submission reconciliation failed'),
     true,
     'InternalOrdersSyncService.ts must surface order submission reconciliation failures in sync results'
+  );
+  assert.equal(
+    internalPositionsSyncServiceSource.includes(
+      'enrichDeltaOpenPositionLeverageFromConfirmedOrders'
+    ),
+    true,
+    'InternalPositionsSyncService.ts must enrich Delta open position leverage from confirmed order context'
+  );
+  assert.equal(
+    internalPositionsSyncServiceSource.includes(
+      'listLatestDeltaSubmissionLeverageContextByAssetId'
+    ),
+    true,
+    'InternalPositionsSyncService.ts must keep the Delta leverage context query isolated'
+  );
+  assert.equal(
+    internalPositionsSyncServiceSource.includes("AND placement_state IN ('placed', 'replayed')"),
+    true,
+    'InternalPositionsSyncService.ts must only use placed or replayed order submissions for leverage provenance'
+  );
+  assert.equal(
+    internalPositionsSyncServiceSource.includes('confirmed_order_leverage'),
+    true,
+    'InternalPositionsSyncService.ts must retain confirmed order leverage provenance on enriched positions'
+  );
+  assert.equal(
+    internalPositionsSyncServiceSource.includes('requested_order_submission'),
+    true,
+    'InternalPositionsSyncService.ts must label requested order leverage fallback provenance'
   );
 }
 

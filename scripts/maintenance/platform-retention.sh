@@ -21,6 +21,7 @@ POSTGRES_BATCH_SIZE=50000
 MYSQL_BATCH_SIZE=50000
 MAX_BATCHES=200
 DOCKER_BUILDER_UNTIL="1h"
+DOCKER_IMAGE_UNTIL="24h"
 MYSQL_BINLOG_RETENTION_HOURS=1
 POSTGRES_INDEX_MAX_ATTEMPTS=5
 POSTGRES_INDEX_RETRY_SECONDS=15
@@ -35,6 +36,8 @@ RUN_MYSQL_BINLOG_PURGE=true
 RUN_MYSQL_TEMP_RECLAIM=true
 CREATE_POSTGRES_CANDLE_RETENTION_INDEX=true
 DOCKER_BUILDER_PRUNE_RAN=false
+DOCKER_IMAGE_PRUNE_RAN=false
+DOCKER_VOLUME_PRUNE_RAN=false
 
 function usage() {
   cat <<'USAGE'
@@ -48,7 +51,9 @@ Purpose:
     Related exchange_asset_update_logs and scheduler_health_check_results cascade from those runs.
   - MySQL binary logs: purge logs older than the configured short local window.
   - MySQL InnoDB temp space: restart MySQL under disk pressure to reclaim #innodb_temp.
-  - Docker build cache: prune old build cache only, never app images or volumes.
+  - Docker build cache: prune old build cache.
+  - Docker images: prune old unused images only, never the images backing running containers or volumes.
+  - Docker local volumes: report attached volume footprint and prune unused local volumes only.
 
 Safety:
   --dry-run is the default and never deletes data.
@@ -66,12 +71,13 @@ Options:
   --mysql-batch-size COUNT           Default: 50000
   --max-batches COUNT                Default: 200
   --docker-builder-until AGE         Default: 1h
+  --docker-image-until AGE           Default: 24h
   --mysql-binlog-retention-hours N   Default: 1
   --postgres-index-max-attempts N     Default: 5
   --postgres-index-retry-seconds N    Default: 15
   --disk-pressure-threshold-percent N Default: 90
   --mysql-temp-reclaim-threshold-gb N Default: 4
-  --skip-docker-prune                Do not prune Docker build cache in --apply.
+  --skip-docker-prune                Do not prune Docker build cache, unused images, or unused volumes in --apply.
   --skip-mysql-binlog-purge          Do not purge MySQL binary logs in --apply.
   --skip-mysql-temp-reclaim          Do not restart MySQL to reclaim #innodb_temp.
   --skip-vacuum                      Do not run VACUUM ANALYZE after Postgres deletes.
@@ -176,6 +182,10 @@ function parse_args() {
         ;;
       --docker-builder-until)
         DOCKER_BUILDER_UNTIL="${2:-}"
+        shift 2
+        ;;
+      --docker-image-until)
+        DOCKER_IMAGE_UNTIL="${2:-}"
         shift 2
         ;;
       --mysql-binlog-retention-hours)
@@ -304,6 +314,58 @@ function print_disk_snapshot() {
 
 function print_docker_snapshot() {
   docker system df
+}
+
+function get_docker_volume_root() {
+  echo "/var/lib/docker/volumes"
+}
+
+function get_docker_volume_root_size() {
+  local volume_root
+  volume_root="$(get_docker_volume_root)"
+  if [[ -d "${volume_root}" ]]; then
+    du -sh "${volume_root}" 2>/dev/null | awk 'NR == 1 { print $1 }'
+  else
+    echo "0B"
+  fi
+}
+
+function print_docker_volume_report() {
+  local volume_root attached_count unused_count total_count
+  volume_root="$(get_docker_volume_root)"
+  attached_count=0
+  unused_count=0
+  total_count=0
+
+  echo "volume_root	${volume_root}"
+  echo "volume_root_size	$(get_docker_volume_root_size)"
+  echo "volume_name	status	size	mountpoint"
+
+  while IFS= read -r volume_name; do
+    local mountpoint size status
+    [[ -z "${volume_name}" ]] && continue
+    total_count=$((total_count + 1))
+    mountpoint="$(docker volume inspect --format '{{.Mountpoint}}' "${volume_name}" 2>/dev/null || true)"
+    if docker ps -a --filter "volume=${volume_name}" -q | grep -q .; then
+      status="attached"
+      attached_count=$((attached_count + 1))
+    else
+      status="unused"
+      unused_count=$((unused_count + 1))
+    fi
+
+    if [[ -n "${mountpoint}" && -d "${mountpoint}" ]]; then
+      size="$(du -sh "${mountpoint}" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+    else
+      size="0B"
+    fi
+
+    printf '%s\t%s\t%s\t%s\n' "${volume_name}" "${status}" "${size}" "${mountpoint:-unknown}"
+  done < <(docker volume ls -q | sort)
+
+  echo "volume_count	${total_count}"
+  echo "attached_volume_count	${attached_count}"
+  echo "unused_volume_count	${unused_count}"
 }
 
 function bytes_to_gib() {
@@ -692,6 +754,44 @@ function apply_docker_builder_prune() {
   echo "docker_builder_prune	failed"
 }
 
+function apply_docker_image_prune() {
+  if [[ "${RUN_DOCKER_PRUNE}" != "true" ]]; then
+    echo "docker_image_prune	skipped"
+    return
+  fi
+
+  if [[ "${DOCKER_IMAGE_PRUNE_RAN}" == "true" ]]; then
+    echo "docker_image_prune	already_run"
+    return
+  fi
+
+  if docker image prune --all --force --filter "until=${DOCKER_IMAGE_UNTIL}"; then
+    DOCKER_IMAGE_PRUNE_RAN=true
+    return
+  fi
+
+  echo "docker_image_prune	failed"
+}
+
+function apply_docker_volume_prune() {
+  if [[ "${RUN_DOCKER_PRUNE}" != "true" ]]; then
+    echo "docker_volume_prune	skipped"
+    return
+  fi
+
+  if [[ "${DOCKER_VOLUME_PRUNE_RAN}" == "true" ]]; then
+    echo "docker_volume_prune	already_run"
+    return
+  fi
+
+  if docker volume prune --all --force; then
+    DOCKER_VOLUME_PRUNE_RAN=true
+    return
+  fi
+
+  echo "docker_volume_prune	failed"
+}
+
 function apply_mysql_temp_reclaim() {
   local root_disk_use_percent mysql_temp_bytes threshold_bytes before_gb after_gb
 
@@ -747,6 +847,7 @@ postgres_batch_size	${POSTGRES_BATCH_SIZE}
 mysql_batch_size	${MYSQL_BATCH_SIZE}
 max_batches	${MAX_BATCHES}
 docker_builder_until	${DOCKER_BUILDER_UNTIL}
+docker_image_until	${DOCKER_IMAGE_UNTIL}
 mysql_binlog_retention_hours	${MYSQL_BINLOG_RETENTION_HOURS}
 postgres_index_max_attempts	${POSTGRES_INDEX_MAX_ATTEMPTS}
 postgres_index_retry_seconds	${POSTGRES_INDEX_RETRY_SECONDS}
@@ -765,12 +866,17 @@ EOF
   section "Docker Usage Before"
   print_docker_snapshot
 
+  section "Docker Volumes Before"
+  print_docker_volume_report
+
   section "Disk Pressure Report Before Cleanup"
   print_disk_pressure_report
 
   if [[ "${MODE}" == "apply" ]]; then
     section "Applying Early Disk Pressure Cleanup"
     apply_docker_builder_prune
+    apply_docker_image_prune
+    apply_docker_volume_prune
     apply_mysql_temp_reclaim
 
     section "Disk After Early Cleanup"
@@ -804,6 +910,12 @@ EOF
     section "Applying Docker Builder Prune"
     apply_docker_builder_prune
 
+    section "Applying Docker Image Prune"
+    apply_docker_image_prune
+
+    section "Applying Docker Volume Prune"
+    apply_docker_volume_prune
+
     if [[ "${RUN_POSTGRES_CANDLES}" == "true" ]]; then
       section "Applying Postgres Candle Retention"
       require_postgres_candle_delete_ready
@@ -818,6 +930,9 @@ EOF
 
     section "Docker Usage After"
     print_docker_snapshot
+
+    section "Docker Volumes After"
+    print_docker_volume_report
   else
     section "Dry Run"
     echo "No data was deleted. Re-run with AURALPHA_RETENTION_CONFIRM=delete and --apply to execute cleanup."

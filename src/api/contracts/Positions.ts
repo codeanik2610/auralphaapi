@@ -26,6 +26,10 @@ export interface PositionSummary {
   unrealizedPnl: number | null;
   realizedPnl: number | null;
   leverage: number | null;
+  requestedLeverage?: number | null;
+  confirmedOrderLeverage?: number | null;
+  observedPositionLeverage?: number | null;
+  leverageSource?: string | null;
   liquidationPrice: number | null;
   exposure: number | null;
   createdAt?: string;
@@ -53,6 +57,10 @@ export interface PositionRecord extends Record<string, unknown> {
   realized_pnl?: number | null;
   realized?: number | null;
   leverage?: number | null;
+  requested_leverage?: number | null;
+  confirmed_order_leverage?: number | null;
+  observed_position_leverage?: number | null;
+  leverage_source?: string | null;
   liquidation_price?: number | null;
   exposure?: number | null;
   created_at?: string;
@@ -130,6 +138,8 @@ export interface PositionLifecycleSuggestedTradeItem {
   linkedPaperOrderId?: string | null;
   sourceTemplateId?: string | null;
   sourceBacktestId?: string | null;
+  stopLossPrice?: number | null;
+  targetPrice?: number | null;
   detailUrl?: string;
   linkedEntities?: import('./UiState').LinkedEntityReference[];
 }

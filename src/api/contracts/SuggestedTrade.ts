@@ -27,12 +27,7 @@ export type SuggestedTradeJourneyStage =
   | 'link_order'
   | 'track_execution'
   | 'closed_out';
-export type SuggestedTradeSyncState =
-  | 'untracked'
-  | 'fresh'
-  | 'stale'
-  | 'attention'
-  | 'settled';
+export type SuggestedTradeSyncState = 'untracked' | 'fresh' | 'stale' | 'attention' | 'settled';
 export type SuggestedTradePageAction =
   | 'review'
   | 'accept'
@@ -92,6 +87,43 @@ export interface SuggestedTradeExecutionLink {
   realizedPnl?: string | null;
   outcome?: 'open' | 'profit' | 'loss' | 'breakeven' | 'unknown' | null;
   note?: string | null;
+}
+
+export interface SuggestedTradeRouteCandidate {
+  brokerKey: string;
+  accountId: string;
+  accountName?: string | null;
+  requestedSymbol: string;
+  brokerSymbol: string;
+  candidateSymbols: string[];
+  resolvedVia?:
+    | 'catalog_exact'
+    | 'catalog_equivalent'
+    | 'remote_exact'
+    | 'remote_equivalent'
+    | null;
+  supported: boolean;
+  supportMessage?: string | null;
+  allowed: boolean;
+  blocked: boolean;
+  summary: string;
+  warningRuleCount: number;
+  blockingRuleCount: number;
+  freshnessState?: string | null;
+}
+
+export interface SuggestedTradeRouteDecision {
+  mode: 'adaptive_candidate_live' | 'adaptive_candidate_shadow';
+  decision: 'selected' | 'blocked';
+  requestedSymbol: string;
+  selectedBrokerKey?: string | null;
+  selectedAccountId?: string | null;
+  selectedAccountName?: string | null;
+  selectedBrokerSymbol?: string | null;
+  selectionReason: string;
+  summary: string;
+  decidedAt?: string | null;
+  candidates: SuggestedTradeRouteCandidate[];
 }
 
 export interface SuggestedTradeSyncStatus {
@@ -175,6 +207,7 @@ export interface SuggestedTradeItem {
   rationale?: string | null;
   dedupeKey: string;
   meta?: Record<string, unknown> | null;
+  routeDecision?: SuggestedTradeRouteDecision | null;
   execution?: SuggestedTradeExecutionLink | null;
   allowedActions?: SuggestedTradePageAction[];
   statusReason?: string;
@@ -212,6 +245,56 @@ export interface SuggestedTradesSummary {
   working: number;
   filled: number;
   closed: number;
+  freshnessAudit?: SuggestedTradesFreshnessAudit;
+}
+
+export interface SuggestedTradesFreshnessAuditWorstDelay {
+  suggestedTradeId: string;
+  symbol: string;
+  timeframe: string;
+  side: SuggestedTradeSide;
+  signalTime: string;
+  suggestedTradeCreatedAt: string;
+  openedAt: string | null;
+  executionMode?: 'live' | 'paper' | null;
+  executionState?: SuggestedTradeExecutionStage | null;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  signalSelectionMode?: string | null;
+  signalToSuggestionMinutes: number;
+  signalToOpenMinutes: number | null;
+  openAgeAfterCloseMinutes: number | null;
+  maxAgeAfterCloseMinutes: number | null;
+  stale: boolean;
+}
+
+export interface SuggestedTradesFreshnessAuditTimeframe {
+  timeframe: string;
+  totalSignals: number;
+  openedSignals: number;
+  staleOpenCount: number;
+  averageSignalToSuggestionMinutes: number | null;
+  averageSignalToOpenMinutes: number | null;
+  maxSignalToOpenMinutes: number | null;
+}
+
+export interface SuggestedTradesFreshnessAudit {
+  lookbackDays: number;
+  windowStart: string;
+  generatedAt: string;
+  sampledSignals: number;
+  totalSignals: number;
+  openedSignals: number;
+  staleOpenCount: number;
+  staleBlockedCount: number;
+  latestClosedOnlyCount: number;
+  cursorGapCount: number;
+  unknownSignalSelectionModeCount: number;
+  averageSignalToSuggestionMinutes: number | null;
+  averageSignalToOpenMinutes: number | null;
+  maxSignalToOpenMinutes: number | null;
+  byTimeframe: SuggestedTradesFreshnessAuditTimeframe[];
+  worstDelays: SuggestedTradesFreshnessAuditWorstDelay[];
 }
 
 export interface SuggestedTradeStatusActionResult {

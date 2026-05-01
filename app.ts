@@ -7,6 +7,7 @@ import { coreDataSource } from './src/database/data-source';
 import { strategyDataSource } from './src/database/pg-data-source';
 import { ActivityExportProcessorService } from './src/api/services/ActivityExportProcessorService';
 import { ActivityMaintenanceService } from './src/api/services/ActivityMaintenanceService';
+import { BrokerCanaryProtectionMonitorService } from './src/api/services/BrokerCanaryProtectionMonitorService';
 import { PaperOrdersSchedulerService } from './src/api/services/PaperOrdersSchedulerService';
 import { SuggestedTradeExecutionSyncService } from './src/api/services/SuggestedTradeExecutionSyncService';
 import { env } from './src/env';
@@ -15,6 +16,7 @@ import { activityExportProcessorLoader } from './src/loaders/ActivityExportProce
 import { automationRecoveryLoader } from './src/loaders/AutomationRecoveryLoader';
 import { Logger } from './src/lib/logger';
 import { activityMaintenanceLoader } from './src/loaders/ActivityMaintenanceLoader';
+import { brokerCanaryProtectionMonitorLoader } from './src/loaders/BrokerCanaryProtectionMonitorLoader';
 import { expressLoader } from './src/loaders/ExpressLoader';
 import { iocLoader } from './src/loaders/IocLoader';
 import { paperOrdersExecutionLoader } from './src/loaders/PaperOrdersExecutionLoader';
@@ -72,6 +74,7 @@ const withTimeout = async <T>(promise: Promise<T>, label: string): Promise<T> =>
 const stopBackgroundServices = async (): Promise<void> => {
   await Container.get(ActivityExportProcessorService).stop();
   await Container.get(ActivityMaintenanceService).stop();
+  await Container.get(BrokerCanaryProtectionMonitorService).stop();
   await Container.get(SuggestedTradeExecutionSyncService).stop();
   await Container.get(PaperOrdersSchedulerService).stop();
 };
@@ -87,6 +90,7 @@ bootstrapMicroframework({
     automationRecoveryLoader,
     activityExportProcessorLoader,
     activityMaintenanceLoader,
+    brokerCanaryProtectionMonitorLoader,
     suggestedTradeExecutionSyncLoader,
     paperOrdersExecutionLoader,
     expressLoader,

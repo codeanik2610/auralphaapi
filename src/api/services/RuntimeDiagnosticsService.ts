@@ -7,6 +7,7 @@ import {
   SchedulerConfigRepository,
   SchedulerRunLogRepository,
   SchedulerUserConfigRepository,
+  WhatsappDeliveryRepository,
 } from '../../database';
 import { env } from '../../env';
 import { RedisClient } from '../../lib/RedisClient';
@@ -18,13 +19,8 @@ import {
   RuntimeStaleItemsResponse,
   RuntimeStatus,
 } from '../contracts/Runtime';
-import {
-  BadRequestAppError,
-  NotFoundAppError,
-} from '../errors/AppError';
-import {
-  buildRuntimeSchedulerAudit,
-} from '../utils/schedulerAuditContract';
+import { BadRequestAppError, NotFoundAppError } from '../errors/AppError';
+import { buildRuntimeSchedulerAudit } from '../utils/schedulerAuditContract';
 import { buildSignedSchedulerHeaders } from '../utils/schedulerRequestAuth';
 import { ActivityExportProcessorService } from './ActivityExportProcessorService';
 import { ActivityMaintenanceService } from './ActivityMaintenanceService';
@@ -35,6 +31,7 @@ import { SuggestedTradeExecutionSyncService } from './SuggestedTradeExecutionSyn
 
 type WorkerHealthSummary = RuntimeOverviewResponse['worker'];
 type EmailWorkerHealthSummary = RuntimeOverviewResponse['emailWorker'];
+type WhatsappWorkerHealthSummary = RuntimeOverviewResponse['whatsappWorker'];
 type DiscoveryRuntimeSummary = RuntimeOverviewResponse['discovery'];
 
 type DiscoveryRuntimePayload = {
@@ -68,6 +65,9 @@ export class RuntimeDiagnosticsService {
 
   @Inject(() => EmailDeliveryRepository)
   private emailDeliveryRepository!: EmailDeliveryRepository;
+
+  @Inject(() => WhatsappDeliveryRepository)
+  private whatsappDeliveryRepository!: WhatsappDeliveryRepository;
 
   @Inject(() => ActivityExportProcessorService)
   private activityExportProcessorService!: ActivityExportProcessorService;
@@ -153,12 +153,18 @@ export class RuntimeDiagnosticsService {
   async getEmailWorkerHealth(): Promise<EmailWorkerHealthSummary> {
     const heartbeatKey = env.redis.emailWorkerHeartbeatKey;
     const smtpConfigured = Boolean(env.email.smtp.host && env.email.smtp.from);
+    const providerConfigured =
+      env.email.provider === 'smtp'
+        ? smtpConfigured
+        : Boolean(env.email.resend.apiKey && env.email.resend.from);
     const queueMetrics = await this.readEmailQueueMetrics();
 
     if (!env.email.enabled) {
       return {
         status: 'disabled',
         enabled: false,
+        provider: env.email.provider,
+        providerConfigured,
         smtpConfigured,
         ...queueMetrics,
         detail: 'Email delivery is disabled in environment configuration.',
@@ -171,6 +177,8 @@ export class RuntimeDiagnosticsService {
         return {
           status: 'down',
           enabled: true,
+          provider: env.email.provider,
+          providerConfigured,
           smtpConfigured,
           ...queueMetrics,
           detail: 'No active email worker heartbeat found.',
@@ -188,12 +196,15 @@ export class RuntimeDiagnosticsService {
       const heartbeatAgeMs = this.computeAgeMs(lastHeartbeatAt);
       const pollIntervalMs = this.readNumber(parsed.pollIntervalMs) ?? env.email.pollIntervalMs;
       const staleThresholdMs = Math.max(30_000, pollIntervalMs * 3);
-      const isStale = typeof heartbeatAgeMs === 'number' ? heartbeatAgeMs > staleThresholdMs : false;
+      const isStale =
+        typeof heartbeatAgeMs === 'number' ? heartbeatAgeMs > staleThresholdMs : false;
       const workerStatus = this.readString(parsed.status) || 'idle';
 
       return {
         status: workerStatus === 'degraded' || isStale ? 'degraded' : 'ok',
         enabled: true,
+        provider: env.email.provider,
+        providerConfigured,
         smtpConfigured,
         ...queueMetrics,
         workerId: this.readString(parsed.workerId),
@@ -202,7 +213,8 @@ export class RuntimeDiagnosticsService {
         heartbeatAgeMs,
         detail:
           workerStatus === 'degraded'
-            ? this.readString(parsed.lastError) || 'Email worker is alive, but the latest batch recorded failures.'
+            ? this.readString(parsed.lastError) ||
+              'Email worker is alive, but the latest batch recorded failures.'
             : isStale
               ? 'Email worker heartbeat is older than the expected polling window.'
               : null,
@@ -211,6 +223,8 @@ export class RuntimeDiagnosticsService {
       return {
         status: 'down',
         enabled: true,
+        provider: env.email.provider,
+        providerConfigured,
         smtpConfigured,
         ...queueMetrics,
         detail:
@@ -221,10 +235,101 @@ export class RuntimeDiagnosticsService {
     }
   }
 
+  async getWhatsappWorkerHealth(): Promise<WhatsappWorkerHealthSummary> {
+    const heartbeatKey = env.redis.whatsappWorkerHeartbeatKey;
+    const providerConfigured = Boolean(
+      env.whatsapp.twilio.accountSid && env.whatsapp.twilio.authToken && env.whatsapp.twilio.from
+    );
+    const queueMetrics = await this.readWhatsappQueueMetrics();
+
+    if (!env.whatsapp.enabled) {
+      return {
+        status: 'disabled',
+        enabled: false,
+        provider: env.whatsapp.provider,
+        providerConfigured,
+        ...queueMetrics,
+        detail: 'WhatsApp delivery is disabled in environment configuration.',
+      };
+    }
+
+    if (!providerConfigured) {
+      return {
+        status: 'down',
+        enabled: true,
+        provider: env.whatsapp.provider,
+        providerConfigured,
+        ...queueMetrics,
+        detail: 'WhatsApp delivery is enabled but the provider configuration is incomplete.',
+      };
+    }
+
+    try {
+      const rawHeartbeat = await RedisClient.getConnection().get(heartbeatKey);
+      if (!rawHeartbeat) {
+        return {
+          status: 'down',
+          enabled: true,
+          provider: env.whatsapp.provider,
+          providerConfigured,
+          ...queueMetrics,
+          detail: 'No active WhatsApp worker heartbeat found.',
+        };
+      }
+
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = JSON.parse(rawHeartbeat) as Record<string, unknown>;
+      } catch {
+        parsed = {};
+      }
+
+      const lastHeartbeatAt = this.readIsoString(parsed.timestamp);
+      const heartbeatAgeMs = this.computeAgeMs(lastHeartbeatAt);
+      const pollIntervalMs = this.readNumber(parsed.pollIntervalMs) ?? env.whatsapp.pollIntervalMs;
+      const staleThresholdMs = Math.max(30_000, pollIntervalMs * 3);
+      const isStale =
+        typeof heartbeatAgeMs === 'number' ? heartbeatAgeMs > staleThresholdMs : false;
+      const workerStatus = this.readString(parsed.status) || 'idle';
+
+      return {
+        status: workerStatus === 'degraded' || isStale ? 'degraded' : 'ok',
+        enabled: true,
+        provider: env.whatsapp.provider,
+        providerConfigured,
+        ...queueMetrics,
+        workerId: this.readString(parsed.workerId),
+        workerStatus,
+        lastHeartbeatAt,
+        heartbeatAgeMs,
+        detail:
+          workerStatus === 'degraded'
+            ? this.readString(parsed.lastError) ||
+              'WhatsApp worker is alive, but the latest batch recorded failures.'
+            : isStale
+              ? 'WhatsApp worker heartbeat is older than the expected polling window.'
+              : null,
+      };
+    } catch (error) {
+      return {
+        status: 'down',
+        enabled: true,
+        provider: env.whatsapp.provider,
+        providerConfigured,
+        ...queueMetrics,
+        detail:
+          error instanceof Error
+            ? `Redis heartbeat read failed: ${error.message}`
+            : `Redis heartbeat read failed: ${String(error)}`,
+      };
+    }
+  }
+
   async getRuntimeOverview(previewLimit = 10): Promise<RuntimeOverviewResponse> {
-    const [worker, emailWorker, automations, stale, discovery] = await Promise.all([
+    const [worker, emailWorker, whatsappWorker, automations, stale, discovery] = await Promise.all([
       this.getWorkerHealth(),
       this.getEmailWorkerHealth(),
+      this.getWhatsappWorkerHealth(),
       this.automationsService.getAutomationOperationalSnapshot(),
       this.collectStaleItems(Math.max(25, previewLimit * 5), true),
       this.getDiscoveryRuntimeSummary(),
@@ -249,7 +354,10 @@ export class RuntimeDiagnosticsService {
           : 'ok';
 
     const overallStatus: RuntimeStatus =
-      worker.status === 'down' || emailWorker.status === 'down' || discovery.status === 'down'
+      worker.status === 'down' ||
+      emailWorker.status === 'down' ||
+      whatsappWorker.status === 'down' ||
+      discovery.status === 'down'
         ? 'down'
         : staleCounts.total > 0 ||
             automationStatus === 'degraded' ||
@@ -263,6 +371,7 @@ export class RuntimeDiagnosticsService {
       staleCounts,
       worker,
       emailWorker,
+      whatsappWorker,
       discovery,
       automations: {
         status: automationStatus,
@@ -315,7 +424,9 @@ export class RuntimeDiagnosticsService {
 
     const nextStatus = options.status || 'Failed';
     if (nextStatus !== 'Failed' && nextStatus !== 'Cancelled') {
-      throw new BadRequestAppError('Scheduler commands can only be repaired to Failed or Cancelled');
+      throw new BadRequestAppError(
+        'Scheduler commands can only be repaired to Failed or Cancelled'
+      );
     }
 
     const actorUserId = String(options.actorUserId || env.scheduler.systemUserId).trim();
@@ -887,29 +998,37 @@ export class RuntimeDiagnosticsService {
   ): Promise<RuntimeStaleItem[]> {
     const safeLimit = Math.max(1, Math.min(limit, 500));
     const now = new Date();
-    const [staleCommands, staleRuns, staleGlobalLocks, staleUserLocks, staleAutomations, staleExports] =
-      await Promise.all([
-        this.schedulerCommandRepository.findStaleCommands({
-          olderThan: new Date(Date.now() - RuntimeDiagnosticsService.WORKER_STALE_COMMAND_THRESHOLD_MS),
-          statuses: ['Processing'],
-          limit: safeLimit,
-        }),
-        this.schedulerRunLogRepository.findStaleRuns({
-          olderThan: new Date(Date.now() - RuntimeDiagnosticsService.WORKER_STALE_RUN_THRESHOLD_MS),
-          statuses: ['Running'],
-          limit: safeLimit,
-        }),
-        this.schedulerConfigRepository.listLockedBefore(now),
-        this.schedulerUserConfigRepository.listLockedBefore(now),
-        this.automationsService.getRuntimeStaleRunCandidates(safeLimit),
-        this.activityExportRepository.findStaleProcessingExports({
-          olderThan: new Date(
-            Date.now() - Math.max(60_000, env.activity.exportProcessorIntervalMs * 4)
-          ),
-          statuses: ['Processing'],
-          limit: safeLimit,
-        }),
-      ]);
+    const [
+      staleCommands,
+      staleRuns,
+      staleGlobalLocks,
+      staleUserLocks,
+      staleAutomations,
+      staleExports,
+    ] = await Promise.all([
+      this.schedulerCommandRepository.findStaleCommands({
+        olderThan: new Date(
+          Date.now() - RuntimeDiagnosticsService.WORKER_STALE_COMMAND_THRESHOLD_MS
+        ),
+        statuses: ['Processing'],
+        limit: safeLimit,
+      }),
+      this.schedulerRunLogRepository.findStaleRuns({
+        olderThan: new Date(Date.now() - RuntimeDiagnosticsService.WORKER_STALE_RUN_THRESHOLD_MS),
+        statuses: ['Running'],
+        limit: safeLimit,
+      }),
+      this.schedulerConfigRepository.listLockedBefore(now),
+      this.schedulerUserConfigRepository.listLockedBefore(now),
+      this.automationsService.getRuntimeStaleRunCandidates(safeLimit),
+      this.activityExportRepository.findStaleProcessingExports({
+        olderThan: new Date(
+          Date.now() - Math.max(60_000, env.activity.exportProcessorIntervalMs * 4)
+        ),
+        statuses: ['Processing'],
+        limit: safeLimit,
+      }),
+    ]);
 
     const items: RuntimeStaleItem[] = [];
 
@@ -921,7 +1040,8 @@ export class RuntimeDiagnosticsService {
         source: 'auralpha',
         status: command.status,
         title: `Scheduler command stalled: ${command.schedulerKey}`,
-        detail: command.errorMessage || 'Command stayed in Processing past the worker stale threshold.',
+        detail:
+          command.errorMessage || 'Command stayed in Processing past the worker stale threshold.',
         schedulerKey: command.schedulerKey,
         actorUserId: command.actorUserId,
         workerId: command.workerId,
@@ -999,7 +1119,9 @@ export class RuntimeDiagnosticsService {
         source: 'auralpha',
         status: activityExport.status,
         title: `Activity export stalled: ${activityExport.fileName}`,
-        detail: activityExport.errorMessage || 'Export stayed in Processing past the processor stale threshold.',
+        detail:
+          activityExport.errorMessage ||
+          'Export stayed in Processing past the processor stale threshold.',
         userId: activityExport.userId,
         workerId: activityExport.workerId,
         startedAt: activityExport.processingStartedAt?.toISOString() ?? null,
@@ -1024,19 +1146,13 @@ export class RuntimeDiagnosticsService {
         }
         for (const run of discovery.payload.stale_template_improvement_runs || []) {
           items.push(
-            this.mapDiscoveryRuntimeItem(
-              run,
-              'discovery-template-improvement',
-              staleThresholdMs
-            )
+            this.mapDiscoveryRuntimeItem(run, 'discovery-template-improvement', staleThresholdMs)
           );
         }
       }
     }
 
-    return items
-      .sort((left, right) => (right.ageMs || 0) - (left.ageMs || 0))
-      .slice(0, safeLimit);
+    return items.sort((left, right) => (right.ageMs || 0) - (left.ageMs || 0)).slice(0, safeLimit);
   }
 
   private getApiLoopSnapshots(): RuntimeLoopSnapshot[] {
@@ -1063,13 +1179,10 @@ export class RuntimeDiagnosticsService {
     const staleRunCount = Array.isArray(payload.stale_discovery_runs)
       ? payload.stale_discovery_runs.length
       : 0;
-    const staleTemplateImprovementCount = Array.isArray(
-      payload.stale_template_improvement_runs
-    )
+    const staleTemplateImprovementCount = Array.isArray(payload.stale_template_improvement_runs)
       ? payload.stale_template_improvement_runs.length
       : 0;
-    const totalStale =
-      staleBotCount + staleRunCount + staleTemplateImprovementCount;
+    const totalStale = staleBotCount + staleRunCount + staleTemplateImprovementCount;
 
     return {
       status: totalStale > 0 ? 'degraded' : 'ok',
@@ -1162,13 +1275,29 @@ export class RuntimeDiagnosticsService {
   }
 
   private async readEmailQueueMetrics(): Promise<
+    Pick<EmailWorkerHealthSummary, 'queuedCount' | 'sendingCount' | 'failedCount' | 'activeCount'>
+  > {
+    try {
+      const snapshot = await this.emailDeliveryRepository.getOperationalSnapshot();
+      return {
+        queuedCount: snapshot.queued,
+        sendingCount: snapshot.sending,
+        failedCount: snapshot.failed,
+        activeCount: snapshot.active,
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  private async readWhatsappQueueMetrics(): Promise<
     Pick<
-      EmailWorkerHealthSummary,
+      WhatsappWorkerHealthSummary,
       'queuedCount' | 'sendingCount' | 'failedCount' | 'activeCount'
     >
   > {
     try {
-      const snapshot = await this.emailDeliveryRepository.getOperationalSnapshot();
+      const snapshot = await this.whatsappDeliveryRepository.getOperationalSnapshot();
       return {
         queuedCount: snapshot.queued,
         sendingCount: snapshot.sending,
