@@ -1084,6 +1084,7 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
   const service = new AutomationsService() as any;
   const createdPayloads: Array<Record<string, unknown>> = [];
   const savedAutomations: Array<Record<string, unknown>> = [];
+  const requestedTimeZones: Array<string | null> = [];
 
   service.prepareAutomationConfig = async (
     _userId: string,
@@ -1095,8 +1096,10 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
     _config: Record<string, unknown>,
     fields: Record<string, unknown>
   ) => fields;
-  service.resolveAutomationTimeZone = async (_userId: string, automationTimeZone?: string | null) =>
-    automationTimeZone || 'Asia/Kolkata';
+  service.resolveAutomationTimeZone = async (_userId: string, automationTimeZone?: string | null) => {
+    requestedTimeZones.push(automationTimeZone ?? null);
+    return 'Asia/Kolkata';
+  };
   service.mapAutomation = (automation: Record<string, unknown>) => automation;
   service.strategyTemplateRepository = {
     getStrategyTemplateById: async (_userId: string, templateId: string) => ({
@@ -1226,7 +1229,7 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
   });
 
   assert.equal(savedAutomations.length, 1);
-  assert.equal(savedAutomations[0].timeZone, 'America/New_York');
+  assert.equal(savedAutomations[0].timeZone, 'Asia/Kolkata');
   assert.deepEqual(savedAutomations[0].schedule, {
     type: 'daily',
     scheduleMode: 'daily',
@@ -1236,6 +1239,7 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
     intervalDays: 1,
   });
   assert.ok(savedAutomations[0].nextRun instanceof Date);
+  assert.deepEqual(requestedTimeZones, ['Asia/Kolkata', null, 'America/New_York']);
 }
 
 async function runTradeSuggestionExecutabilityValidationAssertions(): Promise<void> {

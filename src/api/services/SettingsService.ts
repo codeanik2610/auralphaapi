@@ -1,4 +1,5 @@
 import { Inject, Service } from 'typedi';
+import { EntityManager } from 'typeorm';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import {
   BacktestPromotionRules,
@@ -15,6 +16,7 @@ import {
 import { successResponse } from '../utils/response';
 import {
   ActivityLog,
+  Automation,
   AppSetting,
   AppSettingsRepository,
   SettingsAuditLog,
@@ -26,6 +28,7 @@ import {
   validateUpdateSettingsBody,
 } from '../validators/settings.validator';
 import { DEFAULT_TIMEZONE, normalizeTimeZone } from '../utils/timezone';
+import { computeNextRun, resolveAutomationSchedule } from '../utils/automationSchedule';
 import { env } from '../../env';
 import { coreDataSource } from '../../database/data-source';
 import { BadRequestAppError, ConflictAppError } from '../errors/AppError';
@@ -576,8 +579,7 @@ function buildWhatsappDeliveryRollout(): SettingsWhatsappDeliveryRollout {
     allowsLiveTradeSuggestions: true,
     provider: env.whatsapp.provider,
     providerConfigured: true,
-    detail:
-      'WhatsApp delivery is ready for verified live trade suggestions on this account.',
+    detail: 'WhatsApp delivery is ready for verified live trade suggestions on this account.',
   };
 }
 
@@ -789,6 +791,14 @@ export class SettingsService {
           })
         );
 
+        if (changedEntries.some((entry) => entry.fieldName === 'timezone')) {
+          await this.syncAutomationSchedulesToUserTimeZone(
+            manager,
+            userId,
+            normalizeTimeZone(savedSettings.timezone)
+          );
+        }
+
         return savedSettings;
       });
 
@@ -817,5 +827,28 @@ export class SettingsService {
       }
       throw error;
     }
+  }
+
+  private async syncAutomationSchedulesToUserTimeZone(
+    manager: EntityManager,
+    userId: string,
+    timeZone: string
+  ): Promise<void> {
+    const automationRepository = manager.getRepository(Automation);
+    const automations = await automationRepository.find({ where: { userId } });
+    if (!automations.length) {
+      return;
+    }
+
+    const now = new Date();
+    for (const automation of automations) {
+      automation.timeZone = timeZone;
+      if (String(automation.status || '').toLowerCase() === 'running') {
+        const schedule = resolveAutomationSchedule(automation.schedule ?? null, automation.trigger);
+        automation.nextRun = schedule ? computeNextRun(schedule, timeZone, now) : null;
+      }
+    }
+
+    await automationRepository.save(automations);
   }
 }

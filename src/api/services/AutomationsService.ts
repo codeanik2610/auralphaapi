@@ -1069,7 +1069,7 @@ export class AutomationsService {
       trigger: resolvedFields.trigger,
       status: nextStatus,
       automationType: nextAutomationType,
-      timeZone: nextTimeZone ?? automation.timeZone,
+      timeZone,
       schedule: normalizedSchedule,
       riskMode: validated.riskMode === undefined ? automation.riskMode : validated.riskMode,
       config: nextConfig,
@@ -1734,10 +1734,10 @@ export class AutomationsService {
 
   private async resolveAutomationTimeZone(
     userId: string,
-    automationTimeZone?: string | null
+    _automationTimeZone?: string | null
   ): Promise<string> {
     const userTimeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
-    return normalizeTimeZone(automationTimeZone ?? userTimeZone, userTimeZone);
+    return normalizeTimeZone(userTimeZone, userTimeZone);
   }
 
   private async readWorkerHttpHealth(

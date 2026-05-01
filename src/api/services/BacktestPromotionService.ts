@@ -20,8 +20,7 @@ import {
 import { normalizeTimeZone } from '../utils/timezone';
 import { AutomationRepository, Backtest } from '../../database';
 import { OperationalEventService } from './OperationalEventService';
-
-const BACKTEST_PROMOTION_TIME_ZONE = 'UTC';
+import { UserTimeZoneService } from './UserTimeZoneService';
 
 export interface BacktestPromotionInput {
   userId: string;
@@ -48,6 +47,9 @@ export class BacktestPromotionService {
 
   @Inject(() => OperationalEventService)
   private operationalEventService!: OperationalEventService;
+
+  @Inject(() => UserTimeZoneService)
+  private userTimeZoneService!: UserTimeZoneService;
 
   async promoteResolvedTopSetup({
     userId,
@@ -107,9 +109,7 @@ export class BacktestPromotionService {
       }
 
       const template =
-        this.parseConfig(inputSnapshot.template) ??
-        this.parseConfig(config.template) ??
-        {};
+        this.parseConfig(inputSnapshot.template) ?? this.parseConfig(config.template) ?? {};
       const templateConfig =
         template.config && typeof template.config === 'object'
           ? (template.config as Record<string, unknown>)
@@ -120,9 +120,7 @@ export class BacktestPromotionService {
           : undefined;
       const broker =
         payload.broker ||
-        (primaryAsset
-          ? String(primaryAsset.brokerKey || primaryAsset.broker || '').trim()
-          : '') ||
+        (primaryAsset ? String(primaryAsset.brokerKey || primaryAsset.broker || '').trim() : '') ||
         'paper';
       const market =
         String(inputSnapshot.market || config.market || templateConfig.market || '').trim() ||
@@ -144,7 +142,9 @@ export class BacktestPromotionService {
         assets,
         timeframes,
         market,
-        ...(typeof inputSnapshot.sourceType === 'string' ? { sourceType: inputSnapshot.sourceType } : {}),
+        ...(typeof inputSnapshot.sourceType === 'string'
+          ? { sourceType: inputSnapshot.sourceType }
+          : {}),
         ...(typeof inputSnapshot.sourceId === 'string' ? { sourceId: inputSnapshot.sourceId } : {}),
         ...(typeof inputSnapshot.libraryId === 'string'
           ? { libraryId: inputSnapshot.libraryId }
@@ -187,7 +187,7 @@ export class BacktestPromotionService {
         throw new BadRequestAppError('schedule is required to create a running automation');
       }
 
-      const automationTimeZone = this.resolveAutomationTimeZone();
+      const automationTimeZone = await this.resolveAutomationTimeZone(userId);
       const nextRun =
         status === 'Running' && resolvedSchedule
           ? computeNextRun(resolvedSchedule, automationTimeZone, new Date())
@@ -410,9 +410,7 @@ export class BacktestPromotionService {
       }
 
       const template =
-        this.parseConfig(inputSnapshot.template) ??
-        this.parseConfig(config.template) ??
-        {};
+        this.parseConfig(inputSnapshot.template) ?? this.parseConfig(config.template) ?? {};
       const templateConfig =
         template.config && typeof template.config === 'object'
           ? (template.config as Record<string, unknown>)
@@ -423,9 +421,7 @@ export class BacktestPromotionService {
           : undefined;
       const broker =
         payload.broker ||
-        (primaryAsset
-          ? String(primaryAsset.brokerKey || primaryAsset.broker || '').trim()
-          : '') ||
+        (primaryAsset ? String(primaryAsset.brokerKey || primaryAsset.broker || '').trim() : '') ||
         'paper';
       const market =
         String(inputSnapshot.market || config.market || templateConfig.market || '').trim() ||
@@ -461,7 +457,9 @@ export class BacktestPromotionService {
         market,
         setupScopes,
         sourceBacktestIds,
-        ...(typeof inputSnapshot.sourceType === 'string' ? { sourceType: inputSnapshot.sourceType } : {}),
+        ...(typeof inputSnapshot.sourceType === 'string'
+          ? { sourceType: inputSnapshot.sourceType }
+          : {}),
         ...(typeof inputSnapshot.sourceId === 'string' ? { sourceId: inputSnapshot.sourceId } : {}),
         ...(typeof inputSnapshot.libraryId === 'string'
           ? { libraryId: inputSnapshot.libraryId }
@@ -504,7 +502,7 @@ export class BacktestPromotionService {
         throw new BadRequestAppError('schedule is required to create a running automation');
       }
 
-      const automationTimeZone = this.resolveAutomationTimeZone();
+      const automationTimeZone = await this.resolveAutomationTimeZone(userId);
       const nextRun =
         status === 'Running' && resolvedSchedule
           ? computeNextRun(resolvedSchedule, automationTimeZone, new Date())
@@ -519,8 +517,7 @@ export class BacktestPromotionService {
           ? this.describeAutomationSchedule(resolvedSchedule)
           : `timeframe:${timeframe}`);
       const name =
-        payload.name ||
-        this.buildPromotedAutomationGroupName(primaryBacktest, symbols, timeframe);
+        payload.name || this.buildPromotedAutomationGroupName(primaryBacktest, symbols, timeframe);
       const executionPolicy = this.finalizeTradeSuggestionExecutionPolicy(
         userId,
         payload.executionPolicy
@@ -533,11 +530,7 @@ export class BacktestPromotionService {
         symbol: primarySymbol,
         symbols,
         timeframe,
-        parameter: this.buildPromotedAutomationGroupParameter(
-          primaryBacktest,
-          symbols,
-          timeframe
-        ),
+        parameter: this.buildPromotedAutomationGroupParameter(primaryBacktest, symbols, timeframe),
         setupScope: {
           symbol: primarySymbol,
           symbols,
@@ -625,8 +618,9 @@ export class BacktestPromotionService {
     }
   }
 
-  private resolveAutomationTimeZone(): string {
-    return normalizeTimeZone(BACKTEST_PROMOTION_TIME_ZONE, BACKTEST_PROMOTION_TIME_ZONE);
+  private async resolveAutomationTimeZone(userId: string): Promise<string> {
+    const userTimeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
+    return normalizeTimeZone(userTimeZone, userTimeZone);
   }
 
   private finalizeTradeSuggestionExecutionPolicy(
@@ -635,7 +629,9 @@ export class BacktestPromotionService {
   ): Record<string, unknown> {
     const normalized = normalizeTradeSuggestionExecutionPolicy(value);
     const liveConsent = this.parseConfig(normalized.liveConsent) ?? {};
-    const executionMode = String(normalized.executionMode || 'suggestion_only').trim().toLowerCase();
+    const executionMode = String(normalized.executionMode || 'suggestion_only')
+      .trim()
+      .toLowerCase();
     const liveEnabled = executionMode === 'live_trade_auto' && liveConsent.enabled === true;
 
     return {
@@ -810,15 +806,15 @@ export class BacktestPromotionService {
       record.asset,
       record.name,
     ];
-    const match = candidates
-      .map((candidate) => this.normalizeAssetSymbol(candidate))
-      .find(Boolean);
+    const match = candidates.map((candidate) => this.normalizeAssetSymbol(candidate)).find(Boolean);
 
     return match || '';
   }
 
   private normalizeAssetSymbol(value: unknown): string {
-    return String(value || '').trim().toUpperCase();
+    return String(value || '')
+      .trim()
+      .toUpperCase();
   }
 
   private parseConfig(value: unknown): Record<string, unknown> | null {
@@ -849,12 +845,14 @@ export class BacktestPromotionService {
     const changedCount = Number(summary.changedCount);
     const inheritedCount = Number(summary.inheritedCount);
     const changedFields = Array.isArray(summary.changedFields)
-      ? summary.changedFields
-          .map((item) => String(item || '').trim())
-          .filter(Boolean)
+      ? summary.changedFields.map((item) => String(item || '').trim()).filter(Boolean)
       : [];
 
-    if (!Number.isFinite(changedCount) && !Number.isFinite(inheritedCount) && !changedFields.length) {
+    if (
+      !Number.isFinite(changedCount) &&
+      !Number.isFinite(inheritedCount) &&
+      !changedFields.length
+    ) {
       return null;
     }
 
@@ -862,9 +860,7 @@ export class BacktestPromotionService {
       changedCount: Number.isFinite(changedCount)
         ? Math.max(0, Math.trunc(changedCount))
         : changedFields.length,
-      inheritedCount: Number.isFinite(inheritedCount)
-        ? Math.max(0, Math.trunc(inheritedCount))
-        : 0,
+      inheritedCount: Number.isFinite(inheritedCount) ? Math.max(0, Math.trunc(inheritedCount)) : 0,
       changedFields,
     };
   }

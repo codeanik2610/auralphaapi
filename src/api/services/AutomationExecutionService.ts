@@ -1685,10 +1685,10 @@ export class AutomationExecutionService {
 
   private async resolveAutomationTimeZone(
     userId: string,
-    automationTimeZone?: string | null
+    _automationTimeZone?: string | null
   ): Promise<string> {
     const userTimeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
-    return normalizeTimeZone(automationTimeZone ?? userTimeZone, userTimeZone);
+    return normalizeTimeZone(userTimeZone, userTimeZone);
   }
 
   private buildRunLineage(

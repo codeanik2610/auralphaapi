@@ -10,7 +10,7 @@ import {
   validateUpdateSettingsBody,
 } from '../src/api/validators/settings.validator';
 import { coreDataSource } from '../src/database/data-source';
-import { ActivityLog, AppSetting, SettingsAuditLog } from '../src/database';
+import { ActivityLog, AppSetting, Automation, SettingsAuditLog } from '../src/database';
 import { CreateAppSettingsTable1741474200000 } from './_fixtures/migrations/1741474200000-CreateAppSettingsTable';
 import { NormalizeAppSettingsPrimaryKey1765401000000 } from './_fixtures/migrations/1765401000000-NormalizeAppSettingsPrimaryKey';
 import { AddBacktestPromotionRulesToAppSettings1770715000000 } from './_fixtures/migrations/1770715000000-AddBacktestPromotionRulesToAppSettings';
@@ -234,6 +234,27 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
   const committedSettings = new Map<string, Record<string, unknown>>();
   const committedAudits: Array<Record<string, unknown>> = [];
   const committedActivities: Array<Record<string, unknown>> = [];
+  const committedAutomations = new Map<string, Record<string, unknown>>([
+    [
+      'automation-1',
+      {
+        id: 'automation-1',
+        userId: 'user-1',
+        status: 'Running',
+        timeZone: 'UTC',
+        trigger: 'daily 09:30',
+        schedule: {
+          type: 'daily',
+          scheduleMode: 'daily',
+          runAt: '09:30',
+          hour: 9,
+          minute: 30,
+          intervalDays: 1,
+        },
+        nextRun: null,
+      },
+    ],
+  ]);
   const originalTransaction = (coreDataSource as any).transaction;
 
   service.operationalEventService = {
@@ -251,6 +272,12 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     );
     const pendingAudits = committedAudits.map((item) => ({ ...item }));
     const pendingActivities = committedActivities.map((item) => ({ ...item }));
+    const pendingAutomations = new Map<string, Record<string, unknown>>(
+      Array.from(committedAutomations.entries()).map(([automationId, value]) => [
+        automationId,
+        { ...value },
+      ])
+    );
     const manager = {
       getRepository(entity: unknown) {
         if (entity === AppSetting) {
@@ -322,6 +349,23 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
           };
         }
 
+        if (entity === Automation) {
+          return {
+            async find({ where: { userId } }: { where: { userId: string } }) {
+              return Array.from(pendingAutomations.values())
+                .filter((item) => item.userId === userId)
+                .map((item) => ({ ...item }));
+            },
+            async save(payload: Record<string, unknown> | Array<Record<string, unknown>>) {
+              const items = Array.isArray(payload) ? payload : [payload];
+              for (const item of items) {
+                pendingAutomations.set(String(item.id), { ...item });
+              }
+              return payload;
+            },
+          };
+        }
+
         throw new Error('Unexpected repository request');
       },
     };
@@ -333,6 +377,10 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     }
     committedAudits.splice(0, committedAudits.length, ...pendingAudits);
     committedActivities.splice(0, committedActivities.length, ...pendingActivities);
+    committedAutomations.clear();
+    for (const [automationId, value] of pendingAutomations.entries()) {
+      committedAutomations.set(automationId, value);
+    }
     return result;
   };
 
@@ -373,6 +421,8 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     assert.equal(createdNotifyEmailAudit?.newValueType, 'boolean');
     assert.equal(createdNotifyEmailAudit?.newValueJson, false);
     assert.equal(createdNotifyEmailAudit?.changeType, 'created');
+    assert.equal(committedAutomations.get('automation-1')?.timeZone, 'Asia/Kolkata');
+    assert.ok(committedAutomations.get('automation-1')?.nextRun instanceof Date);
     assert.equal(
       committedActivities.filter(
         (item) => item.userId === 'user-1' && item.title === 'User settings updated'
@@ -700,10 +750,7 @@ async function runSettingsAuditContractAssertions(): Promise<void> {
   assert.equal(settingsResponse.data.whatsappNumber, null);
   assert.equal(settingsResponse.data.whatsappVerifiedAt, null);
   assert.equal(settingsResponse.data.whatsappDeliveryRollout.status, 'disabled');
-  assert.equal(
-    settingsResponse.data.whatsappDeliveryRollout.allowsLiveTradeSuggestions,
-    false
-  );
+  assert.equal(settingsResponse.data.whatsappDeliveryRollout.allowsLiveTradeSuggestions, false);
   assert.equal(settingsResponse.data.whatsappDeliveryRollout.provider, 'twilio');
 
   const defaultAuditResponse = await service.getSettingsAudit('user-1', {});

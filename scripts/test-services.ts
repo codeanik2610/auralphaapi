@@ -85,6 +85,7 @@ import {
   ActivityLog,
   ActivitySavedView,
   AppSetting,
+  Automation,
   EmailDelivery,
   SettingsAuditLog,
 } from '../src/database';
@@ -2415,15 +2416,16 @@ async function runResendEmailTransportAssertions(): Promise<void> {
       })) as typeof fetch;
 
     await assert.rejects(
-      () => transport.send({
-        id: 'delivery-124',
-        recipientEmail: 'alerts@auralpha.com',
-        subject: 'Alert fail',
-        body: 'Body text',
-        userId: 'user-1',
-        channel: 'email',
-        severity: 'High',
-      } as any),
+      () =>
+        transport.send({
+          id: 'delivery-124',
+          recipientEmail: 'alerts@auralpha.com',
+          subject: 'Alert fail',
+          body: 'Body text',
+          userId: 'user-1',
+          channel: 'email',
+          severity: 'High',
+        } as any),
       /Resend send failed: invalid_api_key/
     );
   } finally {
@@ -3076,6 +3078,27 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
   const committedSettings = new Map<string, Record<string, unknown>>();
   const committedAudits: Array<Record<string, unknown>> = [];
   const committedActivities: Array<Record<string, unknown>> = [];
+  const committedAutomations = new Map<string, Record<string, unknown>>([
+    [
+      'automation-1',
+      {
+        id: 'automation-1',
+        userId: 'user-1',
+        status: 'Running',
+        timeZone: 'UTC',
+        trigger: 'daily 09:30',
+        schedule: {
+          type: 'daily',
+          scheduleMode: 'daily',
+          runAt: '09:30',
+          hour: 9,
+          minute: 30,
+          intervalDays: 1,
+        },
+        nextRun: null,
+      },
+    ],
+  ]);
   const originalTransaction = (coreDataSource as any).transaction;
 
   service.operationalEventService = {
@@ -3093,6 +3116,12 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     );
     const pendingAudits = committedAudits.map((item) => ({ ...item }));
     const pendingActivities = committedActivities.map((item) => ({ ...item }));
+    const pendingAutomations = new Map<string, Record<string, unknown>>(
+      Array.from(committedAutomations.entries()).map(([automationId, value]) => [
+        automationId,
+        { ...value },
+      ])
+    );
     const manager = {
       getRepository(entity: unknown) {
         if (entity === AppSetting) {
@@ -3164,6 +3193,23 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
           };
         }
 
+        if (entity === Automation) {
+          return {
+            async find({ where: { userId } }: { where: { userId: string } }) {
+              return Array.from(pendingAutomations.values())
+                .filter((item) => item.userId === userId)
+                .map((item) => ({ ...item }));
+            },
+            async save(payload: Record<string, unknown> | Array<Record<string, unknown>>) {
+              const items = Array.isArray(payload) ? payload : [payload];
+              for (const item of items) {
+                pendingAutomations.set(String(item.id), { ...item });
+              }
+              return payload;
+            },
+          };
+        }
+
         throw new Error('Unexpected repository request');
       },
     };
@@ -3175,6 +3221,10 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     }
     committedAudits.splice(0, committedAudits.length, ...pendingAudits);
     committedActivities.splice(0, committedActivities.length, ...pendingActivities);
+    committedAutomations.clear();
+    for (const [automationId, value] of pendingAutomations.entries()) {
+      committedAutomations.set(automationId, value);
+    }
     return result;
   };
 
@@ -3212,6 +3262,8 @@ async function runSettingsAtomicSaveAssertions(): Promise<void> {
     assert.equal(createdNotifyEmailAudit?.newValueType, 'boolean');
     assert.equal(createdNotifyEmailAudit?.newValueJson, false);
     assert.equal(createdNotifyEmailAudit?.changeType, 'created');
+    assert.equal(committedAutomations.get('automation-1')?.timeZone, 'Asia/Kolkata');
+    assert.ok(committedAutomations.get('automation-1')?.nextRun instanceof Date);
     assert.equal(
       committedActivities.filter(
         (item) => item.userId === 'user-1' && item.title === 'User settings updated'
@@ -10736,7 +10788,7 @@ async function runBacktestPromotionSnapshotAssertions(): Promise<void> {
     logActivity: async () => undefined,
   };
   service.userTimeZoneService = {
-    resolveUserTimeZone: async () => 'UTC',
+    resolveUserTimeZone: async () => 'Asia/Kolkata',
   };
 
   const response = await service.promoteResolvedTopSetup({
@@ -10751,6 +10803,7 @@ async function runBacktestPromotionSnapshotAssertions(): Promise<void> {
   assert.equal(response.data.automation.id, 'automation-1');
   assert.equal(createdAutomations.length, 1);
   const automationPayload = createdAutomations[0];
+  assert.equal(automationPayload?.timeZone, 'Asia/Kolkata');
   assert.equal(automationPayload?.broker, 'paper');
   assert.equal(automationPayload?.market, 'crypto-futures');
   assert.equal(automationPayload?.trigger, 'timeframe:15m');

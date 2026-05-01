@@ -81,9 +81,8 @@ async function runBacktestsControllerAssertions(): Promise<void> {
   );
   assert.deepEqual((await controller.getBacktestsSummary(authReq)).data.args, ['user-1']);
   assert.deepEqual(
-    (
-      await controller.getTopSetups(authReq, '24', '5', 'Momentum', '1h', '0.8', '9', 'true')
-    ).data.args,
+    (await controller.getTopSetups(authReq, '24', '5', 'Momentum', '1h', '0.8', '9', 'true')).data
+      .args,
     [
       'user-1',
       {
@@ -145,13 +144,12 @@ async function runBacktestsControllerAssertions(): Promise<void> {
     (await controller.updateBacktestResults(authReq, 'bt-1', updateBody)).data.args,
     ['user-1', 'bt-1', updateBody]
   );
+  assert.deepEqual((await controller.recoverBacktestFromCheckpoint(authReq, 'bt-1')).data.args, [
+    'user-1',
+    'bt-1',
+  ]);
   assert.deepEqual(
-    (await controller.recoverBacktestFromCheckpoint(authReq, 'bt-1')).data.args,
-    ['user-1', 'bt-1']
-  );
-  assert.deepEqual(
-    (await controller.promoteBacktestToAutomation(authReq, 'bt-1', { status: 'Draft' })).data
-      .args,
+    (await controller.promoteBacktestToAutomation(authReq, 'bt-1', { status: 'Draft' })).data.args,
     ['user-1', 'bt-1', { status: 'Draft' }]
   );
   assert.deepEqual(
@@ -986,11 +984,7 @@ async function runBacktestRecoveryServiceAssertions(): Promise<void> {
     },
   } as any;
 
-  const plan = service.buildRecoveryPlan(
-    backtest,
-    'Failed',
-    new Date('2026-04-05T08:00:00.000Z')
-  );
+  const plan = service.buildRecoveryPlan(backtest, 'Failed', new Date('2026-04-05T08:00:00.000Z'));
 
   assert.equal(plan.message, 'Backtest re-queued from checkpoint');
   assert.equal(plan.status, 'Queued');
@@ -1563,7 +1557,7 @@ async function runBacktestPromotionSnapshotAssertions(): Promise<void> {
     logActivity: async () => undefined,
   };
   service.userTimeZoneService = {
-    resolveUserTimeZone: async () => 'UTC',
+    resolveUserTimeZone: async () => 'Asia/Kolkata',
   };
 
   const response = await service.promoteResolvedTopSetup({
@@ -1586,7 +1580,7 @@ async function runBacktestPromotionSnapshotAssertions(): Promise<void> {
   });
 
   assert.equal(response.data.automation.id, 'automation-1');
-  assert.equal(createdAutomations[0]?.timeZone, 'UTC');
+  assert.equal(createdAutomations[0]?.timeZone, 'Asia/Kolkata');
   assert.equal(createdAutomations[0]?.trigger, 'timeframe:15m');
   const automationConfig = createdAutomations[0]?.config as Record<string, unknown>;
   const execution = (automationConfig?.tradeSuggestion as Record<string, unknown>)
@@ -1597,10 +1591,7 @@ async function runBacktestPromotionSnapshotAssertions(): Promise<void> {
   assert.equal(routing?.routeMode, 'fixed');
   assert.equal(routing?.brokerKey, 'mudrex');
   assert.equal(routing?.accountId, 'account-1');
-  const config = automationConfig?.config as Record<
-    string,
-    unknown
-  >;
+  const config = automationConfig?.config as Record<string, unknown>;
   assert.equal(config?.libraryId, 'library-1');
   assert.equal(config?.templateVersion, 8);
   assert.equal(createdEvents.length, 1);
@@ -1895,10 +1886,7 @@ async function runBacktestPromotionDelegationAssertions(): Promise<void> {
 
   assert.equal(response.data.message, 'delegated');
   assert.equal(capturedCalls[0].userId, 'user-1');
-  assert.equal(
-    (capturedCalls[0].selectedTopSetup as Record<string, unknown>).timeframe,
-    '1h'
-  );
+  assert.equal((capturedCalls[0].selectedTopSetup as Record<string, unknown>).timeframe, '1h');
   assert.ok(capturedPromotionRules);
   const promotionRules = capturedPromotionRules as BacktestPromotionRules;
   assert.equal(promotionRules.minScore, 0.82);
@@ -2232,17 +2220,18 @@ async function runBacktestBatchPromotionAssertions(): Promise<void> {
     ]
   );
   assert.equal(capturedCalls.length, 3);
-  assert.equal(
-    (capturedCalls[0].payload as Record<string, unknown>).name,
-    'BTC custom automation'
-  );
+  assert.equal((capturedCalls[0].payload as Record<string, unknown>).name, 'BTC custom automation');
   assert.equal(
     (capturedCalls[1].payload as Record<string, unknown>).name,
     'Shared Automation Name'
   );
   assert.equal(
-    ((capturedCalls[0].payload as Record<string, unknown>).executionPolicy as Record<string, unknown>)
-      ?.executionMode,
+    (
+      (capturedCalls[0].payload as Record<string, unknown>).executionPolicy as Record<
+        string,
+        unknown
+      >
+    )?.executionMode,
     'paper_trade_auto'
   );
   assert.equal(activities[0].title, 'Backtest batch promotion completed');
@@ -2588,12 +2577,12 @@ function runBacktestsScriptWiringAssertions(): void {
   assert.equal(packageScripts['signoff:backtests'] !== undefined, true);
 
   assert.equal(
-    proofSource.includes("scripts/smokes/smoke-backtests-lifecycle.ts"),
+    proofSource.includes('scripts/smokes/smoke-backtests-lifecycle.ts'),
     true,
     'backtests live proof must run lifecycle smoke'
   );
   assert.equal(
-    proofSource.includes("scripts/checks/check-backtests-health.ts"),
+    proofSource.includes('scripts/checks/check-backtests-health.ts'),
     true,
     'backtests live proof must run health check'
   );
