@@ -1666,6 +1666,30 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
     assert.deepEqual(symbols, ['BTCUSDT', 'ETHUSDT']);
   }
 
+  {
+    const { service } = createService();
+    const symbols = service.resolveTradeSuggestionSymbols({
+      symbol: 'USDCUSDT',
+      symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
+      inputSnapshot: {
+        symbols: ['ADAUSDT', 'LINKUSDT'],
+      },
+      setupScope: {
+        symbol: 'USDCUSDT',
+        timeframe: '5m',
+      },
+      tradeSuggestion: {
+        symbol: 'USDCUSDT',
+        setupScope: {
+          symbol: 'USDCUSDT',
+          timeframe: '5m',
+        },
+      },
+    });
+
+    assert.deepEqual(symbols, ['USDCUSDT']);
+  }
+
   try {
     {
       const { service, events } = createService();

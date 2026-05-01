@@ -1905,9 +1905,16 @@ export class AutomationExecutionService {
     const setupScope =
       this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(config.setupScope);
 
+    const scopedSetupSymbols = [
+      this.readString(setupScope?.symbol),
+      ...this.extractStringArray(setupScope?.symbols),
+    ].filter((item): item is string => Boolean(item));
+    if (scopedSetupSymbols.length) {
+      return Array.from(new Set(scopedSetupSymbols.map((item) => item.trim().toUpperCase())));
+    }
+
     const scopedSymbols = [
       tradeSuggestion.symbols,
-      setupScope?.symbols,
       config.symbols,
       nestedConfig.symbols,
       inputSnapshot.symbols,
