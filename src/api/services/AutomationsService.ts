@@ -1,7 +1,13 @@
 import { Inject, Service } from 'typedi';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { EntityManager } from 'typeorm';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import {
   AutomationActionResult,
+  AutomationDeleteImpact,
+  AutomationDeleteNotice,
+  AutomationDeletePreview,
+  AutomationHardDeleteResult,
   AutomationItem,
   AutomationsListResponse,
   AutomationsSummary,
@@ -26,16 +32,19 @@ import {
 import { buildStrategyTemplateAutomationProfile } from '../utils/strategyTemplateAutomation';
 import {
   AutomationActionBody,
+  AutomationDeleteBody,
   AutomationsQuery,
   CreateAutomationBody,
   UpdateAutomationBody,
   validateAutomationActionBody,
   validateAutomationCreateBody,
+  validateAutomationDeleteBody,
   validateAutomationId,
   validateAutomationUpdateBody,
   validateAutomationsQuery,
 } from '../validators/automations.validator';
 import { Automation, AutomationRun } from '../../database';
+import { coreDataSource } from '../../database/data-source';
 import {
   AutomationCursorRepository,
   AutomationRepository,
@@ -54,6 +63,15 @@ import { Logger } from '../../lib/logger';
 import { StrategyTemplateRepository } from '../../database/repositories/StrategyTemplateRepository';
 
 const log = new Logger(__filename);
+const AUTOMATION_DELETE_CONFIRM_PHRASE = 'DELETE AUTOMATION' as const;
+
+interface AutomationDeletePreviewTokenPayload {
+  version: 1;
+  automationId: string;
+  userId: string;
+  expiresAt: string;
+  previewHash: string;
+}
 
 @Service()
 export class AutomationsService {
@@ -62,6 +80,7 @@ export class AutomationsService {
   private static readonly TRADE_SUGGESTION_RUN_STALE_MINUTES = 20;
   private static readonly BACKTEST_RUN_STALE_MINUTES = 180;
   private static readonly STARTUP_RECOVERY_BATCH_SIZE = 200;
+  private static readonly DELETE_PREVIEW_TTL_MS = 5 * 60 * 1000;
 
   @Inject(() => AutomationRepository)
   private automationRepository!: AutomationRepository;
@@ -186,9 +205,7 @@ export class AutomationsService {
 
       const referenceTime = run.lastProgressAt ?? run.startedAt;
       const ageMs =
-        referenceTime instanceof Date
-          ? Math.max(0, Date.now() - referenceTime.getTime())
-          : null;
+        referenceTime instanceof Date ? Math.max(0, Date.now() - referenceTime.getTime()) : null;
 
       items.push({
         id: run.id,
@@ -380,8 +397,7 @@ export class AutomationsService {
     }
 
     const repairedAtIso = new Date().toISOString();
-    const repairActorUserId =
-      String(env.scheduler.systemUserId || '').trim() || 'system';
+    const repairActorUserId = String(env.scheduler.systemUserId || '').trim() || 'system';
 
     for (const staleRun of staleRuns) {
       try {
@@ -499,12 +515,116 @@ export class AutomationsService {
     });
   }
 
+  async getAutomationDeletePreview(
+    userId: string,
+    automationId: string
+  ): Promise<ApiSuccessResponse<AutomationDeletePreview>> {
+    const automation = await this.requireAutomation(userId, automationId);
+    const preview = await this.buildAutomationDeletePreview(userId, automation);
+    return successResponse(preview);
+  }
+
+  async hardDeleteAutomation(
+    userId: string,
+    automationId: string,
+    body: AutomationDeleteBody = {}
+  ): Promise<ApiSuccessResponse<AutomationHardDeleteResult>> {
+    const validatedAutomationId = validateAutomationId(automationId);
+    const payload = validateAutomationDeleteBody(body);
+    const tokenPayload = this.verifyAutomationDeletePreviewToken(payload.previewToken);
+    const requestedAt = new Date();
+
+    if (
+      !tokenPayload ||
+      tokenPayload.automationId !== validatedAutomationId ||
+      tokenPayload.userId !== userId
+    ) {
+      throw new BadRequestAppError('Deletion preview is invalid. Refresh preview and try again.');
+    }
+
+    if (Date.parse(tokenPayload.expiresAt) <= requestedAt.getTime()) {
+      throw new BadRequestAppError('Deletion preview has expired. Refresh preview and try again.');
+    }
+
+    const result = await coreDataSource.transaction(async (manager) => {
+      const automation = await this.getAutomationForDeleteLock(
+        manager,
+        userId,
+        validatedAutomationId
+      );
+
+      if (!automation) {
+        throw new NotFoundAppError('Automation not found');
+      }
+
+      if (payload.confirmName !== automation.name) {
+        throw new BadRequestAppError('confirmName must exactly match the automation name');
+      }
+
+      const impact = await this.loadAutomationDeleteImpact(userId, validatedAutomationId, manager);
+      const blockers = this.buildAutomationDeleteBlockers(automation, impact);
+      const freshHash = this.buildAutomationDeletePreviewHash(automation, impact, blockers);
+
+      if (freshHash !== tokenPayload.previewHash) {
+        throw new BadRequestAppError('Deletion preview is stale. Refresh preview and try again.');
+      }
+
+      if (blockers.length) {
+        throw new BadRequestAppError(blockers[0].message);
+      }
+
+      await this.stampSuggestedTradesForDeletedAutomation(manager, userId, automation, {
+        deletedAt: requestedAt,
+        deletedBy: userId,
+        reason: payload.reason,
+      });
+      await this.deleteAutomationRuntimeRecords(manager, userId, validatedAutomationId);
+
+      return {
+        automation,
+        impact,
+      };
+    });
+
+    await this.operationalEventService.logActivity(userId, {
+      type: 'Automation',
+      title: `Automation hard deleted: ${result.automation.name}`,
+      status: 'Success',
+      route: 'Automations',
+      stream: 'Controls',
+      related: result.automation.strategy,
+      referenceId: result.automation.id,
+      description: payload.reason,
+      flags: [
+        {
+          id: 'automation-hard-delete',
+          message:
+            'Automation control-plane records were deleted; suggested trades were retained with a deletion snapshot.',
+          channel: 'Automations',
+          time: requestedAt.toISOString(),
+          status: 'Deleted',
+        },
+      ],
+    });
+
+    return successResponse({
+      message: 'Automation hard deleted',
+      deletedAutomationId: result.automation.id,
+      deletedAutomationName: result.automation.name,
+      deletedAt: requestedAt.toISOString(),
+      impact: result.impact,
+      retainedSuggestedTrades: result.impact.suggestedTrades,
+    });
+  }
+
   async runAutomationNow(
     userId: string,
     automationId: string
   ): Promise<ApiSuccessResponse<ExecuteAutomationResult>> {
     const automation = await this.requireAutomation(userId, automationId);
-    const normalizedStatus = String(automation.status || '').trim().toLowerCase();
+    const normalizedStatus = String(automation.status || '')
+      .trim()
+      .toLowerCase();
     if (normalizedStatus !== 'running') {
       throw new BadRequestAppError(
         normalizedStatus === 'paused'
@@ -596,7 +716,8 @@ export class AutomationsService {
         flags: [
           {
             id: 'automation-reconcile-review',
-            message: 'Review worker, run history, and child backtest state before retrying reconcile.',
+            message:
+              'Review worker, run history, and child backtest state before retrying reconcile.',
             channel: 'Automations',
             time: new Date().toISOString(),
             status: 'Needs review',
@@ -624,7 +745,11 @@ export class AutomationsService {
     try {
       const payload = validateAutomationActionBody(body);
       const existing = await this.requireAutomation(userId, validatedAutomationId);
-      if (String(existing.status || '').trim().toLowerCase() === 'paused') {
+      if (
+        String(existing.status || '')
+          .trim()
+          .toLowerCase() === 'paused'
+      ) {
         return successResponse({
           message: 'Automation already paused',
           automation: {
@@ -727,7 +852,9 @@ export class AutomationsService {
         throw new BadRequestAppError('Unable to compute next run from schedule');
       }
 
-      const normalizedStatus = String(automation.status || '').trim().toLowerCase();
+      const normalizedStatus = String(automation.status || '')
+        .trim()
+        .toLowerCase();
       if (normalizedStatus === 'running' && automation.nextRun instanceof Date) {
         return successResponse({
           message: 'Automation already running',
@@ -823,15 +950,22 @@ export class AutomationsService {
       validated.config
     );
     await this.assertAutomationConfigExecutable(userId, validated.automationType, normalizedConfig);
-    const scheduleCandidate = resolveAutomationSchedule(validated.schedule ?? null, validated.trigger);
-    const resolvedFields = this.deriveAutomationCoreFields(validated.automationType, normalizedConfig, {
-      name: validated.name,
-      strategy: validated.strategy,
-      broker: validated.broker,
-      market: validated.market,
-      trigger: validated.trigger,
-      schedule: scheduleCandidate,
-    });
+    const scheduleCandidate = resolveAutomationSchedule(
+      validated.schedule ?? null,
+      validated.trigger
+    );
+    const resolvedFields = this.deriveAutomationCoreFields(
+      validated.automationType,
+      normalizedConfig,
+      {
+        name: validated.name,
+        strategy: validated.strategy,
+        broker: validated.broker,
+        market: validated.market,
+        trigger: validated.trigger,
+        schedule: scheduleCandidate,
+      }
+    );
     const schedule = resolveAutomationSchedule(validated.schedule ?? null, resolvedFields.trigger);
     const normalizedSchedule = normalizeAutomationScheduleRecord(
       validated.schedule ?? null,
@@ -842,7 +976,9 @@ export class AutomationsService {
     }
     const timeZone = await this.resolveAutomationTimeZone(userId, validated.timeZone);
     const nextRun =
-      validated.status === 'Running' && schedule ? computeNextRun(schedule, timeZone, new Date()) : null;
+      validated.status === 'Running' && schedule
+        ? computeNextRun(schedule, timeZone, new Date())
+        : null;
     if (validated.status === 'Running' && !nextRun) {
       throw new BadRequestAppError('Unable to compute next run from schedule');
     }
@@ -887,7 +1023,11 @@ export class AutomationsService {
       validated.automationType ??
       normalizeAutomationType(automation.automationType, automation.config);
     const nextConfigInput = validated.config === undefined ? automation.config : validated.config;
-    const nextConfig = await this.prepareAutomationConfig(userId, nextAutomationType, nextConfigInput);
+    const nextConfig = await this.prepareAutomationConfig(
+      userId,
+      nextAutomationType,
+      nextConfigInput
+    );
     await this.assertAutomationConfigExecutable(userId, nextAutomationType, nextConfig);
     const nextSchedule =
       validated.schedule === undefined ? automation.schedule : validated.schedule;
@@ -948,9 +1088,425 @@ export class AutomationsService {
     return successResponse(this.mapAutomation(saved));
   }
 
+  private async buildAutomationDeletePreview(
+    userId: string,
+    automation: Automation
+  ): Promise<AutomationDeletePreview> {
+    const impact = await this.loadAutomationDeleteImpact(userId, automation.id);
+    const blockers = this.buildAutomationDeleteBlockers(automation, impact);
+    const warnings = this.buildAutomationDeleteWarnings(automation, impact);
+    const expiresAt = new Date(Date.now() + AutomationsService.DELETE_PREVIEW_TTL_MS).toISOString();
+    const previewHash = this.buildAutomationDeletePreviewHash(automation, impact, blockers);
+
+    return {
+      automation: {
+        id: automation.id,
+        name: automation.name,
+        status: automation.status as AutomationDeletePreview['automation']['status'],
+        automationType: normalizeAutomationType(automation.automationType, automation.config),
+        strategy: automation.strategy,
+        trigger: automation.trigger,
+        updatedAt: automation.updatedAt.toISOString(),
+      },
+      impact,
+      blockers,
+      warnings,
+      canDelete: blockers.length === 0,
+      requiredConfirmName: automation.name,
+      requiredConfirmPhrase: AUTOMATION_DELETE_CONFIRM_PHRASE,
+      previewToken: this.signAutomationDeletePreviewToken({
+        version: 1,
+        automationId: automation.id,
+        userId,
+        expiresAt,
+        previewHash,
+      }),
+      expiresAt,
+    };
+  }
+
+  private buildAutomationDeleteBlockers(
+    automation: Automation,
+    impact: AutomationDeleteImpact
+  ): AutomationDeleteNotice[] {
+    const blockers: AutomationDeleteNotice[] = [];
+    const normalizedStatus = String(automation.status || '')
+      .trim()
+      .toLowerCase();
+
+    if (normalizedStatus === 'running') {
+      blockers.push({
+        code: 'automation_running',
+        message: 'Pause this automation before hard delete.',
+        severity: 'blocking',
+        count: 1,
+      });
+    }
+
+    if (impact.activeRuns > 0) {
+      blockers.push({
+        code: 'active_runs',
+        message:
+          'Automation has active queued or running runs. Reconcile or wait for them before hard delete.',
+        severity: 'blocking',
+        count: impact.activeRuns,
+      });
+    }
+
+    if (impact.activeSuggestedTradeExecutions > 0) {
+      blockers.push({
+        code: 'active_suggested_trade_executions',
+        message:
+          'Automation has active suggested trade executions or linked orders. Close, cancel, or reconcile them before hard delete.',
+        severity: 'blocking',
+        count: impact.activeSuggestedTradeExecutions,
+      });
+    }
+
+    return blockers;
+  }
+
+  private buildAutomationDeleteWarnings(
+    automation: Automation,
+    impact: AutomationDeleteImpact
+  ): AutomationDeleteNotice[] {
+    const warnings: AutomationDeleteNotice[] = [];
+    const automationType = normalizeAutomationType(automation.automationType, automation.config);
+    const rootConfig = this.parseRecord(automation.config) ?? {};
+    const tradeSuggestion = this.parseRecord(rootConfig.tradeSuggestion) ?? {};
+    const executionPolicy = normalizeTradeSuggestionExecutionPolicy(
+      tradeSuggestion.execution ?? rootConfig.config ?? null
+    );
+
+    if (impact.automationRuns > 0) {
+      warnings.push({
+        code: 'run_history_deleted',
+        message: 'Recorded automation runs will be deleted with the automation.',
+        severity: 'warning',
+        count: impact.automationRuns,
+      });
+    }
+
+    if (impact.suggestedTrades > 0) {
+      warnings.push({
+        code: 'suggested_trades_retained',
+        message: 'Suggested trades are retained and stamped with a deleted automation snapshot.',
+        severity: 'warning',
+        count: impact.suggestedTrades,
+      });
+    }
+
+    if (impact.openSuggestedTrades > 0) {
+      warnings.push({
+        code: 'open_suggested_trades_retained',
+        message: 'Open suggested trades remain visible after this automation is deleted.',
+        severity: 'warning',
+        count: impact.openSuggestedTrades,
+      });
+    }
+
+    if (impact.acceptedSuggestedTrades > 0) {
+      warnings.push({
+        code: 'accepted_suggested_trades_retained',
+        message: 'Accepted suggested trades remain visible after this automation is deleted.',
+        severity: 'warning',
+        count: impact.acceptedSuggestedTrades,
+      });
+    }
+
+    if (
+      automationType === 'trade-suggestion' &&
+      String(executionPolicy.executionMode || '').toLowerCase() === 'live_trade_auto'
+    ) {
+      warnings.push({
+        code: 'live_auto_route',
+        message:
+          'This was a live auto-trading automation. Confirm external broker state before deletion.',
+        severity: 'warning',
+      });
+    }
+
+    return warnings;
+  }
+
+  private buildAutomationDeletePreviewHash(
+    automation: Automation,
+    impact: AutomationDeleteImpact,
+    blockers: AutomationDeleteNotice[]
+  ): string {
+    return createHmac('sha256', this.getAutomationDeleteTokenSecret())
+      .update(
+        JSON.stringify({
+          automationId: automation.id,
+          userId: automation.userId,
+          status: automation.status,
+          updatedAt: automation.updatedAt.toISOString(),
+          impact,
+          blockers: blockers.map((blocker) => ({
+            code: blocker.code,
+            count: blocker.count ?? null,
+          })),
+        })
+      )
+      .digest('hex');
+  }
+
+  private signAutomationDeletePreviewToken(payload: AutomationDeletePreviewTokenPayload): string {
+    const body = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+    const signature = createHmac('sha256', this.getAutomationDeleteTokenSecret())
+      .update(body)
+      .digest('base64url');
+    return `${body}.${signature}`;
+  }
+
+  private verifyAutomationDeletePreviewToken(
+    token: string
+  ): AutomationDeletePreviewTokenPayload | null {
+    const [body, signature, ...rest] = token.split('.');
+    if (!body || !signature || rest.length) {
+      return null;
+    }
+
+    const expected = createHmac('sha256', this.getAutomationDeleteTokenSecret())
+      .update(body)
+      .digest();
+    const actual = Buffer.from(signature, 'base64url');
+
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(
+        Buffer.from(body, 'base64url').toString('utf8')
+      ) as Partial<AutomationDeletePreviewTokenPayload>;
+
+      if (
+        parsed.version !== 1 ||
+        typeof parsed.automationId !== 'string' ||
+        typeof parsed.userId !== 'string' ||
+        typeof parsed.expiresAt !== 'string' ||
+        typeof parsed.previewHash !== 'string'
+      ) {
+        return null;
+      }
+
+      return parsed as AutomationDeletePreviewTokenPayload;
+    } catch {
+      return null;
+    }
+  }
+
+  private getAutomationDeleteTokenSecret(): string {
+    return env.auth.accessTokenSecret || env.app.apiKey || 'automation-delete-preview';
+  }
+
+  private async getAutomationForDeleteLock(
+    manager: EntityManager,
+    userId: string,
+    automationId: string
+  ): Promise<Automation | null> {
+    return manager
+      .getRepository(Automation)
+      .createQueryBuilder('automation')
+      .setLock('pessimistic_write')
+      .where('automation.id = :automationId', { automationId })
+      .andWhere('automation.userId = :userId', { userId })
+      .getOne();
+  }
+
+  private async loadAutomationDeleteImpact(
+    userId: string,
+    automationId: string,
+    manager: EntityManager = coreDataSource.manager
+  ): Promise<AutomationDeleteImpact> {
+    const automationEvents = await this.countRows(
+      manager,
+      'SELECT COUNT(*) AS count FROM automation_events WHERE automationId = ?',
+      [automationId]
+    );
+    const automationAlerts = await this.countRows(
+      manager,
+      'SELECT COUNT(*) AS count FROM automation_alerts WHERE automationId = ?',
+      [automationId]
+    );
+    const automationRuns = await this.countRows(
+      manager,
+      'SELECT COUNT(*) AS count FROM automation_runs WHERE user_id = ? AND automation_id = ?',
+      [userId, automationId]
+    );
+    const activeRuns = await this.countRows(
+      manager,
+      "SELECT COUNT(*) AS count FROM automation_runs WHERE user_id = ? AND automation_id = ? AND status IN ('Queued', 'Running')",
+      [userId, automationId]
+    );
+    const automationRunOutputs = await this.countRows(
+      manager,
+      'SELECT COUNT(*) AS count FROM automation_run_outputs WHERE user_id = ? AND automation_id = ?',
+      [userId, automationId]
+    );
+    const automationCursors = await this.countRows(
+      manager,
+      'SELECT COUNT(*) AS count FROM automation_cursors WHERE user_id = ? AND automation_id = ?',
+      [userId, automationId]
+    );
+    const suggestedTrades = await this.countRows(
+      manager,
+      'SELECT COUNT(*) AS count FROM suggested_trades WHERE user_id = ? AND automation_id = ?',
+      [userId, automationId]
+    );
+    const openSuggestedTrades = await this.countRows(
+      manager,
+      "SELECT COUNT(*) AS count FROM suggested_trades WHERE user_id = ? AND automation_id = ? AND status IN ('Open', 'Reviewed')",
+      [userId, automationId]
+    );
+    const acceptedSuggestedTrades = await this.countRows(
+      manager,
+      "SELECT COUNT(*) AS count FROM suggested_trades WHERE user_id = ? AND automation_id = ? AND status = 'Accepted'",
+      [userId, automationId]
+    );
+    const activeSuggestedTradeExecutions = await this.countRows(
+      manager,
+      `SELECT COUNT(*) AS count
+         FROM suggested_trades st
+         INNER JOIN suggested_trade_executions ste ON ste.suggested_trade_id = st.id
+         WHERE st.user_id = ? AND st.automation_id = ?
+           AND (
+             LOWER(COALESCE(ste.execution_state, '')) IN ('queued', 'pending', 'submitting', 'submitted', 'working', 'linked', 'accepted', 'pre_trade_passed')
+             OR (
+               ste.order_id IS NOT NULL
+               AND LOWER(COALESCE(ste.order_status, '')) NOT IN ('cancelled', 'canceled', 'rejected', 'expired', 'closed')
+               AND NOT (
+                 ste.position_id IS NOT NULL
+                 AND LOWER(COALESCE(ste.position_status, '')) IN ('closed', 'cancelled', 'canceled', 'rejected', 'expired', 'flat')
+               )
+             )
+             OR (
+               ste.paper_order_id IS NOT NULL
+               AND LOWER(COALESCE(ste.paper_order_status, '')) NOT IN ('cancelled', 'canceled', 'rejected', 'expired', 'closed')
+               AND NOT (
+                 ste.position_id IS NOT NULL
+                 AND LOWER(COALESCE(ste.position_status, '')) IN ('closed', 'cancelled', 'canceled', 'rejected', 'expired', 'flat')
+               )
+             )
+             OR (
+               ste.position_id IS NOT NULL
+               AND LOWER(COALESCE(ste.position_status, '')) NOT IN ('closed', 'cancelled', 'canceled', 'rejected', 'expired', 'flat')
+             )
+           )`,
+      [userId, automationId]
+    );
+
+    return {
+      automationEvents,
+      automationAlerts,
+      automationRuns,
+      activeRuns,
+      automationRunOutputs,
+      automationCursors,
+      suggestedTrades,
+      openSuggestedTrades,
+      acceptedSuggestedTrades,
+      activeSuggestedTradeExecutions,
+    };
+  }
+
+  private async countRows(manager: EntityManager, sql: string, params: unknown[]): Promise<number> {
+    const rows = await manager.query(sql, params);
+    const row = Array.isArray(rows) ? rows[0] : rows;
+    return Number(row?.count ?? row?.COUNT ?? 0) || 0;
+  }
+
+  private async stampSuggestedTradesForDeletedAutomation(
+    manager: EntityManager,
+    userId: string,
+    automation: Automation,
+    options: {
+      deletedAt: Date;
+      deletedBy: string;
+      reason: string;
+    }
+  ): Promise<number> {
+    const result = await manager.query(
+      `UPDATE suggested_trades
+       SET meta_json = JSON_SET(
+         COALESCE(meta_json, JSON_OBJECT()),
+         '$.deletedAutomationSnapshot',
+         JSON_OBJECT(
+           'id', ?,
+           'name', ?,
+           'automationType', ?,
+           'strategy', ?,
+           'broker', ?,
+           'market', ?,
+           'status', ?,
+           'deletedAt', ?,
+           'deletedBy', ?,
+           'reason', ?
+         )
+       ),
+       updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = ? AND automation_id = ?`,
+      [
+        automation.id,
+        automation.name,
+        normalizeAutomationType(automation.automationType, automation.config),
+        automation.strategy,
+        automation.broker,
+        automation.market,
+        automation.status,
+        options.deletedAt.toISOString(),
+        options.deletedBy,
+        options.reason,
+        userId,
+        automation.id,
+      ]
+    );
+
+    return this.readAffectedRows(result);
+  }
+
+  private async deleteAutomationRuntimeRecords(
+    manager: EntityManager,
+    userId: string,
+    automationId: string
+  ): Promise<void> {
+    await manager.query(
+      'DELETE FROM automation_run_outputs WHERE user_id = ? AND automation_id = ?',
+      [userId, automationId]
+    );
+    await manager.query('DELETE FROM automation_cursors WHERE user_id = ? AND automation_id = ?', [
+      userId,
+      automationId,
+    ]);
+    await manager.query('DELETE FROM automation_events WHERE automationId = ?', [automationId]);
+    await manager.query('DELETE FROM automation_alerts WHERE automationId = ?', [automationId]);
+    await manager.query('DELETE FROM automation_runs WHERE user_id = ? AND automation_id = ?', [
+      userId,
+      automationId,
+    ]);
+    await manager.query('DELETE FROM automations WHERE user_id = ? AND id = ?', [
+      userId,
+      automationId,
+    ]);
+  }
+
+  private readAffectedRows(result: unknown): number {
+    const candidate = Array.isArray(result) ? result[0] : result;
+    if (!candidate || typeof candidate !== 'object') {
+      return 0;
+    }
+    const affectedRows = (candidate as { affectedRows?: unknown; affected?: unknown }).affectedRows;
+    const affected = (candidate as { affectedRows?: unknown; affected?: unknown }).affected;
+    return Number(affectedRows ?? affected ?? 0) || 0;
+  }
+
   private async requireAutomation(userId: string, automationId: string): Promise<Automation> {
     const validatedAutomationId = validateAutomationId(automationId);
-    const automation = await this.automationRepository.getAutomationById(userId, validatedAutomationId);
+    const automation = await this.automationRepository.getAutomationById(
+      userId,
+      validatedAutomationId
+    );
 
     if (!automation) {
       throw new NotFoundAppError('Automation not found');
@@ -1019,10 +1575,11 @@ export class AutomationsService {
       typeof meta.childBacktestStatus === 'string' && meta.childBacktestStatus.trim()
         ? meta.childBacktestStatus
         : null;
-    const trigger =
-      typeof meta.trigger === 'string' && meta.trigger.trim() ? meta.trigger : null;
+    const trigger = typeof meta.trigger === 'string' && meta.trigger.trim() ? meta.trigger : null;
     const backtestProgress =
-      meta.backtestProgress && typeof meta.backtestProgress === 'object' && !Array.isArray(meta.backtestProgress)
+      meta.backtestProgress &&
+      typeof meta.backtestProgress === 'object' &&
+      !Array.isArray(meta.backtestProgress)
         ? (meta.backtestProgress as Record<string, unknown>)
         : null;
     const resultSummary =
@@ -1221,9 +1778,7 @@ export class AutomationsService {
     const normalizedUserId = this.readString(userId);
     const now = Date.now();
     const since = new Date(now - 24 * 60 * 60 * 1000);
-    const staleBefore = new Date(
-      now - AutomationsService.CURSOR_STALE_MINUTES * 60 * 1000
-    );
+    const staleBefore = new Date(now - AutomationsService.CURSOR_STALE_MINUTES * 60 * 1000);
 
     const [queueHealth, workerHealth, runDiagnostics, eventDiagnostics, cursorDiagnostics] =
       await Promise.all([
@@ -1357,9 +1912,7 @@ export class AutomationsService {
       }
 
       const heartbeatDate = parsed.timestamp ? new Date(parsed.timestamp) : null;
-      const commandPollDate = parsed.lastCommandPollAt
-        ? new Date(parsed.lastCommandPollAt)
-        : null;
+      const commandPollDate = parsed.lastCommandPollAt ? new Date(parsed.lastCommandPollAt) : null;
       const heartbeatAgeMs =
         heartbeatDate && !Number.isNaN(heartbeatDate.getTime())
           ? Math.max(0, Date.now() - heartbeatDate.getTime())
@@ -1424,7 +1977,9 @@ export class AutomationsService {
     backtestId: string | null,
     backtestStatus: string | null
   ): AutomationRunItem['recovery'] {
-    const normalizedStatus = String(run.status || '').trim().toLowerCase();
+    const normalizedStatus = String(run.status || '')
+      .trim()
+      .toLowerCase();
     const active = normalizedStatus === 'queued' || normalizedStatus === 'running';
     const canRetry = normalizedStatus === 'failed';
     const staleThresholdMinutes = active
@@ -1440,9 +1995,9 @@ export class AutomationsService {
       referenceTime instanceof Date ? Math.max(0, Date.now() - referenceTime.getTime()) : 0;
     const isStaleCandidate = Boolean(
       active &&
-        staleThresholdMinutes &&
-        ageMs >= staleThresholdMinutes * 60 * 1000 &&
-        !backtestPending
+      staleThresholdMinutes &&
+      ageMs >= staleThresholdMinutes * 60 * 1000 &&
+      !backtestPending
     );
 
     let note: string | null = null;
@@ -1467,7 +2022,9 @@ export class AutomationsService {
   }
 
   private isAutomationRunActive(status: string | null | undefined): boolean {
-    const normalized = String(status || '').trim().toLowerCase();
+    const normalized = String(status || '')
+      .trim()
+      .toLowerCase();
     return normalized === 'queued' || normalized === 'running';
   }
 
@@ -1480,7 +2037,9 @@ export class AutomationsService {
     stability: unknown
   ): 'Queued' | 'Running' | 'Completed' | 'Failed' | null {
     const normalize = (value: unknown): 'Queued' | 'Running' | 'Completed' | 'Failed' | null => {
-      const normalized = String(value || '').trim().toLowerCase();
+      const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
       if (!normalized) {
         return null;
       }
@@ -1550,7 +2109,8 @@ export class AutomationsService {
     const clonedRunBody = this.sanitizeBacktestRunnerSourceConfig(
       this.parseRecord(runner.runBody) ?? this.parseRecord(root.config) ?? sourceConfig
     );
-    const market = this.readString(root.market, sourceConfig.market, inputSnapshot.market) ?? 'crypto-futures';
+    const market =
+      this.readString(root.market, sourceConfig.market, inputSnapshot.market) ?? 'crypto-futures';
     const source = this.readString(runner.source, root.source) ?? 'backtest';
 
     return normalizeAutomationConfig('backtest-runner', {
@@ -1583,10 +2143,15 @@ export class AutomationsService {
       userId,
       tradeSuggestion.execution ?? root.config ?? null
     );
-    const setupScope = this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(root.setupScope);
+    const setupScope =
+      this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(root.setupScope);
     const backtestId = this.readString(root.backtestId, tradeSuggestion.backtestId);
     const symbol = this.readString(root.symbol, tradeSuggestion.symbol, setupScope?.symbol);
-    const timeframe = this.readString(root.timeframe, tradeSuggestion.timeframe, setupScope?.timeframe);
+    const timeframe = this.readString(
+      root.timeframe,
+      tradeSuggestion.timeframe,
+      setupScope?.timeframe
+    );
 
     if (!backtestId) {
       return normalizeAutomationConfig('trade-suggestion', {
@@ -1682,8 +2247,12 @@ export class AutomationsService {
       template.templateVersion
     );
     const market =
-      this.readString(root.market, tradeSuggestion.market, inputSnapshot.market, sourceConfig.market) ??
-      'crypto-futures';
+      this.readString(
+        root.market,
+        tradeSuggestion.market,
+        inputSnapshot.market,
+        sourceConfig.market
+      ) ?? 'crypto-futures';
     const strategy =
       this.readString(
         root.strategy,
@@ -1792,7 +2361,10 @@ export class AutomationsService {
         );
       }
 
-      const template = await this.strategyTemplateRepository.getStrategyTemplateById(userId, templateId);
+      const template = await this.strategyTemplateRepository.getStrategyTemplateById(
+        userId,
+        templateId
+      );
       if (!template) {
         throw new NotFoundAppError('Strategy template not found for trade-suggestion automation');
       }
@@ -1822,10 +2394,10 @@ export class AutomationsService {
       liveConsent: {
         enabled: liveEnabled,
         confirmedByUserId: liveEnabled
-          ? this.readString(liveConsent.confirmedByUserId) ?? userId
+          ? (this.readString(liveConsent.confirmedByUserId) ?? userId)
           : null,
         confirmedAt: liveEnabled
-          ? this.readString(liveConsent.confirmedAt) ?? new Date().toISOString()
+          ? (this.readString(liveConsent.confirmedAt) ?? new Date().toISOString())
           : null,
       },
     };
@@ -1883,7 +2455,8 @@ export class AutomationsService {
     const root = this.parseRecord(rawConfig) ?? {};
     const tradeSuggestion = this.parseRecord(root.tradeSuggestion) ?? {};
     const backtestRunner = this.parseRecord(root.backtestRunner) ?? {};
-    const setupScope = this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(root.setupScope);
+    const setupScope =
+      this.parseRecord(tradeSuggestion.setupScope) ?? this.parseRecord(root.setupScope);
     const strategy =
       this.readString(
         fallbacks.strategy,
@@ -1895,8 +2468,7 @@ export class AutomationsService {
         root.sourceTemplateId,
         root.templateId,
         backtestRunner.strategy
-      ) ??
-      (automationType === 'backtest-runner' ? 'Backtest Runner' : 'Trade Suggestion');
+      ) ?? (automationType === 'backtest-runner' ? 'Backtest Runner' : 'Trade Suggestion');
     const market =
       this.readString(
         fallbacks.market,
@@ -1905,7 +2477,10 @@ export class AutomationsService {
         backtestRunner.market,
         this.parseRecord(root.config)?.market
       ) ?? 'crypto-futures';
-    const scopeLabel = [this.readString(root.symbol, tradeSuggestion.symbol, setupScope?.symbol), this.readString(root.timeframe, tradeSuggestion.timeframe, setupScope?.timeframe)]
+    const scopeLabel = [
+      this.readString(root.symbol, tradeSuggestion.symbol, setupScope?.symbol),
+      this.readString(root.timeframe, tradeSuggestion.timeframe, setupScope?.timeframe),
+    ]
       .filter(Boolean)
       .join(' · ');
     const broker =
@@ -1953,8 +2528,7 @@ export class AutomationsService {
       symbol,
       timeframe,
       score: this.readNumber(record.score),
-      trades:
-        this.readNumber(record.total_trades, record.totalTrades, record.trades) ?? null,
+      trades: this.readNumber(record.total_trades, record.totalTrades, record.trades) ?? null,
       winRate: this.readNumber(record.win_rate, record.winRate),
       profitFactor: this.readNumber(record.profit_factor, record.profitFactor),
       returnPct: this.readNumber(record.total_return_pct, record.returnPct),

@@ -108,6 +108,55 @@ export interface AutomationActionResult {
   };
 }
 
+export interface AutomationDeleteImpact {
+  automationEvents: number;
+  automationAlerts: number;
+  automationRuns: number;
+  activeRuns: number;
+  automationRunOutputs: number;
+  automationCursors: number;
+  suggestedTrades: number;
+  openSuggestedTrades: number;
+  acceptedSuggestedTrades: number;
+  activeSuggestedTradeExecutions: number;
+}
+
+export interface AutomationDeleteNotice {
+  code: string;
+  message: string;
+  severity: 'blocking' | 'warning';
+  count?: number;
+}
+
+export interface AutomationDeletePreview {
+  automation: {
+    id: string;
+    name: string;
+    status: AutomationStatus;
+    automationType?: AutomationType;
+    strategy: string;
+    trigger: string;
+    updatedAt: string;
+  };
+  impact: AutomationDeleteImpact;
+  blockers: AutomationDeleteNotice[];
+  warnings: AutomationDeleteNotice[];
+  canDelete: boolean;
+  requiredConfirmName: string;
+  requiredConfirmPhrase: 'DELETE AUTOMATION';
+  previewToken: string;
+  expiresAt: string;
+}
+
+export interface AutomationHardDeleteResult {
+  message: string;
+  deletedAutomationId: string;
+  deletedAutomationName: string;
+  deletedAt: string;
+  impact: AutomationDeleteImpact;
+  retainedSuggestedTrades: number;
+}
+
 export interface AutomationRunItem {
   id: string;
   status: string;

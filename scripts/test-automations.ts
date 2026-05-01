@@ -12,6 +12,7 @@ import { WhatsappNotificationsService } from '../src/api/services/WhatsappNotifi
 import { env } from '../src/env';
 import {
   validateAutomationCreateBody,
+  validateAutomationDeleteBody,
   validateAutomationUpdateBody,
 } from '../src/api/validators/automations.validator';
 import {
@@ -86,6 +87,8 @@ async function runAutomationsControllerAssertions(): Promise<void> {
     getAutomations: async (...args: unknown[]) => createSuccess({ args }),
     getAutomationsSummary: async () => createSuccess({ ok: true }),
     getAutomationById: async (...args: unknown[]) => createSuccess({ args }),
+    getAutomationDeletePreview: async (...args: unknown[]) => createSuccess({ args }),
+    hardDeleteAutomation: async (...args: unknown[]) => createSuccess({ args }),
     runAutomationNow: async (...args: unknown[]) => createSuccess({ args }),
     pauseAutomation: async (...args: unknown[]) => createSuccess({ args }),
     resumeAutomation: async (...args: unknown[]) => createSuccess({ args }),
@@ -101,6 +104,30 @@ async function runAutomationsControllerAssertions(): Promise<void> {
     'user-1',
     'bot-1',
   ]);
+  assert.deepEqual((await controller.getAutomationDeletePreview(authReq, 'bot-1')).data.args, [
+    'user-1',
+    'bot-1',
+  ]);
+  assert.deepEqual(
+    (
+      await controller.hardDeleteAutomation(authReq, 'bot-1', {
+        confirmName: 'Momentum',
+        confirmPhrase: 'DELETE AUTOMATION',
+        reason: 'cleanup retired automation',
+        previewToken: 'token',
+      })
+    ).data.args,
+    [
+      'user-1',
+      'bot-1',
+      {
+        confirmName: 'Momentum',
+        confirmPhrase: 'DELETE AUTOMATION',
+        reason: 'cleanup retired automation',
+        previewToken: 'token',
+      },
+    ]
+  );
   assert.deepEqual((await controller.runAutomationNow(authReq, 'bot-1')).data.args, [
     'user-1',
     'bot-1',
@@ -752,6 +779,143 @@ async function runAutomationControlHardeningAssertions(): Promise<void> {
     /Automation must be running before manual execution\./
   );
   assert.equal(executePayloads.length, 0);
+}
+
+async function runAutomationHardDeleteAssertions(): Promise<void> {
+  const service = new AutomationsService() as any;
+  const deletedRecords: string[] = [];
+  const stamps: Array<Record<string, unknown>> = [];
+  const activities: Array<Record<string, unknown>> = [];
+  const originalTransaction = coreDataSource.transaction.bind(coreDataSource);
+  const automation = {
+    id: 'automation-delete-1',
+    userId: 'user-1',
+    name: 'Retired Momentum Runner',
+    strategy: 'Momentum',
+    broker: 'paper',
+    market: 'crypto-futures',
+    trigger: 'every 15m',
+    status: 'Paused',
+    automationType: 'trade-suggestion',
+    updatedAt: new Date('2026-04-02T10:12:00.000Z'),
+    config: {
+      tradeSuggestion: {
+        execution: {
+          executionMode: 'paper_trade_auto',
+        },
+      },
+    },
+  };
+  const impact = {
+    automationEvents: 4,
+    automationAlerts: 1,
+    automationRuns: 3,
+    activeRuns: 0,
+    automationRunOutputs: 5,
+    automationCursors: 2,
+    suggestedTrades: 7,
+    openSuggestedTrades: 2,
+    acceptedSuggestedTrades: 1,
+    activeSuggestedTradeExecutions: 0,
+  };
+
+  service.requireAutomation = async () => automation;
+  service.loadAutomationDeleteImpact = async () => impact;
+  service.getAutomationForDeleteLock = async () => automation;
+  service.stampSuggestedTradesForDeletedAutomation = async (
+    _manager: unknown,
+    userId: string,
+    lockedAutomation: Record<string, unknown>,
+    options: Record<string, unknown>
+  ) => {
+    stamps.push({ userId, automationId: lockedAutomation.id, ...options });
+    return impact.suggestedTrades;
+  };
+  service.deleteAutomationRuntimeRecords = async (
+    _manager: unknown,
+    userId: string,
+    automationId: string
+  ) => {
+    deletedRecords.push(`${userId}:${automationId}`);
+  };
+  service.operationalEventService = {
+    logActivity: async (_userId: string, payload: Record<string, unknown>) => {
+      activities.push(payload);
+    },
+  };
+  (coreDataSource as any).transaction = async (callback: (manager: unknown) => unknown) =>
+    callback({});
+
+  try {
+    const previewResponse = await service.getAutomationDeletePreview(
+      'user-1',
+      'automation-delete-1'
+    );
+
+    assert.equal(previewResponse.data.canDelete, true);
+    assert.equal(previewResponse.data.requiredConfirmName, 'Retired Momentum Runner');
+    assert.equal(previewResponse.data.requiredConfirmPhrase, 'DELETE AUTOMATION');
+    assert.equal(previewResponse.data.impact.suggestedTrades, 7);
+    assert.equal(
+      previewResponse.data.warnings.some(
+        (warning: { code?: string }) => warning.code === 'suggested_trades_retained'
+      ),
+      true
+    );
+
+    const deleteResponse = await service.hardDeleteAutomation('user-1', 'automation-delete-1', {
+      confirmName: 'Retired Momentum Runner',
+      confirmPhrase: 'DELETE AUTOMATION',
+      reason: 'retired strategy cleanup',
+      previewToken: previewResponse.data.previewToken,
+    });
+
+    assert.equal(deleteResponse.data.message, 'Automation hard deleted');
+    assert.equal(deleteResponse.data.deletedAutomationId, 'automation-delete-1');
+    assert.equal(deleteResponse.data.retainedSuggestedTrades, 7);
+    assert.deepEqual(deletedRecords, ['user-1:automation-delete-1']);
+    assert.equal(stamps.length, 1);
+    assert.equal(stamps[0].reason, 'retired strategy cleanup');
+    assert.equal(activities.length, 1);
+
+    await assert.rejects(
+      () =>
+        service.hardDeleteAutomation('user-1', 'automation-delete-1', {
+          confirmName: 'Wrong name',
+          confirmPhrase: 'DELETE AUTOMATION',
+          reason: 'retired strategy cleanup',
+          previewToken: previewResponse.data.previewToken,
+        }),
+      /confirmName must exactly match/
+    );
+
+    const runningPreview = await service.buildAutomationDeletePreview('user-1', {
+      ...automation,
+      status: 'Running',
+    });
+    assert.equal(runningPreview.canDelete, false);
+    assert.equal(runningPreview.blockers[0].code, 'automation_running');
+  } finally {
+    (coreDataSource as any).transaction = originalTransaction;
+  }
+
+  const deletePayload = validateAutomationDeleteBody({
+    confirmName: 'Retired Momentum Runner',
+    confirmPhrase: 'DELETE AUTOMATION',
+    reason: 'retired strategy cleanup',
+    previewToken: 'preview.token',
+  });
+  assert.equal(deletePayload.confirmPhrase, 'DELETE AUTOMATION');
+  assert.throws(
+    () =>
+      validateAutomationDeleteBody({
+        confirmName: 'Retired Momentum Runner',
+        confirmPhrase: 'delete automation',
+        reason: 'retired strategy cleanup',
+        previewToken: 'preview.token',
+      }),
+    /confirmPhrase must be DELETE AUTOMATION/
+  );
 }
 
 function runAutomationTimeZoneValidationAssertions(): void {
@@ -3071,6 +3235,7 @@ async function main(): Promise<void> {
   runAutomationLineageMappingAssertions();
   await runAutomationReconcileAssertions();
   await runAutomationControlHardeningAssertions();
+  await runAutomationHardDeleteAssertions();
   runAutomationTimeZoneValidationAssertions();
   runAutomationScheduleAuditAssertions();
   await runAutomationSchedulePersistenceAssertions();

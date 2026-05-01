@@ -1,9 +1,21 @@
 import { Request } from 'express';
-import { Body, Get, JsonController, Param, Patch, Post, QueryParam, Req } from 'routing-controllers';
+import {
+  Body,
+  Delete,
+  Get,
+  JsonController,
+  Param,
+  Patch,
+  Post,
+  QueryParam,
+  Req,
+} from 'routing-controllers';
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import {
   AutomationActionResult,
+  AutomationDeletePreview,
+  AutomationHardDeleteResult,
   AutomationItem,
   AutomationsListResponse,
   AutomationsSummary,
@@ -11,7 +23,12 @@ import {
 } from '../contracts/Automation';
 import { ExecuteAutomationResult } from '../services/AutomationExecutionService';
 import { AutomationsService } from '../services/AutomationsService';
-import { AutomationActionBody, CreateAutomationBody, UpdateAutomationBody } from '../validators/automations.validator';
+import {
+  AutomationActionBody,
+  AutomationDeleteBody,
+  CreateAutomationBody,
+  UpdateAutomationBody,
+} from '../validators/automations.validator';
 import { requireAuthUserId } from '../utils/auth';
 
 @JsonController('/automations')
@@ -37,8 +54,21 @@ export class AutomationsController {
   }
 
   @Get('/summary')
-  async getAutomationsSummary(@Req() request: Request): Promise<ApiSuccessResponse<AutomationsSummary>> {
+  async getAutomationsSummary(
+    @Req() request: Request
+  ): Promise<ApiSuccessResponse<AutomationsSummary>> {
     return this.automationsService.getAutomationsSummary(requireAuthUserId(request));
+  }
+
+  @Get('/:automationId/delete-preview')
+  async getAutomationDeletePreview(
+    @Req() request: Request,
+    @Param('automationId') automationId: string
+  ): Promise<ApiSuccessResponse<AutomationDeletePreview>> {
+    return this.automationsService.getAutomationDeletePreview(
+      requireAuthUserId(request),
+      automationId
+    );
   }
 
   @Get('/:automationId')
@@ -77,6 +107,19 @@ export class AutomationsController {
     @Body() body: UpdateAutomationBody
   ): Promise<ApiSuccessResponse<AutomationItem>> {
     return this.automationsService.updateAutomation(requireAuthUserId(request), automationId, body);
+  }
+
+  @Delete('/:automationId')
+  async hardDeleteAutomation(
+    @Req() request: Request,
+    @Param('automationId') automationId: string,
+    @Body() body: AutomationDeleteBody
+  ): Promise<ApiSuccessResponse<AutomationHardDeleteResult>> {
+    return this.automationsService.hardDeleteAutomation(
+      requireAuthUserId(request),
+      automationId,
+      body
+    );
   }
 
   @Post('/:automationId/pause')

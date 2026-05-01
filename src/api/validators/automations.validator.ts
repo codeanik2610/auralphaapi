@@ -80,6 +80,20 @@ export interface AutomationActionBody {
   reason?: string;
 }
 
+export interface AutomationDeleteBody {
+  confirmName?: string;
+  confirmPhrase?: string;
+  reason?: string;
+  previewToken?: string;
+}
+
+export interface ValidatedAutomationDeleteBody {
+  confirmName: string;
+  confirmPhrase: 'DELETE AUTOMATION';
+  reason: string;
+  previewToken: string;
+}
+
 export interface ValidatedAutomationsQuery {
   limit: number;
   offset: number;
@@ -87,7 +101,10 @@ export interface ValidatedAutomationsQuery {
   search?: string;
 }
 
-const sanitizeRecord = (value: unknown, field: string): Record<string, unknown> | null | undefined => {
+const sanitizeRecord = (
+  value: unknown,
+  field: string
+): Record<string, unknown> | null | undefined => {
   if (value === undefined) return undefined;
   if (value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -122,16 +139,8 @@ const validateTradeSuggestionConfig = (
 
   const tradeSuggestion = parseRecord(config.tradeSuggestion);
   const setupScope = parseRecord(tradeSuggestion?.setupScope) ?? parseRecord(config.setupScope);
-  const symbol = readString(
-    config.symbol,
-    tradeSuggestion?.symbol,
-    setupScope?.symbol
-  );
-  const timeframe = readString(
-    config.timeframe,
-    tradeSuggestion?.timeframe,
-    setupScope?.timeframe
-  );
+  const symbol = readString(config.symbol, tradeSuggestion?.symbol, setupScope?.symbol);
+  const timeframe = readString(config.timeframe, tradeSuggestion?.timeframe, setupScope?.timeframe);
   const sourceTemplateId = readString(
     config.sourceTemplateId,
     config.templateId,
@@ -165,13 +174,21 @@ const validateTradeSuggestionConfig = (
   const routeMode = readString(routing.routeMode) ?? 'strategy_default';
   const brokerKey = readString(routing.brokerKey);
 
-  if (!TRADE_SUGGESTION_EXECUTION_MODES.includes(executionMode as (typeof TRADE_SUGGESTION_EXECUTION_MODES)[number])) {
+  if (
+    !TRADE_SUGGESTION_EXECUTION_MODES.includes(
+      executionMode as (typeof TRADE_SUGGESTION_EXECUTION_MODES)[number]
+    )
+  ) {
     throw new BadRequestAppError(
       `${fieldLabel}.tradeSuggestion.execution.executionMode must be one of: ${TRADE_SUGGESTION_EXECUTION_MODES.join(', ')}`
     );
   }
 
-  if (!TRADE_SUGGESTION_ROUTE_MODES.includes(routeMode as (typeof TRADE_SUGGESTION_ROUTE_MODES)[number])) {
+  if (
+    !TRADE_SUGGESTION_ROUTE_MODES.includes(
+      routeMode as (typeof TRADE_SUGGESTION_ROUTE_MODES)[number]
+    )
+  ) {
     throw new BadRequestAppError(
       `${fieldLabel}.tradeSuggestion.execution.routing.routeMode must be one of: ${TRADE_SUGGESTION_ROUTE_MODES.join(', ')}`
     );
@@ -264,6 +281,51 @@ export const validateAutomationActionBody = (
   };
 };
 
+export const validateAutomationDeleteBody = (
+  body: AutomationDeleteBody = {}
+): ValidatedAutomationDeleteBody => {
+  if (body.confirmName !== undefined && typeof body.confirmName !== 'string') {
+    throw new BadRequestAppError('confirmName must be a string');
+  }
+  if (body.confirmPhrase !== undefined && typeof body.confirmPhrase !== 'string') {
+    throw new BadRequestAppError('confirmPhrase must be a string');
+  }
+  if (body.reason !== undefined && typeof body.reason !== 'string') {
+    throw new BadRequestAppError('reason must be a string');
+  }
+  if (body.previewToken !== undefined && typeof body.previewToken !== 'string') {
+    throw new BadRequestAppError('previewToken must be a string');
+  }
+
+  const confirmName = body.confirmName?.trim();
+  const confirmPhrase = body.confirmPhrase?.trim();
+  const reason = body.reason?.trim();
+  const previewToken = body.previewToken?.trim();
+
+  if (!confirmName) {
+    throw new BadRequestAppError('confirmName is required');
+  }
+  if (confirmPhrase !== 'DELETE AUTOMATION') {
+    throw new BadRequestAppError('confirmPhrase must be DELETE AUTOMATION');
+  }
+  if (!reason) {
+    throw new BadRequestAppError('reason is required');
+  }
+  if (reason.length < 8) {
+    throw new BadRequestAppError('reason must be at least 8 characters');
+  }
+  if (!previewToken) {
+    throw new BadRequestAppError('previewToken is required');
+  }
+
+  return {
+    confirmName,
+    confirmPhrase: 'DELETE AUTOMATION',
+    reason,
+    previewToken,
+  };
+};
+
 export const validateAutomationCreateBody = (
   body: CreateAutomationBody = {}
 ): ValidatedCreateAutomationBody => {
@@ -315,7 +377,8 @@ export const validateAutomationUpdateBody = (
   if (status && !VALID_STATUSES.includes(status as AutomationStatus)) {
     throw new BadRequestAppError(`status must be one of: ${VALID_STATUSES.join(', ')}`);
   }
-  const config = body.config === undefined ? undefined : sanitizeRecord(body.config, 'config') ?? null;
+  const config =
+    body.config === undefined ? undefined : (sanitizeRecord(body.config, 'config') ?? null);
   const automationType =
     body.automationType === undefined
       ? undefined
@@ -350,8 +413,14 @@ export const validateAutomationUpdateBody = (
     automationType: automationType as AutomationType | undefined,
     timeZone:
       timeZone === undefined ? undefined : timeZone === null ? null : normalizeTimeZone(timeZone),
-    schedule: body.schedule === undefined ? undefined : sanitizeRecord(body.schedule, 'schedule') ?? null,
-    riskMode: body.riskMode === undefined ? undefined : body.riskMode === null ? null : body.riskMode.trim(),
+    schedule:
+      body.schedule === undefined ? undefined : (sanitizeRecord(body.schedule, 'schedule') ?? null),
+    riskMode:
+      body.riskMode === undefined
+        ? undefined
+        : body.riskMode === null
+          ? null
+          : body.riskMode.trim(),
     config,
   };
 };
