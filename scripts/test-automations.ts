@@ -1771,6 +1771,149 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
     {
       const { service } = createService();
       const createdSuggestions: Array<Record<string, unknown>> = [];
+      const outputs: Array<Record<string, unknown>> = [];
+      const automationTradeSuggestion = {
+        ...automation,
+        automationType: 'trade-suggestion',
+      };
+
+      service.resolveTradeSuggestionProfile = async () => ({
+        sourceTemplateId: 'template-1',
+        templateConfig: {},
+        profile: {
+          automationReady: true,
+          readinessReasons: [],
+          contractVersion: 'v1',
+          market: 'crypto-futures',
+          signalThreshold: 0.81,
+          tradePlan: {
+            long: {
+              enabled: true,
+              side: 'long',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Trend continuation',
+              entryRule: 'Break above range high',
+              exitRule: 'Stop at invalidation',
+            },
+            short: {
+              enabled: false,
+              side: 'short',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Disabled',
+              entryRule: 'Disabled',
+              exitRule: 'Disabled',
+            },
+          },
+        },
+      });
+      service.automationCursorRepository = {
+        listByAutomationAndScope: async () => [],
+        upsertCursor: async () => undefined,
+      };
+      service.automationSignalEvaluatorService = {
+        evaluateLatestSignals: async () => ({
+          evaluatedSymbols: 2,
+          items: [
+            {
+              symbol: 'BTCUSDT',
+              status: 'ok',
+              latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+              signals: [
+                {
+                  side: 'long',
+                  signalTime: '2026-04-04T10:00:00.000Z',
+                  entryPrice: 100,
+                },
+              ],
+            },
+            {
+              symbol: 'ETHUSDT',
+              status: 'ok',
+              latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+              signals: [
+                {
+                  side: 'long',
+                  signalTime: '2026-04-04T10:00:00.000Z',
+                  entryPrice: 200,
+                },
+              ],
+            },
+          ],
+        }),
+      };
+      service.suggestedTradeRepository = {
+        createSuggestedTrade: async (payload: Record<string, unknown>) => {
+          createdSuggestions.push(payload);
+          return {
+            duplicate: false,
+            item: { id: `st-batch-${createdSuggestions.length}` },
+          };
+        },
+      };
+      service.suggestedTradesService = {};
+      service.automationRunOutputRepository = {
+        createOutput: async (payload: Record<string, unknown>) => {
+          outputs.push(payload);
+          return payload;
+        },
+      };
+      service.operationalEventService = {
+        logActivity: async () => undefined,
+        emitNotificationAlert: async () => null,
+      };
+
+      const result = await service.generateTradeSuggestions(
+        automationTradeSuggestion,
+        'run-trade-batch-setups',
+        {
+          symbols: ['BTCUSDT', 'ETHUSDT'],
+          timeframe: '1h',
+          setupScope: {
+            setups: [
+              {
+                symbol: 'BTCUSDT',
+                timeframe: '1h',
+                score: 0.91,
+                dedupeKey: 'setup-btc',
+                backtestId: 'backtest-btc',
+              },
+              {
+                symbol: 'ETHUSDT',
+                timeframe: '1h',
+                score: 0.72,
+                dedupeKey: 'setup-eth',
+                backtestId: 'backtest-eth',
+              },
+            ],
+          },
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'suggestion_only',
+            },
+          },
+        },
+        new Date('2026-04-04T10:05:00.000Z')
+      );
+
+      assert.equal(result.inserted, 2);
+      assert.equal(createdSuggestions.length, 2);
+      assert.equal(createdSuggestions[0]?.score, 0.91);
+      assert.equal(createdSuggestions[0]?.sourceSetupKey, 'setup-btc');
+      assert.equal(createdSuggestions[0]?.sourceBacktestId, 'backtest-btc');
+      assert.equal((createdSuggestions[0]?.meta as Record<string, unknown>)?.setupScore, 0.91);
+      assert.equal(createdSuggestions[1]?.score, 0.72);
+      assert.equal(createdSuggestions[1]?.sourceSetupKey, 'setup-eth');
+      assert.equal(createdSuggestions[1]?.sourceBacktestId, 'backtest-eth');
+      assert.equal((createdSuggestions[1]?.meta as Record<string, unknown>)?.setupScore, 0.72);
+      assert.equal((outputs[0]?.payload as Record<string, unknown>)?.score, 0.91);
+      assert.equal((outputs[1]?.payload as Record<string, unknown>)?.score, 0.72);
+    }
+
+    {
+      const { service } = createService();
+      const createdSuggestions: Array<Record<string, unknown>> = [];
       const cursorUpdates: Array<Record<string, unknown>> = [];
       const automationTradeSuggestion = {
         ...automation,

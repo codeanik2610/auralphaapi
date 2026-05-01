@@ -839,17 +839,16 @@ export class AutomationExecutionService {
       throw new BadRequestAppError('No active trade plan legs are available for this automation');
     }
 
-    const sourceBacktestId = this.readString(tradeSuggestion.backtestId, config.backtestId) ?? null;
-    const sourceSetupKey =
+    const rootSourceBacktestId =
+      this.readString(tradeSuggestion.backtestId, config.backtestId) ?? null;
+    const rootSourceSetupKey =
       this.readString(
         setupScope?.dedupeKey,
         tradeSuggestion.sourceSetupKey,
         config.sourceSetupKey
       ) ?? null;
-    const score = this.readNumber(setupScope?.score, tradeSuggestion.score);
-    const confidence =
-      this.readNumber(tradeSuggestion.confidence, config.confidence, score) ??
-      profile.signalThreshold;
+    const rootScore = this.readNumber(setupScope?.score, tradeSuggestion.score);
+    const explicitConfidence = this.readNumber(tradeSuggestion.confidence, config.confidence);
 
     let inserted = 0;
     let duplicates = 0;
@@ -927,6 +926,19 @@ export class AutomationExecutionService {
 
     for (const item of evaluation.items) {
       symbolsProcessed += 1;
+      const itemSetupScope = this.resolveTradeSuggestionSetupScope(
+        setupScope,
+        item.symbol,
+        timeframe
+      );
+      const sourceBacktestId =
+        this.readString(itemSetupScope?.backtestId, rootSourceBacktestId) ?? null;
+      const sourceSetupKey = this.readString(itemSetupScope?.dedupeKey, rootSourceSetupKey) ?? null;
+      const score = this.readNumber(itemSetupScope?.score, rootScore);
+      const confidence =
+        explicitConfidence ??
+        this.readNumber(itemSetupScope?.confidence, score) ??
+        profile.signalThreshold;
       const currentCursor = cursorMap.get(item.symbol) ?? null;
       const latestClosedSignalTime = item.latestClosedSignalTime
         ? new Date(item.latestClosedSignalTime)
@@ -1923,6 +1935,40 @@ export class AutomationExecutionService {
     ];
     const symbols = assetsCandidates.flatMap((value) => this.extractSymbolsFromAssets(value));
     return Array.from(new Set(symbols.map((item) => item.trim().toUpperCase())));
+  }
+
+  private resolveTradeSuggestionSetupScope(
+    setupScope: Record<string, unknown> | null | undefined,
+    symbol: string,
+    timeframe: string
+  ): Record<string, unknown> | null {
+    const directScope = this.parseRecord(setupScope);
+    if (!directScope) {
+      return null;
+    }
+
+    const setupRecords = Array.isArray(directScope.setups)
+      ? directScope.setups
+          .map((item) => this.parseRecord(item))
+          .filter((item): item is Record<string, unknown> => Boolean(item))
+      : [];
+
+    if (!setupRecords.length) {
+      return directScope;
+    }
+
+    const normalizedSymbol = symbol.trim().toUpperCase();
+    const normalizedTimeframe = timeframe.trim().toLowerCase();
+    const hasMatchingSymbol = (item: Record<string, unknown>) =>
+      this.readString(item.symbol)?.trim().toUpperCase() === normalizedSymbol;
+    const hasMatchingTimeframe = (item: Record<string, unknown>) =>
+      this.readString(item.timeframe)?.trim().toLowerCase() === normalizedTimeframe;
+
+    return (
+      setupRecords.find((item) => hasMatchingSymbol(item) && hasMatchingTimeframe(item)) ??
+      setupRecords.find((item) => hasMatchingSymbol(item) && !this.readString(item.timeframe)) ??
+      null
+    );
   }
 
   private extractStringArray(value: unknown): string[] {
