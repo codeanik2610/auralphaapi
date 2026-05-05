@@ -737,6 +737,11 @@ async function runSyncFlowAssertions(): Promise<void> {
     assets: Array<Record<string, unknown>>;
     attempted: number;
   }> = [];
+  const upsertCaptures: Array<{
+    source: string;
+    assets: Array<Record<string, unknown>>;
+    attempted: number;
+  }> = [];
   const syncRequests: Array<{
     source: string;
     assets: Array<{ id: string; symbol: string }>;
@@ -852,6 +857,21 @@ async function runSyncFlowAssertions(): Promise<void> {
           totalStored: assets.length,
         };
       },
+      async upsertSystemAssets(
+        source: string,
+        assets: Array<Record<string, unknown>>,
+        attempted: number
+      ) {
+        upsertCaptures.push({ source, assets, attempted });
+        return {
+          attempted,
+          matched: assets.length,
+          inserted: assets.length,
+          updated: 0,
+          skipped: Math.max(attempted - assets.length, 0),
+          totalStored: assets.length,
+        };
+      },
     }),
   });
 
@@ -883,6 +903,11 @@ async function runSyncFlowAssertions(): Promise<void> {
   assert.equal(replaceCaptures[1].source, 'mudrex');
   assert.equal(replaceCaptures[1].attempted, 2);
   assert.equal(replaceCaptures[1].assets[0].brokerId, 'broker-mudrex');
+  assert.equal(upsertCaptures.length, 1);
+  assert.equal(upsertCaptures[0].source, 'delta_exchange');
+  assert.equal(upsertCaptures[0].attempted, 2);
+  assert.equal(upsertCaptures[0].assets[0].brokerId, 'broker-delta');
+  assert.equal(mudrexSync.data.deltaInsertedAssets, 2);
   assert.equal(
     Object.prototype.hasOwnProperty.call(replaceCaptures[1].assets[0], 'userId'),
     false
@@ -937,10 +962,10 @@ async function runVisibilityFlowAssertions(): Promise<void> {
             id: 'asset-row-delta-1',
             source: 'delta_exchange',
             brokerId: 'broker-delta',
-            externalId: 'delta:BTCUSDT',
+            externalId: 'delta:BTCUSD',
             assetId: 'asset-btc',
             name: 'Bitcoin',
-            symbol: 'BTCUSDT',
+            symbol: 'BTCUSD',
             createdAt: new Date('2026-04-04T09:00:00.000Z'),
             updatedAt: new Date('2026-04-04T09:00:00.000Z'),
           },
@@ -971,11 +996,11 @@ async function runVisibilityFlowAssertions(): Promise<void> {
     {
       userId: 'user-1',
       source: 'delta_exchange',
-      symbols: ['BTCUSDT'],
+      symbols: ['BTCUSDT', 'BTCUSD', 'BTCUSDC'],
     },
   ]);
   assert.equal(response.data.assets[0].isDeltaMapped, true);
-  assert.equal(response.data.assets[0].deltaExternalId, 'delta:BTCUSDT');
+  assert.equal(response.data.assets[0].deltaExternalId, 'delta:BTCUSD');
 }
 
 async function runProductMapVisibilityAssertions(): Promise<void> {
@@ -1155,7 +1180,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
     routePath: '/v2/orders',
     payload: {
       product_id: 45678,
-      size: 2,
+      size: 2000,
       side: 'buy',
       order_type: 'limit_order',
       time_in_force: 'gtc',
@@ -1169,7 +1194,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
     routePath: '/v2/orders',
     payload: {
       product_id: 45678,
-      size: 2,
+      size: 2000,
       side: 'sell',
       order_type: 'market_order',
       time_in_force: 'gtc',
@@ -1186,7 +1211,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
     routePath: '/v2/orders',
     payload: {
       product_id: 45678,
-      size: 2,
+      size: 2000,
       side: 'sell',
       order_type: 'market_order',
       time_in_force: 'gtc',
@@ -1233,7 +1258,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
     routePath: '/v2/orders',
     payload: {
       product_id: 45678,
-      size: 3,
+      size: 3000,
       side: 'sell',
       order_type: 'market_order',
       time_in_force: 'ioc',
@@ -1246,7 +1271,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
     routePath: '/v2/orders',
     payload: {
       product_id: 45678,
-      size: 3,
+      size: 3000,
       side: 'buy',
       order_type: 'market_order',
       time_in_force: 'gtc',
@@ -1263,7 +1288,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
     routePath: '/v2/orders',
     payload: {
       product_id: 45678,
-      size: 3,
+      size: 3000,
       side: 'buy',
       order_type: 'market_order',
       time_in_force: 'gtc',
@@ -1324,7 +1349,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
     routePath: '/v2/orders',
     payload: {
       product_id: 45678,
-      size: 1,
+      size: 1000,
       side: 'buy',
       order_type: 'limit_order',
       time_in_force: 'gtc',
@@ -1701,7 +1726,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
           accountId: 'acct-1',
         }
       ),
-    /smaller than one whole contract/
+    /smaller than one whole BTCUSD contract/
   );
 
   const staleAdapter = new DeltaExchangeOrdersAdapter() as any;

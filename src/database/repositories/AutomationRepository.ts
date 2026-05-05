@@ -327,6 +327,11 @@ export class AutomationRepository {
     automation.scopeSymbol = persistence.scopeSymbol;
     automation.scopeTimeframe = persistence.scopeTimeframe;
     automation.sourceTemplateId = persistence.sourceTemplateId;
+    // Strip loaded relations to prevent TypeORM from re-persisting them
+    // during save. The @JoinColumn and @Column share the same DB column
+    // (automationId), causing TypeORM to null out the FK on cascade.
+    delete (automation as unknown as Record<string, unknown>).events;
+    delete (automation as unknown as Record<string, unknown>).alerts;
     return this.automationRepository.save(automation);
   }
 

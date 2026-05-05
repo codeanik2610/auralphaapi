@@ -22,6 +22,15 @@ export interface ExchangeAssetSyncSummary {
   skippedSymbols: number;
   totalStoredAssets: number;
   deltaMappedSymbols?: number;
+  deltaInsertedAssets?: number;
+  deltaUpdatedAssets?: number;
+  deltaSkippedSymbols?: number;
+  deltaTotalStoredAssets?: number;
+  deltaMissingSymbols?: Array<{
+    symbol: string;
+    candidateSymbols: string[];
+    reason: string;
+  }>;
 }
 
 export interface ExchangeAssetListResponse {

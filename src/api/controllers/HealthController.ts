@@ -20,6 +20,10 @@ import {
   BrokerCanaryProtectionMonitorResponse,
   BrokerCanaryProtectionMonitorService,
 } from '../services/BrokerCanaryProtectionMonitorService';
+import {
+  SuggestedTradesProtectionGuardrailResponse,
+  SuggestedTradesProtectionGuardrailService,
+} from '../services/SuggestedTradesProtectionGuardrailService';
 import { AlertRepository } from '../../database/repositories/AlertRepository';
 import { BacktestRepository } from '../../database/repositories/BacktestRepository';
 import { EmailDeliveryRepository } from '../../database/repositories/EmailDeliveryRepository';
@@ -199,6 +203,23 @@ interface SuggestedTradeHealthPayload {
   filledSuggestions?: number;
   closedSuggestions?: number;
   queueToOrderConversionRate?: number | null;
+  protectionTrackedTrades?: number;
+  protectionPendingTrades?: number;
+  protectionWaitingForFillTrades?: number;
+  protectionWaitingForPositionTrades?: number;
+  protectionAttachingTrades?: number;
+  protectionAttachedTrades?: number;
+  protectionFailedTrades?: number;
+  protectionManualActionTrades?: number;
+  protectionNotRequiredTrades?: number;
+  protectionUnknownTrades?: number;
+  protectionActionableTrades?: number;
+  protectionUnresolvedTrades?: number;
+  protectionRetriableFailedTrades?: number;
+  protectionAttachmentRate?: number | null;
+  protectionLastCheckedAt?: string | null;
+  protectionLastAttachedAt?: string | null;
+  protectionLastManualActionAt?: string | null;
   queueToOrderSuccess24h?: number;
   summaryRuns24h?: number;
   suggestedTradesCreated24h?: number;
@@ -290,6 +311,9 @@ export class HealthController {
 
   @Inject(() => BrokerCanaryProtectionMonitorService)
   private brokerCanaryProtectionMonitorService!: BrokerCanaryProtectionMonitorService;
+
+  @Inject(() => SuggestedTradesProtectionGuardrailService)
+  private suggestedTradesProtectionGuardrailService!: SuggestedTradesProtectionGuardrailService;
 
   @Inject(() => RuntimeDiagnosticsService)
   private runtimeDiagnosticsService!: RuntimeDiagnosticsService;
@@ -1130,6 +1154,22 @@ export class HealthController {
             : normalizedFreezeOnCritical === 'false'
               ? false
               : undefined,
+      })
+    );
+  }
+
+  @Get('/suggested-trades-protection-guardrails')
+  async getSuggestedTradesProtectionGuardrails(
+    @Req() request: Request,
+    @QueryParam('emitAlerts') emitAlerts?: string
+  ): Promise<ApiSuccessResponse<SuggestedTradesProtectionGuardrailResponse>> {
+    requireAdminAuthUserOrApiKey(request);
+    const normalizedEmitAlerts = String(emitAlerts || '')
+      .trim()
+      .toLowerCase();
+    return successResponse(
+      await this.suggestedTradesProtectionGuardrailService.runAudit({
+        emitAlerts: normalizedEmitAlerts === 'false' ? false : true,
       })
     );
   }

@@ -8,6 +8,7 @@ import {
   DEFAULT_TRADE_SUGGESTION_FRESHNESS_GRACE_SECONDS,
   evaluateSignalFreshness,
 } from '../src/api/utils/signalFreshness';
+import { resolveLimitOrderExpirySeconds } from '../src/api/utils/tradeSuggestionOrderExpiry';
 
 // Test Suite 1: Basic Template ID Promotion
 function runTemplateIdPromotionTests(): void {
@@ -197,11 +198,7 @@ function runDuplicateHandlingTests(): void {
   const sourceTemplateIdCount = keys.filter((k) => k === 'sourceTemplateId').length;
 
   assert.strictEqual(templateIdCount, 1, 'Should not create duplicate templateId key');
-  assert.strictEqual(
-    sourceTemplateIdCount,
-    1,
-    'Should not create duplicate sourceTemplateId key'
-  );
+  assert.strictEqual(sourceTemplateIdCount, 1, 'Should not create duplicate sourceTemplateId key');
   console.log('  ✓ No duplicate keys created');
 
   // Test 3.2: Handle null values correctly
@@ -304,11 +301,7 @@ function runEdgeCaseTests(): void {
 
   const result2 = normalizeAutomationConfig('trade-suggestion', case2);
 
-  assert.strictEqual(
-    result2?.templateId,
-    'valid-id',
-    'Whitespace-only string should be ignored'
-  );
+  assert.strictEqual(result2?.templateId, 'valid-id', 'Whitespace-only string should be ignored');
   console.log('  ✓ Whitespace-only strings ignored');
 
   // Test 5.3: Backtest-runner type (typically no templates)
@@ -433,8 +426,7 @@ function runExecutionPolicyNormalizationTests(): void {
   console.log('  ✓ Centralizes trade-suggestion execution limit normalization');
 
   const freshness = (normalizedLimits.freshness as Record<string, unknown>) || {};
-  const timeframeGraceSeconds =
-    (freshness.timeframeGraceSeconds as Record<string, unknown>) || {};
+  const timeframeGraceSeconds = (freshness.timeframeGraceSeconds as Record<string, unknown>) || {};
   assert.equal(freshness.enabled, true);
   assert.equal(
     timeframeGraceSeconds['15m'],
@@ -451,10 +443,8 @@ function runExecutionPolicyNormalizationTests(): void {
       },
     },
   });
-  const customFreshness =
-    (customFreshnessPolicy.freshness as Record<string, unknown>) || {};
-  const customTimeframes =
-    (customFreshness.timeframeGraceSeconds as Record<string, unknown>) || {};
+  const customFreshness = (customFreshnessPolicy.freshness as Record<string, unknown>) || {};
+  const customTimeframes = (customFreshness.timeframeGraceSeconds as Record<string, unknown>) || {};
   assert.equal(customTimeframes['5m'], 180);
   assert.equal(customTimeframes['15m'], 600);
 
@@ -468,6 +458,35 @@ function runExecutionPolicyNormalizationTests(): void {
   assert.equal(staleEvaluation.ageAfterCloseSeconds, 660);
   assert.equal(staleEvaluation.maxAgeAfterCloseSeconds, 600);
   console.log('  ✓ Normalizes configurable timeframe-aware signal freshness guard');
+
+  const limitOrderExpiry = (normalizedLimits.limitOrderExpiry as Record<string, unknown>) || {};
+  const timeframeExpirySeconds =
+    (limitOrderExpiry.timeframeExpirySeconds as Record<string, unknown>) || {};
+  assert.equal(limitOrderExpiry.enabled, true);
+  assert.equal(
+    timeframeExpirySeconds['5m'],
+    900,
+    'Limit order expiry policy should expose timeframe-aware defaults'
+  );
+  assert.equal(timeframeExpirySeconds['15m'], 2700);
+  assert.equal(timeframeExpirySeconds['1h'], 10800);
+
+  const customLimitExpiryPolicy = normalizeTradeSuggestionExecutionPolicy({
+    limitOrderExpiry: {
+      enabled: true,
+      timeframeExpirySeconds: {
+        '5m': 75,
+        '1h': 600,
+      },
+    },
+  });
+  const customLimitExpiry =
+    (customLimitExpiryPolicy.limitOrderExpiry as Record<string, unknown>) || {};
+  const customLimitExpiryTimeframes =
+    (customLimitExpiry.timeframeExpirySeconds as Record<string, unknown>) || {};
+  assert.equal(customLimitExpiryTimeframes['5m'], 75);
+  assert.equal(resolveLimitOrderExpirySeconds('1h', customLimitExpiry as any), 600);
+  console.log('  ✓ Normalizes timeframe-aware limit order expiry');
 
   const liveConfig = normalizeAutomationConfig('trade-suggestion', {
     kind: 'trade-suggestion',
@@ -492,14 +511,8 @@ function runExecutionPolicyNormalizationTests(): void {
   const liveExecution = (liveConfig?.tradeSuggestion as Record<string, unknown>)
     ?.execution as Record<string, unknown>;
   assert.equal(liveExecution?.executionMode, 'live_trade_auto');
-  assert.equal(
-    ((liveExecution?.routing as Record<string, unknown>) || {}).brokerKey,
-    'mudrex'
-  );
-  assert.equal(
-    ((liveExecution?.liveConsent as Record<string, unknown>) || {}).enabled,
-    true
-  );
+  assert.equal(((liveExecution?.routing as Record<string, unknown>) || {}).brokerKey, 'mudrex');
+  assert.equal(((liveExecution?.liveConsent as Record<string, unknown>) || {}).enabled, true);
   console.log('  ✓ Preserves explicit live execution policy values\n');
 
   const promotedConfig = normalizeAutomationConfig('trade-suggestion', {
@@ -528,8 +541,12 @@ function runExecutionPolicyNormalizationTests(): void {
     'template-1'
   );
   assert.equal(
-    ((promotedConfig?.tradeSuggestion as Record<string, unknown>)?.execution as Record<string, unknown>)
-      ?.executionMode,
+    (
+      (promotedConfig?.tradeSuggestion as Record<string, unknown>)?.execution as Record<
+        string,
+        unknown
+      >
+    )?.executionMode,
     'suggestion_only'
   );
   console.log('  ✓ Preserves promoted snapshot config while normalizing execution policy\n');

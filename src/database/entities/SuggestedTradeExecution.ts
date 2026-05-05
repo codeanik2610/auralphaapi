@@ -31,6 +31,13 @@ import { SuggestedTrade } from './SuggestedTrade';
   'executionState',
   'lastSeenAt',
 ])
+@Index('idx_suggested_trade_executions_protection_state', [
+  'userId',
+  'brokerKey',
+  'accountId',
+  'protectionState',
+  'updatedAt',
+])
 export class SuggestedTradeExecution {
   @PrimaryColumn({ name: 'suggested_trade_id', type: 'char', length: 36 })
   suggestedTradeId!: string;
@@ -106,6 +113,27 @@ export class SuggestedTradeExecution {
     nullable: true,
   })
   takeProfitPrice!: string | null;
+
+  @Column({ name: 'protection_state', type: 'varchar', length: 32, nullable: true })
+  protectionState!: string | null;
+
+  @Column({ name: 'protection_source', type: 'varchar', length: 64, nullable: true })
+  protectionSource!: string | null;
+
+  @Column({ name: 'protection_plan_json', type: 'json', nullable: true })
+  protectionPlan!: Record<string, unknown> | null;
+
+  @Column({ name: 'protection_attempts', type: 'int', unsigned: true, default: 0 })
+  protectionAttempts!: number;
+
+  @Column({ name: 'protection_last_error', type: 'text', nullable: true })
+  protectionLastError!: string | null;
+
+  @Column({ name: 'protection_checked_at', type: 'timestamp', nullable: true })
+  protectionCheckedAt!: Date | null;
+
+  @Column({ name: 'protection_attached_at', type: 'timestamp', nullable: true })
+  protectionAttachedAt!: Date | null;
 
   @Column({ name: 'submitted_at', type: 'timestamp', nullable: true })
   submittedAt!: Date | null;

@@ -285,6 +285,7 @@ export class AutomationSignalEvaluatorService {
       const startedAt = Date.now();
       const symbolCount = Array.isArray(payload.symbols) ? payload.symbols.length : 0;
       const timeframe = String(payload.timeframe || '').trim() || 'unknown';
+      const timeoutMs = this.resolveEvaluationTimeoutMs(symbolCount);
       const child = spawn(pythonBin, ['-B', scriptPath], {
         cwd: process.cwd(),
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -306,10 +307,10 @@ export class AutomationSignalEvaluatorService {
         );
         reject(
           new ServiceUnavailableAppError(
-            `Automation signal evaluation timed out after ${env.automationSignals.timeoutMs}ms`
+            `Automation signal evaluation timed out after ${timeoutMs}ms`
           )
         );
-      }, env.automationSignals.timeoutMs);
+      }, timeoutMs);
 
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
@@ -363,5 +364,16 @@ export class AutomationSignalEvaluatorService {
       child.stdin.write(JSON.stringify(payload));
       child.stdin.end();
     });
+  }
+
+  private resolveEvaluationTimeoutMs(symbolCount: number): number {
+    const baseTimeoutMs = Math.max(1000, env.automationSignals.timeoutMs);
+    const perSymbolMs = Math.max(0, env.automationSignals.timeoutPerSymbolMs);
+    const maxTimeoutMs = Math.max(baseTimeoutMs, env.automationSignals.maxTimeoutMs);
+    const normalizedSymbolCount = Number.isFinite(symbolCount)
+      ? Math.max(0, Math.trunc(symbolCount))
+      : 0;
+
+    return Math.min(maxTimeoutMs, baseTimeoutMs + normalizedSymbolCount * perSymbolMs);
   }
 }

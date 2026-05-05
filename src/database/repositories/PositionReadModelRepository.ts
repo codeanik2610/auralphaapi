@@ -1,5 +1,5 @@
 import { Service } from 'typedi';
-import { PositionRecord } from '../../api/contracts/Positions';
+import { PositionAutomationTradeContext, PositionRecord } from '../../api/contracts/Positions';
 import {
   buildPositionReadModelUpsert,
   buildPositionRecordFromReadModelRow,
@@ -24,6 +24,41 @@ type PositionSnapshotSourceRow = {
   payloadHash?: string | null;
   firstSeenAt?: Date | string | null;
   lastSeenAt?: Date | string | null;
+};
+
+type PositionSuggestedTradeContextRow = {
+  suggestedTradeId?: string | null;
+  automationId?: string | null;
+  automationRunId?: string | null;
+  timeframe?: string | null;
+  signalTime?: Date | string | null;
+  side?: string | null;
+  symbol?: string | null;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  positionId?: string | null;
+  orderId?: string | null;
+  orderType?: string | null;
+  triggerType?: string | null;
+  entryPrice?: number | string | null;
+  filledPrice?: number | string | null;
+  submittedAt?: Date | string | null;
+  filledAt?: Date | string | null;
+  executionState?: string | null;
+  positionStatus?: string | null;
+  protectionState?: string | null;
+  protectionSource?: string | null;
+  protectionAttempts?: number | string | null;
+  protectionLastError?: string | null;
+  protectionCheckedAt?: Date | string | null;
+  protectionAttachedAt?: Date | string | null;
+  protectionStopLossPrice?: number | string | null;
+  protectionTakeProfitPrice?: number | string | null;
+  protectionStopLossOrderId?: string | null;
+  protectionTakeProfitOrderId?: string | null;
+  sourceTemplateId?: string | null;
+  sourceBacktestId?: string | null;
+  traceMethod?: PositionAutomationTradeContext['traceMethod'];
 };
 
 export interface PositionAccountFreshnessRow {
@@ -230,7 +265,8 @@ export class PositionReadModelRepository {
         if (!accountId) {
           return;
         }
-        const existing = coverageByAccountId.get(accountId) || this.createEmptyCoverageRow(accountId);
+        const existing =
+          coverageByAccountId.get(accountId) || this.createEmptyCoverageRow(accountId);
         coverageByAccountId.set(accountId, {
           ...existing,
           snapshotRows: Number(row.snapshotRows || 0),
@@ -263,7 +299,8 @@ export class PositionReadModelRepository {
           if (!accountId) {
             return;
           }
-          const existing = coverageByAccountId.get(accountId) || this.createEmptyCoverageRow(accountId);
+          const existing =
+            coverageByAccountId.get(accountId) || this.createEmptyCoverageRow(accountId);
           const snapshotRows = Number(row.snapshotRows || 0);
           coverageByAccountId.set(accountId, {
             ...existing,
@@ -303,7 +340,8 @@ export class PositionReadModelRepository {
         if (!accountId) {
           return;
         }
-        const existing = coverageByAccountId.get(accountId) || this.createEmptyCoverageRow(accountId);
+        const existing =
+          coverageByAccountId.get(accountId) || this.createEmptyCoverageRow(accountId);
         coverageByAccountId.set(accountId, {
           ...existing,
           readModelRows: Number(row.readModelRows || 0),
@@ -364,7 +402,10 @@ export class PositionReadModelRepository {
     return {
       totalAccounts: normalizedAccountIds.length,
       accountsWithSnapshotData,
-      accountsWithoutSnapshotData: Math.max(0, normalizedAccountIds.length - accountsWithSnapshotData),
+      accountsWithoutSnapshotData: Math.max(
+        0,
+        normalizedAccountIds.length - accountsWithSnapshotData
+      ),
       accountsWithReadModel,
       accountsWithoutReadModel: Math.max(0, normalizedAccountIds.length - accountsWithReadModel),
       accountsWithReadModelDrift,
@@ -432,7 +473,9 @@ export class PositionReadModelRepository {
 
     for (const [accountId, scopedSnapshotRows] of rowsByAccountId.entries()) {
       const accountUserId = String(scopedSnapshotRows[0]?.userId || '').trim();
-      const brokerKey = String(scopedSnapshotRows[0]?.brokerKey || '').trim().toLowerCase();
+      const brokerKey = String(scopedSnapshotRows[0]?.brokerKey || '')
+        .trim()
+        .toLowerCase();
       if (!accountUserId) {
         continue;
       }
@@ -493,7 +536,9 @@ export class PositionReadModelRepository {
       }
     }
 
-    const skippedAccountIds = normalizedAccountIds.filter((accountId) => !rowsByAccountId.has(accountId));
+    const skippedAccountIds = normalizedAccountIds.filter(
+      (accountId) => !rowsByAccountId.has(accountId)
+    );
 
     return {
       requestedAccounts: normalizedAccountIds.length,
@@ -516,8 +561,15 @@ export class PositionReadModelRepository {
       return;
     }
 
-    for (let index = 0; index < normalizedRows.length; index += PositionReadModelRepository.UPSERT_CHUNK_SIZE) {
-      const chunk = normalizedRows.slice(index, index + PositionReadModelRepository.UPSERT_CHUNK_SIZE);
+    for (
+      let index = 0;
+      index < normalizedRows.length;
+      index += PositionReadModelRepository.UPSERT_CHUNK_SIZE
+    ) {
+      const chunk = normalizedRows.slice(
+        index,
+        index + PositionReadModelRepository.UPSERT_CHUNK_SIZE
+      );
       const placeholders = chunk
         .map(
           () =>
@@ -680,12 +732,14 @@ export class PositionReadModelRepository {
       safeLimit ? [...params, safeLimit] : params
     )) as PositionReadModelRow[];
 
-    return rows.map((row) =>
+    const records = rows.map((row) =>
       buildPositionRecordFromReadModelRow(row, {
         accountId: normalizedAccountId,
         brokerKey: String(row.brokerKey || brokerKey || '').trim() || undefined,
       })
     );
+    await this.enrichLivePositionsWithSuggestedTradeContext(userId, records);
+    return records;
   }
 
   async getPositionByExternalId(
@@ -720,10 +774,12 @@ export class PositionReadModelRepository {
       return null;
     }
 
-    return buildPositionRecordFromReadModelRow(row, {
+    const record = buildPositionRecordFromReadModelRow(row, {
       accountId: normalizedAccountId,
       brokerKey: String(row.brokerKey || brokerKey || '').trim() || undefined,
     });
+    await this.enrichLivePositionsWithSuggestedTradeContext(userId, [record]);
+    return record;
   }
 
   async listLivePositionsForAccounts(
@@ -746,7 +802,9 @@ export class PositionReadModelRepository {
       [userId, ...normalizedAccountIds]
     )) as PositionReadModelRow[];
 
-    return this.groupRowsByAccount(rows);
+    const grouped = this.groupRowsByAccount(rows);
+    await this.enrichGroupedLivePositionsWithSuggestedTradeContext(userId, grouped);
+    return grouped;
   }
 
   async getOpenPositionSummaryForAccounts(
@@ -817,7 +875,9 @@ export class PositionReadModelRepository {
               },
             ] as const;
           })
-          .filter((entry): entry is readonly [string, PositionOpenPositionSummaryRow] => Boolean(entry))
+          .filter((entry): entry is readonly [string, PositionOpenPositionSummaryRow] =>
+            Boolean(entry)
+          )
       );
     } catch (error) {
       if (this.isMissingTableError(error, 'position_read_models')) {
@@ -845,9 +905,15 @@ export class PositionReadModelRepository {
     const safeLimit = options.limit ? Math.max(1, Math.floor(options.limit)) : 100;
     const safeOffset = options.offset ? Math.max(0, Math.floor(options.offset)) : 0;
     const normalizedAccountId = String(options.accountId || '').trim();
-    const normalizedBrokerKey = String(options.brokerKey || '').trim().toLowerCase();
-    const normalizedSymbol = String(options.symbol || '').trim().toUpperCase();
-    const normalizedSideKey = String(options.sideKey || '').trim().toLowerCase();
+    const normalizedBrokerKey = String(options.brokerKey || '')
+      .trim()
+      .toLowerCase();
+    const normalizedSymbol = String(options.symbol || '')
+      .trim()
+      .toUpperCase();
+    const normalizedSideKey = String(options.sideKey || '')
+      .trim()
+      .toLowerCase();
     const where = [
       'user_id = ?',
       `account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})`,
@@ -865,11 +931,11 @@ export class PositionReadModelRepository {
       params.push(normalizedBrokerKey);
     }
     if (normalizedSymbol) {
-      where.push('UPPER(COALESCE(symbol, \'\')) = ?');
+      where.push("UPPER(COALESCE(symbol, '')) = ?");
       params.push(normalizedSymbol);
     }
     if (normalizedSideKey === 'long' || normalizedSideKey === 'short') {
-      where.push('LOWER(COALESCE(side_key, \'\')) = ?');
+      where.push("LOWER(COALESCE(side_key, '')) = ?");
       params.push(normalizedSideKey);
     }
 
@@ -906,6 +972,7 @@ export class PositionReadModelRepository {
           brokerKey: String(row.brokerKey || '').trim() || undefined,
         })
       );
+      await this.enrichLivePositionsWithSuggestedTradeContext(userId, items);
       const aggregate = overviewRows[0] || {};
 
       return {
@@ -1077,8 +1144,7 @@ export class PositionReadModelRepository {
       byAccountId.set(accountId, {
         accountId,
         openPositions: Number(row.openPositions || 0),
-        observedAt:
-          observedAt && !Number.isNaN(observedAt.getTime()) ? observedAt : null,
+        observedAt: observedAt && !Number.isNaN(observedAt.getTime()) ? observedAt : null,
         hasSnapshotHistory: Number(row.totalRows || 0) > 0,
       });
     });
@@ -1210,13 +1276,18 @@ export class PositionReadModelRepository {
         safeClosedAt,
         userId,
         accountId,
-        String(brokerKey || '').trim().toLowerCase(),
+        String(brokerKey || '')
+          .trim()
+          .toLowerCase(),
         ...normalizedExternalIds,
       ]
     );
   }
 
-  private async getSnapshotCounts(userId: string, accountIds: string[]): Promise<Map<string, number>> {
+  private async getSnapshotCounts(
+    userId: string,
+    accountIds: string[]
+  ): Promise<Map<string, number>> {
     const rows = (await coreDataSource.query(
       `SELECT account_id AS accountId, COUNT(*) AS totalRows
          FROM scheduler_positions_snapshots
@@ -1233,7 +1304,10 @@ export class PositionReadModelRepository {
     );
   }
 
-  private async getReadModelCounts(userId: string, accountIds: string[]): Promise<Map<string, number>> {
+  private async getReadModelCounts(
+    userId: string,
+    accountIds: string[]
+  ): Promise<Map<string, number>> {
     try {
       const rows = (await coreDataSource.query(
         `SELECT account_id AS accountId, COUNT(*) AS totalRows
@@ -1257,6 +1331,525 @@ export class PositionReadModelRepository {
     }
   }
 
+  private async enrichGroupedLivePositionsWithSuggestedTradeContext(
+    userId: string,
+    grouped: Map<string, PositionRecord[]>
+  ): Promise<void> {
+    await this.enrichLivePositionsWithSuggestedTradeContext(
+      userId,
+      Array.from(grouped.values()).flat()
+    );
+  }
+
+  private async enrichLivePositionsWithSuggestedTradeContext(
+    userId: string,
+    records: PositionRecord[]
+  ): Promise<void> {
+    if (!records.length) {
+      return;
+    }
+
+    const exactRows = this.sortSuggestedTradeContextRows(
+      await this.listExactSuggestedTradeContextRows(userId, records)
+    );
+    const fallbackRows = await this.listFallbackSuggestedTradeContextRows(userId, records);
+    const exactByPosition = new Map<string, PositionSuggestedTradeContextRow>();
+    for (const row of exactRows) {
+      const key = this.buildPositionContextKey(row.brokerKey, row.accountId, row.positionId);
+      if (key && !exactByPosition.has(key)) {
+        exactByPosition.set(key, row);
+      }
+    }
+
+    const fallbackBySymbol = new Map<string, PositionSuggestedTradeContextRow[]>();
+    for (const row of fallbackRows) {
+      const key = this.buildSymbolContextKey(row.brokerKey, row.accountId, row.symbol);
+      if (!key) {
+        continue;
+      }
+      const bucket = fallbackBySymbol.get(key) || [];
+      bucket.push(row);
+      fallbackBySymbol.set(key, bucket);
+    }
+
+    for (const record of records) {
+      const exactKey = this.buildPositionContextKey(
+        record.brokerKey,
+        record.accountId,
+        record.externalId || record.external_id || record.id
+      );
+      const exact = exactKey ? exactByPosition.get(exactKey) : undefined;
+      const fallback = exact
+        ? undefined
+        : this.pickFallbackSuggestedTradeContext(record, fallbackBySymbol);
+      this.applySuggestedTradeContext(record, exact || fallback || null);
+    }
+  }
+
+  private async listExactSuggestedTradeContextRows(
+    userId: string,
+    records: PositionRecord[]
+  ): Promise<PositionSuggestedTradeContextRow[]> {
+    const positionIds = Array.from(
+      new Set(
+        records
+          .map((record) =>
+            String(record.externalId || record.external_id || record.id || '').trim()
+          )
+          .filter(Boolean)
+      )
+    );
+    if (!positionIds.length) {
+      return [];
+    }
+
+    try {
+      return (await coreDataSource.query(
+        `${this.suggestedTradeContextSelectSql('position_id')}
+          WHERE execution_row.user_id = ?
+            AND COALESCE(execution_row.position_id, '') IN (${positionIds.map(() => '?').join(', ')})
+          ORDER BY CASE
+              WHEN execution_row.filled_at IS NOT NULL THEN 0
+              WHEN LOWER(COALESCE(execution_row.execution_state, '')) IN (
+                'blocked',
+                'canceled',
+                'cancelled',
+                'failed',
+                'rejected',
+                'closed'
+              ) THEN 2
+              ELSE 1
+            END ASC,
+            COALESCE(
+              execution_row.filled_at,
+              execution_row.position_opened_at,
+              execution_row.linked_at,
+              execution_row.last_seen_at,
+              execution_row.updated_at,
+              suggested_trade.created_at
+            ) DESC`,
+        [userId, ...positionIds]
+      )) as PositionSuggestedTradeContextRow[];
+    } catch (error) {
+      if (
+        this.isMissingTableError(error, 'suggested_trade_executions') ||
+        this.isMissingTableError(error, 'suggested_trades')
+      ) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  private sortSuggestedTradeContextRows(
+    rows: PositionSuggestedTradeContextRow[]
+  ): PositionSuggestedTradeContextRow[] {
+    return rows
+      .map((row, index) => ({ row, index }))
+      .sort((left, right) => {
+        const rankDelta =
+          this.resolveSuggestedTradeContextPriority(left.row) -
+          this.resolveSuggestedTradeContextPriority(right.row);
+        if (rankDelta !== 0) {
+          return rankDelta;
+        }
+
+        const leftTime = this.toTimestamp(left.row.filledAt ?? left.row.submittedAt) ?? 0;
+        const rightTime = this.toTimestamp(right.row.filledAt ?? right.row.submittedAt) ?? 0;
+        if (leftTime !== rightTime) {
+          return rightTime - leftTime;
+        }
+
+        return left.index - right.index;
+      })
+      .map((item) => item.row);
+  }
+
+  private resolveSuggestedTradeContextPriority(row: PositionSuggestedTradeContextRow): number {
+    if (this.toTimestamp(row.filledAt) !== null) {
+      return 0;
+    }
+
+    const executionState = String(row.executionState || '')
+      .trim()
+      .toLowerCase();
+    if (
+      [
+        'blocked',
+        'canceled',
+        'cancelled',
+        'failed',
+        'rejected',
+        'closed',
+      ].includes(executionState)
+    ) {
+      return 2;
+    }
+
+    return 1;
+  }
+
+  private async listFallbackSuggestedTradeContextRows(
+    userId: string,
+    records: PositionRecord[]
+  ): Promise<PositionSuggestedTradeContextRow[]> {
+    const brokerKeys = Array.from(
+      new Set(
+        records
+          .map((record) =>
+            String(record.brokerKey || '')
+              .trim()
+              .toLowerCase()
+          )
+          .filter(Boolean)
+      )
+    );
+    const accountIds = Array.from(
+      new Set(records.map((record) => String(record.accountId || '').trim()).filter(Boolean))
+    );
+    const symbols = Array.from(
+      new Set(
+        records
+          .map((record) =>
+            String(record.symbol || '')
+              .trim()
+              .toUpperCase()
+          )
+          .filter(Boolean)
+      )
+    );
+    if (!brokerKeys.length || !accountIds.length || !symbols.length) {
+      return [];
+    }
+
+    const safeLimit = Math.max(50, records.length * 8);
+    try {
+      return (await coreDataSource.query(
+        `${this.suggestedTradeContextSelectSql('symbol_entry')}
+          WHERE execution_row.user_id = ?
+            AND LOWER(COALESCE(execution_row.execution_mode, '')) = 'live'
+            AND COALESCE(execution_row.order_id, '') <> ''
+            AND execution_row.filled_at IS NOT NULL
+            AND LOWER(COALESCE(execution_row.execution_state, '')) NOT IN (
+              'blocked',
+              'canceled',
+              'cancelled',
+              'failed',
+              'rejected',
+              'closed'
+            )
+            AND LOWER(COALESCE(execution_row.broker_key, '')) IN (${brokerKeys.map(() => '?').join(', ')})
+            AND COALESCE(execution_row.account_id, '') IN (${accountIds.map(() => '?').join(', ')})
+            AND UPPER(COALESCE(suggested_trade.symbol, '')) IN (${symbols.map(() => '?').join(', ')})
+          ORDER BY COALESCE(
+            execution_row.filled_at,
+            execution_row.position_opened_at,
+            execution_row.submitted_at,
+            execution_row.linked_at,
+            execution_row.last_seen_at,
+            suggested_trade.created_at
+          ) DESC
+          LIMIT ?`,
+        [userId, ...brokerKeys, ...accountIds, ...symbols, safeLimit]
+      )) as PositionSuggestedTradeContextRow[];
+    } catch (error) {
+      if (
+        this.isMissingTableError(error, 'suggested_trade_executions') ||
+        this.isMissingTableError(error, 'suggested_trades')
+      ) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  private suggestedTradeContextSelectSql(
+    traceMethod: PositionAutomationTradeContext['traceMethod']
+  ): string {
+    return `SELECT suggested_trade.id AS suggestedTradeId,
+                   suggested_trade.automation_id AS automationId,
+                   suggested_trade.automation_run_id AS automationRunId,
+                   suggested_trade.timeframe AS timeframe,
+                   suggested_trade.signal_time AS signalTime,
+                   suggested_trade.side AS side,
+                   suggested_trade.symbol AS symbol,
+                   suggested_trade.source_template_id AS sourceTemplateId,
+                   suggested_trade.source_backtest_id AS sourceBacktestId,
+                   execution_row.broker_key AS brokerKey,
+                   execution_row.account_id AS accountId,
+                   execution_row.position_id AS positionId,
+                   execution_row.order_id AS orderId,
+                   execution_row.order_type AS orderType,
+                   execution_row.trigger_type AS triggerType,
+                   execution_row.entry_price AS entryPrice,
+                   execution_row.filled_price AS filledPrice,
+                   execution_row.submitted_at AS submittedAt,
+                   execution_row.filled_at AS filledAt,
+                   execution_row.execution_state AS executionState,
+                   execution_row.position_status AS positionStatus,
+                   execution_row.protection_state AS protectionState,
+                   execution_row.protection_source AS protectionSource,
+                   execution_row.protection_attempts AS protectionAttempts,
+                   execution_row.protection_last_error AS protectionLastError,
+                   execution_row.protection_checked_at AS protectionCheckedAt,
+                   execution_row.protection_attached_at AS protectionAttachedAt,
+                   execution_row.stop_loss_price AS protectionStopLossPrice,
+                   execution_row.take_profit_price AS protectionTakeProfitPrice,
+                   NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.stopLossOrderId')), 'null'), '') AS protectionStopLossOrderId,
+                   NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.takeProfitOrderId')), 'null'), '') AS protectionTakeProfitOrderId,
+                   '${traceMethod}' AS traceMethod
+              FROM suggested_trade_executions execution_row
+              INNER JOIN suggested_trades suggested_trade
+                      ON suggested_trade.id = execution_row.suggested_trade_id`;
+  }
+
+  private pickFallbackSuggestedTradeContext(
+    record: PositionRecord,
+    fallbackBySymbol: Map<string, PositionSuggestedTradeContextRow[]>
+  ): PositionSuggestedTradeContextRow | null {
+    const key = this.buildSymbolContextKey(record.brokerKey, record.accountId, record.symbol);
+    if (!key) {
+      return null;
+    }
+
+    const candidates = fallbackBySymbol.get(key) || [];
+    if (!candidates.length) {
+      return null;
+    }
+
+    const positionSide = String(record.sideKey || record.side || '')
+      .trim()
+      .toLowerCase();
+    const positionEntry = this.toNumberValue(
+      record.entry_price ?? record.positionSummary?.entryPrice
+    );
+    const positionCreatedMs = this.toTimestamp(
+      record.created_at || record.positionSummary?.createdAt || record.first_seen_at
+    );
+    let best: PositionSuggestedTradeContextRow | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (const candidate of candidates) {
+      if (!this.tradeSideMatchesPosition(candidate.side, positionSide)) {
+        continue;
+      }
+
+      const candidateEntry = this.toNumberValue(candidate.filledPrice ?? candidate.entryPrice);
+      const priceDistance =
+        positionEntry !== null && candidateEntry !== null && positionEntry > 0
+          ? Math.abs(positionEntry - candidateEntry) / positionEntry
+          : 0.02;
+      if (priceDistance > 0.03) {
+        continue;
+      }
+
+      const filledMs = this.toTimestamp(candidate.filledAt);
+      const timeDistance =
+        positionCreatedMs !== null && filledMs !== null
+          ? Math.abs(positionCreatedMs - filledMs) / (60 * 60 * 1000)
+          : 0;
+      const score = priceDistance * 1000 + timeDistance;
+      if (score < bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+
+    return best;
+  }
+
+  private applySuggestedTradeContext(
+    record: PositionRecord,
+    row: PositionSuggestedTradeContextRow | null
+  ): void {
+    const context = row ? this.mapSuggestedTradeContext(row) : null;
+    const timeframe = context?.timeframe || 'unknown';
+    const traceMethod = context?.traceMethod || 'unmatched';
+
+    record.timeframe = timeframe;
+    record.trade_timeframe = timeframe;
+    record.tradeTimeframe = timeframe;
+    record.signal_time = context?.signalTime ?? null;
+    record.signalTime = context?.signalTime ?? null;
+    record.entry_order_type = context?.entryOrderType ?? null;
+    record.entryOrderType = context?.entryOrderType ?? null;
+    record.entry_trigger_type = context?.entryTriggerType ?? null;
+    record.entryTriggerType = context?.entryTriggerType ?? null;
+    record.entry_submitted_at = context?.entrySubmittedAt ?? null;
+    record.entrySubmittedAt = context?.entrySubmittedAt ?? null;
+    record.entry_filled_at = context?.entryFilledAt ?? null;
+    record.entryFilledAt = context?.entryFilledAt ?? null;
+    record.entry_order_id = context?.entryOrderId ?? null;
+    record.entryOrderId = context?.entryOrderId ?? null;
+    record.executionProtection = context?.protection ?? null;
+    record.suggested_trade_id = context?.suggestedTradeId ?? null;
+    record.suggestedTradeId = context?.suggestedTradeId ?? null;
+    record.automation_id = context?.automationId ?? null;
+    record.automationId = context?.automationId ?? null;
+    record.automation_run_id = context?.automationRunId ?? null;
+    record.automationRunId = context?.automationRunId ?? null;
+    record.trade_context_source = traceMethod;
+    record.tradeContextSource = traceMethod;
+    record.automationTrade = context;
+
+    if (record.positionSummary) {
+      record.positionSummary.timeframe = timeframe;
+      record.positionSummary.tradeTimeframe = timeframe;
+      record.positionSummary.signalTime = context?.signalTime ?? null;
+      record.positionSummary.entryOrderType = context?.entryOrderType ?? null;
+      record.positionSummary.entryTriggerType = context?.entryTriggerType ?? null;
+      record.positionSummary.entrySubmittedAt = context?.entrySubmittedAt ?? null;
+      record.positionSummary.entryFilledAt = context?.entryFilledAt ?? null;
+      record.positionSummary.entryOrderId = context?.entryOrderId ?? null;
+      record.positionSummary.executionProtection = context?.protection ?? null;
+      record.positionSummary.suggestedTradeId = context?.suggestedTradeId ?? null;
+      record.positionSummary.automationId = context?.automationId ?? null;
+      record.positionSummary.automationRunId = context?.automationRunId ?? null;
+    }
+  }
+
+  private mapSuggestedTradeContext(
+    row: PositionSuggestedTradeContextRow
+  ): PositionAutomationTradeContext | null {
+    const suggestedTradeId = String(row.suggestedTradeId || '').trim();
+    if (!suggestedTradeId) {
+      return null;
+    }
+
+    return {
+      suggestedTradeId,
+      automationId: String(row.automationId || '').trim() || null,
+      automationRunId: String(row.automationRunId || '').trim() || null,
+      timeframe: String(row.timeframe || '').trim() || 'unknown',
+      signalTime: this.toIsoString(row.signalTime),
+      side: String(row.side || '').trim() || null,
+      entryOrderId: String(row.orderId || '').trim() || null,
+      entryOrderType: String(row.orderType || '').trim() || null,
+      entryTriggerType: String(row.triggerType || '').trim() || null,
+      entrySubmittedAt: this.toIsoString(row.submittedAt),
+      entryFilledAt: this.toIsoString(row.filledAt),
+      entryPrice: this.toNumberValue(row.entryPrice),
+      filledPrice: this.toNumberValue(row.filledPrice),
+      executionState: String(row.executionState || '').trim() || null,
+      positionStatus: String(row.positionStatus || '').trim() || null,
+      protection: this.mapPositionProtectionContext(row),
+      sourceTemplateId: String(row.sourceTemplateId || '').trim() || null,
+      sourceBacktestId: String(row.sourceBacktestId || '').trim() || null,
+      traceMethod: row.traceMethod || 'symbol_entry',
+    };
+  }
+
+  private mapPositionProtectionContext(
+    row: PositionSuggestedTradeContextRow
+  ): PositionAutomationTradeContext['protection'] {
+    const state = String(row.protectionState || '').trim() || null;
+    const source = String(row.protectionSource || '').trim() || null;
+    const lastError = String(row.protectionLastError || '').trim() || null;
+    const stopLossOrderId = String(row.protectionStopLossOrderId || '').trim() || null;
+    const takeProfitOrderId = String(row.protectionTakeProfitOrderId || '').trim() || null;
+    const attempts = this.toNumberValue(row.protectionAttempts);
+    const stopLossPrice = this.toNumberValue(row.protectionStopLossPrice);
+    const takeProfitPrice = this.toNumberValue(row.protectionTakeProfitPrice);
+    const checkedAt = this.toIsoString(row.protectionCheckedAt);
+    const attachedAt = this.toIsoString(row.protectionAttachedAt);
+
+    if (
+      !state &&
+      !source &&
+      !lastError &&
+      !stopLossOrderId &&
+      !takeProfitOrderId &&
+      attempts === null &&
+      stopLossPrice === null &&
+      takeProfitPrice === null &&
+      !checkedAt &&
+      !attachedAt
+    ) {
+      return null;
+    }
+
+    return {
+      state,
+      source,
+      attempts,
+      lastError,
+      checkedAt,
+      attachedAt,
+      stopLossPrice,
+      takeProfitPrice,
+      stopLossOrderId,
+      takeProfitOrderId,
+    };
+  }
+
+  private buildPositionContextKey(
+    brokerKey: unknown,
+    accountId: unknown,
+    positionId: unknown
+  ): string | null {
+    const broker = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    const account = String(accountId || '').trim();
+    const position = String(positionId || '').trim();
+    if (!broker || !account || !position) {
+      return null;
+    }
+    return `${broker}::${account}::${position}`;
+  }
+
+  private buildSymbolContextKey(
+    brokerKey: unknown,
+    accountId: unknown,
+    symbol: unknown
+  ): string | null {
+    const broker = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    const account = String(accountId || '').trim();
+    const normalizedSymbol = String(symbol || '')
+      .trim()
+      .toUpperCase();
+    if (!broker || !account || !normalizedSymbol) {
+      return null;
+    }
+    return `${broker}::${account}::${normalizedSymbol}`;
+  }
+
+  private tradeSideMatchesPosition(tradeSide: unknown, positionSide: string): boolean {
+    const normalizedTradeSide = String(tradeSide || '')
+      .trim()
+      .toLowerCase();
+    if (!normalizedTradeSide || !positionSide) {
+      return true;
+    }
+    if (normalizedTradeSide === 'buy') {
+      return positionSide.includes('long') || positionSide.includes('buy');
+    }
+    if (normalizedTradeSide === 'sell') {
+      return positionSide.includes('short') || positionSide.includes('sell');
+    }
+    return true;
+  }
+
+  private toNumberValue(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  private toTimestamp(value: unknown): number | null {
+    const date = this.toDate(value);
+    return date ? date.getTime() : null;
+  }
+
+  private toIsoString(value: unknown): string | null {
+    const date = this.toDate(value);
+    return date ? date.toISOString() : null;
+  }
+
   private groupRowsByAccount(rows: PositionReadModelRow[]): Map<string, PositionRecord[]> {
     const grouped = new Map<string, PositionRecord[]>();
     rows.forEach((row) => {
@@ -1277,9 +1870,7 @@ export class PositionReadModelRepository {
   }
 
   private normalizeAccountIds(accountIds: string[]): string[] {
-    return Array.from(
-      new Set(accountIds.map((item) => String(item || '').trim()).filter(Boolean))
-    );
+    return Array.from(new Set(accountIds.map((item) => String(item || '').trim()).filter(Boolean)));
   }
 
   private toDate(value: unknown): Date | null {
@@ -1356,7 +1947,9 @@ export class PositionReadModelRepository {
         buildPositionReadModelUpsert({
           userId: String(row.userId || fallbackUserId),
           accountId: String(row.accountId || '').trim(),
-          brokerKey: String(row.brokerKey || '').trim().toLowerCase(),
+          brokerKey: String(row.brokerKey || '')
+            .trim()
+            .toLowerCase(),
           externalId: String(row.externalId || '').trim(),
           payload: row.payloadJson,
           payloadJson:
@@ -1395,7 +1988,8 @@ export class PositionReadModelRepository {
         if (!accountId) {
           return;
         }
-        const existing = coverageByAccountId.get(accountId) || this.createEmptyCoverageRow(accountId);
+        const existing =
+          coverageByAccountId.get(accountId) || this.createEmptyCoverageRow(accountId);
         const readModelRows = Number(row.readModelRows || 0);
         coverageByAccountId.set(accountId, {
           ...existing,

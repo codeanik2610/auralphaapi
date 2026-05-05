@@ -9,6 +9,7 @@ type JsonRecord = Record<string, unknown>;
 const resolvedHost = env.app.host === '0.0.0.0' ? '127.0.0.1' : env.app.host;
 const BASE_URL =
   process.env.SMOKE_BASE_URL || `http://${resolvedHost}:${env.app.port}${env.app.routePrefix}`;
+const API_KEY = String(process.env.APP_API_KEY || process.env.API_KEY || '').trim();
 const LOGIN_EMAIL =
   process.env.SMOKE_LOGIN_EMAIL || process.env.AUTH_SEED_EMAIL || 'admin@auralpha.com';
 const LOGIN_PASSWORD =
@@ -45,6 +46,38 @@ const MAX_ACTION_ALERTS = Math.max(
 const MAX_EXECUTION_ALERTS = Math.max(
   0,
   Number(process.env.SUGGESTED_TRADES_MAX_EXECUTION_ALERTS || MAX_OPEN_ALERTS)
+);
+const MAX_PROTECTION_FAILED_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_FAILED_TRADES || 0)
+);
+const MAX_PROTECTION_MANUAL_ACTION_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_MANUAL_ACTION_TRADES || 0)
+);
+const MAX_STALE_MANUAL_PROTECTION_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_STALE_MANUAL_PROTECTION_TRADES || 0)
+);
+const MAX_STALE_ATTACHING_PROTECTION_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_STALE_ATTACHING_PROTECTION_TRADES || 0)
+);
+const MAX_PROTECTION_ACTIONABLE_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_ACTIONABLE_TRADES || 0)
+);
+const MAX_PROTECTION_UNRESOLVED_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_UNRESOLVED_TRADES || 0)
+);
+const MAX_PROTECTION_RETRIABLE_FAILED_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_RETRIABLE_FAILED_TRADES || 0)
+);
+const MIN_PROTECTION_ATTACHMENT_RATE = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MIN_PROTECTION_ATTACHMENT_RATE || 0)
 );
 const MIN_QUEUE_TO_ORDER_CONVERSION_RATE = Math.max(
   0,
@@ -128,6 +161,14 @@ async function writeStepSummary(summary: {
     openAlerts: number;
     openActionAlerts: number;
     openExecutionAlerts: number;
+    protectionFailedTrades: number;
+    protectionManualActionTrades: number;
+    staleManualProtectionTrades: number;
+    staleAttachingProtectionTrades: number;
+    protectionActionableTrades: number;
+    protectionUnresolvedTrades: number;
+    protectionRetriableFailedTrades: number;
+    minProtectionAttachmentRate: number;
     minQueueToOrderConversionRate: number;
     maxOverviewLatencyMs: number;
     maxListLatencyMs: number;
@@ -147,6 +188,18 @@ async function writeStepSummary(summary: {
     openAlerts: number;
     openActionAlerts: number;
     openExecutionAlerts: number;
+    protectionTrackedTrades: number;
+    protectionAttachedTrades: number;
+    protectionFailedTrades: number;
+    protectionManualActionTrades: number;
+    protectionStaleManualActionTrades: number;
+    protectionManualRecoveryStaleAfterMs: number;
+    protectionStaleAttachingTrades: number;
+    protectionAttachingStaleAfterMs: number;
+    protectionActionableTrades: number;
+    protectionUnresolvedTrades: number;
+    protectionRetriableFailedTrades: number;
+    protectionAttachmentRate: number | null;
     overviewLatencyMs: number | null;
     listLatencyMs: number | null;
     summaryLatencyMs: number | null;
@@ -175,6 +228,14 @@ async function writeStepSummary(summary: {
     `- openAlerts <= ${summary.thresholds.openAlerts}`,
     `- openActionAlerts <= ${summary.thresholds.openActionAlerts}`,
     `- openExecutionAlerts <= ${summary.thresholds.openExecutionAlerts}`,
+    `- protectionFailedTrades <= ${summary.thresholds.protectionFailedTrades}`,
+    `- protectionManualActionTrades <= ${summary.thresholds.protectionManualActionTrades}`,
+    `- protectionStaleManualActionTrades <= ${summary.thresholds.staleManualProtectionTrades}`,
+    `- protectionStaleAttachingTrades <= ${summary.thresholds.staleAttachingProtectionTrades}`,
+    `- protectionActionableTrades <= ${summary.thresholds.protectionActionableTrades}`,
+    `- protectionUnresolvedTrades <= ${summary.thresholds.protectionUnresolvedTrades}`,
+    `- protectionRetriableFailedTrades <= ${summary.thresholds.protectionRetriableFailedTrades}`,
+    `- protectionAttachmentRate >= ${summary.thresholds.minProtectionAttachmentRate}`,
     `- queueToOrderConversionRate >= ${summary.thresholds.minQueueToOrderConversionRate}`,
     `- overviewLatencyMs <= ${summary.thresholds.maxOverviewLatencyMs}`,
     `- listLatencyMs <= ${summary.thresholds.maxListLatencyMs}`,
@@ -199,6 +260,22 @@ async function writeStepSummary(summary: {
     `- openAlerts: ${summary.finalHealth.openAlerts}`,
     `- openActionAlerts: ${summary.finalHealth.openActionAlerts}`,
     `- openExecutionAlerts: ${summary.finalHealth.openExecutionAlerts}`,
+    `- protectionTrackedTrades: ${summary.finalHealth.protectionTrackedTrades}`,
+    `- protectionAttachedTrades: ${summary.finalHealth.protectionAttachedTrades}`,
+    `- protectionFailedTrades: ${summary.finalHealth.protectionFailedTrades}`,
+    `- protectionManualActionTrades: ${summary.finalHealth.protectionManualActionTrades}`,
+    `- protectionStaleManualActionTrades: ${summary.finalHealth.protectionStaleManualActionTrades}`,
+    `- protectionManualRecoveryStaleAfterMs: ${summary.finalHealth.protectionManualRecoveryStaleAfterMs}`,
+    `- protectionStaleAttachingTrades: ${summary.finalHealth.protectionStaleAttachingTrades}`,
+    `- protectionAttachingStaleAfterMs: ${summary.finalHealth.protectionAttachingStaleAfterMs}`,
+    `- protectionActionableTrades: ${summary.finalHealth.protectionActionableTrades}`,
+    `- protectionUnresolvedTrades: ${summary.finalHealth.protectionUnresolvedTrades}`,
+    `- protectionRetriableFailedTrades: ${summary.finalHealth.protectionRetriableFailedTrades}`,
+    `- protectionAttachmentRate: ${
+      summary.finalHealth.protectionAttachmentRate === null
+        ? 'n/a'
+        : summary.finalHealth.protectionAttachmentRate
+    }`,
     `- overviewLatencyMs: ${summary.finalHealth.overviewLatencyMs ?? 'n/a'}`,
     `- listLatencyMs: ${summary.finalHealth.listLatencyMs ?? 'n/a'}`,
     `- summaryLatencyMs: ${summary.finalHealth.summaryLatencyMs ?? 'n/a'}`,
@@ -218,6 +295,8 @@ async function requestJson(
   const headers = new Headers(init.headers || {});
   if (accessToken) {
     headers.set('authorization', `Bearer ${accessToken}`);
+  } else if (API_KEY) {
+    headers.set('x-api-key', API_KEY);
   }
 
   const response = await fetch(`${BASE_URL}${path}`, {
@@ -241,20 +320,27 @@ async function requestJson(
   return payload;
 }
 
-async function login(): Promise<string> {
-  const response = await requestJson('/auth/login', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      email: LOGIN_EMAIL,
-      password: LOGIN_PASSWORD,
-    }),
-  });
-  const accessToken = readString(asRecord(response.data).accessToken);
-  assert.ok(accessToken, 'login should return an access token');
-  return accessToken;
+async function loginIfPossible(): Promise<string> {
+  try {
+    const response = await requestJson('/auth/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: LOGIN_EMAIL,
+        password: LOGIN_PASSWORD,
+      }),
+    });
+    const accessToken = readString(asRecord(response.data).accessToken);
+    assert.ok(accessToken, 'login should return an access token');
+    return accessToken;
+  } catch (error) {
+    if (API_KEY) {
+      return '';
+    }
+    throw error;
+  }
 }
 
 async function runLifecycleSmoke(): Promise<void> {
@@ -290,10 +376,7 @@ async function readSuggestedTradeHealth(accessToken: string): Promise<JsonRecord
   return asRecord(response.data);
 }
 
-function assertGateSnapshot(params: {
-  health: JsonRecord;
-  sampleLabel: string;
-}): void {
+function assertGateSnapshot(params: { health: JsonRecord; sampleLabel: string }): void {
   const { health, sampleLabel } = params;
   const status = readString(health.status).toLowerCase();
   const rolloutEnabled = Boolean(health.rolloutEnabled);
@@ -304,6 +387,13 @@ function assertGateSnapshot(params: {
   const openAlerts = readNumber(health.openAlerts);
   const openActionAlerts = readNumber(health.openActionAlerts);
   const openExecutionAlerts = readNumber(health.openExecutionAlerts);
+  const protectionFailedTrades = readNumber(health.protectionFailedTrades);
+  const protectionManualActionTrades = readNumber(health.protectionManualActionTrades);
+  const protectionStaleManualActionTrades = readNumber(health.protectionStaleManualActionTrades);
+  const protectionStaleAttachingTrades = readNumber(health.protectionStaleAttachingTrades);
+  const protectionActionableTrades = readNumber(health.protectionActionableTrades);
+  const protectionUnresolvedTrades = readNumber(health.protectionUnresolvedTrades);
+  const protectionRetriableFailedTrades = readNumber(health.protectionRetriableFailedTrades);
   const overviewLatencyMs =
     health.overviewLatencyMs === null || health.overviewLatencyMs === undefined
       ? null
@@ -324,6 +414,10 @@ function assertGateSnapshot(params: {
     health.queueToOrderConversionRate === null || health.queueToOrderConversionRate === undefined
       ? null
       : readNumber(health.queueToOrderConversionRate);
+  const protectionAttachmentRate =
+    health.protectionAttachmentRate === null || health.protectionAttachmentRate === undefined
+      ? null
+      : readNumber(health.protectionAttachmentRate);
 
   assert.notEqual(status, 'down', `${sampleLabel}: suggested trades health is down`);
   if (REQUIRE_ROLLOUT_ENABLED) {
@@ -357,6 +451,46 @@ function assertGateSnapshot(params: {
     openExecutionAlerts <= MAX_EXECUTION_ALERTS,
     `${sampleLabel}: open execution alerts ${openExecutionAlerts} exceeds ${MAX_EXECUTION_ALERTS}`
   );
+  assert.ok(
+    protectionFailedTrades <= MAX_PROTECTION_FAILED_TRADES,
+    `${sampleLabel}: protection failed trades ${protectionFailedTrades} exceeds ${MAX_PROTECTION_FAILED_TRADES}`
+  );
+  assert.ok(
+    protectionManualActionTrades <= MAX_PROTECTION_MANUAL_ACTION_TRADES,
+    `${sampleLabel}: protection manual-action trades ${protectionManualActionTrades} exceeds ${MAX_PROTECTION_MANUAL_ACTION_TRADES}`
+  );
+  assert.ok(
+    protectionStaleManualActionTrades <= MAX_STALE_MANUAL_PROTECTION_TRADES,
+    `${sampleLabel}: stale manual protection trades ${protectionStaleManualActionTrades} exceeds ${MAX_STALE_MANUAL_PROTECTION_TRADES}`
+  );
+  assert.ok(
+    protectionStaleAttachingTrades <= MAX_STALE_ATTACHING_PROTECTION_TRADES,
+    `${sampleLabel}: stale attaching protection trades ${protectionStaleAttachingTrades} exceeds ${MAX_STALE_ATTACHING_PROTECTION_TRADES}`
+  );
+  assert.ok(
+    protectionActionableTrades <= MAX_PROTECTION_ACTIONABLE_TRADES,
+    `${sampleLabel}: protection actionable trades ${protectionActionableTrades} exceeds ${MAX_PROTECTION_ACTIONABLE_TRADES}`
+  );
+  assert.ok(
+    protectionUnresolvedTrades <= MAX_PROTECTION_UNRESOLVED_TRADES,
+    `${sampleLabel}: protection unresolved trades ${protectionUnresolvedTrades} exceeds ${MAX_PROTECTION_UNRESOLVED_TRADES}`
+  );
+  assert.ok(
+    protectionRetriableFailedTrades <= MAX_PROTECTION_RETRIABLE_FAILED_TRADES,
+    `${sampleLabel}: protection retriable failed trades ${protectionRetriableFailedTrades} exceeds ${MAX_PROTECTION_RETRIABLE_FAILED_TRADES}`
+  );
+  if (protectionAttachmentRate !== null) {
+    assert.ok(
+      protectionAttachmentRate >= MIN_PROTECTION_ATTACHMENT_RATE,
+      `${sampleLabel}: protection attachment rate ${protectionAttachmentRate} is below ${MIN_PROTECTION_ATTACHMENT_RATE}`
+    );
+  } else {
+    assert.equal(
+      MIN_PROTECTION_ATTACHMENT_RATE <= 0,
+      true,
+      `${sampleLabel}: protection attachment rate is unavailable`
+    );
+  }
   if (queueToOrderConversionRate !== null) {
     assert.ok(
       queueToOrderConversionRate >= MIN_QUEUE_TO_ORDER_CONVERSION_RATE,
@@ -396,10 +530,17 @@ function assertGateSnapshot(params: {
 }
 
 async function run(): Promise<void> {
-  const accessToken = await login();
-  const meResponse = await requestJson('/auth/me', {}, accessToken);
-  const me = asRecord(meResponse.data);
-  assert.equal(readString(me.email).toLowerCase(), LOGIN_EMAIL.toLowerCase());
+  const accessToken = await loginIfPossible();
+  assert.ok(
+    accessToken || API_KEY,
+    'Either admin login credentials or APP_API_KEY/API_KEY is required to run the suggested trades release gate'
+  );
+
+  if (accessToken) {
+    const meResponse = await requestJson('/auth/me', {}, accessToken);
+    const me = asRecord(meResponse.data);
+    assert.equal(readString(me.email).toLowerCase(), LOGIN_EMAIL.toLowerCase());
+  }
 
   if (RUN_LIFECYCLE_SMOKE) {
     await runLifecycleSmoke();
@@ -451,6 +592,14 @@ async function run(): Promise<void> {
       openAlerts: MAX_OPEN_ALERTS,
       openActionAlerts: MAX_ACTION_ALERTS,
       openExecutionAlerts: MAX_EXECUTION_ALERTS,
+      protectionFailedTrades: MAX_PROTECTION_FAILED_TRADES,
+      protectionManualActionTrades: MAX_PROTECTION_MANUAL_ACTION_TRADES,
+      staleManualProtectionTrades: MAX_STALE_MANUAL_PROTECTION_TRADES,
+      staleAttachingProtectionTrades: MAX_STALE_ATTACHING_PROTECTION_TRADES,
+      protectionActionableTrades: MAX_PROTECTION_ACTIONABLE_TRADES,
+      protectionUnresolvedTrades: MAX_PROTECTION_UNRESOLVED_TRADES,
+      protectionRetriableFailedTrades: MAX_PROTECTION_RETRIABLE_FAILED_TRADES,
+      minProtectionAttachmentRate: MIN_PROTECTION_ATTACHMENT_RATE,
       minQueueToOrderConversionRate: MIN_QUEUE_TO_ORDER_CONVERSION_RATE,
       maxOverviewLatencyMs: MAX_OVERVIEW_LATENCY_MS,
       maxListLatencyMs: MAX_LIST_LATENCY_MS,
@@ -470,6 +619,24 @@ async function run(): Promise<void> {
       openAlerts: readNumber(lastHealth.openAlerts),
       openActionAlerts: readNumber(lastHealth.openActionAlerts),
       openExecutionAlerts: readNumber(lastHealth.openExecutionAlerts),
+      protectionTrackedTrades: readNumber(lastHealth.protectionTrackedTrades),
+      protectionAttachedTrades: readNumber(lastHealth.protectionAttachedTrades),
+      protectionFailedTrades: readNumber(lastHealth.protectionFailedTrades),
+      protectionManualActionTrades: readNumber(lastHealth.protectionManualActionTrades),
+      protectionStaleManualActionTrades: readNumber(lastHealth.protectionStaleManualActionTrades),
+      protectionManualRecoveryStaleAfterMs: readNumber(
+        lastHealth.protectionManualRecoveryStaleAfterMs
+      ),
+      protectionStaleAttachingTrades: readNumber(lastHealth.protectionStaleAttachingTrades),
+      protectionAttachingStaleAfterMs: readNumber(lastHealth.protectionAttachingStaleAfterMs),
+      protectionActionableTrades: readNumber(lastHealth.protectionActionableTrades),
+      protectionUnresolvedTrades: readNumber(lastHealth.protectionUnresolvedTrades),
+      protectionRetriableFailedTrades: readNumber(lastHealth.protectionRetriableFailedTrades),
+      protectionAttachmentRate:
+        lastHealth.protectionAttachmentRate === null ||
+        lastHealth.protectionAttachmentRate === undefined
+          ? null
+          : readNumber(lastHealth.protectionAttachmentRate),
       overviewLatencyMs:
         lastHealth.overviewLatencyMs === null || lastHealth.overviewLatencyMs === undefined
           ? null

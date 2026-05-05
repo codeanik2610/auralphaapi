@@ -376,10 +376,9 @@ export class AutomationsService {
     skipped: number;
     failed: number;
   }> {
+    const startupRecoveryStartedAt = new Date();
     const staleRuns = await this.automationRunRepository.findStaleRuns({
-      olderThan: new Date(
-        Date.now() - AutomationsService.TRADE_SUGGESTION_RUN_STALE_MINUTES * 60 * 1000
-      ),
+      olderThan: startupRecoveryStartedAt,
       statuses: ['Queued', 'Running'],
       limit: AutomationsService.STARTUP_RECOVERY_BATCH_SIZE,
     });
@@ -442,18 +441,25 @@ export class AutomationsService {
           refreshedBacktestId,
           refreshedBacktestStatus
         );
+        const interruptedByRestart = this.isStartupInterruptedRun(
+          run,
+          startupRecoveryStartedAt,
+          refreshedBacktestId
+        );
 
-        if (!recovery?.isStaleCandidate) {
+        if (!recovery?.isStaleCandidate && !interruptedByRestart) {
           summary.skipped += 1;
           continue;
         }
 
-        const reason = `Startup recovery cleared stale automation run after API restart/deploy on ${repairedAtIso}`;
+        const reason = interruptedByRestart
+          ? `Startup recovery cleared interrupted automation run after API restart/deploy on ${repairedAtIso}`
+          : `Startup recovery cleared stale automation run after API restart/deploy on ${repairedAtIso}`;
         await this.clearStaleAutomationRun(automation, run, {
           actorUserId: repairActorUserId,
           backtestId: refreshedBacktestId,
           reason,
-          mode: 'startup-recovery',
+          mode: interruptedByRestart ? 'startup-interrupted-run' : 'startup-recovery',
         });
 
         await this.operationalEventService.logActivity(automation.userId, {
@@ -2026,6 +2032,29 @@ export class AutomationsService {
       .trim()
       .toLowerCase();
     return normalized === 'queued' || normalized === 'running';
+  }
+
+  private isStartupInterruptedRun(
+    run: AutomationRun,
+    startupRecoveryStartedAt: Date,
+    backtestId: string | null
+  ): boolean {
+    if (backtestId || !this.isAutomationRunActive(run.status)) {
+      return false;
+    }
+
+    const normalizedStatus = String(run.status || '')
+      .trim()
+      .toLowerCase();
+    if (normalizedStatus !== 'running') {
+      return false;
+    }
+
+    const referenceTime = run.lastProgressAt instanceof Date ? run.lastProgressAt : run.startedAt;
+    return (
+      referenceTime instanceof Date &&
+      referenceTime.getTime() < startupRecoveryStartedAt.getTime()
+    );
   }
 
   private readRunChildBacktestId(meta: Record<string, unknown>): string | null {

@@ -1,15 +1,13 @@
 import type { AutomationType, LegacyAutomationType } from '../contracts/Automation';
 import { normalizeTradeSuggestionFreshnessPolicy } from './signalFreshness';
+import { normalizeTradeSuggestionLimitOrderExpiryPolicy } from './tradeSuggestionOrderExpiry';
 
 const LEGACY_AUTOMATION_TYPE_MAP: Record<LegacyAutomationType, AutomationType> = {
   strategy: 'trade-suggestion',
   'strategy-library': 'backtest-runner',
 };
 
-export const CANONICAL_AUTOMATION_TYPES: AutomationType[] = [
-  'trade-suggestion',
-  'backtest-runner',
-];
+export const CANONICAL_AUTOMATION_TYPES: AutomationType[] = ['trade-suggestion', 'backtest-runner'];
 
 export const ACCEPTED_AUTOMATION_TYPE_INPUTS = [
   ...CANONICAL_AUTOMATION_TYPES,
@@ -165,28 +163,17 @@ export const TRADE_SUGGESTION_EXECUTION_MODES = [
   'paper_trade_auto',
   'live_trade_auto',
 ] as const;
-export const TRADE_SUGGESTION_APPROVAL_MODES = [
-  'manual_review',
-  'auto_if_safe',
-] as const;
-export const TRADE_SUGGESTION_ROUTE_MODES = [
-  'strategy_default',
-  'user_default',
-  'fixed',
-] as const;
+export const TRADE_SUGGESTION_APPROVAL_MODES = ['manual_review', 'auto_if_safe'] as const;
+export const TRADE_SUGGESTION_ROUTE_MODES = ['strategy_default', 'user_default', 'fixed'] as const;
 export const TRADE_SUGGESTION_ORDER_TYPES = ['market', 'limit'] as const;
-export const TRADE_SUGGESTION_QUANTITY_MODES = [
-  'quantity',
-  'notional',
-  'risk_percent',
-] as const;
+export const TRADE_SUGGESTION_QUANTITY_MODES = ['quantity', 'notional', 'risk_percent'] as const;
 export const TRADE_SUGGESTION_TIME_IN_FORCE = ['GTC', 'IOC', 'FOK'] as const;
 
 export const TRADE_SUGGESTION_EXECUTION_LIMIT_RULES = {
   maxOrdersPerRun: {
     fallback: 1,
     min: 1,
-    max: 100,
+    max: 1000,
     integer: true,
   },
   maxOrdersPerDay: {
@@ -253,6 +240,11 @@ export const normalizeTradeSuggestionExecutionPolicy = (
   const orderTemplate = parseRecord(root.orderTemplate) ?? {};
   const liveConsent = parseRecord(root.liveConsent) ?? {};
   const freshness = parseRecord(root.freshness) ?? parseRecord(root.signalFreshness) ?? {};
+  const limitOrderExpiry =
+    parseRecord(root.limitOrderExpiry) ??
+    parseRecord(root.orderExpiry) ??
+    parseRecord(root.limitOrderTtl) ??
+    {};
 
   const executionMode = normalizeEnum(
     readString(root.executionMode, root.mode),
@@ -287,20 +279,18 @@ export const normalizeTradeSuggestionExecutionPolicy = (
   const liveAutoLeverage =
     executionMode === 'live_trade_auto' && (!leverage || leverage <= 0) ? 1 : leverage;
   const liveConsentEnabled =
-    executionMode === 'live_trade_auto'
-      ? (readBoolean(liveConsent.enabled) ?? false)
-      : false;
+    executionMode === 'live_trade_auto' ? (readBoolean(liveConsent.enabled) ?? false) : false;
 
   return {
     executionMode,
     approvalMode,
     preTrade: {
       required: true,
-      maxSnapshotAgeSeconds: normalizeNumeric(
-        readNumber(preTrade.maxSnapshotAgeSeconds),
-        900,
-        { min: 60, max: 86400, integer: true }
-      ),
+      maxSnapshotAgeSeconds: normalizeNumeric(readNumber(preTrade.maxSnapshotAgeSeconds), 900, {
+        min: 60,
+        max: 86400,
+        integer: true,
+      }),
       blockOnCritical: readBoolean(preTrade.blockOnCritical) ?? true,
       blockOnWarning: readBoolean(preTrade.blockOnWarning) ?? false,
       blockOnCoverageGap: readBoolean(preTrade.blockOnCoverageGap) ?? true,
@@ -311,6 +301,7 @@ export const normalizeTradeSuggestionExecutionPolicy = (
       blockOnDuplicateSignal: readBoolean(preTrade.blockOnDuplicateSignal) ?? true,
     },
     freshness: normalizeTradeSuggestionFreshnessPolicy(freshness),
+    limitOrderExpiry: normalizeTradeSuggestionLimitOrderExpiryPolicy(limitOrderExpiry),
     routing: {
       routeMode,
       brokerKey: readString(routing.brokerKey, root.brokerKey),
@@ -391,13 +382,7 @@ export const inferAutomationTypeFromConfig = (value: unknown): AutomationType | 
     return explicitType;
   }
 
-  const runnerSources = [
-    root,
-    backtestRunner,
-    nestedConfig,
-    inputSnapshot,
-    runnerBody,
-  ];
+  const runnerSources = [root, backtestRunner, nestedConfig, inputSnapshot, runnerBody];
   const libraryId = readLibraryId(...runnerSources);
   const runnerSource = readString(
     ...runnerSources.flatMap((record) => [record?.source, record?.sourceType])
@@ -411,13 +396,7 @@ export const inferAutomationTypeFromConfig = (value: unknown): AutomationType | 
     return 'backtest-runner';
   }
 
-  const suggestionSources = [
-    root,
-    tradeSuggestion,
-    nestedConfig,
-    inputSnapshot,
-    tradeExecution,
-  ];
+  const suggestionSources = [root, tradeSuggestion, nestedConfig, inputSnapshot, tradeExecution];
   const tradeSource = readString(
     ...suggestionSources.flatMap((record) => [record?.source, record?.sourceType])
   );
@@ -444,10 +423,7 @@ export const inferAutomationTypeFromConfig = (value: unknown): AutomationType | 
   return null;
 };
 
-export const normalizeAutomationType = (
-  value: unknown,
-  config?: unknown
-): AutomationType => {
+export const normalizeAutomationType = (value: unknown, config?: unknown): AutomationType => {
   const explicit = normalizeExplicitAutomationType(
     typeof value === 'string' ? value : readString(value)
   );
@@ -467,10 +443,7 @@ export const normalizeAutomationConfig = (
 
   if (type === 'backtest-runner') {
     const runner = parseRecord(root.backtestRunner) ?? {};
-    const runBody =
-      parseRecord(runner.runBody) ??
-      parseRecord(root.config) ??
-      null;
+    const runBody = parseRecord(runner.runBody) ?? parseRecord(root.config) ?? null;
     const libraryId =
       readString(
         runner.libraryId,
@@ -486,21 +459,13 @@ export const normalizeAutomationConfig = (
         root.source,
         root.sourceType,
         libraryId ? 'strategy-library' : null
-      ) ??
-      (libraryId ? 'strategy-library' : 'manual');
+      ) ?? (libraryId ? 'strategy-library' : 'manual');
 
     // Extract template IDs (backtest-runner typically doesn't use templates, but handle for consistency)
-    const sourceTemplateId = readString(
-      root.sourceTemplateId,
-      runBody?.sourceTemplateId,
-      runner.sourceTemplateId
-    ) ?? null;
+    const sourceTemplateId =
+      readString(root.sourceTemplateId, runBody?.sourceTemplateId, runner.sourceTemplateId) ?? null;
 
-    const templateId = readString(
-      root.templateId,
-      runBody?.templateId,
-      runner.templateId
-    ) ?? null;
+    const templateId = readString(root.templateId, runBody?.templateId, runner.templateId) ?? null;
 
     return {
       ...root,
@@ -522,30 +487,19 @@ export const normalizeAutomationConfig = (
   }
 
   const suggestion = parseRecord(root.tradeSuggestion) ?? {};
-  const rawConfig =
-    parseRecord(root.config) ??
-    parseRecord(suggestion.config) ??
-    null;
-  const rawExecution =
-    parseRecord(suggestion.execution) ??
-    rawConfig ??
-    null;
+  const rawConfig = parseRecord(root.config) ?? parseRecord(suggestion.config) ?? null;
+  const rawExecution = parseRecord(suggestion.execution) ?? rawConfig ?? null;
   const nestedConfig = readNestedRecord(rawExecution, 'config');
   const executionInputSnapshot =
     parseRecord(rawExecution?.inputSnapshot) ??
     readNestedRecord(rawExecution, 'config', 'inputSnapshot');
   const execution = normalizeTradeSuggestionExecutionPolicy(rawExecution);
   const setupScope = parseRecord(suggestion.setupScope) ?? parseRecord(root.setupScope) ?? null;
-  const source =
-    readString(suggestion.source, root.source, root.sourceType) ?? 'manual';
+  const source = readString(suggestion.source, root.source, root.sourceType) ?? 'manual';
   const backtestId = readString(suggestion.backtestId, root.backtestId) ?? null;
   const strategy = readString(suggestion.strategy, root.strategy) ?? null;
   const symbol = readString(suggestion.symbol, root.symbol, setupScope?.symbol) ?? null;
-  const timeframe = readString(
-    suggestion.timeframe,
-    root.timeframe,
-    setupScope?.timeframe
-  ) ?? null;
+  const timeframe = readString(suggestion.timeframe, root.timeframe, setupScope?.timeframe) ?? null;
   const market = readString(suggestion.market, root.market, rawExecution?.market) ?? null;
 
   // Extract template IDs with clear precedence:
@@ -554,24 +508,26 @@ export const normalizeAutomationConfig = (
     parseRecord(rawExecution?.template) ??
     parseRecord(nestedConfig?.template) ??
     parseRecord(executionInputSnapshot?.template);
-  const sourceTemplateId = readString(
-    root.sourceTemplateId,              // 1. Explicit top-level (highest priority)
-    rawExecution?.sourceTemplateId,      // 2. Nested in execution/config
-    nestedConfig?.sourceTemplateId,      // 3. Double-nested legacy execution config
-    suggestion.sourceTemplateId,         // 3. Nested in tradeSuggestion
-    executionInputSnapshot?.sourceTemplateId,
-    executionTemplate?.id                // 4. Nested template object
-  ) ?? null;
+  const sourceTemplateId =
+    readString(
+      root.sourceTemplateId, // 1. Explicit top-level (highest priority)
+      rawExecution?.sourceTemplateId, // 2. Nested in execution/config
+      nestedConfig?.sourceTemplateId, // 3. Double-nested legacy execution config
+      suggestion.sourceTemplateId, // 3. Nested in tradeSuggestion
+      executionInputSnapshot?.sourceTemplateId,
+      executionTemplate?.id // 4. Nested template object
+    ) ?? null;
 
-  const templateId = readString(
-    root.templateId,                     // 1. Explicit top-level (highest priority)
-    rawExecution?.templateId,            // 2. Nested in execution/config
-    nestedConfig?.templateId,            // 3. Double-nested legacy execution config
-    suggestion.templateId,               // 3. Nested in tradeSuggestion
-    executionInputSnapshot?.templateId,
-    executionTemplate?.id,               // 4. Nested template object
-    executionTemplate?.templateId        // 5. Template object's templateId field
-  ) ?? null;
+  const templateId =
+    readString(
+      root.templateId, // 1. Explicit top-level (highest priority)
+      rawExecution?.templateId, // 2. Nested in execution/config
+      nestedConfig?.templateId, // 3. Double-nested legacy execution config
+      suggestion.templateId, // 3. Nested in tradeSuggestion
+      executionInputSnapshot?.templateId,
+      executionTemplate?.id, // 4. Nested template object
+      executionTemplate?.templateId // 5. Template object's templateId field
+    ) ?? null;
 
   return {
     ...root,

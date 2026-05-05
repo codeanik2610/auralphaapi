@@ -175,7 +175,25 @@ export class InternalPositionsSyncService {
   }
 
   private readObservedPositionLeverageValue(item: Record<string, unknown>): number | null {
+    const leverageSource = String(item.leverage_source ?? '').trim().toLowerCase();
+    if (leverageSource === 'derived_position_margin') {
+      return null;
+    }
     for (const candidate of [item.observed_position_leverage, item.leverage, item.position_leverage]) {
+      const numeric = this.toPositiveFiniteNumber(candidate);
+      if (numeric !== null) {
+        return numeric;
+      }
+    }
+    return null;
+  }
+
+  private readDerivedPositionLeverageValue(item: Record<string, unknown>): number | null {
+    const leverageSource = String(item.leverage_source ?? '').trim().toLowerCase();
+    if (leverageSource !== 'derived_position_margin' && item.derived_position_leverage === undefined) {
+      return null;
+    }
+    for (const candidate of [item.derived_position_leverage, item.leverage, item.position_leverage]) {
       const numeric = this.toPositiveFiniteNumber(candidate);
       if (numeric !== null) {
         return numeric;
@@ -329,10 +347,11 @@ export class InternalPositionsSyncService {
       const assetId = this.resolvePositionAssetId(item);
       const leverageContext = assetId ? leverageByAssetId.get(assetId) : null;
       const observedLeverage = this.readObservedPositionLeverageValue(item);
+      const derivedPositionLeverage = this.readDerivedPositionLeverageValue(item);
       const requestedLeverage = leverageContext?.requestedLeverage ?? null;
       const confirmedOrderLeverage = leverageContext?.confirmedOrderLeverage ?? null;
       const resolvedLeverage =
-        observedLeverage ?? confirmedOrderLeverage ?? requestedLeverage ?? null;
+        observedLeverage ?? derivedPositionLeverage ?? confirmedOrderLeverage ?? requestedLeverage ?? null;
 
       if (requestedLeverage !== null) {
         item.requested_leverage = String(requestedLeverage);
@@ -343,6 +362,9 @@ export class InternalPositionsSyncService {
       if (observedLeverage !== null) {
         item.observed_position_leverage = String(observedLeverage);
       }
+      if (derivedPositionLeverage !== null) {
+        item.derived_position_leverage = String(derivedPositionLeverage);
+      }
 
       if (resolvedLeverage === null) {
         continue;
@@ -352,9 +374,11 @@ export class InternalPositionsSyncService {
       item.leverage_source =
         observedLeverage !== null
           ? 'broker_position'
-          : confirmedOrderLeverage !== null
-            ? 'confirmed_order_submission'
-            : 'requested_order_submission';
+          : derivedPositionLeverage !== null
+            ? 'derived_position_margin'
+            : confirmedOrderLeverage !== null
+              ? 'confirmed_order_submission'
+              : 'requested_order_submission';
     }
   }
 

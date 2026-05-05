@@ -10,6 +10,7 @@ import { ActivityMaintenanceService } from './src/api/services/ActivityMaintenan
 import { BrokerCanaryProtectionMonitorService } from './src/api/services/BrokerCanaryProtectionMonitorService';
 import { PaperOrdersSchedulerService } from './src/api/services/PaperOrdersSchedulerService';
 import { SuggestedTradeExecutionSyncService } from './src/api/services/SuggestedTradeExecutionSyncService';
+import { SuggestedTradesProtectionGuardrailService } from './src/api/services/SuggestedTradesProtectionGuardrailService';
 import { env } from './src/env';
 import { banner } from './src/lib/banner';
 import { activityExportProcessorLoader } from './src/loaders/ActivityExportProcessorLoader';
@@ -22,6 +23,7 @@ import { iocLoader } from './src/loaders/IocLoader';
 import { paperOrdersExecutionLoader } from './src/loaders/PaperOrdersExecutionLoader';
 import { redisBootstrapLoader } from './src/loaders/RedisBootstrapLoader';
 import { suggestedTradeExecutionSyncLoader } from './src/loaders/SuggestedTradeExecutionSyncLoader';
+import { suggestedTradesProtectionGuardrailLoader } from './src/loaders/SuggestedTradesProtectionGuardrailLoader';
 import { typeormLoader } from './src/loaders/TypeormLoader';
 import { winstonLoader } from './src/loaders/WinstonLoader';
 
@@ -76,6 +78,7 @@ const stopBackgroundServices = async (): Promise<void> => {
   await Container.get(ActivityMaintenanceService).stop();
   await Container.get(BrokerCanaryProtectionMonitorService).stop();
   await Container.get(SuggestedTradeExecutionSyncService).stop();
+  await Container.get(SuggestedTradesProtectionGuardrailService).stop();
   await Container.get(PaperOrdersSchedulerService).stop();
 };
 
@@ -92,6 +95,7 @@ bootstrapMicroframework({
     activityMaintenanceLoader,
     brokerCanaryProtectionMonitorLoader,
     suggestedTradeExecutionSyncLoader,
+    suggestedTradesProtectionGuardrailLoader,
     paperOrdersExecutionLoader,
     expressLoader,
   ],

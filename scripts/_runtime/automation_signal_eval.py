@@ -176,6 +176,11 @@ async def _evaluate() -> dict[str, Any]:
     spec = parser._parse_template(template)
     if spec is None:
         raise ValueError("Template is missing an executable entry/exit contract")
+    python_executor = (
+        PythonStrategyExecutor.from_code(spec.code_definition)
+        if spec.code_target == "python" and spec.code_definition
+        else None
+    )
 
     db_url = str(payload.get("dbUrl") or "").strip()
     if not db_url:
@@ -275,9 +280,8 @@ async def _evaluate() -> dict[str, Any]:
 
             entry_trade_plans = None
             entry_short_trade_plans = None
-            if spec.code_target == "python" and spec.code_definition:
-                executor = PythonStrategyExecutor.from_code(spec.code_definition)
-                bundle = executor.build_signal_bundle(df)
+            if python_executor is not None:
+                bundle = python_executor.build_signal_bundle(df)
                 entry = bundle.entry_long
                 exit_ = bundle.exit_long
                 entry_short = bundle.entry_short
@@ -325,7 +329,6 @@ async def _evaluate() -> dict[str, Any]:
                     candidate_row["timestamp"], utc=True
                 ).isoformat()
                 candidate_fallback_entry_price = float(candidate_row["close"])
-
                 long_entry = _bool_at(entry, candidate_index)
                 long_entry_previous = _bool_at(entry, previous_bar_index)
                 long_exit = _bool_at(exit_, candidate_index)

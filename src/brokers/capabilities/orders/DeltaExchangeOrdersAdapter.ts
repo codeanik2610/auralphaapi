@@ -85,6 +85,34 @@ interface DeltaPositionPayload {
   size?: string | number | null;
 }
 
+export interface DeltaLiveAutoProductRulePreflightBody {
+  symbol?: string | null;
+  quantity: number;
+  entryPrice: number;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+  side: 'long' | 'short';
+}
+
+export interface DeltaLiveAutoProductRulePreflightResult {
+  productId: number;
+  productSymbol: string;
+  quantityContracts: number;
+  requestedBaseQuantity: number;
+  executableBaseQuantity: number;
+  contractValue: number;
+  contractUnitCurrency: string | null;
+  auditNote: string;
+}
+
+interface DeltaLiveAutoContractSizing {
+  quantityContracts: number;
+  requestedBaseQuantity: number;
+  executableBaseQuantity: number;
+  contractValue: number;
+  contractUnitCurrency: string | null;
+}
+
 @Service()
 export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
   @Inject(() => DeltaExchangeHttpClient)
@@ -136,7 +164,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     const resolvedProduct = await this.resolveProductForOrder(requestedProductId, body);
     const productId = resolvedProduct.productId;
     const product = resolvedProduct.product;
-    const size = this.resolveOrderSize(body.quantity, product, body);
+    const size = this.resolveOrderSize(body.quantity, product, body, productId);
     const side = this.resolveOrderSide(body);
     const orderType = this.resolveOrderType(body.order_type);
     const timeInForce = this.resolveTimeInForce(body.trigger_type, orderType);
@@ -146,11 +174,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       await this.assertLiveAutoProtectionCanBeAttached(productId, product, body, context);
     }
     const clientOrderId = this.buildClientOrderId(body.idempotency_key);
-    const confirmedLeverage = await this.ensureOrderLeverageConfigured(
-      productId,
-      body,
-      context
-    );
+    const confirmedLeverage = await this.ensureOrderLeverageConfigured(productId, body, context);
     const requestPayload: Record<string, unknown> = {
       product_id: productId,
       size,
@@ -248,6 +272,100 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     };
   }
 
+  async createLiveAutoProtectiveOrdersForPosition(
+    assetId: string,
+    body: {
+      size: number;
+      entrySide: 'buy' | 'sell';
+      stopLossPrice: number;
+      takeProfitPrice: number;
+      idempotencyKey?: string;
+    },
+    context?: BrokerOrderContext
+  ): Promise<unknown> {
+    const productId = await this.resolveProductId(assetId);
+    const product = await this.getProductById(productId);
+    this.assertLiveAutoProduct(product, productId);
+    const size = Math.abs(this.toNumber(body.size));
+    if (!(size > 0)) {
+      throw new BadRequestAppError('Delta Exchange protection remediation requires position size');
+    }
+    if (!Number.isInteger(size)) {
+      throw new BadRequestAppError(
+        'Delta Exchange protection remediation requires a whole-number contract size'
+      );
+    }
+    const stopLossPrice = this.toNumber(body.stopLossPrice);
+    const takeProfitPrice = this.toNumber(body.takeProfitPrice);
+    if (!(stopLossPrice > 0 && takeProfitPrice > 0)) {
+      throw new BadRequestAppError(
+        'Delta Exchange protection remediation requires stop-loss and take-profit prices'
+      );
+    }
+
+    const protectiveOrders = await this.createLiveAutoProtectiveOrders(
+      productId,
+      size,
+      body.entrySide,
+      {
+        stopLossPrice,
+        takeProfitPrice,
+        referenceEntryPrice: 0,
+        rebased: false,
+      },
+      body.idempotencyKey,
+      context
+    );
+
+    return {
+      protection_status: protectiveOrders.length ? 'attached' : 'not_requested',
+      protective_orders: protectiveOrders,
+      stop_loss_order_id:
+        protectiveOrders.find((order) => order.kind === 'stop_loss')?.order_id ?? null,
+      take_profit_order_id:
+        protectiveOrders.find((order) => order.kind === 'take_profit')?.order_id ?? null,
+    };
+  }
+
+  async preflightLiveAutoOrder(
+    assetId: string,
+    body: DeltaLiveAutoProductRulePreflightBody,
+    _context?: BrokerOrderContext
+  ): Promise<DeltaLiveAutoProductRulePreflightResult> {
+    const requestedProductId = await this.resolveProductId(assetId);
+    const resolvedProduct = await this.resolveLiveAutoProductForOrder(
+      requestedProductId,
+      body.symbol ?? undefined
+    );
+    const entrySide = body.side === 'short' ? 'sell' : 'buy';
+    this.assertLiveAutoProtectionDirection(
+      entrySide,
+      body.entryPrice,
+      body.stopLossPrice,
+      body.takeProfitPrice
+    );
+    const sizing = this.resolveLiveAutoContractSizing(
+      body.quantity,
+      resolvedProduct.product,
+      resolvedProduct.productId,
+      body.symbol ?? resolvedProduct.product?.symbol
+    );
+    const productSymbol =
+      String(resolvedProduct.product?.symbol || body.symbol || resolvedProduct.productId)
+        .trim()
+        .toUpperCase() || String(resolvedProduct.productId);
+    return {
+      productId: resolvedProduct.productId,
+      productSymbol,
+      ...sizing,
+      auditNote: this.buildLiveAutoProductRuleAuditNote(
+        productSymbol,
+        resolvedProduct.productId,
+        sizing
+      ),
+    };
+  }
+
   private shouldAttachLiveAutoProtection(body: ValidatedCreateOrderRouteBody): boolean {
     return (
       this.isLiveAutoSubmission(body) &&
@@ -299,9 +417,25 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     entrySide: 'buy' | 'sell',
     body: ValidatedCreateOrderRouteBody
   ): void {
-    const entryPrice = this.toNumber(body.order_price);
-    const stopLossPrice = this.toNumber(body.stoploss_price);
-    const takeProfitPrice = this.toNumber(body.takeprofit_price);
+    this.assertLiveAutoProtectionDirection(
+      entrySide,
+      body.order_price,
+      body.stoploss_price,
+      body.takeprofit_price
+    );
+  }
+
+  private assertLiveAutoProtectionDirection(
+    entrySide: 'buy' | 'sell',
+    entryPriceValue: unknown,
+    stopLossPriceValue: unknown,
+    takeProfitPriceValue: unknown
+  ): void {
+    const entryPrice = this.toNumber(entryPriceValue as string | number | null | undefined);
+    const stopLossPrice = this.toNumber(stopLossPriceValue as string | number | null | undefined);
+    const takeProfitPrice = this.toNumber(
+      takeProfitPriceValue as string | number | null | undefined
+    );
     if (!(entryPrice > 0 && stopLossPrice > 0 && takeProfitPrice > 0)) {
       throw new BadRequestAppError(
         'Delta Exchange live-auto requires native stop-loss and take-profit prices'
@@ -337,9 +471,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       'stop_loss',
       'stop_loss_order',
       plan.stopLossPrice,
-      this.buildClientOrderId(
-        idempotencyKey ? `${idempotencyKey}:stop_loss` : undefined
-      ),
+      this.buildClientOrderId(idempotencyKey ? `${idempotencyKey}:stop_loss` : undefined),
       context
     );
     const takeProfit = await this.createLiveAutoProtectiveOrder(
@@ -349,9 +481,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       'take_profit',
       'take_profit_order',
       plan.takeProfitPrice,
-      this.buildClientOrderId(
-        idempotencyKey ? `${idempotencyKey}:take_profit` : undefined
-      ),
+      this.buildClientOrderId(idempotencyKey ? `${idempotencyKey}:take_profit` : undefined),
       context
     );
 
@@ -423,7 +553,10 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       payload,
       context
     );
-    if (!(plannedEntryPrice > 0) || !(typeof actualEntryPrice === 'number' && actualEntryPrice > 0)) {
+    if (
+      !(plannedEntryPrice > 0) ||
+      !(typeof actualEntryPrice === 'number' && actualEntryPrice > 0)
+    ) {
       return fallback;
     }
     const resolvedEntryPrice = actualEntryPrice;
@@ -490,7 +623,9 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     orderType: 'market_order' | 'limit_order',
     state: string | null | undefined
   ): boolean {
-    const normalizedState = String(state || '').trim().toLowerCase();
+    const normalizedState = String(state || '')
+      .trim()
+      .toLowerCase();
     if (!['closed', 'filled', 'completed', 'executed'].includes(normalizedState)) {
       return false;
     }
@@ -553,34 +688,18 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
   private resolveOrderSize(
     quantity: unknown,
     product: DeltaProductPayload | null,
-    body: ValidatedCreateOrderRouteBody
+    body: ValidatedCreateOrderRouteBody,
+    productId: number
   ): number {
     const size = Number(quantity);
-    if (Number.isInteger(size) && size > 0) {
-      return size;
-    }
 
     if (this.isLiveAutoSubmission(body)) {
-      const contractValue = this.toNumber(product?.contract_value);
-      if (!(contractValue > 0)) {
-        throw new BadRequestAppError(
-          'Delta Exchange live-auto quantity conversion requires product contract_value'
-        );
-      }
-      const notionalType = String(product?.notional_type || '').trim().toLowerCase();
-      if (notionalType && notionalType !== 'vanilla') {
-        throw new BadRequestAppError(
-          'Delta Exchange live-auto quantity conversion requires a vanilla contract'
-        );
-      }
-      const contractSize = Math.floor(size / contractValue);
-      if (!(contractSize > 0)) {
-        throw new BadRequestAppError(
-          'Delta Exchange live-auto notional is smaller than one whole contract'
-        );
-      }
+      return this.resolveLiveAutoContractSizing(size, product, productId, body.symbol)
+        .quantityContracts;
+    }
 
-      return contractSize;
+    if (Number.isInteger(size) && size > 0) {
+      return size;
     }
 
     if (!(size > 0)) {
@@ -592,6 +711,85 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     throw new BadRequestAppError(
       'Delta Exchange order size must be a whole-number contract quantity'
     );
+  }
+
+  private resolveLiveAutoContractSizing(
+    quantity: unknown,
+    product: DeltaProductPayload | null,
+    productId: number,
+    symbol?: string | null
+  ): DeltaLiveAutoContractSizing {
+    const requestedBaseQuantity = this.toNumber(quantity as string | number | null | undefined);
+    const productLabel =
+      String(product?.symbol || symbol || productId)
+        .trim()
+        .toUpperCase() || String(productId);
+    if (!(requestedBaseQuantity > 0)) {
+      throw new BadRequestAppError(
+        `Delta Exchange live-auto requires a positive base quantity for ${productLabel}`
+      );
+    }
+
+    const contractValue = this.toNumber(product?.contract_value);
+    if (!(contractValue > 0)) {
+      throw new BadRequestAppError(
+        `Delta Exchange product ${productId} is missing contract_value for live-auto placement`
+      );
+    }
+
+    const notionalType = String(product?.notional_type || '')
+      .trim()
+      .toLowerCase();
+    if (notionalType && notionalType !== 'vanilla') {
+      throw new BadRequestAppError(
+        `Delta Exchange product ${productId} uses unsupported notional_type ${notionalType} for live-auto placement`
+      );
+    }
+
+    const rawContracts = requestedBaseQuantity / contractValue;
+    const nearestContracts = Math.round(rawContracts);
+    const quantityContracts =
+      Math.abs(rawContracts - nearestContracts) <= 1e-9
+        ? nearestContracts
+        : Math.floor(rawContracts);
+
+    if (!Number.isInteger(quantityContracts) || quantityContracts < 1) {
+      throw new BadRequestAppError(
+        `Delta Exchange live-auto base quantity ${this.formatNumber(requestedBaseQuantity)} is smaller than one whole ${productLabel} contract (contract_value ${this.formatNumber(contractValue)})`
+      );
+    }
+
+    return {
+      quantityContracts,
+      requestedBaseQuantity,
+      executableBaseQuantity: Number((quantityContracts * contractValue).toFixed(12)),
+      contractValue,
+      contractUnitCurrency:
+        String(product?.contract_unit_currency || '')
+          .trim()
+          .toUpperCase() || null,
+    };
+  }
+
+  private buildLiveAutoProductRuleAuditNote(
+    productSymbol: string,
+    productId: number,
+    sizing: DeltaLiveAutoContractSizing
+  ): string {
+    const unit = sizing.contractUnitCurrency ? ` ${sizing.contractUnitCurrency}` : '';
+    const baseQuantityNote =
+      Math.abs(sizing.executableBaseQuantity - sizing.requestedBaseQuantity) > 1e-12
+        ? `, executable base quantity ${this.formatNumber(sizing.executableBaseQuantity)}${unit} after whole-contract rounding`
+        : '';
+    return `Delta product preflight passed for ${productSymbol}: product ${productId} is live/operational, contract_value ${this.formatNumber(sizing.contractValue)}${unit}, requested base quantity ${this.formatNumber(sizing.requestedBaseQuantity)}${unit} routes as ${sizing.quantityContracts} contract${sizing.quantityContracts === 1 ? '' : 's'}${baseQuantityNote}.`;
+  }
+
+  private formatNumber(value: number): string {
+    if (!Number.isFinite(value)) {
+      return String(value);
+    }
+    const fixed = value.toFixed(12);
+    return fixed.replace(/\.?0+$/, '');
   }
 
   private resolveOrderSide(body: ValidatedCreateOrderRouteBody): 'buy' | 'sell' {
@@ -614,7 +812,9 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     triggerType: string | undefined,
     orderType: 'market_order' | 'limit_order'
   ): 'gtc' | 'ioc' {
-    const normalized = String(triggerType || '').trim().toLowerCase();
+    const normalized = String(triggerType || '')
+      .trim()
+      .toLowerCase();
     if (normalized === 'gtc' || normalized === 'ioc') {
       return normalized;
     }
@@ -637,7 +837,9 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
   }
 
   private isLiveAutoSubmission(body: ValidatedCreateOrderRouteBody): boolean {
-    return String(body.idempotency_key || '').trim().startsWith('live-auto:');
+    return String(body.idempotency_key || '')
+      .trim()
+      .startsWith('live-auto:');
   }
 
   private async resolveProductForOrder(
@@ -648,17 +850,21 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       return { productId, product: null };
     }
 
+    return this.resolveLiveAutoProductForOrder(productId, body.symbol);
+  }
+
+  private async resolveLiveAutoProductForOrder(
+    productId: number,
+    symbol: string | undefined
+  ): Promise<DeltaResolvedOrderProduct> {
     const product = await this.getProductById(productId);
     if (product) {
-      if (
-        String(body.symbol || '').trim() &&
-        !this.isDeltaSymbolCompatible(product.symbol, body.symbol)
-      ) {
-        const symbolResolvedProduct = await this.findLiveAutoProductBySymbol(body.symbol);
+      if (String(symbol || '').trim() && !this.isDeltaSymbolCompatible(product.symbol, symbol)) {
+        const symbolResolvedProduct = await this.findLiveAutoProductBySymbol(symbol);
         if (symbolResolvedProduct) {
           const resolvedProductId = this.toProductId(
             symbolResolvedProduct.id,
-            String(body.symbol || productId)
+            String(symbol || productId)
           );
           this.assertLiveAutoProduct(symbolResolvedProduct, resolvedProductId);
           return {
@@ -668,7 +874,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
         }
 
         throw new BadRequestAppError(
-          `Delta Exchange product mapping is stale for ${String(body.symbol).toUpperCase()}; requested product ${productId} maps to ${String(
+          `Delta Exchange product mapping is stale for ${String(symbol).toUpperCase()}; requested product ${productId} maps to ${String(
             product.symbol || 'unknown'
           ).toUpperCase()}`
         );
@@ -680,11 +886,11 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       };
     }
 
-    const symbolResolvedProduct = await this.findLiveAutoProductBySymbol(body.symbol);
+    const symbolResolvedProduct = await this.findLiveAutoProductBySymbol(symbol);
     if (symbolResolvedProduct) {
       const resolvedProductId = this.toProductId(
         symbolResolvedProduct.id,
-        String(body.symbol || productId)
+        String(symbol || productId)
       );
       this.assertLiveAutoProduct(symbolResolvedProduct, resolvedProductId);
       return {
@@ -693,7 +899,9 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       };
     }
 
-    const symbolHint = String(body.symbol || '').trim().toUpperCase();
+    const symbolHint = String(symbol || '')
+      .trim()
+      .toUpperCase();
     throw new BadRequestAppError(
       `Delta Exchange product mapping is stale for ${
         symbolHint || `product ${productId}`
@@ -708,9 +916,15 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       );
     }
 
-    const state = String(product.state || '').trim().toLowerCase();
-    const tradingStatus = String(product.trading_status || '').trim().toLowerCase();
-    const contractType = String(product.contract_type || '').trim().toLowerCase();
+    const state = String(product.state || '')
+      .trim()
+      .toLowerCase();
+    const tradingStatus = String(product.trading_status || '')
+      .trim()
+      .toLowerCase();
+    const contractType = String(product.contract_type || '')
+      .trim()
+      .toLowerCase();
     if (
       state !== 'live' ||
       tradingStatus !== 'operational' ||
@@ -749,17 +963,16 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     });
 
     const findBySymbol = (candidateSymbol: string): DeltaProductPayload | null =>
-      candidates.find(
-        (product) => this.normalizeDeltaSymbol(product.symbol) === candidateSymbol
-      ) ?? null;
+      candidates.find((product) => this.normalizeDeltaSymbol(product.symbol) === candidateSymbol) ??
+      null;
 
     return (
       findBySymbol(normalizedSymbol) ??
       findBySymbol(normalizedRegionalSymbol) ??
       (baseSymbol
-        ? candidates.find(
+        ? (candidates.find(
             (product) => this.resolveDeltaBaseSymbol(product.symbol) === baseSymbol
-          ) ?? null
+          ) ?? null)
         : null)
     );
   }
@@ -804,13 +1017,17 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     if (!product) {
       return false;
     }
-    const state = String(product.state || '').trim().toLowerCase();
-    const tradingStatus = String(product.trading_status || '').trim().toLowerCase();
-    const contractType = String(product.contract_type || '').trim().toLowerCase();
+    const state = String(product.state || '')
+      .trim()
+      .toLowerCase();
+    const tradingStatus = String(product.trading_status || '')
+      .trim()
+      .toLowerCase();
+    const contractType = String(product.contract_type || '')
+      .trim()
+      .toLowerCase();
     return (
-      state === 'live' &&
-      tradingStatus === 'operational' &&
-      contractType === 'perpetual_futures'
+      state === 'live' && tradingStatus === 'operational' && contractType === 'perpetual_futures'
     );
   }
 
@@ -921,17 +1138,21 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     const productId = Number(detail.product_id);
 
     if (!Number.isFinite(resolvedId) || resolvedId <= 0) {
-      throw new BadRequestAppError('Cannot cancel order: invalid order ID returned by Delta Exchange');
+      throw new BadRequestAppError(
+        'Cannot cancel order: invalid order ID returned by Delta Exchange'
+      );
     }
     if (!Number.isFinite(productId) || productId <= 0) {
-      throw new BadRequestAppError('Cannot cancel order: product_id is required but missing from order details');
+      throw new BadRequestAppError(
+        'Cannot cancel order: product_id is required but missing from order details'
+      );
     }
 
     await this.deltaHttpClient.signedDelete<unknown>(
       context?.accountId,
       '/v2/orders',
       { id: resolvedId, product_id: productId },
-      context?.userId,
+      context?.userId
     );
 
     return {
@@ -947,10 +1168,11 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       return directValue;
     }
 
-    const mappedByExternalId = await this.exchangeAssetRepository.getSystemAssetBySourceAndExternalId(
-      'delta_exchange',
-      assetId
-    );
+    const mappedByExternalId =
+      await this.exchangeAssetRepository.getSystemAssetBySourceAndExternalId(
+        'delta_exchange',
+        assetId
+      );
     if (mappedByExternalId) {
       return this.toProductId(mappedByExternalId.externalId, assetId);
     }
@@ -971,9 +1193,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       return this.toProductId(mappedBySymbol.externalId, assetId);
     }
 
-    throw new BadRequestAppError(
-      'Delta Exchange product mapping not found for the selected asset'
-    );
+    throw new BadRequestAppError('Delta Exchange product mapping not found for the selected asset');
   }
 
   private toProductId(value: unknown, assetId: string): number {

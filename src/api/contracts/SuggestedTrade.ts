@@ -28,6 +28,16 @@ export type SuggestedTradeJourneyStage =
   | 'track_execution'
   | 'closed_out';
 export type SuggestedTradeSyncState = 'untracked' | 'fresh' | 'stale' | 'attention' | 'settled';
+export type SuggestedTradeProtectionState =
+  | 'pending'
+  | 'waiting_for_fill'
+  | 'waiting_for_position'
+  | 'attaching'
+  | 'attached'
+  | 'failed'
+  | 'manual_unlinked'
+  | 'not_required'
+  | 'unknown';
 export type SuggestedTradePageAction =
   | 'review'
   | 'accept'
@@ -69,6 +79,13 @@ export interface SuggestedTradeExecutionLink {
   entryPrice?: string | null;
   stopLossPrice?: string | null;
   takeProfitPrice?: string | null;
+  protectionState?: SuggestedTradeProtectionState | null;
+  protectionSource?: string | null;
+  protectionPlan?: Record<string, unknown> | null;
+  protectionAttempts?: number | null;
+  protectionLastError?: string | null;
+  protectionCheckedAt?: string | null;
+  protectionAttachedAt?: string | null;
   submittedAt?: string | null;
   linkedAt?: string | null;
   lastSeenAt?: string | null;
@@ -93,6 +110,8 @@ export interface SuggestedTradeRouteCandidate {
   brokerKey: string;
   accountId: string;
   accountName?: string | null;
+  shadowOnly?: boolean;
+  shadowReason?: string | null;
   requestedSymbol: string;
   brokerSymbol: string;
   candidateSymbols: string[];

@@ -46,6 +46,38 @@ const MAX_EXECUTION_ALERTS = Math.max(
   0,
   Number(process.env.SUGGESTED_TRADES_MAX_EXECUTION_ALERTS || MAX_OPEN_ALERTS)
 );
+const MAX_PROTECTION_FAILED_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_FAILED_TRADES || 0)
+);
+const MAX_PROTECTION_MANUAL_ACTION_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_MANUAL_ACTION_TRADES || 0)
+);
+const MAX_STALE_MANUAL_PROTECTION_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_STALE_MANUAL_PROTECTION_TRADES || 0)
+);
+const MAX_STALE_ATTACHING_PROTECTION_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_STALE_ATTACHING_PROTECTION_TRADES || 0)
+);
+const MAX_PROTECTION_ACTIONABLE_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_ACTIONABLE_TRADES || 0)
+);
+const MAX_PROTECTION_UNRESOLVED_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_UNRESOLVED_TRADES || 0)
+);
+const MAX_PROTECTION_RETRIABLE_FAILED_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_RETRIABLE_FAILED_TRADES || 0)
+);
+const MIN_PROTECTION_ATTACHMENT_RATE = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MIN_PROTECTION_ATTACHMENT_RATE || 0)
+);
 const MIN_QUEUE_TO_ORDER_CONVERSION_RATE = Math.max(
   0,
   Number(process.env.SUGGESTED_TRADES_MIN_QUEUE_TO_ORDER_CONVERSION_RATE || 0)
@@ -156,7 +188,9 @@ async function run(): Promise<void> {
   const runtimeResponse = await requestJson('/health/runtime', {}, accessToken);
   const health = asRecord(healthResponse.data);
   const runtime = asRecord(runtimeResponse.data);
-  const runtimeLoops = asArray(runtime.apiLoops).map((item) => readString(item.key)).filter(Boolean);
+  const runtimeLoops = asArray(runtime.apiLoops)
+    .map((item) => readString(item.key))
+    .filter(Boolean);
 
   const snapshot = {
     baseUrl: BASE_URL,
@@ -173,6 +207,21 @@ async function run(): Promise<void> {
       health.queueToOrderConversionRate === null || health.queueToOrderConversionRate === undefined
         ? null
         : readNumber(health.queueToOrderConversionRate),
+    protectionTrackedTrades: readNumber(health.protectionTrackedTrades),
+    protectionAttachedTrades: readNumber(health.protectionAttachedTrades),
+    protectionFailedTrades: readNumber(health.protectionFailedTrades),
+    protectionManualActionTrades: readNumber(health.protectionManualActionTrades),
+    protectionStaleManualActionTrades: readNumber(health.protectionStaleManualActionTrades),
+    protectionManualRecoveryStaleAfterMs: readNumber(health.protectionManualRecoveryStaleAfterMs),
+    protectionStaleAttachingTrades: readNumber(health.protectionStaleAttachingTrades),
+    protectionAttachingStaleAfterMs: readNumber(health.protectionAttachingStaleAfterMs),
+    protectionActionableTrades: readNumber(health.protectionActionableTrades),
+    protectionUnresolvedTrades: readNumber(health.protectionUnresolvedTrades),
+    protectionRetriableFailedTrades: readNumber(health.protectionRetriableFailedTrades),
+    protectionAttachmentRate:
+      health.protectionAttachmentRate === null || health.protectionAttachmentRate === undefined
+        ? null
+        : readNumber(health.protectionAttachmentRate),
     openAlerts: readNumber(health.openAlerts),
     openActionAlerts: readNumber(health.openActionAlerts),
     openExecutionAlerts: readNumber(health.openExecutionAlerts),
@@ -232,7 +281,9 @@ async function run(): Promise<void> {
     );
   }
   if (snapshot.openAlerts > MAX_OPEN_ALERTS) {
-    throw new Error(`open suggested trade alerts ${snapshot.openAlerts} exceeds ${MAX_OPEN_ALERTS}`);
+    throw new Error(
+      `open suggested trade alerts ${snapshot.openAlerts} exceeds ${MAX_OPEN_ALERTS}`
+    );
   }
   if (snapshot.openActionAlerts > MAX_ACTION_ALERTS) {
     throw new Error(
@@ -243,6 +294,52 @@ async function run(): Promise<void> {
     throw new Error(
       `open suggested trade execution alerts ${snapshot.openExecutionAlerts} exceeds ${MAX_EXECUTION_ALERTS}`
     );
+  }
+  if (snapshot.protectionFailedTrades > MAX_PROTECTION_FAILED_TRADES) {
+    throw new Error(
+      `protection failed trades ${snapshot.protectionFailedTrades} exceeds ${MAX_PROTECTION_FAILED_TRADES}`
+    );
+  }
+  if (snapshot.protectionManualActionTrades > MAX_PROTECTION_MANUAL_ACTION_TRADES) {
+    throw new Error(
+      `protection manual-action trades ${snapshot.protectionManualActionTrades} exceeds ${MAX_PROTECTION_MANUAL_ACTION_TRADES}`
+    );
+  }
+  if (snapshot.protectionStaleManualActionTrades > MAX_STALE_MANUAL_PROTECTION_TRADES) {
+    throw new Error(
+      `stale manual protection trades ${snapshot.protectionStaleManualActionTrades} exceeds ${MAX_STALE_MANUAL_PROTECTION_TRADES}`
+    );
+  }
+  if (snapshot.protectionStaleAttachingTrades > MAX_STALE_ATTACHING_PROTECTION_TRADES) {
+    throw new Error(
+      `stale attaching protection trades ${snapshot.protectionStaleAttachingTrades} exceeds ${MAX_STALE_ATTACHING_PROTECTION_TRADES}`
+    );
+  }
+  if (snapshot.protectionActionableTrades > MAX_PROTECTION_ACTIONABLE_TRADES) {
+    throw new Error(
+      `protection actionable trades ${snapshot.protectionActionableTrades} exceeds ${MAX_PROTECTION_ACTIONABLE_TRADES}`
+    );
+  }
+  if (snapshot.protectionUnresolvedTrades > MAX_PROTECTION_UNRESOLVED_TRADES) {
+    throw new Error(
+      `protection unresolved trades ${snapshot.protectionUnresolvedTrades} exceeds ${MAX_PROTECTION_UNRESOLVED_TRADES}`
+    );
+  }
+  if (snapshot.protectionRetriableFailedTrades > MAX_PROTECTION_RETRIABLE_FAILED_TRADES) {
+    throw new Error(
+      `protection retriable failed trades ${snapshot.protectionRetriableFailedTrades} exceeds ${MAX_PROTECTION_RETRIABLE_FAILED_TRADES}`
+    );
+  }
+  if (
+    snapshot.protectionAttachmentRate !== null &&
+    snapshot.protectionAttachmentRate < MIN_PROTECTION_ATTACHMENT_RATE
+  ) {
+    throw new Error(
+      `protection attachment rate ${snapshot.protectionAttachmentRate} is below ${MIN_PROTECTION_ATTACHMENT_RATE}`
+    );
+  }
+  if (snapshot.protectionAttachmentRate === null && MIN_PROTECTION_ATTACHMENT_RATE > 0) {
+    throw new Error('protection attachment rate is unavailable for threshold enforcement');
   }
   if (
     snapshot.queueToOrderConversionRate !== null &&

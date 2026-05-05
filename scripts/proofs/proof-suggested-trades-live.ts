@@ -29,6 +29,18 @@ function runStep(label: string, scriptPath: string, envOverrides: EnvMap = {}): 
 async function run(): Promise<void> {
   await runStep('lifecycle smoke', 'scripts/smokes/smoke-suggested-trades-lifecycle.ts');
   await runStep('health threshold check', 'scripts/checks/check-suggested-trades-health.ts');
+  await runStep(
+    'protection dry-run audit',
+    'scripts/checks/check-suggested-trades-protection-dry-run.ts'
+  );
+  await runStep(
+    'protection recovery freshness',
+    'scripts/checks/check-suggested-trades-protection-recovery.ts'
+  );
+  await runStep(
+    'protection action report',
+    'scripts/checks/check-suggested-trades-protection-actions.ts'
+  );
 }
 
 run().catch((error) => {

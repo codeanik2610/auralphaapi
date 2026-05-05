@@ -20,6 +20,11 @@ import {
   normalizeAutomationScheduleRecord,
   resolveAutomationSchedule,
 } from '../src/api/utils/automationSchedule';
+import {
+  evaluateSignalFreshness,
+  normalizeTradeSuggestionFreshnessPolicy,
+  resolveFreshnessGraceSeconds,
+} from '../src/api/utils/signalFreshness';
 import { AutomationRepository } from '../src/database/repositories/AutomationRepository';
 import { coreDataSource } from '../src/database/data-source';
 
@@ -1026,6 +1031,45 @@ function runTradeSuggestionExecutionPolicyValidationAssertions(): void {
         },
       }),
     /routing\.brokerKey is required when routeMode is fixed/
+  );
+}
+
+function runTradeSuggestionFreshnessPolicyAssertions(): void {
+  const policy = normalizeTradeSuggestionFreshnessPolicy({});
+
+  assert.equal(resolveFreshnessGraceSeconds('5m', policy), 480);
+  assert.equal(resolveFreshnessGraceSeconds('15m', policy), 600);
+  assert.equal(resolveFreshnessGraceSeconds('1h', policy), 900);
+
+  assert.equal(
+    evaluateSignalFreshness({
+      signalTime: '2026-05-02T06:10:00.000Z',
+      timeframe: '5m',
+      policy,
+      evaluatedAt: new Date('2026-05-02T06:21:42.000Z'),
+    }).allowed,
+    true,
+    '5m batch signal should remain executable after normal scan latency'
+  );
+  assert.equal(
+    evaluateSignalFreshness({
+      signalTime: '2026-05-02T05:00:00.000Z',
+      timeframe: '1h',
+      policy,
+      evaluatedAt: new Date('2026-05-02T06:11:15.000Z'),
+    }).allowed,
+    true,
+    '1h signal should tolerate slightly more than 10 minutes of operational latency'
+  );
+  assert.equal(
+    evaluateSignalFreshness({
+      signalTime: '2026-05-02T04:00:00.000Z',
+      timeframe: '1h',
+      policy,
+      evaluatedAt: new Date('2026-05-02T05:47:13.000Z'),
+    }).allowed,
+    false,
+    '1h signal should still block genuinely stale late arrivals'
   );
 }
 
@@ -2105,6 +2149,104 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
 
     {
       const { service } = createService();
+      const activityLogs: Array<Record<string, unknown>> = [];
+      const automationTradeSuggestion = {
+        ...automation,
+        automationType: 'trade-suggestion',
+      };
+
+      service.resolveTradeSuggestionProfile = async () => ({
+        sourceTemplateId: 'template-1',
+        templateConfig: {},
+        profile: {
+          automationReady: true,
+          readinessReasons: [],
+          contractVersion: 'v1',
+          market: 'crypto-futures',
+          signalThreshold: 0.81,
+          tradePlan: {
+            long: {
+              enabled: true,
+              side: 'long',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Trend continuation',
+              entryRule: 'Break above range high',
+              exitRule: 'Stop at invalidation',
+            },
+            short: {
+              enabled: false,
+              side: 'short',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              rationale: 'Disabled',
+              entryRule: 'Disabled',
+              exitRule: 'Disabled',
+            },
+          },
+        },
+      });
+      service.automationCursorRepository = {
+        listByAutomationAndScope: async () => [],
+        upsertCursor: async () => undefined,
+      };
+      service.automationSignalEvaluatorService = {
+        evaluateLatestSignals: async () => ({
+          evaluatedSymbols: 0,
+          skippedSymbols: 1,
+          items: [
+            {
+              symbol: 'BTCUSDT',
+              timeframe: '5m',
+              status: 'no_data',
+              reason: 'No closed candle available yet',
+            },
+          ],
+        }),
+      };
+      service.suggestedTradeRepository = {
+        createSuggestedTrade: async () => {
+          throw new Error('suggestion should not be created when candles are not ready');
+        },
+      };
+      service.suggestedTradesService = {};
+      service.automationRunOutputRepository = {
+        createOutput: async () => undefined,
+      };
+      service.operationalEventService = {
+        logActivity: async (_userId: string, payload: Record<string, unknown>) => {
+          activityLogs.push(payload);
+        },
+        emitNotificationAlert: async () => null,
+      };
+
+      const result = await service.generateTradeSuggestions(
+        automationTradeSuggestion,
+        'run-candles-not-ready',
+        {
+          symbol: 'BTCUSDT',
+          timeframe: '5m',
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'suggestion_only',
+            },
+          },
+        },
+        new Date('2026-04-04T10:00:30.000Z')
+      );
+
+      assert.equal(result.inserted, 0);
+      assert.equal(result.symbolsProcessed, 1);
+      assert.equal(result.symbolsSkipped, 1);
+      assert.equal(result.symbolsEvaluated, 0);
+      assert.equal(result.signalsDetected, 0);
+      assert.equal(activityLogs.length, 1);
+      assert.equal(activityLogs[0]?.status, 'Success');
+      assert.match(String(activityLogs[0]?.description || ''), /No closed candles were ready yet/);
+    }
+
+    {
+      const { service } = createService();
       const createdSuggestions: Array<Record<string, unknown>> = [];
       const cursorUpdates: Array<Record<string, unknown>> = [];
       const automationTradeSuggestion = {
@@ -2871,6 +3013,7 @@ async function runAutomationsOperationalAssertions(): Promise<void> {
 
 function runAutomationSignalEvaluatorAssertions(): void {
   const service = new AutomationSignalEvaluatorService() as any;
+  const originalAutomationSignalEnv = { ...env.automationSignals };
 
   const mapped = service.mapEvaluatedSignalItem({
     symbol: 'btcusdt',
@@ -2927,6 +3070,16 @@ function runAutomationSignalEvaluatorAssertions(): void {
     status: 'weird',
   });
   assert.equal(fallback.status, 'failed');
+
+  Object.assign(env.automationSignals, {
+    timeoutMs: 60_000,
+    timeoutPerSymbolMs: 2_000,
+    maxTimeoutMs: 300_000,
+  });
+  assert.equal(service.resolveEvaluationTimeoutMs(1), 62_000);
+  assert.equal(service.resolveEvaluationTimeoutMs(76), 212_000);
+  assert.equal(service.resolveEvaluationTimeoutMs(200), 300_000);
+  Object.assign(env.automationSignals, originalAutomationSignalEnv);
 }
 
 async function runAutomationRuntimeStaleCandidateAssertions(): Promise<void> {
@@ -3001,6 +3154,111 @@ async function runAutomationRuntimeStaleCandidateAssertions(): Promise<void> {
   assert.equal(items[0].repairAction, 'reconcile');
 }
 
+async function runAutomationStartupRecoveryAssertions(): Promise<void> {
+  const { AutomationsService } = await import('../src/api/services/AutomationsService');
+
+  const service = new AutomationsService() as any;
+  const now = Date.now();
+  const interruptedRun = {
+    id: 'run-interrupted-by-restart',
+    automationId: 'automation-interrupted',
+    userId: 'user-1',
+    status: 'Running',
+    startedAt: new Date(now - 10_000),
+    lastProgressAt: new Date(now - 10_000),
+    workerId: 'worker-1',
+    errorMessage: null,
+    meta: {},
+  };
+  const activeChildRun = {
+    id: 'run-active-child',
+    automationId: 'automation-child',
+    userId: 'user-1',
+    status: 'Running',
+    startedAt: new Date(now - 12_000),
+    lastProgressAt: new Date(now - 12_000),
+    workerId: 'worker-1',
+    errorMessage: null,
+    meta: {
+      backtestId: 'backtest-running',
+      childBacktestStatus: 'Running',
+    },
+  };
+  const captured: { olderThan?: Date; statuses?: string[]; limit?: number } = {};
+  const cleared: Array<{ runId: string; options: Record<string, unknown> }> = [];
+  const logged: unknown[] = [];
+
+  service.automationRunRepository = {
+    async findStaleRuns(query: { olderThan: Date; statuses: string[]; limit: number }) {
+      captured.olderThan = query.olderThan;
+      captured.statuses = query.statuses;
+      captured.limit = query.limit;
+      return [interruptedRun, activeChildRun];
+    },
+    async findById(runId: string) {
+      return runId === activeChildRun.id ? activeChildRun : null;
+    },
+    async markRunRepaired() {
+      throw new Error('markRunRepaired should not be called for known automation runs');
+    },
+  };
+  service.automationRepository = {
+    async getAutomationByIdAny(automationId: string) {
+      return {
+        id: automationId,
+        name: automationId,
+        userId: 'user-1',
+        status: 'Running',
+        strategy: 'Supertrend 10,3 Red-Green Breakout v2',
+      };
+    },
+  };
+  service.backtestRepository = {
+    async getBacktestById() {
+      return {
+        id: 'backtest-running',
+        status: 'Running',
+        stability: null,
+      };
+    },
+  };
+  service.automationExecutionService = {
+    async syncBacktestRunnerLifecycleByBacktestId() {
+      return undefined;
+    },
+  };
+  service.operationalEventService = {
+    async logActivity(payload: unknown) {
+      logged.push(payload);
+    },
+  };
+  service.clearStaleAutomationRun = async (
+    _automation: unknown,
+    run: { id: string },
+    options: Record<string, unknown>
+  ) => {
+    cleared.push({ runId: run.id, options });
+  };
+
+  const summary = await service.reconcileStaleRunsOnStartup();
+
+  assert.ok(captured.olderThan instanceof Date);
+  assert.deepEqual(captured.statuses, ['Queued', 'Running']);
+  assert.equal(captured.limit, 200);
+  assert.ok(
+    Math.abs(captured.olderThan!.getTime() - Date.now()) < 15_000,
+    'startup recovery should inspect runs active before this API boot, not wait for 20 minutes'
+  );
+  assert.equal(summary.scanned, 2);
+  assert.equal(summary.recovered, 1);
+  assert.equal(summary.skipped, 1);
+  assert.equal(cleared.length, 1);
+  assert.equal(cleared[0].runId, interruptedRun.id);
+  assert.equal(cleared[0].options.mode, 'startup-interrupted-run');
+  assert.equal(cleared[0].options.backtestId, null);
+  assert.equal(logged.length, 1);
+}
+
 function runAutomationsScriptWiringAssertions(): void {
   const packageSource = read('package.json');
   const packageJson = JSON.parse(packageSource) as { scripts?: Record<string, string> };
@@ -3012,6 +3270,7 @@ function runAutomationsScriptWiringAssertions(): void {
   const signoffSource = read('scripts/signoffs/signoff-automations.ts');
   const evaluatorSource = read('src/api/services/AutomationSignalEvaluatorService.ts');
   const executionSource = read('src/api/services/AutomationExecutionService.ts');
+  const runtimeEvaluatorSource = read('scripts/_runtime/automation_signal_eval.py');
 
   assert.equal(
     packageScripts['test:automations'],
@@ -3062,6 +3321,28 @@ function runAutomationsScriptWiringAssertions(): void {
       evaluatorSource.includes("'automation_signal_eval.py'"),
     true,
     'automation signal evaluator must use scripts/_runtime automation runner'
+  );
+  assert.equal(
+    evaluatorSource.includes('resolveEvaluationTimeoutMs') &&
+      evaluatorSource.includes('timeoutPerSymbolMs') &&
+      evaluatorSource.includes('maxTimeoutMs'),
+    true,
+    'automation signal evaluator must scale timeout budget for large batch automations'
+  );
+  assert.equal(
+    runtimeEvaluatorSource.includes('def _planned_entry_price') &&
+      runtimeEvaluatorSource.includes('trade_plan.get(key)') &&
+      runtimeEvaluatorSource.includes('"entryPrice": _planned_entry_price') &&
+      !runtimeEvaluatorSource.includes('def _candle_midpoint_price'),
+    true,
+    'automation runtime must take planned entry prices from the strategy template trade plan'
+  );
+  assert.equal(
+    runtimeEvaluatorSource.includes('timestamps < current_bucket_start') &&
+      runtimeEvaluatorSource.includes('pd.Timestamp') &&
+      runtimeEvaluatorSource.includes('bucket_seconds'),
+    true,
+    'automation runtime must evaluate timeframe-aligned closed candle boundaries'
   );
   assert.equal(
     executionSource.includes('suggestedTradeId: context?.suggestedTradeId ?? null'),
@@ -3267,6 +3548,7 @@ async function main(): Promise<void> {
   runAutomationTimeZoneValidationAssertions();
   runAutomationScheduleAuditAssertions();
   await runAutomationSchedulePersistenceAssertions();
+  runTradeSuggestionFreshnessPolicyAssertions();
   await runTradeSuggestionExecutabilityValidationAssertions();
   await runTradeSuggestionTemplateContractAssertions();
   await runTradeSuggestionCreationWorkflowContractAssertions();
@@ -3274,6 +3556,7 @@ async function main(): Promise<void> {
   await runAutomationOperationalSnapshotAssertions();
   await runAutomationsOperationalAssertions();
   await runAutomationRuntimeStaleCandidateAssertions();
+  await runAutomationStartupRecoveryAssertions();
   await runWhatsappNotificationQueueAssertions();
   runAutomationSignalEvaluatorAssertions();
   runTradeSuggestionExecutionPolicyValidationAssertions();

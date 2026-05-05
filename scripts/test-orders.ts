@@ -1117,6 +1117,41 @@ async function runNormalizationAssertion(): Promise<void> {
   assert.equal(mappingStored?.reconciliationState, 'not_required');
   assert.equal(mappingStored?.errorPayload?.code, 'ORDER_REJECTED_BROKER_MAPPING');
 
+  harness.setAdapterResult(new BadRequestAppError('price not a multiple of the price step'));
+
+  await assert.rejects(
+    () =>
+      harness.service.createFuturesOrder('user-1', 'asset-1', {
+        brokerKey: 'mudrex',
+        accountId: 'acct-1',
+        idempotency_key: 'order-submit-8-price-step-error',
+        symbol: 'BTCUSDT',
+        side: 'long',
+        execution_mode: 'live',
+        leverage: 15,
+        quantity: 1,
+        order_price: 74000.003,
+        order_type: 'limit',
+        trigger_type: 'GTC',
+        is_takeprofit: false,
+        is_stoploss: false,
+        stoploss_price: 73000,
+        takeprofit_price: 76000,
+        reduce_only: false,
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as { httpCode?: number }).httpCode === 400 &&
+      error.message === 'Order rejected: price does not match the broker rules for this asset.' &&
+      (error as { code?: string }).code === 'ORDER_REJECTED_INVALID_PRICE'
+  );
+
+  const priceStepStored = harness.submissions.get('user-1:order-submit-8-price-step-error');
+  assert.equal(priceStepStored?.status, 'failed');
+  assert.equal(priceStepStored?.placementState, 'rejected');
+  assert.equal(priceStepStored?.reconciliationState, 'not_required');
+  assert.equal(priceStepStored?.errorPayload?.code, 'ORDER_REJECTED_INVALID_PRICE');
+
   const deltaAuthError = new UnauthorizedAppError(
     'UnauthorizedApiAccess: Api Key not authorised to access this endpoint (route /v2/orders)'
   );

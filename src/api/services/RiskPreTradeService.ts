@@ -1417,8 +1417,8 @@ export class RiskPreTradeService {
 
     if (input.route.brokerKey) {
       const afterBrokerAllocation = this.toRatioPct(
-        (this.toFiniteNumber(input.brokerSnapshot?.grossExposure, 0) ?? 0) +
-          input.grossExposureDelta,
+        (this.toFiniteNumber(input.brokerSnapshot?.reservedOrderMargin, 0) ?? 0) +
+          input.reservedOrderMarginDelta,
         input.snapshot?.portfolioEquity
       );
       const brokerCriticalLimit = Math.min(100, input.routeThresholds.maxTotalAllocation);
@@ -1435,7 +1435,7 @@ export class RiskPreTradeService {
           brokerKey: input.route.brokerKey,
           policyContextId: input.routePolicyContext?.id ?? null,
           ruleCode: 'broker_total_allocation',
-          metricName: 'allocationPct',
+          metricName: 'marginAllocationPct',
           actualValue: afterBrokerAllocation,
           basisValue: this.toFiniteNumber(input.snapshot?.portfolioEquity, null),
           warnThresholdValue: input.routeThresholds.concentrationWarnPct,
@@ -1444,10 +1444,10 @@ export class RiskPreTradeService {
           blocking: status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
           message:
             status === 'critical'
-              ? `Projected ${input.route.brokerKey} allocation exceeds the configured critical threshold.`
+              ? `Projected ${input.route.brokerKey} margin allocation exceeds the configured critical threshold.`
               : status === 'warning'
-                ? `Projected ${input.route.brokerKey} allocation enters the warning band.`
-                : `${input.route.brokerKey} allocation remains within tolerance after this request.`,
+                ? `Projected ${input.route.brokerKey} margin allocation enters the warning band.`
+                : `${input.route.brokerKey} margin allocation remains within tolerance after this request.`,
         });
       }
     }
@@ -1491,7 +1491,8 @@ export class RiskPreTradeService {
     }
 
     const afterAssetAllocation = this.toRatioPct(
-      (this.toFiniteNumber(input.assetSnapshot?.grossExposure, 0) ?? 0) + input.grossExposureDelta,
+      (this.toFiniteNumber(input.assetSnapshot?.reservedOrderMargin, 0) ?? 0) +
+        input.reservedOrderMarginDelta,
       input.snapshot?.portfolioEquity
     );
     if (afterAssetAllocation !== null) {
@@ -1509,7 +1510,7 @@ export class RiskPreTradeService {
         symbol: input.order.symbol,
         policyContextId: input.routePolicyContext?.id ?? null,
         ruleCode: 'asset_concentration',
-        metricName: 'allocationPct',
+        metricName: 'marginConcentrationPct',
         actualValue: afterAssetAllocation,
         basisValue: this.toFiniteNumber(input.snapshot?.portfolioEquity, null),
         warnThresholdValue: input.routeThresholds.concentrationWarnPct,
@@ -1518,17 +1519,17 @@ export class RiskPreTradeService {
         blocking: status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
         message:
           status === 'critical'
-            ? `Projected ${input.order.symbol} concentration exceeds the configured critical threshold.`
+            ? `Projected ${input.order.symbol} margin concentration exceeds the configured critical threshold.`
             : status === 'warning'
-              ? `Projected ${input.order.symbol} concentration enters the warning band.`
-              : `${input.order.symbol} concentration remains within tolerance after this request.`,
+              ? `Projected ${input.order.symbol} margin concentration enters the warning band.`
+              : `${input.order.symbol} margin concentration remains within tolerance after this request.`,
       });
     }
 
     if (input.route.brokerKey) {
       const afterBrokerAssetAllocation = this.toRatioPct(
-        (this.toFiniteNumber(input.brokerAssetSnapshot?.grossExposure, 0) ?? 0) +
-          input.grossExposureDelta,
+        (this.toFiniteNumber(input.brokerAssetSnapshot?.reservedOrderMargin, 0) ?? 0) +
+          input.reservedOrderMarginDelta,
         input.snapshot?.portfolioEquity
       );
       if (afterBrokerAssetAllocation !== null) {
@@ -1546,7 +1547,7 @@ export class RiskPreTradeService {
           symbol: input.order.symbol,
           policyContextId: input.routePolicyContext?.id ?? null,
           ruleCode: 'broker_asset_concentration',
-          metricName: 'allocationPct',
+          metricName: 'marginConcentrationPct',
           actualValue: afterBrokerAssetAllocation,
           basisValue: this.toFiniteNumber(input.snapshot?.portfolioEquity, null),
           warnThresholdValue: input.routeThresholds.concentrationWarnPct,
@@ -1555,10 +1556,10 @@ export class RiskPreTradeService {
           blocking: status === 'critical' && Boolean(input.routePolicyContext?.enforceHardBlock),
           message:
             status === 'critical'
-              ? `Projected ${input.order.symbol} concentration on ${input.route.brokerKey} exceeds the configured critical threshold.`
+              ? `Projected ${input.order.symbol} margin concentration on ${input.route.brokerKey} exceeds the configured critical threshold.`
               : status === 'warning'
-                ? `Projected ${input.order.symbol} concentration on ${input.route.brokerKey} enters the warning band.`
-                : `${input.order.symbol} concentration on ${input.route.brokerKey} remains within tolerance.`,
+                ? `Projected ${input.order.symbol} margin concentration on ${input.route.brokerKey} enters the warning band.`
+                : `${input.order.symbol} margin concentration on ${input.route.brokerKey} remains within tolerance.`,
         });
       }
     }

@@ -649,15 +649,39 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       'SuggestedTradesOverviewService.ts',
       'SuggestedTradesHealthService.ts',
       'SuggestedTradeExecutionSyncService.ts',
+      'SuggestedTradesProtectionGuardrailService.ts',
       'BrokerCanaryProtectionMonitorService.ts',
       'WhatsappNotificationsService.ts',
     ],
     tests: [
       script('test:suggested-trades', 'scripts/test-suggested-trades.ts'),
       script('test:broker-canary-monitor', 'scripts/test-broker-canary-monitor.ts'),
+      script(
+        'test:suggested-trades-protection-guardrails',
+        'scripts/test-suggested-trades-protection-guardrails.ts'
+      ),
     ],
     checks: [
       script('check:suggested-trades-health', 'scripts/checks/check-suggested-trades-health.ts'),
+      script('check:suggested-trades-delta-shadow-routing'),
+      script('check:suggested-trades-delta-live-routing'),
+      script('check:suggested-trades-delta-live-canary'),
+      script(
+        'check:suggested-trades-protection-dry-run',
+        'scripts/checks/check-suggested-trades-protection-dry-run.ts'
+      ),
+      script(
+        'check:suggested-trades-protection-actions',
+        'scripts/checks/check-suggested-trades-protection-actions.ts'
+      ),
+      script(
+        'check:suggested-trades-protection-recovery',
+        'scripts/checks/check-suggested-trades-protection-recovery.ts'
+      ),
+      script(
+        'check:suggested-trades-protection-guardrails',
+        'scripts/checks/check-suggested-trades-protection-guardrails.ts'
+      ),
       script(
         'check:broker-auto-canary-readiness',
         'scripts/checks/check-broker-auto-canary-readiness.ts'

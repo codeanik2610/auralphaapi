@@ -323,6 +323,18 @@ const schedulerExecutionMode: 'direct' | 'queue' =
   process.env.SCHEDULER_EXECUTION_MODE === 'queue' ? 'queue' : 'direct';
 const loginMaxAttempts = Math.max(1, getNumber('AUTH_LOGIN_MAX_ATTEMPTS', 5));
 const loginIpMaxAttempts = Math.max(loginMaxAttempts, getNumber('AUTH_LOGIN_IP_MAX_ATTEMPTS', 20));
+const automationSignalTimeoutMs = Math.max(
+  1000,
+  getNumber('AUTOMATION_SIGNAL_TIMEOUT_MS', 60000)
+);
+const automationSignalTimeoutPerSymbolMs = Math.max(
+  0,
+  getNumber('AUTOMATION_SIGNAL_TIMEOUT_PER_SYMBOL_MS', 2000)
+);
+const automationSignalMaxTimeoutMs = Math.max(
+  automationSignalTimeoutMs,
+  getNumber('AUTOMATION_SIGNAL_MAX_TIMEOUT_MS', 300000)
+);
 
 export const env = {
   node: process.env.NODE_ENV || 'development',
@@ -497,7 +509,9 @@ export const env = {
         process.env.AUTOMATION_SIGNAL_DISCOVERY_ENGINE_ROOT || defaultDiscoveryEngineRoot,
         '.venv/bin/python'
       ),
-    timeoutMs: Math.max(1000, getNumber('AUTOMATION_SIGNAL_TIMEOUT_MS', 60000)),
+    timeoutMs: automationSignalTimeoutMs,
+    timeoutPerSymbolMs: automationSignalTimeoutPerSymbolMs,
+    maxTimeoutMs: automationSignalMaxTimeoutMs,
     evalBars: Math.max(50, getNumber('AUTOMATION_SIGNAL_EVAL_BARS', 300)),
   },
   paperOrders: {
@@ -543,6 +557,9 @@ export const env = {
       brokerAllowlist: getArray('SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST').map((item) =>
         item.trim().toLowerCase()
       ),
+      shadowBrokerAllowlist: getArray('SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST').map(
+        (item) => item.trim().toLowerCase()
+      ),
     },
   },
   brokerCanaryMonitor: {
@@ -559,6 +576,23 @@ export const env = {
       getNumber('BROKER_CANARY_MONITOR_SNAPSHOT_STALE_AFTER_MS', 15 * 60 * 1000)
     ),
     autoFreezeOnCritical: getBool('BROKER_CANARY_MONITOR_AUTO_FREEZE_ON_CRITICAL', false),
+    includeSuggestedTrades: getBool('BROKER_CANARY_MONITOR_INCLUDE_SUGGESTED_TRADES', false),
+  },
+  suggestedTradesProtectionGuardrails: {
+    enabled: getBool('SUGGESTED_TRADES_PROTECTION_GUARDRAIL_ENABLED', true),
+    backgroundEnabled:
+      process.env.SUGGESTED_TRADES_PROTECTION_GUARDRAIL_BACKGROUND_ENABLED !== undefined
+        ? getBool('SUGGESTED_TRADES_PROTECTION_GUARDRAIL_BACKGROUND_ENABLED', true)
+        : !process.env.NODE_ENV || process.env.NODE_ENV !== 'test',
+    pollIntervalMs: Math.max(
+      60_000,
+      getNumber('SUGGESTED_TRADES_PROTECTION_GUARDRAIL_POLL_INTERVAL_MS', 5 * 60 * 1000)
+    ),
+    maxTrades: Math.max(1, getNumber('SUGGESTED_TRADES_PROTECTION_GUARDRAIL_MAX_TRADES', 100)),
+    staleAfterMs: Math.max(
+      60_000,
+      getNumber('SUGGESTED_TRADES_PROTECTION_GUARDRAIL_STALE_AFTER_MS', 10 * 60 * 1000)
+    ),
   },
   positions: {
     liveSnapshotStaleAfterMs: Math.max(

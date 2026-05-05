@@ -1581,7 +1581,9 @@ async function testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById(): Promis
             symbol: 'BTCUSD',
             status: 'PENDING',
             side: 'sell',
-            stop_order_type: orderId === 'sl-1' ? 'stop_loss_order' : 'take_profit_order',
+            stop_order_type: orderId.startsWith('sl-')
+              ? 'stop_loss_order'
+              : 'take_profit_order',
             reduce_only: true,
             created_at: '2026-04-20T06:12:20.000Z',
           };
@@ -1663,17 +1665,27 @@ async function testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById(): Promis
         },
       ];
     }
+    if (statement.includes('FROM suggested_trade_executions')) {
+      assert.deepEqual(params, ['user-1', 'acct-delta', 'delta_exchange', 90]);
+      return [
+        {
+          brokerOrderId: 'entry-1',
+          stopLossOrderId: 'sl-2',
+          takeProfitOrderId: 'tp-2',
+        },
+      ];
+    }
     if (
       statement.includes('SELECT external_id, symbol, order_status') &&
       statement.includes('FROM scheduler_orders_snapshots')
     ) {
       staleCloseParams.push([...params]);
-      assert.ok(statement.includes('external_id NOT IN (?, ?, ?)'));
+      assert.ok(statement.includes('external_id NOT IN (?, ?, ?, ?, ?)'));
       return [];
     }
     if (statement.includes('UPDATE scheduler_orders_snapshots')) {
       staleCloseParams.push([...params]);
-      assert.ok(statement.includes('external_id NOT IN (?, ?, ?)'));
+      assert.ok(statement.includes('external_id NOT IN (?, ?, ?, ?, ?)'));
       return [{ affectedRows: 0 }];
     }
     if (statement.includes('FROM scheduler_orders_snapshots')) {
@@ -1690,21 +1702,50 @@ async function testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById(): Promis
       accountIds: ['acct-delta'],
     });
 
-    assert.deepEqual(getOrderCalls.sort(), ['sl-1', 'tp-1']);
+    assert.deepEqual(getOrderCalls.sort(), ['sl-1', 'sl-2', 'tp-1', 'tp-2']);
     assert.deepEqual(
       capturedItems.map((item) => String(item.id || item.order_id || '')).sort(),
-      ['entry-1', 'sl-1', 'tp-1']
+      ['entry-1', 'sl-1', 'sl-2', 'tp-1', 'tp-2']
     );
-    assert.deepEqual(protectedIdsFromReconciliation, ['entry-1', 'sl-1', 'tp-1']);
-    assert.deepEqual(syncedOrderIds[0], ['entry-1', 'sl-1', 'tp-1']);
+    assert.deepEqual(protectedIdsFromReconciliation, [
+      'entry-1',
+      'sl-1',
+      'sl-2',
+      'tp-1',
+      'tp-2',
+    ]);
+    assert.deepEqual(syncedOrderIds[0], ['entry-1', 'sl-1', 'sl-2', 'tp-1', 'tp-2']);
     assert.equal(staleCloseParams.length, 2);
-    assert.deepEqual(staleCloseParams[0].slice(-3), ['entry-1', 'sl-1', 'tp-1']);
-    assert.deepEqual(staleCloseParams[1].slice(-3), ['entry-1', 'sl-1', 'tp-1']);
-    assert.equal(result.insertedRecords, 3);
+    assert.equal((staleCloseParams[0][4] as Date).getMilliseconds(), 0);
+    assert.equal((staleCloseParams[1][5] as Date).getMilliseconds(), 0);
+    assert.deepEqual(staleCloseParams[0].slice(-5), [
+      'entry-1',
+      'sl-1',
+      'tp-1',
+      'sl-2',
+      'tp-2',
+    ]);
+    assert.deepEqual(staleCloseParams[1].slice(-5), [
+      'entry-1',
+      'sl-1',
+      'tp-1',
+      'sl-2',
+      'tp-2',
+    ]);
+    assert.equal(result.insertedRecords, 5);
     assert.equal(result.failedAccounts, 0);
   } finally {
     (coreDataSource as any).query = originalQuery;
   }
+}
+
+function testOrdersSyncStaleCutoffFloorsToSqlSecond(): void {
+  const service = new InternalOrdersSyncService() as any;
+  const cutoff = service.toSqlSecondSafeStaleCutoff(
+    new Date('2026-05-05T16:43:33.987Z')
+  ) as Date;
+
+  assert.equal(cutoff.toISOString(), '2026-05-05T16:43:33.000Z');
 }
 
 async function testOrdersHistoryReconciliationPrunesDriftedTerminalRows(): Promise<void> {
@@ -1840,6 +1881,7 @@ async function run(): Promise<void> {
   await testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById();
+  testOrdersSyncStaleCutoffFloorsToSqlSecond();
   await testOrdersHistoryReconciliationPrunesDriftedTerminalRows();
   await testOrdersHistoryReconciliationKeepsProtectedTrackedRows();
   console.log('Positions/orders sync Phase 4 assertions passed.');

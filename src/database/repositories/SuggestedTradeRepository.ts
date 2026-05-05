@@ -98,6 +98,27 @@ export interface SuggestedTradeOperationalSnapshot {
   queueToOrderConversionRate: number | null;
 }
 
+export interface SuggestedTradeProtectionOperationalSnapshot {
+  tracked: number;
+  pending: number;
+  waitingForFill: number;
+  waitingForPosition: number;
+  attaching: number;
+  attached: number;
+  failed: number;
+  manualUnlinked: number;
+  staleManualUnlinked: number;
+  staleAttaching: number;
+  notRequired: number;
+  unknown: number;
+  actionable: number;
+  unresolved: number;
+  retriableFailed: number;
+  lastCheckedAt: Date | null;
+  lastAttachedAt: Date | null;
+  lastManualActionAt: Date | null;
+}
+
 export interface LinkedOrderSnapshot {
   orderStatus: string | null;
   statusRank: number | null;
@@ -138,6 +159,13 @@ export interface SuggestedTradeExecutionUpsertPayload {
   entryPrice?: string | null;
   stopLossPrice?: string | null;
   takeProfitPrice?: string | null;
+  protectionState?: string | null;
+  protectionSource?: string | null;
+  protectionPlan?: Record<string, unknown> | null;
+  protectionAttempts?: number | null;
+  protectionLastError?: string | null;
+  protectionCheckedAt?: Date | string | null;
+  protectionAttachedAt?: Date | string | null;
   submittedAt?: Date | string | null;
   linkedAt?: Date | string | null;
   lastSeenAt?: Date | string | null;
@@ -193,6 +221,28 @@ const normalizeOptionalNumber = (value: unknown): number | null => {
   return Number.isFinite(numeric) ? numeric : null;
 };
 
+const normalizeOperationalCount = (value: unknown): number => {
+  const numeric = normalizeOptionalNumber(value);
+  return numeric === null ? 0 : Math.max(0, Math.floor(numeric));
+};
+
+const normalizeOptionalUnsignedInteger = (value: unknown): number => {
+  const numeric = normalizeOptionalNumber(value);
+  if (numeric === null) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(numeric));
+};
+
+const normalizeOptionalRecord = (
+  value: Record<string, unknown> | null | undefined
+): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value;
+};
+
 const normalizeOptionalDate = (value: Date | string | null | undefined): Date | null => {
   if (!value) {
     return null;
@@ -213,6 +263,19 @@ const buildDedupeKey = (payload: SuggestedTradeInsertPayload): string =>
 
 const EXECUTION_LOOKUP_CHUNK_SIZE = 200;
 const TERMINAL_EXECUTION_STATES = ['closed', 'cancelled', 'rejected', 'expired', 'failed'];
+const REMEDIABLE_PROTECTION_STATES = [
+  'pending',
+  'waiting_for_fill',
+  'waiting_for_position',
+  'attaching',
+  'manual_unlinked',
+];
+const RETRIABLE_FAILED_PROTECTION_ERROR_PATTERNS = [
+  '%position not found%',
+  '%bad request%',
+  '%invalid stop loss price%',
+  '%replacement protection is required%',
+];
 
 @Service()
 export class SuggestedTradeRepository {
@@ -288,6 +351,13 @@ export class SuggestedTradeRepository {
       entryPrice: normalizeDecimal(payload.entryPrice),
       stopLossPrice: normalizeDecimal(payload.stopLossPrice),
       takeProfitPrice: normalizeDecimal(payload.takeProfitPrice),
+      protectionState: normalizeOptionalString(payload.protectionState)?.toLowerCase() ?? null,
+      protectionSource: normalizeOptionalString(payload.protectionSource)?.toLowerCase() ?? null,
+      protectionPlan: normalizeOptionalRecord(payload.protectionPlan),
+      protectionAttempts: normalizeOptionalUnsignedInteger(payload.protectionAttempts),
+      protectionLastError: normalizeOptionalString(payload.protectionLastError),
+      protectionCheckedAt: normalizeOptionalDate(payload.protectionCheckedAt),
+      protectionAttachedAt: normalizeOptionalDate(payload.protectionAttachedAt),
       submittedAt: normalizeOptionalDate(payload.submittedAt),
       linkedAt: normalizeOptionalDate(payload.linkedAt),
       lastSeenAt: normalizeOptionalDate(payload.lastSeenAt),
@@ -372,6 +442,12 @@ export class SuggestedTradeRepository {
     since: Date,
     limit = 20
   ): Promise<LinkedPositionSnapshot[]> {
+    const normalizedBrokerKey = brokerKey.toLowerCase();
+    const symbolLookupValues = this.buildSymbolLookupValues(normalizedBrokerKey, [symbol]);
+    if (!symbolLookupValues.length) {
+      return [];
+    }
+
     const rows = (await coreDataSource.query(
       `SELECT external_id AS externalId,
               status,
@@ -383,15 +459,15 @@ export class SuggestedTradeRepository {
         WHERE user_id = ?
           AND account_id = ?
           AND LOWER(broker_key) = ?
-          AND LOWER(symbol) = ?
+          AND LOWER(symbol) IN (${symbolLookupValues.map(() => '?').join(',')})
           AND last_seen_at >= ?
         ORDER BY status_rank DESC, last_seen_at DESC
         LIMIT ?`,
       [
         userId,
         accountId,
-        brokerKey.toLowerCase(),
-        symbol.toLowerCase(),
+        normalizedBrokerKey,
+        ...symbolLookupValues,
         since,
         Math.max(1, Math.floor(limit)),
       ]
@@ -503,17 +579,8 @@ export class SuggestedTradeRepository {
     accountId: string,
     symbols: string[]
   ): Promise<SuggestedTrade[]> {
-    const normalizedSymbols = Array.from(
-      new Set(
-        symbols
-          .map((value) =>
-            String(value || '')
-              .trim()
-              .toLowerCase()
-          )
-          .filter(Boolean)
-      )
-    );
+    const normalizedBrokerKey = brokerKey.toLowerCase();
+    const normalizedSymbols = this.buildSymbolLookupValues(normalizedBrokerKey, symbols);
     if (!normalizedSymbols.length) {
       return [];
     }
@@ -532,7 +599,7 @@ export class SuggestedTradeRepository {
             AND COALESCE(execution_row.order_id, '') <> ''
             AND LOWER(COALESCE(execution_row.execution_state, '')) <> 'closed'
             AND LOWER(suggested_trade.symbol) IN (${chunk.map(() => '?').join(',')})`,
-        [userId, brokerKey.toLowerCase(), accountId, ...chunk]
+        [userId, normalizedBrokerKey, accountId, ...chunk]
       )) as Array<{ id?: string }>;
 
       for (const row of rows) {
@@ -553,10 +620,9 @@ export class SuggestedTradeRepository {
     symbol: string,
     limit = 6
   ): Promise<SuggestedTrade[]> {
-    const normalizedSymbol = String(symbol || '')
-      .trim()
-      .toLowerCase();
-    if (!normalizedSymbol) {
+    const normalizedBrokerKey = brokerKey.toLowerCase();
+    const symbolLookupValues = this.buildSymbolLookupValues(normalizedBrokerKey, [symbol]);
+    if (!symbolLookupValues.length) {
       return [];
     }
 
@@ -568,7 +634,9 @@ export class SuggestedTradeRepository {
         WHERE execution_row.user_id = ?
           AND LOWER(COALESCE(execution_row.broker_key, '')) = ?
           AND COALESCE(execution_row.account_id, '') = ?
-          AND LOWER(COALESCE(suggested_trade.symbol, '')) = ?
+          AND LOWER(COALESCE(suggested_trade.symbol, '')) IN (${symbolLookupValues
+            .map(() => '?')
+            .join(',')})
         ORDER BY COALESCE(
           execution_row.last_seen_at,
           execution_row.position_closed_at,
@@ -578,7 +646,13 @@ export class SuggestedTradeRepository {
           suggested_trade.created_at
         ) DESC
         LIMIT ?`,
-      [userId, brokerKey.toLowerCase(), accountId, normalizedSymbol, Math.max(1, Math.floor(limit))]
+      [
+        userId,
+        normalizedBrokerKey,
+        accountId,
+        ...symbolLookupValues,
+        Math.max(1, Math.floor(limit)),
+      ]
     )) as Array<{ id?: string }>;
 
     return this.loadSuggestedTradesByIds(
@@ -671,6 +745,66 @@ export class SuggestedTradeRepository {
 
   async countActivePaperExecutionsForAutomation(automationId: string): Promise<number> {
     return this.countActiveExecutionsForAutomation(automationId, 'paper');
+  }
+
+  private buildSymbolLookupValues(brokerKey: string, symbols: string[]): string[] {
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    const values = new Set<string>();
+
+    for (const symbol of symbols) {
+      if (normalizedBrokerKey === 'delta_exchange') {
+        for (const equivalent of this.buildDeltaSymbolEquivalents(symbol)) {
+          values.add(equivalent.toLowerCase());
+        }
+        continue;
+      }
+
+      const normalized = String(symbol || '')
+        .trim()
+        .toLowerCase();
+      if (normalized) {
+        values.add(normalized);
+      }
+    }
+
+    return Array.from(values);
+  }
+
+  private buildDeltaSymbolEquivalents(symbol: unknown): string[] {
+    const normalized = this.normalizeDeltaSymbol(symbol);
+    if (!normalized) {
+      return [];
+    }
+
+    const values = new Set<string>([normalized]);
+    const base = this.resolveDeltaBaseSymbol(normalized);
+    if (base && base !== normalized) {
+      values.add(`${base}USDT`);
+      values.add(`${base}USDC`);
+      values.add(`${base}USD`);
+    }
+
+    return Array.from(values);
+  }
+
+  private normalizeDeltaSymbol(value: unknown): string {
+    return String(value || '')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+  }
+
+  private resolveDeltaBaseSymbol(value: unknown): string {
+    const normalized = this.normalizeDeltaSymbol(value);
+    for (const quote of ['USDT', 'USDC', 'USD']) {
+      if (normalized.endsWith(quote) && normalized.length > quote.length) {
+        return normalized.slice(0, -quote.length);
+      }
+    }
+
+    return normalized;
   }
 
   private parsePayloadObject(payload: unknown): Record<string, unknown> | null {
@@ -850,6 +984,73 @@ export class SuggestedTradeRepository {
     return builder.take(limit).getMany();
   }
 
+  async listProtectionRemediationCandidates(
+    limit: number,
+    staleBefore: Date
+  ): Promise<SuggestedTrade[]> {
+    const builder = this.repository
+      .createQueryBuilder('suggested_trade')
+      .leftJoinAndSelect('suggested_trade.executionRecord', 'execution_record')
+      .where("LOWER(COALESCE(execution_record.executionMode, '')) = 'live'")
+      .andWhere(
+        `(
+          LOWER(COALESCE(execution_record.protectionState, '')) IN (:...states)
+          OR (
+            LOWER(COALESCE(execution_record.protectionState, '')) = 'failed'
+            AND COALESCE(execution_record.protectionAttempts, 0) < 3
+            AND (${RETRIABLE_FAILED_PROTECTION_ERROR_PATTERNS.map(
+              (_pattern, index) =>
+                `LOWER(COALESCE(execution_record.protectionLastError, '')) LIKE :retryErrorPattern${index}`
+            ).join(' OR ')})
+          )
+        )`,
+        {
+          states: REMEDIABLE_PROTECTION_STATES,
+          ...Object.fromEntries(
+            RETRIABLE_FAILED_PROTECTION_ERROR_PATTERNS.map((pattern, index) => [
+              `retryErrorPattern${index}`,
+              pattern,
+            ])
+          ),
+        }
+      )
+      .andWhere(
+        "LOWER(COALESCE(execution_record.executionState, '')) NOT IN (:...terminalStates)",
+        { terminalStates: TERMINAL_EXECUTION_STATES }
+      )
+      .andWhere(
+        `(
+          execution_record.protection_checked_at IS NULL
+          OR execution_record.protection_checked_at <= :staleBefore
+        )`,
+        { staleBefore }
+      )
+      .addSelect(
+        `COALESCE(
+          execution_record.protection_checked_at,
+          execution_record.updated_at,
+          execution_record.linked_at,
+          execution_record.created_at,
+          suggested_trade.updated_at
+        )`,
+        'protection_remediation_sort_checked_at'
+      )
+      .addSelect(
+        `CASE
+          WHEN COALESCE(execution_record.order_id, '') <> '' THEN 0
+          WHEN COALESCE(execution_record.position_id, '') <> '' THEN 0
+          WHEN LOWER(COALESCE(execution_record.execution_state, '')) IN ('linked', 'working', 'filled') THEN 0
+          ELSE 1
+        END`,
+        'protection_remediation_priority'
+      )
+      .orderBy('protection_remediation_priority', 'ASC')
+      .addOrderBy('protection_remediation_sort_checked_at', 'ASC')
+      .addOrderBy('suggested_trade.signalTime', 'ASC');
+
+    return builder.take(Math.max(1, Math.floor(limit))).getMany();
+  }
+
   async getExecutionSyncSummary(
     userId: string,
     query: Omit<SuggestedTradeSummaryQuery, 'userId'> = {},
@@ -1025,6 +1226,75 @@ export class SuggestedTradeRepository {
       closed: Number(raw?.closed || 0),
       queueToOrderConversionRate:
         accepted > 0 ? Number((convertedToOrder / accepted).toFixed(4)) : null,
+    };
+  }
+
+  async getProtectionOperationalSnapshot(
+    manualRecoveryStaleBefore = new Date(Date.now() - 10 * 60 * 1000),
+    attachingStaleBefore = manualRecoveryStaleBefore
+  ): Promise<SuggestedTradeProtectionOperationalSnapshot> {
+    const retryableFailedSql = `LOWER(COALESCE(protection_last_error, '')) LIKE '%position not found%'
+      OR LOWER(COALESCE(protection_last_error, '')) LIKE '%bad request%'
+      OR LOWER(COALESCE(protection_last_error, '')) LIKE '%invalid stop loss price%'
+      OR LOWER(COALESCE(protection_last_error, '')) LIKE '%replacement protection is required%'`;
+    const activeProtectionSql = `LOWER(COALESCE(execution_state, '')) NOT IN ('closed', 'cancelled', 'rejected', 'expired', 'failed')
+      AND LOWER(COALESCE(position_status, '')) NOT IN ('closed', 'liquidated')`;
+    const rows = (await coreDataSource.query(
+      `SELECT COUNT(*) AS tracked,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'pending' AND ${activeProtectionSql} THEN 1 ELSE 0 END), 0) AS pending,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'waiting_for_fill' AND ${activeProtectionSql} THEN 1 ELSE 0 END), 0) AS waitingForFill,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'waiting_for_position' AND ${activeProtectionSql} THEN 1 ELSE 0 END), 0) AS waitingForPosition,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'attaching' AND ${activeProtectionSql} THEN 1 ELSE 0 END), 0) AS attaching,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'attached' THEN 1 ELSE 0 END), 0) AS attached,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'failed' AND ${activeProtectionSql} THEN 1 ELSE 0 END), 0) AS failed,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'manual_unlinked' AND ${activeProtectionSql} THEN 1 ELSE 0 END), 0) AS manualUnlinked,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'manual_unlinked' AND ${activeProtectionSql} AND (protection_checked_at IS NULL OR protection_checked_at < ?) THEN 1 ELSE 0 END), 0) AS staleManualUnlinked,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'attaching' AND ${activeProtectionSql} AND (protection_checked_at IS NULL OR protection_checked_at < ?) THEN 1 ELSE 0 END), 0) AS staleAttaching,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'not_required' THEN 1 ELSE 0 END), 0) AS notRequired,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'unknown' AND ${activeProtectionSql} THEN 1 ELSE 0 END), 0) AS unknown,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) IN ('failed', 'manual_unlinked') AND ${activeProtectionSql} THEN 1 ELSE 0 END), 0) AS actionable,
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(protection_state, '')) IN ('pending', 'waiting_for_fill', 'waiting_for_position', 'attaching', 'failed') AND ${activeProtectionSql} THEN 1 ELSE 0 END), 0) AS unresolved,
+              COALESCE(SUM(CASE
+                WHEN LOWER(COALESCE(protection_state, '')) = 'failed'
+                 AND ${activeProtectionSql}
+                 AND COALESCE(protection_attempts, 0) < 3
+                 AND (${retryableFailedSql})
+                THEN 1 ELSE 0 END), 0) AS retriableFailed,
+              MAX(protection_checked_at) AS lastCheckedAt,
+              MAX(protection_attached_at) AS lastAttachedAt,
+              MAX(CASE WHEN LOWER(COALESCE(protection_state, '')) = 'manual_unlinked' AND ${activeProtectionSql} THEN protection_checked_at ELSE NULL END) AS lastManualActionAt
+         FROM suggested_trade_executions
+        WHERE LOWER(COALESCE(execution_mode, '')) = 'live'
+          AND (
+            protection_state IS NOT NULL
+            OR stop_loss_price IS NOT NULL
+            OR take_profit_price IS NOT NULL
+          )`,
+      [manualRecoveryStaleBefore, attachingStaleBefore]
+    )) as Array<Record<string, unknown>>;
+
+    const row = rows[0] ?? {};
+    return {
+      tracked: normalizeOperationalCount(row.tracked),
+      pending: normalizeOperationalCount(row.pending),
+      waitingForFill: normalizeOperationalCount(row.waitingForFill),
+      waitingForPosition: normalizeOperationalCount(row.waitingForPosition),
+      attaching: normalizeOperationalCount(row.attaching),
+      attached: normalizeOperationalCount(row.attached),
+      failed: normalizeOperationalCount(row.failed),
+      manualUnlinked: normalizeOperationalCount(row.manualUnlinked),
+      staleManualUnlinked: normalizeOperationalCount(row.staleManualUnlinked),
+      staleAttaching: normalizeOperationalCount(row.staleAttaching),
+      notRequired: normalizeOperationalCount(row.notRequired),
+      unknown: normalizeOperationalCount(row.unknown),
+      actionable: normalizeOperationalCount(row.actionable),
+      unresolved: normalizeOperationalCount(row.unresolved),
+      retriableFailed: normalizeOperationalCount(row.retriableFailed),
+      lastCheckedAt: normalizeOptionalDate(row.lastCheckedAt as Date | string | null | undefined),
+      lastAttachedAt: normalizeOptionalDate(row.lastAttachedAt as Date | string | null | undefined),
+      lastManualActionAt: normalizeOptionalDate(
+        row.lastManualActionAt as Date | string | null | undefined
+      ),
     };
   }
 

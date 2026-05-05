@@ -10,6 +10,11 @@ import { SuggestedTradesOverviewService } from './SuggestedTradesOverviewService
 import { SuggestedTradesService } from './SuggestedTradesService';
 
 const HEALTH_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const PROTECTION_MANUAL_RECOVERY_STALE_MS = 10 * 60 * 1000;
+const PROTECTION_ATTACHING_STALE_MS =
+  Math.max(1, Number(process.env.SUGGESTED_TRADES_PROTECTION_ATTACHING_STALE_MINUTES || 10)) *
+  60 *
+  1000;
 
 export interface SuggestedTradesHealthSnapshot {
   status: 'ok' | 'degraded' | 'down' | 'disabled';
@@ -37,6 +42,27 @@ export interface SuggestedTradesHealthSnapshot {
   filledSuggestions: number;
   closedSuggestions: number;
   queueToOrderConversionRate: number | null;
+  protectionTrackedTrades: number;
+  protectionPendingTrades: number;
+  protectionWaitingForFillTrades: number;
+  protectionWaitingForPositionTrades: number;
+  protectionAttachingTrades: number;
+  protectionAttachedTrades: number;
+  protectionFailedTrades: number;
+  protectionManualActionTrades: number;
+  protectionStaleManualActionTrades: number;
+  protectionManualRecoveryStaleAfterMs: number;
+  protectionStaleAttachingTrades: number;
+  protectionAttachingStaleAfterMs: number;
+  protectionNotRequiredTrades: number;
+  protectionUnknownTrades: number;
+  protectionActionableTrades: number;
+  protectionUnresolvedTrades: number;
+  protectionRetriableFailedTrades: number;
+  protectionAttachmentRate: number | null;
+  protectionLastCheckedAt: string | null;
+  protectionLastAttachedAt: string | null;
+  protectionLastManualActionAt: string | null;
   queueToOrderSuccess24h: number;
   summaryRuns24h: number;
   suggestedTradesCreated24h: number;
@@ -85,6 +111,10 @@ export class SuggestedTradesHealthService {
     } = {}
   ): Promise<SuggestedTradesHealthSnapshot> {
     const createdAfter = new Date(Date.now() - HEALTH_LOOKBACK_MS);
+    const protectionManualRecoveryStaleBefore = new Date(
+      Date.now() - PROTECTION_MANUAL_RECOVERY_STALE_MS
+    );
+    const protectionAttachingStaleBefore = new Date(Date.now() - PROTECTION_ATTACHING_STALE_MS);
     const normalizedProbeUserId = this.normalizeOptionalText(options.probeUserId);
 
     const [
@@ -95,6 +125,7 @@ export class SuggestedTradesHealthService {
       refreshFailures24h,
       stateTransitionFailures24h,
       queueToOrderSuccess24h,
+      protectionSnapshot,
       freshnessAudit,
       latencyProbe,
     ] = await Promise.all([
@@ -124,6 +155,10 @@ export class SuggestedTradesHealthService {
         titleLike: 'routed to orders',
         createdAfter,
       }),
+      this.suggestedTradeRepository.getProtectionOperationalSnapshot(
+        protectionManualRecoveryStaleBefore,
+        protectionAttachingStaleBefore
+      ),
       this.suggestedTradesService.getSuggestedTradesFreshnessAudit({
         lookbackDays: 7,
       }),
@@ -152,10 +187,47 @@ export class SuggestedTradesHealthService {
         `${alertMetrics.openAlerts} open Suggested Trades alert${alertMetrics.openAlerts === 1 ? '' : 's'} remain in the inbox.`
       );
     }
+    if (protectionSnapshot.failed > 0) {
+      detailParts.push(
+        `${protectionSnapshot.failed} live protection remediation failure${protectionSnapshot.failed === 1 ? '' : 's'} remain.`
+      );
+    }
+    if (protectionSnapshot.manualUnlinked > 0) {
+      detailParts.push(
+        `${protectionSnapshot.manualUnlinked} live position${protectionSnapshot.manualUnlinked === 1 ? '' : 's'} need manual SL/TP protection action.`
+      );
+    }
+    if (protectionSnapshot.staleManualUnlinked > 0) {
+      detailParts.push(
+        `${protectionSnapshot.staleManualUnlinked} manual SL/TP protection recovery check${protectionSnapshot.staleManualUnlinked === 1 ? '' : 's'} are stale.`
+      );
+    }
+    if (protectionSnapshot.staleAttaching > 0) {
+      detailParts.push(
+        `${protectionSnapshot.staleAttaching} live protection replacement submission${protectionSnapshot.staleAttaching === 1 ? '' : 's'} are stuck waiting for active order snapshots.`
+      );
+    }
+    if (protectionSnapshot.unresolved > 0) {
+      detailParts.push(
+        `${protectionSnapshot.unresolved} live protection state${protectionSnapshot.unresolved === 1 ? '' : 's'} remain unresolved.`
+      );
+    }
     if (latencyProbe.latencyProbeError) {
       detailParts.push(`Latency probe failed: ${latencyProbe.latencyProbeError}`);
     }
 
+    const protectionAttachmentDenominator =
+      protectionSnapshot.attached +
+      protectionSnapshot.failed +
+      protectionSnapshot.manualUnlinked +
+      protectionSnapshot.pending +
+      protectionSnapshot.waitingForFill +
+      protectionSnapshot.waitingForPosition +
+      protectionSnapshot.attaching;
+    const protectionAttachmentRate =
+      protectionAttachmentDenominator > 0
+        ? Number((protectionSnapshot.attached / protectionAttachmentDenominator).toFixed(4))
+        : null;
     const degraded =
       env.suggestedTrades.rolloutEnabled &&
       (syncStatus.state === 'attention' ||
@@ -163,6 +235,11 @@ export class SuggestedTradesHealthService {
         refreshFailures24h > 0 ||
         stateTransitionFailures24h > 0 ||
         alertMetrics.openAlerts > 0 ||
+        protectionSnapshot.failed > 0 ||
+        protectionSnapshot.manualUnlinked > 0 ||
+        protectionSnapshot.staleManualUnlinked > 0 ||
+        protectionSnapshot.staleAttaching > 0 ||
+        protectionSnapshot.unresolved > 0 ||
         Boolean(latencyProbe.latencyProbeError));
 
     return {
@@ -191,6 +268,27 @@ export class SuggestedTradesHealthService {
       filledSuggestions: operationalSnapshot.filled,
       closedSuggestions: operationalSnapshot.closed,
       queueToOrderConversionRate: operationalSnapshot.queueToOrderConversionRate,
+      protectionTrackedTrades: protectionSnapshot.tracked,
+      protectionPendingTrades: protectionSnapshot.pending,
+      protectionWaitingForFillTrades: protectionSnapshot.waitingForFill,
+      protectionWaitingForPositionTrades: protectionSnapshot.waitingForPosition,
+      protectionAttachingTrades: protectionSnapshot.attaching,
+      protectionAttachedTrades: protectionSnapshot.attached,
+      protectionFailedTrades: protectionSnapshot.failed,
+      protectionManualActionTrades: protectionSnapshot.manualUnlinked,
+      protectionStaleManualActionTrades: protectionSnapshot.staleManualUnlinked,
+      protectionManualRecoveryStaleAfterMs: PROTECTION_MANUAL_RECOVERY_STALE_MS,
+      protectionStaleAttachingTrades: protectionSnapshot.staleAttaching,
+      protectionAttachingStaleAfterMs: PROTECTION_ATTACHING_STALE_MS,
+      protectionNotRequiredTrades: protectionSnapshot.notRequired,
+      protectionUnknownTrades: protectionSnapshot.unknown,
+      protectionActionableTrades: protectionSnapshot.actionable,
+      protectionUnresolvedTrades: protectionSnapshot.unresolved,
+      protectionRetriableFailedTrades: protectionSnapshot.retriableFailed,
+      protectionAttachmentRate,
+      protectionLastCheckedAt: this.toIsoString(protectionSnapshot.lastCheckedAt),
+      protectionLastAttachedAt: this.toIsoString(protectionSnapshot.lastAttachedAt),
+      protectionLastManualActionAt: this.toIsoString(protectionSnapshot.lastManualActionAt),
       queueToOrderSuccess24h,
       summaryRuns24h: generationMetrics.summaryRuns,
       suggestedTradesCreated24h: generationMetrics.suggestedTradesCreated,
@@ -301,5 +399,16 @@ export class SuggestedTradesHealthService {
   private normalizeOptionalText(value: unknown): string | null {
     const normalized = String(value || '').trim();
     return normalized ? normalized : null;
+  }
+
+  private toIsoString(value: Date | string | null | undefined): string | null {
+    if (!value) {
+      return null;
+    }
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+    return date.toISOString();
   }
 }

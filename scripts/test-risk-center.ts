@@ -629,8 +629,17 @@ async function risk_centerGuard01(): Promise<void> {
         grossExposure: 9000,
         reservedOrderMargin: 200,
       },
-      assetSnapshot: null,
-      brokerAssetSnapshot: null,
+      assetSnapshot: {
+        symbol: 'BTCUSDT',
+        grossExposure: 9000,
+        reservedOrderMargin: 200,
+      },
+      brokerAssetSnapshot: {
+        brokerKey: 'mudrex',
+        symbol: 'BTCUSDT',
+        grossExposure: 9000,
+        reservedOrderMargin: 200,
+      },
       grossExposureDelta: 100,
       netExposureDelta: 100,
       openOrderExposureDelta: 100,
@@ -662,9 +671,131 @@ async function risk_centerGuard01(): Promise<void> {
     const brokerAllocationRule = futuresRuleDrafts.find(
       (item: Record<string, unknown>) => item.ruleCode === 'broker_total_allocation'
     );
-    assert.equal(brokerAllocationRule?.status, 'critical');
-    assert.equal(brokerAllocationRule?.blocking, true);
-    assert.equal(brokerAllocationRule?.actualValue, 91);
+    assert.equal(brokerAllocationRule?.status, 'ok');
+    assert.equal(brokerAllocationRule?.blocking, false);
+    assert.equal(brokerAllocationRule?.metricName, 'marginAllocationPct');
+    assert.equal(brokerAllocationRule?.actualValue, 2.1);
+
+    const assetConcentrationRule = futuresRuleDrafts.find(
+      (item: Record<string, unknown>) => item.ruleCode === 'asset_concentration'
+    );
+    assert.equal(assetConcentrationRule?.status, 'ok');
+    assert.equal(assetConcentrationRule?.blocking, false);
+    assert.equal(assetConcentrationRule?.metricName, 'marginConcentrationPct');
+    assert.equal(assetConcentrationRule?.actualValue, 2.1);
+
+    const brokerAssetConcentrationRule = futuresRuleDrafts.find(
+      (item: Record<string, unknown>) => item.ruleCode === 'broker_asset_concentration'
+    );
+    assert.equal(brokerAssetConcentrationRule?.status, 'ok');
+    assert.equal(brokerAssetConcentrationRule?.blocking, false);
+    assert.equal(brokerAssetConcentrationRule?.metricName, 'marginConcentrationPct');
+    assert.equal(brokerAssetConcentrationRule?.actualValue, 2.1);
+
+    const marginBlockedRuleDrafts = service.buildRuleEvaluationDrafts({
+      snapshot: {
+        portfolioEquity: 10000,
+        grossExposure: 9000,
+        reservedOrderMargin: 6900,
+      },
+      route: {
+        routeMode: 'fixed',
+        brokerKey: 'mudrex',
+        accountId: 'account-1',
+        accountName: 'Mudrex Main',
+      },
+      order: {
+        symbol: 'BTCUSDT',
+        timeframe: '1h',
+        side: 'BUY',
+        orderType: 'market',
+        timeInForce: null,
+        quantityMode: 'notional',
+        quantity: null,
+        notional: 100,
+        riskPercent: null,
+        entryPrice: 100,
+        stopLossPrice: 95,
+        takeProfitTargets: [110],
+        leverage: 10,
+        reduceOnly: false,
+      },
+      coverage: {
+        accountId: 'account-1',
+      },
+      freshness: {
+        freshnessState: 'fresh',
+        snapshotLagMinutes: 1,
+        blocking: false,
+        message: 'Risk snapshot freshness is within the expected decision window.',
+      },
+      globalThresholds: {
+        ...thresholds,
+        minLeverage: 1,
+        minNotionalPerTrade: 100,
+        maxOrderAllocation: 10,
+        maxTotalAllocation: 70,
+      },
+      routePolicyContext: {
+        id: 'policy-context-1',
+        enforceHardBlock: true,
+      },
+      routeThresholds: {
+        ...thresholds,
+        minLeverage: 1,
+        minNotionalPerTrade: 100,
+        maxOrderAllocation: 10,
+        maxTotalAllocation: 70,
+      },
+      accountSnapshot: {
+        accountId: 'account-1',
+        trackedBalance: 10000,
+        grossExposure: 9000,
+        reservedOrderMargin: 6900,
+      },
+      brokerSnapshot: {
+        brokerKey: 'mudrex',
+        trackedBalance: 10000,
+        grossExposure: 9000,
+        reservedOrderMargin: 6900,
+      },
+      assetSnapshot: {
+        symbol: 'BTCUSDT',
+        grossExposure: 100,
+        reservedOrderMargin: 4400,
+      },
+      brokerAssetSnapshot: {
+        brokerKey: 'mudrex',
+        symbol: 'BTCUSDT',
+        grossExposure: 100,
+        reservedOrderMargin: 4400,
+      },
+      grossExposureDelta: 100,
+      netExposureDelta: 100,
+      openOrderExposureDelta: 100,
+      reservedOrderMarginDelta: 200,
+      notional: 100,
+    });
+    const marginBlockedBrokerRule = marginBlockedRuleDrafts.find(
+      (item: Record<string, unknown>) => item.ruleCode === 'broker_total_allocation'
+    );
+    assert.equal(marginBlockedBrokerRule?.status, 'critical');
+    assert.equal(marginBlockedBrokerRule?.blocking, true);
+    assert.equal(marginBlockedBrokerRule?.actualValue, 71);
+
+    const marginBlockedAssetRule = marginBlockedRuleDrafts.find(
+      (item: Record<string, unknown>) => item.ruleCode === 'asset_concentration'
+    );
+    assert.equal(marginBlockedAssetRule?.status, 'critical');
+    assert.equal(marginBlockedAssetRule?.blocking, true);
+    assert.equal(marginBlockedAssetRule?.actualValue, 46);
+
+    const marginBlockedBrokerAssetRule = marginBlockedRuleDrafts.find(
+      (item: Record<string, unknown>) => item.ruleCode === 'broker_asset_concentration'
+    );
+    assert.equal(marginBlockedBrokerAssetRule?.status, 'critical');
+    assert.equal(marginBlockedBrokerAssetRule?.blocking, true);
+    assert.equal(marginBlockedBrokerAssetRule?.actualValue, 46);
   }
 
   async function runPreviewPreTradeCheckAssertions(): Promise<void> {

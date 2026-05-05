@@ -1302,6 +1302,40 @@ export class AutomationExecutionService {
       });
     }
 
+    if (
+      evaluation.evaluatedSymbols === 0 &&
+      this.isClosedCandleReadinessSkip(evaluation.items)
+    ) {
+      await this.operationalEventService.logActivity(automation.userId, {
+        type: 'Automation',
+        title: `Trade suggestions skipped: ${automation.name}`,
+        status: 'Success',
+        route: 'Automations',
+        stream: 'Suggestions',
+        referenceId: automation.id,
+        description: `No closed candles were ready yet across ${symbolsProcessed} processed symbol(s); ${symbolsSkipped} symbol(s) skipped`,
+      });
+
+      return {
+        inserted,
+        duplicates,
+        symbolsProcessed,
+        symbolsSkipped,
+        symbolsEvaluated: evaluation.evaluatedSymbols,
+        signalsDetected,
+        autoPaperPlaced,
+        autoPaperBlocked,
+        autoPaperSkipped,
+        autoPaperFailed,
+        autoLiveReady,
+        autoLivePlaced,
+        autoLiveBlocked,
+        autoLiveSkipped,
+        autoLiveDisabled,
+        autoLiveFailed,
+      };
+    }
+
     if (evaluation.evaluatedSymbols === 0) {
       throw new BadRequestAppError(
         'No recent closed candles were available to evaluate this automation'
@@ -2167,6 +2201,27 @@ export class AutomationExecutionService {
     }
     parts.push(`Execution timeframe: ${context.timeframe}.`);
     return parts.join(' ');
+  }
+
+  private isClosedCandleReadinessSkip(
+    items: Array<{ status?: string; reason?: string | null }>
+  ): boolean {
+    if (!items.length) {
+      return false;
+    }
+
+    return items.every((item) => {
+      const status = String(item.status || '').trim().toLowerCase();
+      const reason = String(item.reason || '').trim().toLowerCase();
+      if (status !== 'no_data' && status !== 'stale') {
+        return false;
+      }
+      return (
+        reason.includes('closed candle') ||
+        reason.includes('no candles returned') ||
+        reason.includes('no candles available')
+      );
+    });
   }
 
   private readString(...values: unknown[]): string | null {

@@ -922,6 +922,30 @@ async function testBrokerKeyFilterIsPassedToCandidateQuery(): Promise<void> {
   assert.equal(sawBrokerFilter, true);
 }
 
+async function testSuggestedTradeSubmissionsAreExcludedByDefault(): Promise<void> {
+  const service = createService();
+  let sawSuggestedTradeExclusion = false;
+
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        sawSuggestedTradeExclusion = sql.includes('suggested_trade_id IS NULL');
+        return [];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: false,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
+  );
+
+  assert.equal(response.status, 'ok');
+  assert.equal(response.monitoredSubmissions, 0);
+  assert.equal(sawSuggestedTradeExclusion, true);
+}
+
 async function main(): Promise<void> {
   await testHealthyProtectedCanaryDoesNotAlert();
   await testMudrexOpenPositionProtectionCanComeFromPositionSnapshot();
@@ -938,6 +962,7 @@ async function main(): Promise<void> {
   await testExistingCanaryAlertIsRefreshedWhenLifecycleChanges();
   await testDisabledMonitorSkipsQueries();
   await testBrokerKeyFilterIsPassedToCandidateQuery();
+  await testSuggestedTradeSubmissionsAreExcludedByDefault();
   console.log('Broker canary protection monitor assertions passed.');
 }
 

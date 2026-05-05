@@ -146,6 +146,114 @@ export class ExchangeAssetRepository {
     };
   }
 
+  async upsertSystemAssets(
+    source: string,
+    assets: ExchangeAssetUpsertPayload[],
+    attempted: number
+  ): Promise<ExchangeAssetSyncResult> {
+    const payloadBySymbol = new Map<string, ExchangeAssetUpsertPayload>();
+    for (const asset of assets) {
+      const symbolKey = String(asset.symbol || '')
+        .trim()
+        .toUpperCase();
+      if (!symbolKey) {
+        continue;
+      }
+      payloadBySymbol.set(symbolKey, {
+        ...asset,
+        source,
+        symbol: String(asset.symbol || '').trim().toUpperCase(),
+      });
+    }
+
+    const payload = Array.from(payloadBySymbol.values());
+    const symbols = payload.map((item) => item.symbol);
+    const existingAssets = symbols.length
+      ? await this.repository
+          .createQueryBuilder('asset')
+          .where('LOWER(asset.source) = LOWER(:source)', { source })
+          .andWhere('UPPER(asset.symbol) IN (:...symbols)', { symbols })
+          .getMany()
+      : [];
+
+    const existingBySymbol = new Map(
+      existingAssets.map((item) => [
+        String(item.symbol || '')
+          .trim()
+          .toUpperCase(),
+        item,
+      ])
+    );
+
+    let inserted = 0;
+    let updated = 0;
+    const changes: ExchangeAssetSyncResult['changes'] = [];
+    const recordsToSave: Partial<ExchangeAsset>[] = [];
+
+    for (const item of payload) {
+      const symbolKey = String(item.symbol || '')
+        .trim()
+        .toUpperCase();
+      const existing = existingBySymbol.get(symbolKey);
+      if (!existing) {
+        inserted += 1;
+        recordsToSave.push({ ...item });
+        changes.push({
+          symbol: item.symbol,
+          externalId: item.externalId,
+          assetId: item.assetId,
+          actionType: 'inserted',
+        });
+        continue;
+      }
+
+      const nextBrokerId = item.brokerId ?? null;
+      const hasChange =
+        String(existing.externalId || '') !== item.externalId ||
+        String(existing.assetId || '') !== item.assetId ||
+        String(existing.name || '') !== item.name ||
+        String(existing.symbol || '').toUpperCase() !== symbolKey ||
+        (existing.brokerId ?? null) !== nextBrokerId;
+
+      if (!hasChange) {
+        continue;
+      }
+
+      updated += 1;
+      recordsToSave.push({
+        id: existing.id,
+        ...item,
+        brokerId: nextBrokerId,
+      });
+      changes.push({
+        symbol: item.symbol,
+        externalId: item.externalId,
+        assetId: item.assetId,
+        actionType: 'updated',
+      });
+    }
+
+    if (recordsToSave.length > 0) {
+      await this.repository.save(recordsToSave);
+    }
+
+    const totalStored = await this.repository.count({
+      where: {
+        source,
+      },
+    });
+
+    return {
+      attempted,
+      matched: payload.length,
+      inserted,
+      updated,
+      skipped: Math.max(attempted - payload.length, 0),
+      totalStored,
+      changes,
+    };
+  }
+
   async getSystemAssetBySourceAndExternalId(
     source: string,
     externalId: string

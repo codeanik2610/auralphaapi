@@ -1433,6 +1433,13 @@ export class BaselineCoreSchema1800000000000 implements MigrationInterface {
   \`entry_price\` decimal(30,12) DEFAULT NULL,
   \`stop_loss_price\` decimal(30,12) DEFAULT NULL,
   \`take_profit_price\` decimal(30,12) DEFAULT NULL,
+  \`protection_state\` varchar(32) DEFAULT NULL,
+  \`protection_source\` varchar(64) DEFAULT NULL,
+  \`protection_plan_json\` json DEFAULT NULL,
+  \`protection_attempts\` int unsigned NOT NULL DEFAULT '0',
+  \`protection_last_error\` text,
+  \`protection_checked_at\` timestamp NULL DEFAULT NULL,
+  \`protection_attached_at\` timestamp NULL DEFAULT NULL,
   \`submitted_at\` timestamp NULL DEFAULT NULL,
   \`linked_at\` timestamp NULL DEFAULT NULL,
   \`last_seen_at\` timestamp NULL DEFAULT NULL,
@@ -1456,6 +1463,7 @@ export class BaselineCoreSchema1800000000000 implements MigrationInterface {
   KEY \`idx_suggested_trade_executions_user_paper_order_lookup\` (\`user_id\`,\`paper_order_id\`),
   KEY \`idx_suggested_trade_executions_user_position_lookup\` (\`user_id\`,\`broker_key\`,\`account_id\`,\`position_id\`),
   KEY \`idx_suggested_trade_executions_user_state_seen_at\` (\`user_id\`,\`broker_key\`,\`account_id\`,\`execution_state\`,\`last_seen_at\`),
+  KEY \`idx_suggested_trade_executions_protection_state\` (\`user_id\`,\`broker_key\`,\`account_id\`,\`protection_state\`,\`updated_at\`),
   KEY \`idx_suggested_trade_executions_pre_trade_state\` (\`user_id\`,\`pre_trade_state\`,\`updated_at\`),
   KEY \`idx_suggested_trade_executions_pre_trade_check\` (\`pre_trade_check_id\`),
   CONSTRAINT \`fk_suggested_trade_executions_trade\` FOREIGN KEY (\`suggested_trade_id\`) REFERENCES \`suggested_trades\` (\`id\`) ON DELETE CASCADE
@@ -1644,7 +1652,7 @@ export class BaselineCoreSchema1800000000000 implements MigrationInterface {
   KEY \`fk_watchlist_items_watchlist_owner\` (\`watchlistId\`,\`user_id\`),
   CONSTRAINT \`FK_710da2b72379823ed515e5ea9eb\` FOREIGN KEY (\`watchlistId\`) REFERENCES \`watchlists\` (\`id\`) ON DELETE CASCADE,
   CONSTRAINT \`fk_watchlist_items_watchlist_owner\` FOREIGN KEY (\`watchlistId\`, \`user_id\`) REFERENCES \`watchlists\` (\`id\`, \`user_id\`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`,
   ];
 
   private readonly dropTables = [

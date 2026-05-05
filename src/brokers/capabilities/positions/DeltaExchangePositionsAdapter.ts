@@ -529,7 +529,11 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     const direction = isLong ? 1 : -1;
     const unrealizedPnl = direction * (markPrice - entryPrice) * quantity;
     const realizedPnl = this.toNumber(item.realized_pnl);
-    const leverage = this.toPositiveNumericString(item.leverage);
+    const brokerLeverage = this.toPositiveNumericString(item.leverage);
+    const derivedLeverage =
+      brokerLeverage ??
+      this.deriveLeverageFromMargin(item.margin, quantity, entryPrice, markPrice);
+    const leverage = brokerLeverage ?? derivedLeverage;
     return {
       created_at: item.created_at ?? '',
       updated_at: item.updated_at ?? item.created_at ?? '',
@@ -542,14 +546,22 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
       base_quantity: baseQuantity !== null ? String(baseQuantity) : null,
       contract_value: contractValue ? String(contractValue) : null,
       contract_unit_currency: product?.contract_unit_currency ?? null,
+      margin: item.margin === null || item.margin === undefined ? null : String(item.margin),
       leverage,
-      ...(leverage
+      ...(brokerLeverage
         ? {
-            position_leverage: leverage,
-            observed_position_leverage: leverage,
+            position_leverage: brokerLeverage,
+            observed_position_leverage: brokerLeverage,
             leverage_source: 'broker_position',
           }
-        : {}),
+        : derivedLeverage
+          ? {
+              position_leverage: derivedLeverage,
+              derived_position_leverage: derivedLeverage,
+              leverage_calculation_basis: 'entry_notional_over_margin',
+              leverage_source: 'derived_position_margin',
+            }
+          : {}),
       liquidation_price: String(item.liquidation_price ?? '0'),
       order_type: isLong ? 'buy' : 'sell',
       side: isLong ? 'Long' : 'Short',
@@ -562,6 +574,28 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
       unrealized_pnl: unrealizedPnl,
       realized: realizedPnl,
     };
+  }
+
+  private deriveLeverageFromMargin(
+    marginValue: string | number | null | undefined,
+    quantity: number,
+    entryPrice: number,
+    markPrice: number
+  ): string | null {
+    const margin = this.toNumber(marginValue);
+    const price = entryPrice > 0 ? entryPrice : markPrice;
+    if (!(margin > 0) || !(quantity > 0) || !(price > 0)) {
+      return null;
+    }
+    const leverage = Math.abs(price * quantity) / margin;
+    return this.toRoundedPositiveNumericString(leverage);
+  }
+
+  private toRoundedPositiveNumericString(value: number): string | null {
+    if (!Number.isFinite(value) || value <= 0) {
+      return null;
+    }
+    return String(Math.round(value * 100_000_000) / 100_000_000);
   }
 
   private toPositiveNumericString(value: string | number | null | undefined): string | null {

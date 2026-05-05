@@ -19,6 +19,14 @@ type ReleaseGateSummary = {
     openAlerts: number;
     openActionAlerts: number;
     openExecutionAlerts: number;
+    protectionFailedTrades: number;
+    protectionManualActionTrades: number;
+    staleManualProtectionTrades: number;
+    staleAttachingProtectionTrades: number;
+    protectionActionableTrades: number;
+    protectionUnresolvedTrades: number;
+    protectionRetriableFailedTrades: number;
+    minProtectionAttachmentRate: number;
     minQueueToOrderConversionRate: number;
     maxOverviewLatencyMs: number;
     maxListLatencyMs: number;
@@ -38,6 +46,18 @@ type ReleaseGateSummary = {
     openAlerts: number;
     openActionAlerts: number;
     openExecutionAlerts: number;
+    protectionTrackedTrades: number;
+    protectionAttachedTrades: number;
+    protectionFailedTrades: number;
+    protectionManualActionTrades: number;
+    protectionStaleManualActionTrades: number;
+    protectionManualRecoveryStaleAfterMs: number;
+    protectionStaleAttachingTrades: number;
+    protectionAttachingStaleAfterMs: number;
+    protectionActionableTrades: number;
+    protectionUnresolvedTrades: number;
+    protectionRetriableFailedTrades: number;
+    protectionAttachmentRate: number | null;
     overviewLatencyMs: number | null;
     listLatencyMs: number | null;
     summaryLatencyMs: number | null;
@@ -73,9 +93,7 @@ const STAGING_WORKFLOW_URL = String(
 ).trim();
 const DASHBOARD_URL = String(process.env.SUGGESTED_TRADES_SIGNOFF_DASHBOARD_URL || '').trim();
 const PAGER_URL = String(process.env.SUGGESTED_TRADES_SIGNOFF_PAGER_URL || '').trim();
-const RELEASE_NOTE_URL = String(
-  process.env.SUGGESTED_TRADES_SIGNOFF_RELEASE_NOTE_URL || ''
-).trim();
+const RELEASE_NOTE_URL = String(process.env.SUGGESTED_TRADES_SIGNOFF_RELEASE_NOTE_URL || '').trim();
 
 function asRecord(value: unknown): JsonRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -125,6 +143,14 @@ async function readGateSummary(): Promise<ReleaseGateSummary> {
       openAlerts: readNumber(thresholds.openAlerts),
       openActionAlerts: readNumber(thresholds.openActionAlerts),
       openExecutionAlerts: readNumber(thresholds.openExecutionAlerts),
+      protectionFailedTrades: readNumber(thresholds.protectionFailedTrades),
+      protectionManualActionTrades: readNumber(thresholds.protectionManualActionTrades),
+      staleManualProtectionTrades: readNumber(thresholds.staleManualProtectionTrades),
+      staleAttachingProtectionTrades: readNumber(thresholds.staleAttachingProtectionTrades ?? 0),
+      protectionActionableTrades: readNumber(thresholds.protectionActionableTrades),
+      protectionUnresolvedTrades: readNumber(thresholds.protectionUnresolvedTrades),
+      protectionRetriableFailedTrades: readNumber(thresholds.protectionRetriableFailedTrades),
+      minProtectionAttachmentRate: readNumber(thresholds.minProtectionAttachmentRate),
       minQueueToOrderConversionRate: readNumber(thresholds.minQueueToOrderConversionRate),
       maxOverviewLatencyMs: readNumber(thresholds.maxOverviewLatencyMs),
       maxListLatencyMs: readNumber(thresholds.maxListLatencyMs),
@@ -144,6 +170,20 @@ async function readGateSummary(): Promise<ReleaseGateSummary> {
       openAlerts: readNumber(finalHealth.openAlerts),
       openActionAlerts: readNumber(finalHealth.openActionAlerts),
       openExecutionAlerts: readNumber(finalHealth.openExecutionAlerts),
+      protectionTrackedTrades: readNumber(finalHealth.protectionTrackedTrades),
+      protectionAttachedTrades: readNumber(finalHealth.protectionAttachedTrades),
+      protectionFailedTrades: readNumber(finalHealth.protectionFailedTrades),
+      protectionManualActionTrades: readNumber(finalHealth.protectionManualActionTrades),
+      protectionStaleManualActionTrades: readNumber(finalHealth.protectionStaleManualActionTrades),
+      protectionManualRecoveryStaleAfterMs: readNumber(
+        finalHealth.protectionManualRecoveryStaleAfterMs
+      ),
+      protectionStaleAttachingTrades: readNumber(finalHealth.protectionStaleAttachingTrades ?? 0),
+      protectionAttachingStaleAfterMs: readNumber(finalHealth.protectionAttachingStaleAfterMs ?? 0),
+      protectionActionableTrades: readNumber(finalHealth.protectionActionableTrades),
+      protectionUnresolvedTrades: readNumber(finalHealth.protectionUnresolvedTrades),
+      protectionRetriableFailedTrades: readNumber(finalHealth.protectionRetriableFailedTrades),
+      protectionAttachmentRate: readNullableNumber(finalHealth.protectionAttachmentRate),
       overviewLatencyMs: readNullableNumber(finalHealth.overviewLatencyMs),
       listLatencyMs: readNullableNumber(finalHealth.listLatencyMs),
       summaryLatencyMs: readNullableNumber(finalHealth.summaryLatencyMs),
@@ -209,6 +249,25 @@ async function writeStepSummary(summary: {
     `- refreshFailures24h: ${summary.gate.finalHealth.refreshFailures24h}`,
     `- stateTransitionFailures24h: ${summary.gate.finalHealth.stateTransitionFailures24h}`,
     `- duplicateSuggestions24h: ${summary.gate.finalHealth.duplicateSuggestions24h}`,
+    `- openAlerts: ${summary.gate.finalHealth.openAlerts}`,
+    `- openActionAlerts: ${summary.gate.finalHealth.openActionAlerts}`,
+    `- openExecutionAlerts: ${summary.gate.finalHealth.openExecutionAlerts}`,
+    `- protectionTrackedTrades: ${summary.gate.finalHealth.protectionTrackedTrades}`,
+    `- protectionAttachedTrades: ${summary.gate.finalHealth.protectionAttachedTrades}`,
+    `- protectionFailedTrades: ${summary.gate.finalHealth.protectionFailedTrades}`,
+    `- protectionManualActionTrades: ${summary.gate.finalHealth.protectionManualActionTrades}`,
+    `- protectionStaleManualActionTrades: ${summary.gate.finalHealth.protectionStaleManualActionTrades}`,
+    `- protectionManualRecoveryStaleAfterMs: ${summary.gate.finalHealth.protectionManualRecoveryStaleAfterMs}`,
+    `- protectionStaleAttachingTrades: ${summary.gate.finalHealth.protectionStaleAttachingTrades}`,
+    `- protectionAttachingStaleAfterMs: ${summary.gate.finalHealth.protectionAttachingStaleAfterMs}`,
+    `- protectionActionableTrades: ${summary.gate.finalHealth.protectionActionableTrades}`,
+    `- protectionUnresolvedTrades: ${summary.gate.finalHealth.protectionUnresolvedTrades}`,
+    `- protectionRetriableFailedTrades: ${summary.gate.finalHealth.protectionRetriableFailedTrades}`,
+    `- protectionAttachmentRate: ${
+      summary.gate.finalHealth.protectionAttachmentRate === null
+        ? 'n/a'
+        : summary.gate.finalHealth.protectionAttachmentRate
+    }`,
     `- queueToOrderConversionRate: ${
       summary.gate.finalHealth.queueToOrderConversionRate === null
         ? 'n/a'
@@ -233,6 +292,19 @@ async function run(): Promise<void> {
     gate.finalHealth.openAlerts <= gate.thresholds.openAlerts &&
     gate.finalHealth.openActionAlerts <= gate.thresholds.openActionAlerts &&
     gate.finalHealth.openExecutionAlerts <= gate.thresholds.openExecutionAlerts &&
+    gate.finalHealth.protectionFailedTrades <= gate.thresholds.protectionFailedTrades &&
+    gate.finalHealth.protectionManualActionTrades <= gate.thresholds.protectionManualActionTrades &&
+    gate.finalHealth.protectionStaleManualActionTrades <=
+      gate.thresholds.staleManualProtectionTrades &&
+    gate.finalHealth.protectionStaleAttachingTrades <=
+      gate.thresholds.staleAttachingProtectionTrades &&
+    gate.finalHealth.protectionActionableTrades <= gate.thresholds.protectionActionableTrades &&
+    gate.finalHealth.protectionUnresolvedTrades <= gate.thresholds.protectionUnresolvedTrades &&
+    gate.finalHealth.protectionRetriableFailedTrades <=
+      gate.thresholds.protectionRetriableFailedTrades &&
+    (gate.finalHealth.protectionAttachmentRate === null
+      ? gate.thresholds.minProtectionAttachmentRate <= 0
+      : gate.finalHealth.protectionAttachmentRate >= gate.thresholds.minProtectionAttachmentRate) &&
     (gate.finalHealth.queueToOrderConversionRate === null
       ? gate.thresholds.minQueueToOrderConversionRate <= 0
       : gate.finalHealth.queueToOrderConversionRate >=

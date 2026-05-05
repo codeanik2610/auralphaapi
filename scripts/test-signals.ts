@@ -638,7 +638,7 @@ async function runSignalPresentationAssertions(): Promise<void> {
     entryPrice: '100',
     sourceRefType: 'strategy_library',
     sourceRefId: 'template-1',
-    expiresAt: new Date('2026-05-04T11:00:00.000Z'),
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     riskNote: 'Keep size controlled',
     promotionState: null,
     metadata: null,

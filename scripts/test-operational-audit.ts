@@ -464,6 +464,8 @@ function runOperationalAudit(): void {
     'suggestedTradesHealthService',
     "@Get('/broker-canary')",
     'brokerCanaryProtectionMonitorService',
+    "@Get('/suggested-trades-protection-guardrails')",
+    'suggestedTradesProtectionGuardrailService',
   ]) {
     if (!healthControllerSource.includes(marker)) {
       findings.push(`HealthController.ts: missing operational health marker ${marker}`);

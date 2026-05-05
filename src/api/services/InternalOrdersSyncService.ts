@@ -89,6 +89,15 @@ export class InternalOrdersSyncService {
     return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
   }
 
+  private toSqlSecondSafeStaleCutoff(date: Date): Date {
+    const value = date.getTime();
+    if (!Number.isFinite(value)) {
+      return new Date(0);
+    }
+
+    return new Date(Math.floor(value / 1000) * 1000);
+  }
+
   private buildDateWindows(startDate: string, endDate: string, windowDays: number): Array<{ startDate: string; endDate: string }> {
     const start = this.parseIsoDate(startDate);
     const end = this.parseIsoDate(endDate);
@@ -349,7 +358,13 @@ export class InternalOrdersSyncService {
     accountId: string,
     brokerKey: string
   ): Promise<string[]> {
-    const rows = (await coreDataSource.query(
+    type TrackedOrderIdRow = {
+      brokerOrderId?: string | null;
+      stopLossOrderId?: string | null;
+      takeProfitOrderId?: string | null;
+    };
+
+    const submissionRows = (await coreDataSource.query(
       `SELECT broker_order_id AS brokerOrderId,
               JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.stop_loss_order_id')) AS stopLossOrderId,
               JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.take_profit_order_id')) AS takeProfitOrderId
@@ -364,18 +379,29 @@ export class InternalOrdersSyncService {
         ORDER BY created_at DESC
         LIMIT 500`,
       [userId, accountId, brokerKey.toLowerCase(), MAX_LOOKBACK_DAYS]
-    )) as Array<{
-      brokerOrderId?: string | null;
-      stopLossOrderId?: string | null;
-      takeProfitOrderId?: string | null;
-    }>;
+    )) as TrackedOrderIdRow[];
+
+    const suggestedTradeRows = (await coreDataSource.query(
+      `SELECT order_id AS brokerOrderId,
+              JSON_UNQUOTE(JSON_EXTRACT(protection_plan_json, '$.stopLossOrderId')) AS stopLossOrderId,
+              JSON_UNQUOTE(JSON_EXTRACT(protection_plan_json, '$.takeProfitOrderId')) AS takeProfitOrderId
+         FROM suggested_trade_executions
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(COALESCE(broker_key, '')) = ?
+          AND protection_plan_json IS NOT NULL
+          AND submitted_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+        ORDER BY submitted_at DESC
+        LIMIT 500`,
+      [userId, accountId, brokerKey.toLowerCase(), MAX_LOOKBACK_DAYS]
+    )) as TrackedOrderIdRow[];
 
     return Array.from(
       new Set(
-        rows
+        [...submissionRows, ...suggestedTradeRows]
           .flatMap((row) => [row.brokerOrderId, row.stopLossOrderId, row.takeProfitOrderId])
           .map((item) => String(item || '').trim())
-          .filter(Boolean)
+          .filter((item) => Boolean(item) && !['null', 'undefined'].includes(item.toLowerCase()))
       )
     );
   }
@@ -1132,6 +1158,8 @@ export class InternalOrdersSyncService {
             // Step 6: Close stale open orders not seen in this run
             if (!openError) {
               const closeRank = this.computeOrderStatusRank('CLOSED');
+              const staleSnapshotSeenBefore =
+                this.toSqlSecondSafeStaleCutoff(accountSyncStartedAt);
               const staleCloseProtectedOrderIds = Array.from(
                 new Set(
                   trackedSubmissionOrderIds
@@ -1149,16 +1177,16 @@ export class InternalOrdersSyncService {
                  FROM scheduler_orders_snapshots
                  WHERE user_id = ?
                    AND account_id = ?
-                   AND LOWER(broker_key) = ?
-                   AND status_rank < ?
-                   AND last_seen_at < ?
-                   ${staleCloseProtectionSql}`,
+                  AND LOWER(broker_key) = ?
+                  AND status_rank < ?
+                  AND last_seen_at < ?
+                  ${staleCloseProtectionSql}`,
                 [
                   userId,
                   resolvedAccountId,
                   resolvedBrokerKey.toLowerCase(),
                   closeRank,
-                  accountSyncStartedAt,
+                  staleSnapshotSeenBefore,
                   ...staleCloseProtectedOrderIds,
                 ]
               )) as Array<{ external_id: string; symbol: string | null; order_status: string | null }>;
@@ -1180,7 +1208,7 @@ export class InternalOrdersSyncService {
                   resolvedAccountId,
                   resolvedBrokerKey.toLowerCase(),
                   closeRank,
-                  accountSyncStartedAt,
+                  staleSnapshotSeenBefore,
                   ...staleCloseProtectedOrderIds,
                 ]
               );

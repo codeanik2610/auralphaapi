@@ -2826,6 +2826,10 @@ export class RiskService {
         const evaluation = positionEvaluationsById.get(positionId);
         const summary = position.positionSummary;
         const leverageContext = this.resolvePositionLeverageContext(position);
+        const resolvedExposure = evaluation?.exposure ?? this.resolvePositionExposure(position);
+        const resolvedReservedMargin =
+          evaluation?.reservedMargin ??
+          this.resolvePositionReservedMargin(position, resolvedExposure, leverageContext.leverage);
         return {
           brokerKey: account.brokerKey,
           accountId: account.accountId,
@@ -2839,10 +2843,7 @@ export class RiskService {
           quantity: this.toFiniteNumber(summary?.quantity ?? position.quantity, null),
           entryPrice: this.toFiniteNumber(summary?.entryPrice ?? position.entry_price, null),
           currentPrice: this.toFiniteNumber(summary?.currentPrice ?? position.current_price, null),
-          exposure: this.roundNumber(
-            evaluation?.exposure ?? this.resolvePositionExposure(position),
-            2
-          ),
+          exposure: this.roundNumber(resolvedExposure, 2),
           unrealizedPnl: this.toFiniteNumber(
             summary?.unrealizedPnl ?? position.unrealized_pnl,
             null
@@ -2868,7 +2869,7 @@ export class RiskService {
           concentrationPct:
             evaluation?.concentrationPct === null || evaluation?.concentrationPct === undefined
               ? equity > 0
-                ? this.roundNumber((this.resolvePositionExposure(position) / equity) * 100, 2)
+                ? this.roundNumber((resolvedReservedMargin / equity) * 100, 2)
                 : 0
               : this.roundNumber(evaluation.concentrationPct, 2),
           riskState: evaluation ? this.resolveWorstRiskState(evaluation.statuses) : 'ok',
@@ -3447,15 +3448,15 @@ export class RiskService {
       const worstLiquidationDistancePct = this.minNumber(
         scopedEvaluations.map((evaluation) => evaluation.liquidationDistancePct)
       );
-      const allocationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
+      const marginAllocationPct = equity > 0 ? (reservedOrderMargin / equity) * 100 : 0;
       const marginUsagePct = trackedBalance > 0 ? (reservedOrderMargin / trackedBalance) * 100 : 0;
       const assessment = this.buildScopedRiskAssessment({
         criticalSignals: [
           ...(marginUsagePct >= thresholds.marginUsageCriticalPct
             ? ['Broker margin usage exceeds the configured critical threshold.']
             : []),
-          ...(allocationPct >= thresholds.maxTotalAllocation
-            ? ['Broker total allocation exceeds the configured critical threshold.']
+          ...(marginAllocationPct >= thresholds.maxTotalAllocation
+            ? ['Broker margin allocation exceeds the configured critical threshold.']
             : []),
           ...(weightedAvgLeverage !== null && weightedAvgLeverage >= thresholds.maxAvgLeverage
             ? ['Average leverage exceeds the configured broker threshold.']
@@ -3469,9 +3470,9 @@ export class RiskService {
           marginUsagePct < thresholds.marginUsageCriticalPct
             ? ['Broker margin usage is approaching its warning band.']
             : []),
-          ...(allocationPct >= thresholds.concentrationWarnPct &&
-          allocationPct < thresholds.maxTotalAllocation
-            ? ['Broker allocation is becoming concentrated.']
+          ...(marginAllocationPct >= thresholds.concentrationWarnPct &&
+          marginAllocationPct < thresholds.maxTotalAllocation
+            ? ['Broker margin allocation is becoming concentrated.']
             : []),
           ...(weightedAvgLeverage !== null &&
           weightedAvgLeverage >= thresholds.maxAvgLeverage * 0.8 &&
@@ -3494,7 +3495,7 @@ export class RiskService {
           )?.notes?.[0] || null,
         baseScore:
           Math.min(20, marginUsagePct / 4) +
-          Math.min(20, allocationPct / 4) +
+          Math.min(20, marginAllocationPct / 4) +
           (weightedAvgLeverage !== null ? Math.min(15, weightedAvgLeverage * 2) : 0) +
           (worstLiquidationDistancePct !== null
             ? worstLiquidationDistancePct <= 5
@@ -3592,7 +3593,6 @@ export class RiskService {
         2
       );
       const netExposure = this.roundNumber(longExposure - shortExposure, 2);
-      const allocationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
       const weightedAvgLeverage = this.weightedAverage(
         scopedEvaluations.map((evaluation) => ({
           value: evaluation.leverage,
@@ -3622,10 +3622,11 @@ export class RiskService {
           orderSummary.reservedOrderMargin,
         2
       );
+      const marginConcentrationPct = equity > 0 ? (reservedOrderMargin / equity) * 100 : 0;
       const assessment = this.buildScopedRiskAssessment({
         criticalSignals: [
-          ...(allocationPct >= thresholds.concentrationCriticalPct
-            ? ['Asset concentration exceeds the configured critical threshold.']
+          ...(marginConcentrationPct >= thresholds.concentrationCriticalPct
+            ? ['Asset margin concentration exceeds the configured critical threshold.']
             : []),
           ...(maxLeverage !== null && maxLeverage >= thresholds.maxLeverage
             ? ['Observed leverage exceeds the configured max leverage.']
@@ -3635,9 +3636,9 @@ export class RiskService {
             : []),
         ],
         watchSignals: [
-          ...(allocationPct >= thresholds.concentrationWarnPct &&
-          allocationPct < thresholds.concentrationCriticalPct
-            ? ['Asset concentration is approaching the warning band.']
+          ...(marginConcentrationPct >= thresholds.concentrationWarnPct &&
+          marginConcentrationPct < thresholds.concentrationCriticalPct
+            ? ['Asset margin concentration is approaching the warning band.']
             : []),
           ...(maxLeverage !== null &&
           maxLeverage >= thresholds.maxLeverage * 0.8 &&
@@ -3659,7 +3660,7 @@ export class RiskService {
               !evaluation.statuses.includes('critical') && evaluation.statuses.includes('watch')
           )?.notes?.[0] || null,
         baseScore:
-          Math.min(25, allocationPct / 4) +
+          Math.min(25, marginConcentrationPct / 4) +
           (maxLeverage !== null ? Math.min(15, maxLeverage * 2) : 0) +
           (worstLiquidationDistancePct !== null
             ? worstLiquidationDistancePct <= 5
@@ -3770,7 +3771,6 @@ export class RiskService {
         2
       );
       const netExposure = this.roundNumber(longExposure - shortExposure, 2);
-      const allocationPct = equity > 0 ? (grossExposure / equity) * 100 : 0;
       const weightedAvgLeverage = this.weightedAverage(
         scopedEvaluations.map((evaluation) => ({
           value: evaluation.leverage,
@@ -3802,13 +3802,14 @@ export class RiskService {
       );
       const marginUsagePct =
         brokerTrackedBalance > 0 ? (reservedOrderMargin / brokerTrackedBalance) * 100 : 0;
+      const marginConcentrationPct = equity > 0 ? (reservedOrderMargin / equity) * 100 : 0;
       const assessment = this.buildScopedRiskAssessment({
         criticalSignals: [
           ...(marginUsagePct >= thresholds.marginUsageCriticalPct
             ? ['Broker-asset margin usage exceeds the configured critical threshold.']
             : []),
-          ...(allocationPct >= thresholds.concentrationCriticalPct
-            ? ['Broker-asset concentration exceeds the configured critical threshold.']
+          ...(marginConcentrationPct >= thresholds.concentrationCriticalPct
+            ? ['Broker-asset margin concentration exceeds the configured critical threshold.']
             : []),
           ...(maxLeverage !== null && maxLeverage >= thresholds.maxLeverage
             ? ['Observed leverage exceeds the configured max leverage.']
@@ -3822,9 +3823,9 @@ export class RiskService {
           marginUsagePct < thresholds.marginUsageCriticalPct
             ? ['Broker-asset margin usage is approaching its warning band.']
             : []),
-          ...(allocationPct >= thresholds.concentrationWarnPct &&
-          allocationPct < thresholds.concentrationCriticalPct
-            ? ['Broker-asset concentration is approaching the warning band.']
+          ...(marginConcentrationPct >= thresholds.concentrationWarnPct &&
+          marginConcentrationPct < thresholds.concentrationCriticalPct
+            ? ['Broker-asset margin concentration is approaching the warning band.']
             : []),
           ...(maxLeverage !== null &&
           maxLeverage >= thresholds.maxLeverage * 0.8 &&
@@ -3847,7 +3848,7 @@ export class RiskService {
           )?.notes?.[0] || null,
         baseScore:
           Math.min(20, marginUsagePct / 4) +
-          Math.min(20, allocationPct / 4) +
+          Math.min(20, marginConcentrationPct / 4) +
           (maxLeverage !== null ? Math.min(15, maxLeverage * 2) : 0) +
           (worstLiquidationDistancePct !== null
             ? worstLiquidationDistancePct <= 5
@@ -4154,33 +4155,50 @@ export class RiskService {
       });
     }
 
-    brokerExposureTotals.forEach((exposure, brokerKey) => {
+    brokerExposureTotals.forEach((_exposure, brokerKey) => {
       const brokerAccount = accounts.find((account) => account.brokerKey === brokerKey) || null;
       const thresholds = brokerAccount?.thresholds || globalThresholds;
       const criticalLimit = Math.min(100, thresholds.maxTotalAllocation);
-      const pct = equity > 0 ? (exposure / equity) * 100 : 0;
+      const brokerReservedMargin = this.roundNumber(
+        accounts
+          .filter((account) => account.brokerKey === brokerKey)
+          .reduce((sum, account) => {
+            const fallbackMargin = this.roundNumber(
+              evaluations
+                .filter((evaluation) => evaluation.accountId === account.accountId)
+                .reduce((innerSum, evaluation) => innerSum + evaluation.reservedMargin, 0) +
+                (orderSummaryByAccount.get(account.accountId)?.reservedOrderMargin || 0),
+              2
+            );
+            return (
+              sum + (preferredReservedMarginByAccount.get(account.accountId) ?? fallbackMargin)
+            );
+          }, 0),
+        2
+      );
+      const pct = equity > 0 ? (brokerReservedMargin / equity) * 100 : 0;
       const brokerStatus = this.resolveThresholdState(
         pct,
         thresholds.concentrationWarnPct,
         criticalLimit
       );
       pushControl({
-        bucket: `${brokerKey || 'broker'} total allocation`,
+        bucket: `${brokerKey || 'broker'} margin allocation`,
         exposure: this.formatPercent(pct),
         threshold: `Warn ${this.formatPercent(thresholds.concentrationWarnPct)} / Critical ${this.formatPercent(criticalLimit)}`,
         status: brokerStatus,
         action:
           pct >= criticalLimit
-            ? `Reduce ${brokerKey || 'broker'} concentration before it dominates portfolio risk.`
+            ? `Reduce ${brokerKey || 'broker'} margin allocation before adding new trades.`
             : pct >= thresholds.concentrationWarnPct
-              ? `Keep ${brokerKey || 'broker'} exposure under watch; it is becoming the dominant sleeve.`
-              : `${brokerKey || 'Broker'} allocation remains inside the configured posture.`,
+              ? `Keep ${brokerKey || 'broker'} margin allocation under watch.`
+              : `${brokerKey || 'Broker'} margin allocation remains inside the configured posture.`,
         policyContextKey: brokerAccount?.policyContext.contextKey || null,
         scopeType: 'broker',
         scopeKey: brokerKey || 'broker',
         brokerKey: brokerKey || null,
         ruleCode: 'broker_total_allocation',
-        metricName: 'allocationPct',
+        metricName: 'marginAllocationPct',
         actualValue: this.roundNumber(pct, 2),
         basisValue: this.roundNumber(equity, 2),
         warnThresholdValue: thresholds.concentrationWarnPct,
@@ -4245,16 +4263,16 @@ export class RiskService {
           thresholds.concentrationCriticalPct
         );
         pushControl({
-          bucket: `${evaluation.symbol} concentration`,
+          bucket: `${evaluation.symbol} margin concentration`,
           exposure: this.formatPercent(concentrationPct),
           threshold: `Warn ${this.formatPercent(thresholds.concentrationWarnPct)} / Critical ${this.formatPercent(thresholds.concentrationCriticalPct)}`,
           status: concentrationStatus,
           action:
             concentrationPct >= thresholds.concentrationCriticalPct
-              ? `Cut ${evaluation.symbol} concentration or hedge the position.`
+              ? `Reduce ${evaluation.symbol} margin concentration or hedge the position.`
               : concentrationPct >= thresholds.concentrationWarnPct
-                ? `Keep ${evaluation.symbol} under review; it is becoming oversized.`
-                : `${evaluation.symbol} concentration remains inside the configured posture.`,
+                ? `Keep ${evaluation.symbol} under review; its margin concentration is becoming oversized.`
+                : `${evaluation.symbol} margin concentration remains inside the configured posture.`,
           policyContextKey: account?.policyContext.contextKey || null,
           scopeType: 'asset',
           scopeKey: evaluation.symbol,
@@ -4262,7 +4280,7 @@ export class RiskService {
           accountId: evaluation.accountId,
           symbol: evaluation.symbol,
           ruleCode: 'asset_concentration',
-          metricName: 'allocationPct',
+          metricName: 'marginConcentrationPct',
           actualValue: this.roundNumber(concentrationPct, 2),
           basisValue: this.roundNumber(equity, 2),
           warnThresholdValue: thresholds.concentrationWarnPct,
@@ -4479,7 +4497,7 @@ export class RiskService {
       summary?.unrealizedPnl ?? position.unrealized_pnl,
       null
     );
-    const concentrationPct = portfolioEquity > 0 ? (exposure / portfolioEquity) * 100 : null;
+    const concentrationPct = portfolioEquity > 0 ? (reservedMargin / portfolioEquity) * 100 : null;
     const liquidationDistancePct = this.resolveLiquidationDistancePct(position);
     const statuses: Array<'ok' | 'watch' | 'critical'> = [];
     const notes: string[] = [];
@@ -4499,7 +4517,7 @@ export class RiskService {
       statuses.push(this.normalizeRiskState(state));
       if (this.normalizeRiskState(state) !== 'ok') {
         notes.push(
-          `${this.resolvePositionSymbol(position)} concentration is ${this.formatPercent(concentrationPct)}, above the configured posture.`
+          `${this.resolvePositionSymbol(position)} margin concentration is ${this.formatPercent(concentrationPct)}, above the configured posture.`
         );
       }
     }

@@ -20,6 +20,7 @@ type LifecycleState =
 
 interface SubmissionCandidateRow {
   id?: string | null;
+  suggestedTradeId?: string | null;
   userId?: string | null;
   brokerKey?: string | null;
   accountId?: string | null;
@@ -302,6 +303,7 @@ export class BrokerCanaryProtectionMonitorService {
     return coreDataSource.query(
       `SELECT id,
               user_id AS userId,
+              suggested_trade_id AS suggestedTradeId,
               broker_key AS brokerKey,
               account_id AS accountId,
               broker_order_id AS brokerOrderId,
@@ -324,6 +326,7 @@ export class BrokerCanaryProtectionMonitorService {
           AND status = 'completed'
           AND placement_state IN ('placed', 'replayed')
           AND broker_order_id IS NOT NULL
+          ${env.brokerCanaryMonitor.includeSuggestedTrades ? '' : 'AND suggested_trade_id IS NULL'}
           AND account_id IS NOT NULL
           AND broker_key IS NOT NULL
           ${brokerFilter}

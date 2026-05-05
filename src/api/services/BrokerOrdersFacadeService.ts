@@ -293,9 +293,7 @@ export class BrokerOrdersFacadeService {
     const executionMode = String(submission.executionMode || orderPayload?.executionMode || '')
       .trim()
       .toLowerCase();
-    const reduceOnly = this.readBooleanLike(
-      orderPayload?.reduceOnly ?? orderPayload?.reduce_only
-    );
+    const reduceOnly = this.readBooleanLike(orderPayload?.reduceOnly ?? orderPayload?.reduce_only);
     const stopLossPrice = this.toNumberOrNull(
       orderPayload?.stopLossPrice ?? orderPayload?.stoplossPrice ?? orderPayload?.stop_loss_price
     );
@@ -1558,7 +1556,7 @@ export class BrokerOrdersFacadeService {
 
     if (
       ['price', 'tick', 'step'].some((token) => lowerMessage.includes(token)) &&
-      ['invalid', 'minimum', 'maximum', 'range', 'precision'].some((token) =>
+      ['invalid', 'minimum', 'maximum', 'range', 'precision', 'multiple'].some((token) =>
         lowerMessage.includes(token)
       )
     ) {
@@ -2971,8 +2969,7 @@ export class BrokerOrdersFacadeService {
         ? createdOrder.protectiveOrders
         : [];
     const stopLossOrderId =
-      String(createdOrder.stop_loss_order_id ?? createdOrder.stopLossOrderId ?? '').trim() ||
-      null;
+      String(createdOrder.stop_loss_order_id ?? createdOrder.stopLossOrderId ?? '').trim() || null;
     const takeProfitOrderId =
       String(createdOrder.take_profit_order_id ?? createdOrder.takeProfitOrderId ?? '').trim() ||
       null;

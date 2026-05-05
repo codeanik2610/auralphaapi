@@ -215,8 +215,8 @@ export const validateBacktestTopSetupsQuery = (
   const limit = query.limit !== undefined ? Number(query.limit) : 24;
   const offset = query.offset !== undefined ? Number(query.offset) : 0;
 
-  if (!Number.isInteger(limit) || limit <= 0 || limit > 200) {
-    throw new BadRequestAppError('limit must be an integer between 1 and 200');
+  if (!Number.isInteger(limit) || limit <= 0 || limit > 500) {
+    throw new BadRequestAppError('limit must be an integer between 1 and 500');
   }
 
   if (!Number.isInteger(offset) || offset < 0) {

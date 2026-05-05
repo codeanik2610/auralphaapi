@@ -15,7 +15,11 @@ import {
 } from '../src/api/validators/suggestedTrades.validator';
 import { SuggestedTrade } from '../src/database/entities/SuggestedTrade';
 import { SuggestedTradeExecution } from '../src/database/entities/SuggestedTradeExecution';
+import { SuggestedTradeRepository } from '../src/database/repositories/SuggestedTradeRepository';
+import { coreDataSource } from '../src/database/data-source';
+import { AddSuggestedTradeExecutionProtectionTracking1800001700000 } from '../src/database/migrations_baseline/1800001700000-AddSuggestedTradeExecutionProtectionTracking';
 import { HardenSuggestedTradeExecutionStorage1767300010000 } from './_fixtures/migrations/1767300010000-HardenSuggestedTradeExecutionStorage';
+import { DeltaExchangeOrdersAdapter } from '../src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter';
 import { env } from '../src/env';
 import { getMetadataArgsStorage } from 'typeorm';
 
@@ -254,6 +258,7 @@ function runSuggestedTradeExecutionEntitySchemaAssertions(): void {
     'idx_suggested_trade_executions_user_paper_order_lookup',
     'idx_suggested_trade_executions_user_position_lookup',
     'idx_suggested_trade_executions_user_state_seen_at',
+    'idx_suggested_trade_executions_protection_state',
   ]) {
     assert.ok(
       executionIndexes.includes(indexName),
@@ -272,6 +277,20 @@ function runSuggestedTradeExecutionEntitySchemaAssertions(): void {
     executionColumns.find((column) => column.propertyName === 'userId')?.options.name,
     'user_id'
   );
+  for (const [propertyName, columnName] of [
+    ['protectionState', 'protection_state'],
+    ['protectionSource', 'protection_source'],
+    ['protectionPlan', 'protection_plan_json'],
+    ['protectionAttempts', 'protection_attempts'],
+    ['protectionLastError', 'protection_last_error'],
+    ['protectionCheckedAt', 'protection_checked_at'],
+    ['protectionAttachedAt', 'protection_attached_at'],
+  ]) {
+    assert.equal(
+      executionColumns.find((column) => column.propertyName === propertyName)?.options.name,
+      columnName
+    );
+  }
 }
 
 function runSuggestedTradeValidationAssertions(): void {
@@ -382,6 +401,68 @@ async function runSuggestedTradeExecutionStorageMigrationAssertions(): Promise<v
   );
   assert.equal(
     executedQueries.some((sql) => sql.includes("JSON_REMOVE(meta_json, '$.execution')")),
+    true
+  );
+}
+
+async function runSuggestedTradeExecutionProtectionMigrationAssertions(): Promise<void> {
+  const migration = new AddSuggestedTradeExecutionProtectionTracking1800001700000();
+  const addedColumns: string[] = [];
+  const createdIndexes: string[] = [];
+  const executedQueries: string[] = [];
+  const tableState = {
+    columns: new Set<string>(),
+    indices: new Set<string>(),
+  };
+
+  await migration.up({
+    async hasTable(tableName: string) {
+      return tableName === 'suggested_trade_executions';
+    },
+    async hasColumn(tableName: string, columnName: string) {
+      return tableName === 'suggested_trade_executions' && tableState.columns.has(columnName);
+    },
+    async addColumn(tableName: string, column: { name?: string }) {
+      assert.equal(tableName, 'suggested_trade_executions');
+      const name = String(column.name || '');
+      addedColumns.push(name);
+      tableState.columns.add(name);
+    },
+    async getTable(tableName: string) {
+      assert.equal(tableName, 'suggested_trade_executions');
+      return {
+        indices: [...tableState.indices].map((name) => ({ name })),
+      };
+    },
+    async createIndex(tableName: string, index: { name?: string }) {
+      assert.equal(tableName, 'suggested_trade_executions');
+      const name = String(index.name || '');
+      createdIndexes.push(name);
+      tableState.indices.add(name);
+    },
+    async query(sql: string) {
+      executedQueries.push(sql);
+      return [];
+    },
+  } as any);
+
+  assert.deepEqual(addedColumns, [
+    'protection_state',
+    'protection_source',
+    'protection_plan_json',
+    'protection_attempts',
+    'protection_last_error',
+    'protection_checked_at',
+    'protection_attached_at',
+  ]);
+  assert.equal(createdIndexes.includes('idx_suggested_trade_executions_protection_state'), true);
+  assert.equal(
+    executedQueries.some(
+      (sql) =>
+        sql.includes('JSON_OBJECT') &&
+        sql.includes('waiting_for_fill') &&
+        sql.includes('waiting_for_position')
+    ),
     true
   );
 }
@@ -944,8 +1025,26 @@ async function runSuggestedTradeExecutionPersistenceAssertions(): Promise<void> 
   assert.equal(savedExecutionPayload?.['paperOrderId'], 'paper-1');
   assert.equal(savedExecutionPayload?.['executionState'], 'linked');
   assert.equal(savedExecutionPayload?.['brokerKey'], 'mudrex');
+  assert.equal(savedExecutionPayload?.['protectionState'], 'not_required');
   assert.deepEqual(savedTradeMeta, { signalId: 'sig-1' });
   assert.equal(response.data.suggestedTrade.execution?.paperOrderId, 'paper-1');
+
+  const liveProtectionPayload = service.toExecutionPersistencePayload(
+    { ...trade, meta: null },
+    {
+      executionMode: 'live',
+      orderId: 'live-order-1',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+      executionState: 'linked',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitPrice: '110',
+    }
+  );
+  assert.equal(liveProtectionPayload.protectionState, 'waiting_for_fill');
+  assert.equal(liveProtectionPayload.protectionSource, 'suggested_trade_execution');
+  assert.equal(liveProtectionPayload.protectionPlan?.['stopLossPrice'], '95');
 }
 
 async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
@@ -959,6 +1058,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     requireFixedRouting: process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING,
     userAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST,
     brokerAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST,
+    shadowBrokerAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST,
   };
   const originalLiveAuto = {
     enabled: env.suggestedTrades.liveAuto.enabled,
@@ -967,6 +1067,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     requireFixedRouting: env.suggestedTrades.liveAuto.requireFixedRouting,
     userAllowlist: [...env.suggestedTrades.liveAuto.userAllowlist],
     brokerAllowlist: [...env.suggestedTrades.liveAuto.brokerAllowlist],
+    shadowBrokerAllowlist: [...env.suggestedTrades.liveAuto.shadowBrokerAllowlist],
   };
   const freshOneHourSignalTime = new Date(Date.now() - 62 * 60 * 1000);
 
@@ -1052,6 +1153,26 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
       };
     },
   };
+  service.brokerRuntimeRegistry = {
+    getOrdersAdapter(brokerKey: string) {
+      if (brokerKey !== 'delta_exchange') {
+        return {};
+      }
+      return {
+        async preflightLiveAutoOrder(assetId: string, body: Record<string, unknown>) {
+          assert.equal(assetId, currentAssetExternalId);
+          assert.equal(String(body.symbol || '').toUpperCase(), 'BTCUSDT');
+          return {
+            quantityContracts: 1000,
+            contractValue: 0.001,
+            contractUnitCurrency: 'BTC',
+            auditNote:
+              'Delta product preflight passed for BTCUSD: product 45678 is live/operational, contract_value 0.001 BTC, requested base quantity 1 BTC routes as 1000 contracts.',
+          };
+        },
+      };
+    },
+  };
   service.brokerAccountRepository = {
     async getConnectedBrokerAccounts() {
       return [];
@@ -1074,8 +1195,8 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     brokerKey: currentBrokerKey,
     accountId: currentAccountId,
     liveConsentEnabled: true,
-    orderType: 'market',
-    timeInForce: null,
+    orderType: 'limit',
+    timeInForce: 'GTC',
     quantityMode: 'notional',
     quantity: null,
     notional: 100,
@@ -1115,7 +1236,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
             takeProfitTargets: [108],
             leverage: 5,
             reduceOnly: false,
-            orderType: 'market',
+            orderType: 'limit',
           },
         },
       },
@@ -1156,12 +1277,14 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     env.suggestedTrades.liveAuto.requireFixedRouting = true;
     env.suggestedTrades.liveAuto.userAllowlist = ['user-1'];
     env.suggestedTrades.liveAuto.brokerAllowlist = ['mudrex'];
+    env.suggestedTrades.liveAuto.shadowBrokerAllowlist = [];
     process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED = 'true';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_ENABLED = 'false';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'false';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING = 'true';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST = 'user-1';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = 'mudrex';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST = '';
 
     const disabled = await service.attemptAutoLiveExecutionForAutomation('user-1', 'st-live-auto', {
       async createOrder() {
@@ -1204,8 +1327,31 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal(preTradeGateCalls, 1);
     assert.equal(
       (persistedExecution?.['note'] as string | undefined) ?? null,
-      'Live auto rollout guard passed. Broker placement remains disabled until live auto execution is explicitly enabled.'
+      'Live auto rollout guard passed. Broker placement remains disabled until live auto execution is explicitly enabled. Using broker policy minimum leverage 5x.'
     );
+
+    const originalRunPreTradeGate = service.runPreTradeGate;
+    service.runPreTradeGate = async (...args: unknown[]) => {
+      const result = await originalRunPreTradeGate.apply(service, args);
+      result.result.request.order.orderType = 'market';
+      return result;
+    };
+    const marketBlocked = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto',
+      {
+        async createOrder() {
+          throw new Error('market-blocked path should not create orders');
+        },
+      }
+    );
+    assert.equal(marketBlocked.outcome, 'blocked');
+    assert.match(marketBlocked.message, /must be limit orders/);
+    assert.equal(
+      (persistedExecution?.['executionState'] as string | undefined) ?? null,
+      'rejected'
+    );
+    service.runPreTradeGate = originalRunPreTradeGate;
 
     baseTrade.signalTime = new Date(Date.now() - 3 * 60 * 60 * 1000);
     const stale = await service.attemptAutoLiveExecutionForAutomation('user-1', 'st-live-auto', {
@@ -1216,7 +1362,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal(stale.outcome, 'skipped');
     assert.match(stale.message, /Skipped live execution/);
     assert.match(stale.message, /freshness window/);
-    assert.equal(preTradeGateCalls, 1);
+    assert.equal(preTradeGateCalls, 2);
     assert.ok(loggedActivities.includes('Live auto stale signal skipped: BTCUSDT'));
     baseTrade.signalTime = freshOneHourSignalTime;
 
@@ -1234,6 +1380,8 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
         assert.equal(body.symbol, 'BTCUSDT');
         assert.equal(body.accountId, 'acc-1');
         assert.equal(body.brokerKey, 'mudrex');
+        assert.equal(body.order_type, 'limit');
+        assert.equal(body.trigger_type, 'GTC');
         assert.equal(context?.suggestedTradeId, 'st-live-auto');
         return {
           success: true,
@@ -1276,12 +1424,17 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
           assert.equal(body.symbol, 'BTCUSDT');
           assert.equal(body.accountId, 'delta-acc-1');
           assert.equal(body.brokerKey, 'delta_exchange');
+          assert.equal(body.order_type, 'limit');
+          assert.equal(body.trigger_type, 'GTC');
           assert.equal(context?.suggestedTradeId, 'st-live-auto');
           return {
             success: true,
             data: {
               order_id: 'delta-live-order-1',
               status: 'open',
+              protection_status: 'attached',
+              stop_loss_order_id: 'delta-live-sl-early',
+              take_profit_order_id: 'delta-live-tp-early',
             },
           };
         },
@@ -1291,6 +1444,20 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal(deltaPlaced.orderId, 'delta-live-order-1');
     assert.equal(deltaPlaced.brokerKey, 'delta_exchange');
     assert.equal(deltaPlaced.accountId, 'delta-acc-1');
+    assert.equal(persistedExecution?.['protectionState'], 'waiting_for_fill');
+    assert.equal(persistedExecution?.['protectionAttachedAt'] ?? null, null);
+    assert.equal(
+      (persistedExecution?.['protectionPlan'] as Record<string, unknown>)?.stopLossOrderId,
+      'delta-live-sl-early'
+    );
+    assert.equal(
+      (persistedExecution?.['protectionPlan'] as Record<string, unknown>)?.takeProfitOrderId,
+      'delta-live-tp-early'
+    );
+    assert.match(
+      String(persistedExecution?.['note'] || ''),
+      /awaiting entry fill and active order snapshot verification/
+    );
 
     baseTrade.symbol = 'SOLUSDC';
     currentBrokerKey = 'mudrex';
@@ -1388,6 +1555,9 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     env.suggestedTrades.liveAuto.requireFixedRouting = originalLiveAuto.requireFixedRouting;
     env.suggestedTrades.liveAuto.userAllowlist = [...originalLiveAuto.userAllowlist];
     env.suggestedTrades.liveAuto.brokerAllowlist = [...originalLiveAuto.brokerAllowlist];
+    env.suggestedTrades.liveAuto.shadowBrokerAllowlist = [
+      ...originalLiveAuto.shadowBrokerAllowlist,
+    ];
     restoreEnv('SUGGESTED_TRADES_ROLLOUT_ENABLED', originalEnvFlags.rolloutEnabled);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', originalEnvFlags.enabled);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED', originalEnvFlags.executionEnabled);
@@ -1401,6 +1571,10 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     );
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST', originalEnvFlags.userAllowlist);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST', originalEnvFlags.brokerAllowlist);
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST',
+      originalEnvFlags.shadowBrokerAllowlist
+    );
   }
 }
 
@@ -1415,6 +1589,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     requireFixedRouting: process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING,
     userAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST,
     brokerAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST,
+    shadowBrokerAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST,
   };
   const originalLiveAuto = {
     enabled: env.suggestedTrades.liveAuto.enabled,
@@ -1423,6 +1598,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     requireFixedRouting: env.suggestedTrades.liveAuto.requireFixedRouting,
     userAllowlist: [...env.suggestedTrades.liveAuto.userAllowlist],
     brokerAllowlist: [...env.suggestedTrades.liveAuto.brokerAllowlist],
+    shadowBrokerAllowlist: [...env.suggestedTrades.liveAuto.shadowBrokerAllowlist],
   };
   const freshRiskSignalTime = new Date(Date.now() - 62 * 60 * 1000);
 
@@ -1452,6 +1628,8 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
 
   const createCheckRoutes: string[] = [];
   const createCheckSymbols: string[] = [];
+  const createCheckLeverages: Array<number | null> = [];
+  const createCheckNotionals: Array<number | null> = [];
   const placedRoutes: string[] = [];
   const savedRouteDecisions: Array<Record<string, unknown> | null> = [];
   const mudrexRiskOrders: Array<{
@@ -1494,7 +1672,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
         },
         order: {
           ...body.order,
-          leverage: body.order?.leverage ?? 5,
+          leverage: body.order?.leverage ?? null,
           entryPrice: body.order?.entryPrice ?? 100,
           stopLossPrice: body.order?.stopLossPrice ?? 95,
           takeProfitTargets: body.order?.takeProfitTargets ?? [108],
@@ -1721,6 +1899,8 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
           .trim()
           .toUpperCase()
       );
+      createCheckLeverages.push(body.order?.leverage ?? null);
+      createCheckNotionals.push(body.order?.notional ?? null);
       return createSuccess(
         buildPreTradeResult(body, `check:${body.routing?.brokerKey}:${body.routing?.accountId}`)
       );
@@ -1761,6 +1941,45 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
           quantity_step: normalizedSymbol === 'AIXBTUSDT' ? '10' : '0.000001',
           max_market_contract: normalizedSymbol === 'AIXBTUSDT' ? '1215000' : '1000000',
           min_notional_value: '5',
+          min_price: '0.000001',
+          max_price: '1000000',
+          price_step:
+            normalizedSymbol === 'BTCUSDT'
+              ? '0.01'
+              : normalizedSymbol === 'AIXBTUSDT'
+                ? '0.000001'
+                : '0.0001',
+        },
+      };
+    },
+  };
+  service.brokerRuntimeRegistry = {
+    getOrdersAdapter(brokerKey: string) {
+      if (brokerKey !== 'delta_exchange') {
+        return {};
+      }
+      return {
+        async preflightLiveAutoOrder(assetId: string, body: Record<string, unknown>) {
+          assert.match(assetId, /^delta-/);
+          const symbol = String(body.symbol || '')
+            .trim()
+            .toUpperCase();
+          if (symbol === 'JCTUSDT') {
+            return {
+              quantityContracts: 57300,
+              contractValue: 1,
+              contractUnitCurrency: 'JCT',
+              auditNote:
+                'Delta product preflight passed for JCTUSD: product 789 is live/operational, contract_value 1 JCT, requested base quantity 57300 JCT routes as 57300 contracts.',
+            };
+          }
+          return {
+            quantityContracts: 1000,
+            contractValue: 0.001,
+            contractUnitCurrency: 'BTC',
+            auditNote:
+              'Delta product preflight passed for BTCUSD: product 45678 is live/operational, contract_value 0.001 BTC, requested base quantity 1 BTC routes as 1000 contracts.',
+          };
         },
       };
     },
@@ -1770,6 +1989,8 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       return {
         id: `policy-${brokerKey}`,
         scope: 'broker',
+        minLeverage: 15,
+        maxLeverage: 25,
         tradeSizePctOfBalance: 10,
       };
     },
@@ -1794,6 +2015,35 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     },
   };
   service.brokerRuntimeRegistry = {
+    getOrdersAdapter(brokerKey: string) {
+      if (brokerKey !== 'delta_exchange') {
+        return {};
+      }
+      return {
+        async preflightLiveAutoOrder(assetId: string, body: Record<string, unknown>) {
+          assert.match(assetId, /^delta-/);
+          const symbol = String(body.symbol || '')
+            .trim()
+            .toUpperCase();
+          if (symbol === 'JCTUSDT') {
+            return {
+              quantityContracts: 57300,
+              contractValue: 1,
+              contractUnitCurrency: 'JCT',
+              auditNote:
+                'Delta product preflight passed for JCTUSD: product 789 is live/operational, contract_value 1 JCT, requested base quantity 57300 JCT routes as 57300 contracts.',
+            };
+          }
+          return {
+            quantityContracts: 1000,
+            contractValue: 0.001,
+            contractUnitCurrency: 'BTC',
+            auditNote:
+              'Delta product preflight passed for BTCUSD: product 45678 is live/operational, contract_value 0.001 BTC, requested base quantity 1 BTC routes as 1000 contracts.',
+          };
+        },
+      };
+    },
     getPositionsAdapter(brokerKey: string) {
       assert.equal(brokerKey, 'mudrex');
       return {
@@ -1844,13 +2094,13 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     brokerKey: null,
     accountId: null,
     liveConsentEnabled: true,
-    orderType: 'market',
-    timeInForce: null,
+    orderType: 'limit',
+    timeInForce: 'GTC',
     quantityMode: 'notional',
     quantity: null,
     notional: 100,
     riskPercent: null,
-    leverage: 5,
+    leverage: null,
     reduceOnly: false,
     maxOrdersPerRun: 2,
     maxOrdersPerDay: 3,
@@ -1875,6 +2125,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     env.suggestedTrades.liveAuto.requireFixedRouting = true;
     env.suggestedTrades.liveAuto.userAllowlist = ['user-1'];
     env.suggestedTrades.liveAuto.brokerAllowlist = ['mudrex', 'delta_exchange'];
+    env.suggestedTrades.liveAuto.shadowBrokerAllowlist = [];
     process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED = 'true';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_ENABLED = 'true';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'true';
@@ -1882,6 +2133,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING = 'true';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST = 'user-1';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = 'mudrex,delta_exchange';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST = '';
 
     const deltaPreferred = await service.attemptAutoLiveExecutionForAutomation(
       'user-1',
@@ -1892,6 +2144,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
           assert.equal(assetId, 'delta-asset-1');
           assert.equal(body.brokerKey, 'delta_exchange');
           assert.equal(body.accountId, 'delta-acc-1');
+          assert.equal(body.leverage, 15);
           return {
             success: true,
             data: {
@@ -1903,10 +2156,12 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       }
     );
 
-    assert.equal(deltaPreferred.outcome, 'placed');
+    assert.equal(deltaPreferred.outcome, 'placed', deltaPreferred.message);
     assert.equal(deltaPreferred.brokerKey, 'delta_exchange');
     assert.equal(deltaPreferred.accountId, 'delta-acc-1');
     assert.equal(createCheckRoutes[0], 'delta_exchange:delta-acc-1');
+    assert.equal(createCheckLeverages[0], 15);
+    assert.equal(createCheckNotionals[0], 179.27);
     assert.equal(placedRoutes[0], 'delta_exchange:delta-acc-1');
     assert.equal(
       savedRouteDecisions.some((decision) => decision?.selectedBrokerKey === 'delta_exchange'),
@@ -1928,6 +2183,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
           assert.equal(assetId, 'mudrex-asset-1');
           assert.equal(body.brokerKey, 'mudrex');
           assert.equal(body.accountId, 'acc-1');
+          assert.equal(body.leverage, 15);
           return {
             success: true,
             data: {
@@ -1943,6 +2199,8 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     assert.equal(mudrexFallback.brokerKey, 'mudrex');
     assert.equal(mudrexFallback.accountId, 'acc-1');
     assert.equal(createCheckRoutes[1], 'mudrex:acc-1');
+    assert.equal(createCheckLeverages[1], 15);
+    assert.equal(createCheckNotionals[1], 592.49);
     assert.equal(placedRoutes[1], 'mudrex:acc-1');
     assert.equal(
       savedRouteDecisions.some((decision) => decision?.selectedBrokerKey === 'mudrex'),
@@ -1967,6 +2225,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
           assert.equal(body.brokerKey, 'mudrex');
           assert.equal(body.accountId, 'acc-1');
           assert.equal(body.symbol, 'SOLUSDT');
+          assert.equal(body.leverage, 15);
           return {
             success: true,
             data: {
@@ -1983,6 +2242,8 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     assert.equal(mudrexEquivalent.accountId, 'acc-1');
     assert.equal(createCheckRoutes[2], 'mudrex:acc-1');
     assert.equal(createCheckSymbols[2], 'SOLUSDT');
+    assert.equal(createCheckLeverages[2], 15);
+    assert.equal(createCheckNotionals[2], 592.49);
     assert.equal(placedRoutes[2], 'mudrex:acc-1');
     const latestRouteDecision = savedRouteDecisions[savedRouteDecisions.length - 1];
     assert.equal(latestRouteDecision?.mode, 'adaptive_candidate_live');
@@ -2114,6 +2375,46 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       },
     });
 
+    currentTrade = {
+      ...currentTrade,
+      id: 'st-live-auto-risk-3d',
+      symbol: 'BTCUSDT',
+      side: 'SELL',
+      entryPrice: '100.003',
+      stopLossPrice: '101.002',
+      takeProfitTargets: ['98.998'],
+    };
+
+    const mudrexPriceStepNormalized = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto-risk-3d',
+      {
+        async createOrder(assetId: string, body: Record<string, unknown>) {
+          placedRoutes.push(`${String(body.brokerKey)}:${String(body.accountId)}`);
+          assert.equal(assetId, 'mudrex-asset-1');
+          assert.equal(body.brokerKey, 'mudrex');
+          assert.equal(body.accountId, 'acc-1');
+          assert.equal(body.side, 'short');
+          assert.equal(body.order_price, 100.01);
+          assert.equal(body.stoploss_price, 101.01);
+          assert.equal(body.takeprofit_price, 98.99);
+          return {
+            success: true,
+            data: {
+              order_id: 'mudrex-live-order-risk-3d',
+              status: 'OPEN',
+            },
+          };
+        },
+      }
+    );
+
+    assert.equal(mudrexPriceStepNormalized.outcome, 'placed');
+    assert.equal(mudrexPriceStepNormalized.brokerKey, 'mudrex');
+    assert.equal(mudrexPriceStepNormalized.accountId, 'acc-1');
+    assert.equal(createCheckRoutes[5], 'mudrex:acc-1');
+    assert.equal(placedRoutes[5], 'mudrex:acc-1');
+
     env.suggestedTrades.liveAuto.executionEnabled = false;
     env.suggestedTrades.liveAuto.adaptiveRoutingMode = 'shadow';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'false';
@@ -2145,6 +2446,69 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
         String(shadowRouteDecision.summary).includes('Shadow route would select mudrex'),
       true
     );
+
+    env.suggestedTrades.liveAuto.executionEnabled = false;
+    env.suggestedTrades.liveAuto.adaptiveRoutingMode = 'live';
+    env.suggestedTrades.liveAuto.brokerAllowlist = ['mudrex'];
+    env.suggestedTrades.liveAuto.shadowBrokerAllowlist = ['delta_exchange'];
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'false';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE = 'live';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = 'mudrex';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST = 'delta_exchange';
+    service.detectLiveAutoDeltaNativeProtectionConflict = async () => null;
+    service.positionReadModelRepository = {
+      async listLivePositionsForAccounts() {
+        return new Map();
+      },
+    };
+    service.ordersSnapshotSourceRepository = {
+      async listOpenOrdersForAccounts() {
+        return new Map();
+      },
+    };
+    currentTrade = {
+      ...currentTrade,
+      id: 'st-live-auto-risk-5',
+      symbol: 'SOLUSDC',
+      side: 'BUY',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitTargets: ['108'],
+    };
+
+    const deltaShadowOnlyResult = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto-risk-5',
+      {
+        async createOrder() {
+          throw new Error('shadow-only Delta evaluation must not create orders');
+        },
+      }
+    );
+
+    assert.equal(deltaShadowOnlyResult.outcome, 'ready');
+    assert.equal(deltaShadowOnlyResult.brokerKey, 'mudrex');
+    assert.equal(deltaShadowOnlyResult.accountId, 'acc-1');
+    const deltaShadowOnlyDecision = savedRouteDecisions[savedRouteDecisions.length - 1];
+    assert.equal(deltaShadowOnlyDecision?.mode, 'adaptive_candidate_live');
+    assert.equal(deltaShadowOnlyDecision?.selectedBrokerKey, 'mudrex');
+    assert.equal(deltaShadowOnlyDecision?.selectedBrokerSymbol, 'SOLUSDT');
+    assert.equal(
+      typeof deltaShadowOnlyDecision?.summary === 'string' &&
+        String(deltaShadowOnlyDecision.summary).includes('Shadow-only route verdicts'),
+      true
+    );
+    assert.equal(
+      Array.isArray(deltaShadowOnlyDecision?.candidates) &&
+        (deltaShadowOnlyDecision?.candidates as Array<Record<string, unknown>>).some(
+          (candidate) =>
+            candidate?.brokerKey === 'delta_exchange' &&
+            candidate?.shadowOnly === true &&
+            candidate?.supported === true &&
+            candidate?.allowed === true
+        ),
+      true
+    );
   } finally {
     env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
     env.suggestedTrades.liveAuto.enabled = originalLiveAuto.enabled;
@@ -2153,6 +2517,9 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     env.suggestedTrades.liveAuto.requireFixedRouting = originalLiveAuto.requireFixedRouting;
     env.suggestedTrades.liveAuto.userAllowlist = [...originalLiveAuto.userAllowlist];
     env.suggestedTrades.liveAuto.brokerAllowlist = [...originalLiveAuto.brokerAllowlist];
+    env.suggestedTrades.liveAuto.shadowBrokerAllowlist = [
+      ...originalLiveAuto.shadowBrokerAllowlist,
+    ];
     restoreEnv('SUGGESTED_TRADES_ROLLOUT_ENABLED', originalEnvFlags.rolloutEnabled);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', originalEnvFlags.enabled);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED', originalEnvFlags.executionEnabled);
@@ -2166,6 +2533,441 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     );
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST', originalEnvFlags.userAllowlist);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST', originalEnvFlags.brokerAllowlist);
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST',
+      originalEnvFlags.shadowBrokerAllowlist
+    );
+  }
+}
+
+async function runSuggestedTradeDeltaProductPreflightAssertions(): Promise<void> {
+  const adapter = new DeltaExchangeOrdersAdapter() as any;
+  const deltaProduct = {
+    id: '139',
+    symbol: 'BTCUSD',
+    state: 'live',
+    trading_status: 'operational',
+    contract_type: 'perpetual_futures',
+    contract_value: '0.001',
+    contract_unit_currency: 'BTC',
+    notional_type: 'vanilla',
+  };
+
+  assert.equal(
+    adapter.resolveOrderSize(
+      1,
+      deltaProduct,
+      {
+        idempotency_key: 'live-auto:test:btc',
+        symbol: 'BTCUSDT',
+      },
+      139
+    ),
+    1000
+  );
+  assert.equal(
+    adapter.resolveOrderSize(
+      0.002,
+      deltaProduct,
+      {
+        idempotency_key: 'live-auto:test:btcusd',
+        symbol: 'BTCUSD',
+      },
+      139
+    ),
+    2
+  );
+  assert.throws(
+    () =>
+      adapter.resolveOrderSize(
+        0.0005,
+        deltaProduct,
+        {
+          idempotency_key: 'live-auto:test:tiny',
+          symbol: 'BTCUSDT',
+        },
+        139
+      ),
+    /smaller than one whole BTCUSD contract/
+  );
+
+  const service = new SuggestedTradesService() as any;
+  const preflightCalls: Array<{ assetId: string; symbol: string; quantity: number }> = [];
+  service.brokerRuntimeRegistry = {
+    getOrdersAdapter() {
+      return {
+        async preflightLiveAutoOrder(assetId: string, body: Record<string, unknown>) {
+          const symbol = String(body.symbol || '')
+            .trim()
+            .toUpperCase();
+          const quantity = Number(body.quantity);
+          preflightCalls.push({ assetId, symbol, quantity });
+          if (symbol === 'TINYUSDT') {
+            throw new Error(
+              'Delta Exchange live-auto base quantity 0.0005 is smaller than one whole TINYUSD contract (contract_value 0.001)'
+            );
+          }
+          if (symbol === 'JCTUSDT') {
+            return {
+              quantityContracts: 57300,
+              contractValue: 1,
+              contractUnitCurrency: 'JCT',
+              auditNote:
+                'Delta product preflight passed for JCTUSD: product 789 is live/operational, contract_value 1 JCT, requested base quantity 57300 JCT routes as 57300 contracts.',
+            };
+          }
+          return {
+            quantityContracts: symbol === 'BTCUSD' ? 2 : 1000,
+            contractValue: 0.001,
+            contractUnitCurrency: 'BTC',
+            auditNote: `Delta product preflight passed for ${symbol === 'BTCUSD' ? 'BTCUSD' : 'BTCUSD'}: product 139 is live/operational, contract_value 0.001 BTC, requested base quantity ${quantity} BTC routes as ${symbol === 'BTCUSD' ? 2 : 1000} contracts.`,
+          };
+        },
+      };
+    },
+  };
+
+  const btcUsdt = await service.normalizeLiveAutoOrderSizing(
+    'delta_exchange',
+    '139',
+    'BTCUSDT',
+    1,
+    100,
+    95,
+    108,
+    'long',
+    'limit'
+  );
+  assert.equal(btcUsdt.quantity, 1);
+  assert.match(String(btcUsdt.auditNote), /1000 contracts/);
+
+  const btcUsd = await service.normalizeLiveAutoOrderSizing(
+    'delta_exchange',
+    '139',
+    'BTCUSD',
+    0.002,
+    100,
+    95,
+    108,
+    'long',
+    'limit'
+  );
+  assert.equal(btcUsd.quantity, 0.002);
+  assert.match(String(btcUsd.auditNote), /2 contracts/);
+
+  const jct = await service.normalizeLiveAutoOrderSizing(
+    'delta_exchange',
+    '789',
+    'JCTUSDT',
+    57300,
+    0.01,
+    0.009,
+    0.012,
+    'long',
+    'limit'
+  );
+  assert.equal(jct.quantity, 57300);
+  assert.match(String(jct.auditNote), /57300 contracts/);
+
+  await assert.rejects(
+    () =>
+      service.normalizeLiveAutoOrderSizing(
+        'delta_exchange',
+        'tiny-1',
+        'TINYUSDT',
+        0.0005,
+        100,
+        95,
+        108,
+        'long',
+        'limit'
+      ),
+    /smaller than one whole TINYUSD contract/
+  );
+  assert.deepEqual(
+    preflightCalls.map((call) => `${call.assetId}:${call.symbol}`),
+    ['139:BTCUSDT', '139:BTCUSD', '789:JCTUSDT', 'tiny-1:TINYUSDT']
+  );
+
+  const mudrexPreflightService = new SuggestedTradesService() as any;
+  mudrexPreflightService.brokerReferenceDataService = {
+    async getFuturesAssetDetailBySymbol(_brokerKey: string, symbol: string) {
+      assert.equal(symbol, 'PUMPBTCUSDT');
+      return {
+        data: {
+          quantity_step: '10',
+          min_contract: '10',
+          max_contract: '330000',
+          max_market_contract: '330000',
+          min_notional_value: '5',
+          price_step: '0.000001',
+          min_price: '0.000001',
+          max_price: '1000000',
+          min_leverage: '1',
+          max_leverage: '5',
+          leverage_step: '0.01',
+        },
+      };
+    },
+  };
+  const mudrexSized = await mudrexPreflightService.normalizeLiveAutoOrderSizing(
+    'mudrex',
+    'mudrex-pump',
+    'PUMPBTCUSDT',
+    11370,
+    0.01588,
+    0.015,
+    0.017,
+    'short',
+    'limit',
+    5
+  );
+  assert.equal(mudrexSized.quantity, 11370);
+  await assert.rejects(
+    () =>
+      mudrexPreflightService.normalizeLiveAutoOrderSizing(
+        'mudrex',
+        'mudrex-pump',
+        'PUMPBTCUSDT',
+        11370,
+        0.01588,
+        0.015,
+        0.017,
+        'short',
+        'limit',
+        15
+      ),
+    /Mudrex requested leverage 15x exceeds the broker maximum leverage 5x for PUMPBTCUSDT/
+  );
+
+  const unsupportedRouteService = new SuggestedTradesService() as any;
+  unsupportedRouteService.exchangeAssetRepository = {
+    async listSystemAssetsBySourceAndSymbols(source: string, symbols: string[]) {
+      assert.equal(source, 'delta_exchange');
+      assert.deepEqual(symbols, ['SKRUSDT', 'SKRUSD', 'SKRUSDC']);
+      return [];
+    },
+  };
+  await assert.rejects(
+    () => unsupportedRouteService.resolveLiveAutoAssetRoute('delta_exchange', 'SKRUSDT'),
+    (error: Error) => {
+      assert.match(error.message, /Delta product unsupported for SKRUSDT/);
+      assert.match(error.message, /SKRUSDT, SKRUSD, SKRUSDC/);
+      assert.doesNotMatch(error.message, /Run exchange-assets-sync before live auto placement/);
+      return true;
+    }
+  );
+
+  const originalRolloutEnabled = env.suggestedTrades.rolloutEnabled;
+  const originalLiveAuto = {
+    enabled: env.suggestedTrades.liveAuto.enabled,
+    executionEnabled: env.suggestedTrades.liveAuto.executionEnabled,
+    requireFixedRouting: env.suggestedTrades.liveAuto.requireFixedRouting,
+    userAllowlist: [...env.suggestedTrades.liveAuto.userAllowlist],
+    brokerAllowlist: [...env.suggestedTrades.liveAuto.brokerAllowlist],
+    shadowBrokerAllowlist: [...env.suggestedTrades.liveAuto.shadowBrokerAllowlist],
+  };
+  const originalEnvFlags = {
+    rolloutEnabled: process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED,
+    enabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_ENABLED,
+    executionEnabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED,
+    requireFixedRouting: process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING,
+    userAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST,
+    brokerAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST,
+    shadowBrokerAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST,
+  };
+  const blockedService = new SuggestedTradesService() as any;
+  let persistedExecution: Record<string, unknown> | null = null;
+
+  blockedService.suggestedTradeRepository = {
+    async getSuggestedTradeById() {
+      return {
+        id: 'st-delta-tiny-preflight',
+        automationId: 'auto-delta',
+        automationRunId: 'run-delta',
+        userId: 'user-1',
+        symbol: 'TINYUSDT',
+        timeframe: '5m',
+        side: 'BUY',
+        signalTime: new Date(),
+        status: 'Open',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitTargets: ['108'],
+        dedupeKey: 'dedupe-delta-tiny',
+        meta: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    },
+    async countSystemAcceptedExecutionsSince() {
+      return 0;
+    },
+    async countActiveExecutionsForAutomation() {
+      return 0;
+    },
+  };
+  blockedService.loadTradeSuggestionExecutionPolicy = async () => ({
+    executionMode: 'live_trade_auto',
+    approvalMode: 'auto_if_safe',
+    routeMode: 'fixed',
+    brokerKey: 'delta_exchange',
+    accountId: 'delta-acc-1',
+    liveConsentEnabled: true,
+    orderType: 'limit',
+    timeInForce: 'GTC',
+    quantityMode: 'quantity',
+    quantity: 0.0005,
+    notional: null,
+    riskPercent: null,
+    leverage: 15,
+    reduceOnly: false,
+    maxOrdersPerRun: 2,
+    maxOrdersPerDay: 3,
+    maxConcurrentOpenTrades: 1,
+    maxNotionalPerTrade: null,
+    maxNotionalPerDay: null,
+    dedupeWindowSeconds: 3600,
+    freshness: { enabled: false, graceSeconds: null, timeframeGraceSeconds: {} },
+  });
+  blockedService.detectLiveAutoDuplicateAssetConflict = async () => null;
+  blockedService.runPreTradeGate = async () => ({
+    result: {
+      checkId: 'check-delta-tiny',
+      status: 'passed',
+      decision: {
+        allowed: true,
+        blocked: false,
+        approvalRequired: false,
+        blockingRuleCount: 0,
+        warningRuleCount: 0,
+        summary: 'All clear',
+      },
+      request: {
+        routing: { brokerKey: 'delta_exchange', accountId: 'delta-acc-1' },
+        order: {
+          symbol: 'TINYUSDT',
+          entryPrice: 100,
+          stopLossPrice: 95,
+          takeProfitTargets: [108],
+          leverage: 15,
+          quantity: 0.0005,
+          orderType: 'limit',
+          reduceOnly: false,
+        },
+      },
+      delta: { grossExposureDelta: 0.05 },
+    },
+    execution: {
+      executionMode: 'live',
+      preTradeState: 'passed',
+      preTradeCheckId: 'check-delta-tiny',
+      brokerKey: 'delta_exchange',
+      accountId: 'delta-acc-1',
+      leverage: 15,
+      quantity: 0.0005,
+    },
+    ready: true,
+  });
+  blockedService.resolveLiveAutoAssetRoute = async () => ({
+    assetId: 'tiny-1',
+    requestedSymbol: 'TINYUSDT',
+    brokerSymbol: 'TINYUSDT',
+    candidateSymbols: ['TINYUSDT'],
+    resolvedVia: 'catalog_exact',
+  });
+  blockedService.brokerRuntimeRegistry = service.brokerRuntimeRegistry;
+  blockedService.brokerAccountRepository = {
+    async getConnectedBrokerAccounts() {
+      return [];
+    },
+  };
+  blockedService.positionReadModelRepository = {
+    async listLivePositionsForAccounts() {
+      return new Map();
+    },
+  };
+  blockedService.ordersSnapshotSourceRepository = {
+    async listOpenOrdersForAccounts() {
+      return new Map();
+    },
+  };
+  blockedService.riskKillSwitchService = {
+    async findActiveLiveTradingBlock() {
+      return null;
+    },
+  };
+  blockedService.operationalEventService = {
+    async logActivity() {
+      return undefined;
+    },
+    async emitFailureAlert() {
+      return undefined;
+    },
+  };
+  blockedService.persistExecutionState = async (
+    _trade: Record<string, unknown>,
+    execution: Record<string, unknown>
+  ) => {
+    persistedExecution = { ...execution };
+  };
+
+  try {
+    env.suggestedTrades.rolloutEnabled = true;
+    env.suggestedTrades.liveAuto.enabled = true;
+    env.suggestedTrades.liveAuto.executionEnabled = true;
+    env.suggestedTrades.liveAuto.requireFixedRouting = true;
+    env.suggestedTrades.liveAuto.userAllowlist = ['user-1'];
+    env.suggestedTrades.liveAuto.brokerAllowlist = ['delta_exchange'];
+    env.suggestedTrades.liveAuto.shadowBrokerAllowlist = [];
+    process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_ENABLED = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST = 'user-1';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = 'delta_exchange';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST = '';
+
+    const blocked = await blockedService.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-delta-tiny-preflight',
+      {
+        async createOrder() {
+          throw new Error('Delta product preflight should block before createOrder');
+        },
+      }
+    );
+    assert.equal(blocked.outcome, 'blocked');
+    assert.match(blocked.message, /smaller than one whole TINYUSD contract/);
+    assert.equal(persistedExecution?.['executionState'], 'rejected');
+    assert.equal(persistedExecution?.['preTradeState'], 'blocked');
+    assert.match(
+      String(persistedExecution?.['preTradeBlockedReason'] || ''),
+      /smaller than one whole TINYUSD contract/
+    );
+  } finally {
+    env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
+    env.suggestedTrades.liveAuto.enabled = originalLiveAuto.enabled;
+    env.suggestedTrades.liveAuto.executionEnabled = originalLiveAuto.executionEnabled;
+    env.suggestedTrades.liveAuto.requireFixedRouting = originalLiveAuto.requireFixedRouting;
+    env.suggestedTrades.liveAuto.userAllowlist = [...originalLiveAuto.userAllowlist];
+    env.suggestedTrades.liveAuto.brokerAllowlist = [...originalLiveAuto.brokerAllowlist];
+    env.suggestedTrades.liveAuto.shadowBrokerAllowlist = [
+      ...originalLiveAuto.shadowBrokerAllowlist,
+    ];
+    restoreEnv('SUGGESTED_TRADES_ROLLOUT_ENABLED', originalEnvFlags.rolloutEnabled);
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', originalEnvFlags.enabled);
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED', originalEnvFlags.executionEnabled);
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING',
+      originalEnvFlags.requireFixedRouting
+    );
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST', originalEnvFlags.userAllowlist);
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST', originalEnvFlags.brokerAllowlist);
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST',
+      originalEnvFlags.shadowBrokerAllowlist
+    );
   }
 }
 
@@ -2295,6 +3097,175 @@ async function runSuggestedTradeReconcileAssertions(): Promise<void> {
   assert.deepEqual(response.data.suggestedTrade.allowedActions, ['reconcile_execution']);
   assert.equal(activityCount, 1);
   assert.equal(failureAlertCount, 0);
+}
+
+async function runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions(): Promise<void> {
+  const repository = new SuggestedTradeRepository() as any;
+  const originalQuery = coreDataSource.query;
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+
+  repository.loadSuggestedTradesByIds = async (_userId: string, ids: string[]) =>
+    ids.map((id) => ({ id }));
+
+  (coreDataSource as any).query = async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('FROM scheduler_positions_snapshots')) {
+      return [
+        {
+          externalId: 'delta-position-1',
+          status: 'OPEN',
+          statusRank: 1,
+          firstSeenAt: '2026-04-04T10:02:00.000Z',
+          lastSeenAt: '2026-04-04T10:03:00.000Z',
+          payload: JSON.stringify({
+            symbol: 'BTCUSD',
+            side: 'long',
+            status: 'open',
+          }),
+        },
+      ];
+    }
+
+    return [{ id: 'st-delta-1' }];
+  };
+
+  try {
+    const linkedTrades = await repository.findLinkedTradesBySymbols(
+      'user-1',
+      'delta_exchange',
+      'acc-1',
+      ['BTCUSD']
+    );
+    assert.deepEqual(
+      linkedTrades.map((item: { id: string }) => item.id),
+      ['st-delta-1']
+    );
+    assert.deepEqual(calls[0]?.params.slice(0, 3), ['user-1', 'delta_exchange', 'acc-1']);
+    assert.deepEqual(new Set(calls[0]?.params.slice(3)), new Set(['btcusd', 'btcusdt', 'btcusdc']));
+
+    calls.length = 0;
+    const snapshots = await repository.getLinkedPositionSnapshots(
+      'user-1',
+      'delta_exchange',
+      'acc-1',
+      'BTCUSDT',
+      new Date('2026-04-04T10:00:00.000Z')
+    );
+    assert.equal(snapshots[0]?.externalId, 'delta-position-1');
+    assert.equal(snapshots[0]?.payload?.symbol, 'BTCUSD');
+    assert.deepEqual(calls[0]?.params.slice(0, 3), ['user-1', 'acc-1', 'delta_exchange']);
+    assert.deepEqual(
+      new Set(calls[0]?.params.slice(3, -2)),
+      new Set(['btcusdt', 'btcusdc', 'btcusd'])
+    );
+
+    calls.length = 0;
+    await repository.findRecentTradesBySymbol('user-1', 'delta_exchange', 'acc-1', 'ETHUSDC', 6);
+    assert.deepEqual(
+      new Set(calls[0]?.params.slice(3, -1)),
+      new Set(['ethusdc', 'ethusdt', 'ethusd'])
+    );
+
+    calls.length = 0;
+    await repository.findLinkedTradesBySymbols('user-1', 'mudrex', 'acc-1', ['BTCUSD']);
+    assert.deepEqual(calls[0]?.params.slice(0, 3), ['user-1', 'mudrex', 'acc-1']);
+    assert.deepEqual(calls[0]?.params.slice(3), ['btcusd']);
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
+function runSuggestedTradeDeltaClosedFilledTimestampAssertions(): void {
+  const service = new SuggestedTradesService() as any;
+
+  const mergedOrder = service.mergeExecutionOutcome(
+    {
+      brokerKey: 'delta_exchange',
+      orderStatus: 'OPEN',
+      executionState: 'working',
+      submittedAt: '2026-05-05T12:51:57.000Z',
+      filledAt: null,
+    },
+    {
+      orderStatus: 'CLOSED',
+      statusRank: 3,
+      lastSeenAt: '2026-05-05T12:58:31.000Z',
+      payload: {
+        status: 'closed',
+        created_at: '2026-05-05T12:51:56.967470Z',
+        updated_at: '2026-05-05T12:54:07.297083Z',
+        filled_price: 0.3577,
+        filled_quantity: 2,
+      },
+    }
+  );
+
+  assert.equal(mergedOrder.orderStatus, 'CLOSED');
+  assert.equal(mergedOrder.executionState, 'filled');
+  assert.equal(mergedOrder.filledAt, '2026-05-05T12:54:07.297Z');
+  assert.equal(mergedOrder.filledQuantity, 2);
+
+  const closedUnfilledOrder = service.mergeExecutionOutcome(
+    {
+      brokerKey: 'delta_exchange',
+      orderStatus: 'OPEN',
+      executionState: 'working',
+      filledAt: null,
+    },
+    {
+      orderStatus: 'CLOSED',
+      statusRank: 3,
+      lastSeenAt: '2026-05-05T12:58:31.000Z',
+      payload: {
+        status: 'closed',
+        updated_at: '2026-05-05T12:54:07.297083Z',
+        filled_quantity: 0,
+      },
+    }
+  );
+
+  assert.equal(closedUnfilledOrder.executionState, 'closed');
+  assert.equal(closedUnfilledOrder.filledAt, null);
+
+  const positionMerged = service.mergePositionOutcome(
+    {
+      symbol: 'BUSDT',
+      side: 'BUY',
+      signalTime: new Date('2026-05-05T12:45:00.000Z'),
+    },
+    {
+      brokerKey: 'delta_exchange',
+      orderStatus: 'CLOSED',
+      executionState: 'closed',
+      submittedAt: '2026-05-05T12:51:57.000Z',
+      filledAt: null,
+      filledQuantity: 2,
+      quantity: 2,
+      entryPrice: '0.3577',
+    },
+    [
+      {
+        externalId: '133436',
+        status: 'OPEN',
+        statusRank: 1,
+        firstSeenAt: '2026-05-05T12:55:28.000Z',
+        lastSeenAt: '2026-05-05T12:58:28.000Z',
+        payload: {
+          symbol: 'BUSD',
+          side: 'long',
+          status: 'open',
+          quantity: 2,
+          entry_price: '0.3577',
+          created_at: '2026-05-05T12:54:07.000Z',
+        },
+      },
+    ]
+  );
+
+  assert.equal(positionMerged.positionId, '133436');
+  assert.equal(positionMerged.positionOpenedAt, '2026-05-05T12:54:07.000Z');
+  assert.equal(positionMerged.filledAt, '2026-05-05T12:54:07.000Z');
+  assert.equal(positionMerged.executionState, 'filled');
 }
 
 async function runSuggestedTradeSiblingProtectionAutoCancelAssertions(): Promise<void> {
@@ -2443,6 +3414,2198 @@ async function runSuggestedTradeSiblingProtectionAutoCancelAssertions(): Promise
     String(savedExecutionPayload?.['note'] || ''),
     /Sibling protection cancel requested after position close: tp-1/
   );
+}
+
+async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
+  const service = new SuggestedTradesService() as any;
+  let savedExecutionPayload: Record<string, unknown> | null = null;
+  const cancelledOrders: Array<{ orderId: string; context: Record<string, unknown> | undefined }> =
+    [];
+
+  const trade = {
+    id: 'st-limit-expiry',
+    automationId: 'auto-1',
+    automationRunId: 'run-1',
+    userId: 'user-1',
+    sourceBacktestId: null,
+    sourceTemplateId: null,
+    sourceSetupKey: null,
+    symbol: 'BTCUSDT',
+    timeframe: '5m',
+    side: 'BUY',
+    signalTime: new Date('2026-04-04T10:00:00.000Z'),
+    status: 'Accepted',
+    confidence: 0.88,
+    score: 90,
+    entryPrice: '100',
+    stopLossPrice: '95',
+    takeProfitTargets: ['108'],
+    entryRule: 'breakout',
+    exitRule: 'trail',
+    rationale: 'Momentum continuation',
+    dedupeKey: 'dedupe-limit-expiry',
+    meta: {
+      execution: {
+        executionMode: 'live',
+        orderId: 'ord-limit-1',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        executionState: 'working',
+        orderStatus: 'OPEN',
+        orderType: 'limit',
+        linkedAt: '2026-04-04T10:01:00.000Z',
+        submittedAt: '2026-04-04T10:01:00.000Z',
+        entryPrice: '100',
+        quantity: 1,
+        note: 'Live limit order linked.',
+      },
+    },
+    createdAt: new Date('2026-04-04T10:00:30.000Z'),
+    updatedAt: new Date('2026-04-04T10:02:00.000Z'),
+  };
+
+  service.loadTradeSuggestionExecutionPolicy = async () => ({
+    limitOrderExpiry: {
+      enabled: true,
+      expirySeconds: null,
+      timeframeExpirySeconds: {
+        '5m': 900,
+      },
+    },
+  });
+  service.suggestedTradeRepository = {
+    async getLinkedOrderSnapshot() {
+      return {
+        orderStatus: 'OPEN',
+        statusRank: 1,
+        lastSeenAt: '2026-04-04T10:04:00.000Z',
+        payload: {
+          created_at: '2026-04-04T10:01:00.000Z',
+          updated_at: '2026-04-04T10:04:00.000Z',
+        },
+      };
+    },
+    async getLinkedPositionSnapshots() {
+      return [];
+    },
+    async saveSuggestedTrade(item: Record<string, unknown>) {
+      return {
+        ...item,
+        updatedAt: new Date('2026-04-04T10:04:00.000Z'),
+      };
+    },
+    async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+      savedExecutionPayload = { ...payload };
+      return {
+        ...payload,
+        createdAt: new Date('2026-04-04T10:04:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:04:00.000Z'),
+      };
+    },
+  };
+  service.paperOrderExecutionService = {
+    async simulateUserPaperOrders() {
+      return undefined;
+    },
+  };
+  service.paperOrderRepository = {
+    async getPaperOrderById() {
+      return null;
+    },
+  };
+  service.brokerRuntimeRegistry = {
+    supportsOrdersAdapter() {
+      return true;
+    },
+    getOrdersAdapter() {
+      return {
+        async cancelOrder(orderId: string, context?: Record<string, unknown>) {
+          cancelledOrders.push({ orderId, context });
+          return { success: true };
+        },
+      };
+    },
+  };
+
+  const refreshed = await service.refreshExecutionOutcomes('user-1', [trade]);
+
+  assert.equal(refreshed, 1);
+  assert.deepEqual(cancelledOrders, [
+    {
+      orderId: 'ord-limit-1',
+      context: {
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+      },
+    },
+  ]);
+  assert.equal(savedExecutionPayload?.['executionState'], 'expired');
+  assert.equal(savedExecutionPayload?.['orderStatus'], 'EXPIRED');
+  assert.match(
+    String(savedExecutionPayload?.['note'] || ''),
+    /Limit entry order expired after 15m for 5m/
+  );
+}
+
+async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void> {
+  {
+    const service = new SuggestedTradesService() as any;
+    let savedExecutionPayload: Record<string, unknown> | null = null;
+    const riskOrders: Array<{
+      positionId: string;
+      body: Record<string, unknown>;
+      context: Record<string, unknown> | undefined;
+    }> = [];
+    const trade = {
+      id: 'st-mudrex-protection-remediate',
+      automationId: 'auto-1',
+      automationRunId: 'run-1',
+      userId: 'user-1',
+      symbol: 'BTCUSDT',
+      timeframe: '5m',
+      side: 'BUY',
+      signalTime: new Date('2026-04-04T10:00:00.000Z'),
+      status: 'Accepted',
+      confidence: 0.88,
+      score: 90,
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitTargets: ['110'],
+      entryRule: 'breakout',
+      exitRule: 'trail',
+      rationale: null,
+      dedupeKey: 'dedupe-mudrex-protection-remediate',
+      meta: null,
+      executionRecord: {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-1',
+        orderStatus: 'OPEN',
+        executionState: 'linked',
+        orderType: 'limit',
+        linkedAt: '2026-04-04T10:01:00.000Z',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitPrice: '110',
+        quantity: 1,
+        protectionState: 'pending',
+        protectionAttempts: 0,
+        createdAt: new Date('2026-04-04T10:01:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:01:00.000Z'),
+      },
+      createdAt: new Date('2026-04-04T10:00:30.000Z'),
+      updatedAt: new Date('2026-04-04T10:01:00.000Z'),
+    };
+
+    service.suggestedTradeRepository = {
+      async getLinkedOrderSnapshot() {
+        return {
+          orderStatus: 'FILLED',
+          statusRank: 3,
+          lastSeenAt: '2026-04-04T10:03:00.000Z',
+          payload: {
+            status: 'FILLED',
+            average_fill_price: '102',
+            filled_quantity: '1',
+            remaining_quantity: '0',
+            updated_at: '2026-04-04T10:03:00.000Z',
+          },
+        };
+      },
+      async getLinkedPositionSnapshots() {
+        return [
+          {
+            externalId: 'mudrex:asset-1:2026-04-04T10:03:05Z:LONG',
+            status: 'OPEN',
+            statusRank: 2,
+            firstSeenAt: '2026-04-04T10:03:05.000Z',
+            lastSeenAt: '2026-04-04T10:03:05.000Z',
+            payload: {
+              id: 'mudrex-native-position-1',
+              status: 'open',
+              side: 'Long',
+              entry_price: '102',
+              quantity: '1',
+              created_at: '2026-04-04T10:03:05.000Z',
+              updated_at: '2026-04-04T10:03:05.000Z',
+            },
+          },
+        ];
+      },
+      async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+        savedExecutionPayload = { ...payload };
+        return {
+          ...payload,
+          createdAt: new Date('2026-04-04T10:04:00.000Z'),
+          updatedAt: new Date('2026-04-04T10:04:00.000Z'),
+        };
+      },
+    };
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder(
+            positionId: string,
+            body: Record<string, unknown>,
+            context?: Record<string, unknown>
+          ) {
+            riskOrders.push({ positionId, body, context });
+            return { success: true };
+          },
+        };
+      },
+      supportsOrdersAdapter() {
+        return false;
+      },
+    };
+
+    const refreshed = await service.refreshExecutionOutcomes('user-1', [trade]);
+
+    assert.equal(refreshed, 1);
+    assert.equal(riskOrders[0]?.positionId, 'mudrex-native-position-1');
+    assert.equal(riskOrders[0]?.body.stoploss_price, '96.900000');
+    assert.equal(riskOrders[0]?.body.takeprofit_price, '112.200000');
+    assert.equal(savedExecutionPayload?.['protectionState'], 'attached');
+    assert.equal(savedExecutionPayload?.['protectionAttempts'], 1);
+    assert.equal(
+      (savedExecutionPayload?.['protectionPlan'] as Record<string, unknown> | undefined)
+        ?.attachedStopLossPrice,
+      '96.900000'
+    );
+    assert.equal(
+      (savedExecutionPayload?.['protectionPlan'] as Record<string, unknown> | undefined)
+        ?.snapshotPositionId,
+      'mudrex:asset-1:2026-04-04T10:03:05Z:LONG'
+    );
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let riskOrderPositionId: string | null = null;
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder(positionId: string) {
+            riskOrderPositionId = positionId;
+            return { success: true };
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-mudrex-protection-retry',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        dedupeKey: 'dedupe-mudrex-protection-retry',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-retry',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'failed',
+        protectionAttempts: 1,
+        protectionLastError: 'Mudrex protection remediation failed: position not found',
+      },
+      [
+        {
+          externalId: 'mudrex:asset-1:2026-04-04T10:03:05Z:SHORT',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: 'mudrex-native-position-retry',
+            status: 'open',
+            order_type: 'SHORT',
+            entry_price: '0.0182',
+            quantity: '100',
+            created_at: '2026-04-04T10:03:05.000Z',
+            updated_at: '2026-04-04T10:03:05.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(riskOrderPositionId, 'mudrex-native-position-retry');
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.protectionAttempts, 2);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let riskOrderCalled = false;
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder() {
+            riskOrderCalled = true;
+            throw new Error('invalid manual protection should not call broker');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-mudrex-protection-manual',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        dedupeKey: 'dedupe-mudrex-protection-manual',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-manual',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'failed',
+        protectionAttempts: 2,
+        protectionLastError: 'Mudrex protection remediation failed: bad request',
+      },
+      [
+        {
+          externalId: 'mudrex:asset-1:2026-04-04T10:03:05Z:SHORT',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: 'mudrex-native-position-manual',
+            status: 'open',
+            order_type: 'SHORT',
+            entry_price: '0.0182',
+            current_price: '0.0195',
+            liquidation_price: '0.021',
+            quantity: '100',
+            created_at: '2026-04-04T10:03:05.000Z',
+            updated_at: '2026-04-04T10:03:05.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(riskOrderCalled, false);
+    assert.equal(nextExecution.protectionState, 'manual_unlinked');
+    assert.match(String(nextExecution.protectionLastError || ''), /manual action/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let riskOrderCalled = false;
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder() {
+            riskOrderCalled = true;
+            throw new Error('manual recovery must not create a new Mudrex risk order');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-mudrex-manual-recovered',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        dedupeKey: 'dedupe-mudrex-manual-recovered',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-manual-recovered',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'manual_unlinked',
+        protectionAttempts: 2,
+        protectionLastError: 'Mudrex protection needs manual action.',
+      },
+      [
+        {
+          externalId: 'mudrex:asset-1:2026-04-04T10:03:05Z:SHORT',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: 'mudrex-native-position-manual-recovered',
+            status: 'open',
+            order_type: 'SHORT',
+            entry_price: '0.0182',
+            stoploss_order_id: 'mudrex-sl-1',
+            takeprofit_order_id: 'mudrex-tp-1',
+            created_at: '2026-04-04T10:03:05.000Z',
+            updated_at: '2026-04-04T10:03:05.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(riskOrderCalled, false);
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.protectionAttempts, 2);
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.match(String(nextExecution.note || ''), /manual SL\/TP protection/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let riskOrderCalled = false;
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder() {
+            riskOrderCalled = true;
+            throw new Error('manual recheck must not create a new Mudrex risk order');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-mudrex-manual-still-open',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        dedupeKey: 'dedupe-mudrex-manual-still-open',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-manual-still-open',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'manual_unlinked',
+        protectionAttempts: 2,
+        protectionLastError: 'Mudrex protection needs manual action.',
+      },
+      [
+        {
+          externalId: 'mudrex:asset-1:2026-04-04T10:03:05Z:SHORT',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: 'mudrex-native-position-manual-still-open',
+            status: 'open',
+            order_type: 'SHORT',
+            entry_price: '0.0182',
+            created_at: '2026-04-04T10:03:05.000Z',
+            updated_at: '2026-04-04T10:03:05.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(riskOrderCalled, false);
+    assert.equal(nextExecution.protectionState, 'manual_unlinked');
+    assert.equal(nextExecution.protectionAttempts, 2);
+    assert.equal(nextExecution.protectionLastError, 'Mudrex protection needs manual action.');
+    assert.match(String(nextExecution.note || ''), /manual action remains required/);
+    assert.ok(nextExecution.protectionCheckedAt);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let riskOrderCalled = false;
+    let riskOrderPositionId: string | null = null;
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder(positionId: string) {
+            riskOrderCalled = true;
+            riskOrderPositionId = positionId;
+            return {};
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-mudrex-not-required-open-position',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        dedupeKey: 'dedupe-mudrex-not-required-open-position',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-not-required-open-position',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'not_required',
+        protectionAttempts: 0,
+        protectionCheckedAt: '2026-04-04T10:02:00.000Z',
+      },
+      [
+        {
+          externalId: 'mudrex:asset-1:2026-04-04T10:03:05Z:SHORT',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: 'mudrex-native-position-not-required-open',
+            status: 'open',
+            order_type: 'SHORT',
+            entry_price: '0.0182',
+            current_price: '0.0182',
+            liquidation_price: '0.021',
+            quantity: '100',
+            created_at: '2026-04-04T10:03:05.000Z',
+            updated_at: '2026-04-04T10:03:05.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(riskOrderCalled, true);
+    assert.equal(riskOrderPositionId, 'mudrex-native-position-not-required-open');
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.protectionAttempts, 1);
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.match(String(nextExecution.note || ''), /Derived Mudrex SL\/TP attached/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let riskOrderCalled = false;
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder() {
+            riskOrderCalled = true;
+            throw new Error('position-less retry must not attach protection');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-mudrex-not-required-waiting-for-position',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        dedupeKey: 'dedupe-mudrex-not-required-waiting-for-position',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-not-required-waiting-for-position',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'not_required',
+        protectionAttempts: 0,
+      },
+      []
+    );
+
+    assert.equal(riskOrderCalled, false);
+    assert.equal(nextExecution.protectionState, 'waiting_for_position');
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.ok(nextExecution.protectionCheckedAt);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let riskOrderPositionId: string | null = null;
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder(positionId: string) {
+            riskOrderPositionId = positionId;
+            return {};
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-mudrex-stale-closed-position-link',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        dedupeKey: 'dedupe-mudrex-stale-closed-position-link',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-stale-closed-position-link',
+        executionState: 'closed',
+        orderStatus: 'FILLED',
+        submittedAt: '2026-04-04T10:00:00.000Z',
+        positionId: 'mudrex:asset-1:2026-04-03T06:00:00Z:SHORT',
+        positionStatus: 'CLOSED',
+        positionClosedAt: '2026-04-03T06:30:00.000Z',
+        outcome: 'loss',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'not_required',
+        protectionAttempts: 0,
+      },
+      [
+        {
+          externalId: 'mudrex:asset-1:2026-04-03T06:00:00Z:SHORT',
+          status: 'CLOSED',
+          statusRank: 9,
+          firstSeenAt: '2026-04-03T06:00:00.000Z',
+          lastSeenAt: '2026-04-04T10:01:00.000Z',
+          payload: {
+            id: 'mudrex-native-position-stale-closed',
+            status: 'closed',
+            order_type: 'SHORT',
+            entry_price: '0.018',
+            quantity: '100',
+            created_at: '2026-04-03T06:00:00.000Z',
+            closed_at: '2026-04-03T06:30:00.000Z',
+            updated_at: '2026-04-04T10:01:00.000Z',
+          },
+        },
+        {
+          externalId: 'mudrex:asset-1:2026-04-04T10:03:05Z:SHORT',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: 'mudrex-native-position-current-open',
+            status: 'open',
+            order_type: 'SHORT',
+            entry_price: '0.0182',
+            current_price: '0.0182',
+            liquidation_price: '0.021',
+            quantity: '100',
+            created_at: '2026-04-04T10:03:05.000Z',
+            updated_at: '2026-04-04T10:03:05.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(riskOrderPositionId, 'mudrex-native-position-current-open');
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.protectionLastError, null);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder() {
+            throw new Error('breached SL must not create Mudrex protection');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-mudrex-not-required-open-position-breached',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        dedupeKey: 'dedupe-mudrex-not-required-open-position-breached',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-not-required-open-position-breached',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        positionStatus: 'OPEN',
+        positionClosedAt: '2026-04-03T06:30:00.000Z',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'not_required',
+        protectionAttempts: 0,
+      },
+      [
+        {
+          externalId: 'mudrex:asset-1:2026-04-04T10:03:05Z:SHORT',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: 'mudrex-native-position-current-open-breached',
+            status: 'open',
+            order_type: 'SHORT',
+            entry_price: '0.0182',
+            current_price: '0.0195',
+            liquidation_price: '0.021',
+            quantity: '100',
+            created_at: '2026-04-04T10:03:05.000Z',
+            updated_at: '2026-04-04T10:03:05.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(nextExecution.protectionState, 'manual_unlinked');
+    assert.match(String(nextExecution.protectionLastError || ''), /already breached/);
+
+    const persisted = service.toExecutionPersistencePayload(
+      {
+        id: 'st-mudrex-not-required-open-position-breached',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        confidence: null,
+        score: null,
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        entryRule: null,
+        exitRule: null,
+        rationale: null,
+        dedupeKey: 'dedupe-mudrex-not-required-open-position-breached',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-not-required-open-position-breached',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        positionStatus: 'OPEN',
+        positionClosedAt: '2026-04-03T06:30:00.000Z',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'manual_unlinked',
+        protectionLastError: 'Mudrex protection needs manual action.',
+      }
+    );
+    assert.equal(persisted.protectionState, 'manual_unlinked');
+    assert.equal(persisted.protectionLastError, 'Mudrex protection needs manual action.');
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder() {
+            throw new Error('exhausted breached Mudrex protection must not retry broker order');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-mudrex-failed-open-position-breached',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        dedupeKey: 'dedupe-mudrex-failed-open-position-breached',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-failed-open-position-breached',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        positionStatus: 'OPEN',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'failed',
+        protectionAttempts: 8,
+        protectionLastError: 'Mudrex protection remediation failed: bad request',
+      },
+      [
+        {
+          externalId: 'mudrex:asset-1:2026-04-04T10:03:05Z:SHORT',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: 'mudrex-native-position-failed-breached',
+            status: 'open',
+            order_type: 'SHORT',
+            entry_price: '0.0182',
+            current_price: '0.0195',
+            liquidation_price: '0.021',
+            quantity: '100',
+            created_at: '2026-04-04T10:03:05.000Z',
+            updated_at: '2026-04-04T10:03:05.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(nextExecution.protectionState, 'manual_unlinked');
+    assert.match(String(nextExecution.protectionLastError || ''), /already breached/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'delta-sl-manual-1',
+      takeProfitOrderId: 'delta-tp-manual-1',
+      stopLossStatus: 'OPEN',
+      takeProfitStatus: 'OPEN',
+      activeOrderIds: ['delta-sl-manual-1', 'delta-tp-manual-1'],
+    });
+    service.resolveActiveDeltaProtectionOrdersForSymbol = async () => ({
+      stopLossOrderIds: ['delta-sl-manual-1'],
+      takeProfitOrderIds: ['delta-tp-manual-1'],
+      unclassifiedOrderIds: [],
+      activeOrderIds: ['delta-sl-manual-1', 'delta-tp-manual-1'],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            throw new Error('manual Delta recovery must not create new protection orders');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-manual-recovered',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'BTCUSDT',
+        timeframe: '5m',
+        side: 'BUY',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitTargets: ['110'],
+        dedupeKey: 'dedupe-delta-manual-recovered',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+        orderId: 'delta-entry-manual-recovered',
+        executionState: 'filled',
+        orderStatus: 'CLOSED',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitPrice: '110',
+        protectionState: 'manual_unlinked',
+        protectionAttempts: 1,
+        protectionLastError: 'Delta Exchange protection is still not linked.',
+      },
+      [
+        {
+          externalId: 'delta:btc-position-1',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            product_symbol: 'BTCUSDT',
+            side: 'long',
+            entry_price: '100',
+            size: '1',
+            created_at: '2026-04-04T10:03:05.000Z',
+            updated_at: '2026-04-04T10:03:05.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.protectionAttempts, 1);
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.equal(
+      (nextExecution.protectionPlan as Record<string, unknown> | undefined)?.stopLossOrderId,
+      'delta-sl-manual-1'
+    );
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'delta-sl-active',
+      takeProfitOrderId: 'delta-tp-active',
+      stopLossStatus: 'PENDING',
+      takeProfitStatus: 'OPEN',
+      activeOrderIds: ['delta-sl-active', 'delta-tp-active'],
+    });
+    service.resolveActiveDeltaProtectionOrdersForSymbol = async () => ({
+      stopLossOrderIds: ['delta-sl-active'],
+      takeProfitOrderIds: ['delta-tp-active'],
+      unclassifiedOrderIds: [],
+      activeOrderIds: ['delta-sl-active', 'delta-tp-active'],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('attached active validation must not place replacement orders');
+          },
+        };
+      },
+    };
+
+    const execution = {
+      executionMode: 'live',
+      brokerKey: 'delta_exchange',
+      accountId: 'delta-acc-1',
+      orderId: 'delta-attached-active-entry',
+      executionState: 'filled',
+      orderStatus: 'CLOSED',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitPrice: '110',
+      protectionState: 'attached',
+      protectionAttempts: 0,
+      protectionCheckedAt: '2026-04-04T10:04:00.000Z',
+    };
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-attached-active',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'BTCUSDT',
+        timeframe: '5m',
+        side: 'BUY',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitTargets: ['110'],
+        dedupeKey: 'dedupe-delta-attached-active',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      execution,
+      [
+        {
+          externalId: 'delta:btc-attached-active',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            status: 'open',
+            side: 'Long',
+            entry_price: '100',
+            mark_price: '101',
+            quantity_contracts: '1',
+          },
+        },
+      ]
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.deepEqual(nextExecution, execution);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'delta-sl-linked',
+      takeProfitOrderId: 'delta-tp-linked',
+      stopLossStatus: 'PENDING',
+      takeProfitStatus: 'OPEN',
+      activeOrderIds: ['delta-sl-linked', 'delta-tp-linked'],
+    });
+    service.resolveActiveDeltaProtectionOrdersForSymbol = async () => ({
+      stopLossOrderIds: ['delta-sl-linked', 'delta-sl-extra'],
+      takeProfitOrderIds: ['delta-tp-linked', 'delta-tp-extra'],
+      unclassifiedOrderIds: [],
+      activeOrderIds: ['delta-sl-linked', 'delta-tp-linked', 'delta-sl-extra', 'delta-tp-extra'],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('attached duplicate validation must not place replacement orders');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-attached-duplicate-active',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'CROSSUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.105765',
+        stopLossPrice: '0.107121129922',
+        takeProfitTargets: ['0.101696610234'],
+        dedupeKey: 'dedupe-delta-attached-duplicate-active',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-attached-duplicate-entry',
+        executionState: 'filled',
+        orderStatus: 'CLOSED',
+        entryPrice: '0.105765',
+        stopLossPrice: '0.107121129922',
+        takeProfitPrice: '0.101696610234',
+        protectionState: 'attached',
+        protectionAttempts: 0,
+      },
+      [
+        {
+          externalId: '84924',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: '84924',
+            product_symbol: 'CROSSUSD',
+            status: 'open',
+            side: 'Short',
+            entry_price: '0.10485',
+            mark_price: '0.1045',
+            quantity_contracts: '100',
+          },
+        },
+      ]
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.equal(nextExecution.protectionState, 'manual_unlinked');
+    assert.match(String(nextExecution.protectionLastError || ''), /extra or unclassified/);
+    assert.match(String(nextExecution.protectionLastError || ''), /manual cleanup is required/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'delta-sl-linked',
+      takeProfitOrderId: 'delta-tp-linked',
+      stopLossStatus: 'PENDING',
+      takeProfitStatus: 'OPEN',
+      activeOrderIds: ['delta-sl-linked', 'delta-tp-linked'],
+    });
+    service.resolveActiveDeltaProtectionOrdersForSymbol = async () => ({
+      stopLossOrderIds: ['delta-sl-linked', 'delta-sl-extra'],
+      takeProfitOrderIds: ['delta-tp-linked', 'delta-tp-extra'],
+      unclassifiedOrderIds: [],
+      activeOrderIds: ['delta-sl-linked', 'delta-tp-linked', 'delta-sl-extra', 'delta-tp-extra'],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('manual duplicate recovery must not place replacement orders');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-manual-duplicate-active',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'CROSSUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.105765',
+        stopLossPrice: '0.107121129922',
+        takeProfitTargets: ['0.101696610234'],
+        dedupeKey: 'dedupe-delta-manual-duplicate-active',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-manual-duplicate-entry',
+        executionState: 'filled',
+        orderStatus: 'CLOSED',
+        entryPrice: '0.105765',
+        stopLossPrice: '0.107121129922',
+        takeProfitPrice: '0.101696610234',
+        protectionState: 'manual_unlinked',
+        protectionAttempts: 0,
+        protectionLastError:
+          'Delta Exchange linked SL/TP pair is active, but extra reduce-only protection also exists.',
+      },
+      [
+        {
+          externalId: '84924',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: '84924',
+            product_symbol: 'CROSSUSD',
+            status: 'open',
+            side: 'Short',
+            entry_price: '0.10485',
+            mark_price: '0.1045',
+            quantity_contracts: '100',
+          },
+        },
+      ]
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.equal(nextExecution.protectionState, 'manual_unlinked');
+    assert.match(String(nextExecution.protectionLastError || ''), /extra or unclassified/);
+    assert.match(String(nextExecution.protectionLastError || ''), /manual cleanup is required/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'delta-sl-cancelled',
+      takeProfitOrderId: 'delta-tp-cancelled',
+      stopLossStatus: 'CANCELLED',
+      takeProfitStatus: 'CANCELLED',
+      activeOrderIds: [],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('phase 3 validation must not place replacement orders');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-attached-cancelled-safe',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'EVAAUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.60595',
+        stopLossPrice: '0.623769828915',
+        takeProfitTargets: ['0.552490513254'],
+        dedupeKey: 'dedupe-delta-attached-cancelled-safe',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-attached-cancelled-safe-entry',
+        executionState: 'filled',
+        orderStatus: 'CLOSED',
+        entryPrice: '0.60595',
+        stopLossPrice: '0.623769828915',
+        takeProfitPrice: '0.552490513254',
+        protectionState: 'attached',
+        protectionAttempts: 0,
+      },
+      [
+        {
+          externalId: 'delta:evaa-open',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            status: 'open',
+            side: 'Short',
+            entry_price: '0.606',
+            mark_price: '0.6111',
+            quantity_contracts: '156',
+          },
+        },
+      ]
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.equal(nextExecution.protectionState, 'failed');
+    assert.equal(nextExecution.protectionAttempts, 1);
+    assert.match(String(nextExecution.protectionLastError || ''), /inactive or missing/);
+    assert.match(String(nextExecution.protectionLastError || ''), /replacement protection/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'delta-sl-crossed',
+      takeProfitOrderId: 'delta-tp-crossed',
+      stopLossStatus: 'CANCELLED',
+      takeProfitStatus: 'CANCELLED',
+      activeOrderIds: [],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('crossed stop validation must not place replacement orders');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-attached-cancelled-crossed',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'SUSDT',
+        timeframe: '5m',
+        side: 'BUY',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.0453',
+        stopLossPrice: '0.044913490607',
+        takeProfitTargets: ['0.046459528178'],
+        dedupeKey: 'dedupe-delta-attached-cancelled-crossed',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-attached-cancelled-crossed-entry',
+        executionState: 'filled',
+        orderStatus: 'CLOSED',
+        entryPrice: '0.0453',
+        stopLossPrice: '0.044913490607',
+        takeProfitPrice: '0.046459528178',
+        protectionState: 'attached',
+        protectionAttempts: 0,
+      },
+      [
+        {
+          externalId: 'delta:s-open',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            status: 'open',
+            side: 'Long',
+            entry_price: '0.0453',
+            mark_price: '0.0448',
+            quantity_contracts: '209',
+          },
+        },
+      ]
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.equal(nextExecution.protectionState, 'manual_unlinked');
+    assert.equal(nextExecution.protectionAttempts, 0);
+    assert.match(String(nextExecution.protectionLastError || ''), /already crossed/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-terminal-manual-protection',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        dedupeKey: 'dedupe-terminal-manual-protection',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-terminal',
+        executionState: 'closed',
+        positionStatus: 'LIQUIDATED',
+        positionClosedAt: '2026-04-04T10:10:00.000Z',
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'manual_unlinked',
+        protectionAttempts: 2,
+        protectionLastError: 'Mudrex protection needs manual action.',
+      },
+      []
+    );
+
+    assert.equal(nextExecution.protectionState, 'not_required');
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.match(String(nextExecution.note || ''), /Terminal execution no longer requires/);
+
+    const persisted = service.toExecutionPersistencePayload(
+      {
+        id: 'st-terminal-manual-protection',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'GOATUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        confidence: null,
+        score: null,
+        entryPrice: '0.018',
+        stopLossPrice: '0.019',
+        takeProfitTargets: ['0.016'],
+        entryRule: null,
+        exitRule: null,
+        rationale: null,
+        dedupeKey: 'dedupe-terminal-manual-protection',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        executionState: 'closed',
+        positionStatus: 'LIQUIDATED',
+        stopLossPrice: '0.019',
+        takeProfitPrice: '0.016',
+        protectionState: 'manual_unlinked',
+        protectionLastError: 'stale manual action',
+      }
+    );
+    assert.equal(persisted.protectionState, 'not_required');
+    assert.equal(persisted.protectionLastError, null);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let deltaAttachBody: Record<string, unknown> | null = null;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+      stopLossStatus: null,
+      takeProfitStatus: null,
+      activeOrderIds: [],
+    });
+    service.resolveLiveAutoAssetRoute = async () => ({
+      assetId: '45678',
+      requestedSymbol: 'BTCUSDT',
+      brokerSymbol: 'BTCUSDT',
+      candidateSymbols: ['BTCUSDT'],
+      resolvedVia: 'catalog_exact',
+    });
+    service.resolveActiveDeltaProtectionOrdersForSymbol = async () => ({
+      stopLossOrderIds: [],
+      takeProfitOrderIds: [],
+      unclassifiedOrderIds: [],
+      activeOrderIds: [],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition(
+            assetId: string,
+            body: Record<string, unknown>,
+            context?: Record<string, unknown>
+          ) {
+            assert.equal(assetId, '45678');
+            assert.equal(context?.brokerKey, 'delta_exchange');
+            deltaAttachBody = { ...body };
+            return {
+              protection_status: 'attached',
+              stop_loss_order_id: 'delta-sl-1',
+              take_profit_order_id: 'delta-tp-1',
+            };
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-protection-remediate',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'BTCUSDT',
+        timeframe: '5m',
+        side: 'BUY',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitTargets: ['110'],
+        dedupeKey: 'dedupe-delta-protection-remediate',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-order-1',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitPrice: '110',
+        filledPrice: '102',
+        protectionState: 'failed',
+        protectionAttempts: 1,
+        protectionLastError:
+          'Delta Exchange attached protection is inactive or missing for an open position (SL old-sl CANCELLED, TP old-tp CANCELLED); replacement protection is required before this execution can be marked attached.',
+      },
+      [
+        {
+          externalId: '45678',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: '45678',
+            status: 'open',
+            side: 'Long',
+            entry_price: '102',
+            quantity_contracts: '3',
+            created_at: '2026-04-04T10:03:05.000Z',
+            updated_at: '2026-04-04T10:03:05.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(nextExecution.protectionState, 'attaching');
+    assert.equal(nextExecution.protectionAttempts, 2);
+    assert.equal(nextExecution.protectionAttachedAt, null);
+    assert.equal(nextExecution.protectionLastError, null);
+    const attachedBody = deltaAttachBody as unknown as Record<string, unknown>;
+    assert.equal(attachedBody.size, 3);
+    assert.equal(attachedBody.entrySide, 'buy');
+    assert.equal(attachedBody.stopLossPrice, 96.9);
+    assert.equal(attachedBody.takeProfitPrice, 112.2);
+    assert.equal(
+      (nextExecution.protectionPlan as Record<string, unknown>)?.stopLossOrderId,
+      'delta-sl-1'
+    );
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => {
+      throw new Error('terminal unfilled Delta entry should not inspect protection snapshots');
+    };
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('terminal unfilled Delta entry must not create protection orders');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-terminal-unfilled',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'CROSSUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.105765',
+        stopLossPrice: '0.107121129922',
+        takeProfitTargets: ['0.101696610234'],
+        dedupeKey: 'dedupe-delta-terminal-unfilled',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-cancelled-entry',
+        executionState: 'cancelled',
+        orderStatus: 'CANCELLED',
+        positionId: '84924',
+        positionStatus: 'OPEN',
+        entryPrice: '0.105765',
+        stopLossPrice: '0.107121129922',
+        takeProfitPrice: '0.101696610234',
+        protectionState: 'attached',
+        protectionAttempts: 3,
+      },
+      [
+        {
+          externalId: '84924',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: '84924',
+            product_symbol: 'CROSSUSD',
+            side: 'Short',
+            entry_price: '0.10485',
+            mark_price: '0.1045',
+            quantity_contracts: '100',
+          },
+        },
+      ]
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.equal(nextExecution.protectionState, 'not_required');
+    assert.equal(nextExecution.positionId, null);
+    assert.equal(nextExecution.positionStatus, null);
+    assert.match(String(nextExecution.note || ''), /Terminal unfilled entry order/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+      stopLossStatus: null,
+      takeProfitStatus: null,
+      activeOrderIds: [],
+    });
+    service.resolveLiveAutoAssetRoute = async () => ({
+      assetId: '84924',
+      requestedSymbol: 'CROSSUSDT',
+      brokerSymbol: 'CROSSUSD',
+      candidateSymbols: ['CROSSUSDT', 'CROSSUSD'],
+      resolvedVia: 'catalog_equivalent',
+    });
+    service.resolveActiveDeltaProtectionOrdersForSymbol = async () => ({
+      stopLossOrderIds: ['delta-sl-existing-1', 'delta-sl-existing-2'],
+      takeProfitOrderIds: ['delta-tp-existing-1', 'delta-tp-existing-2'],
+      unclassifiedOrderIds: [],
+      activeOrderIds: [
+        'delta-sl-existing-1',
+        'delta-tp-existing-1',
+        'delta-sl-existing-2',
+        'delta-tp-existing-2',
+      ],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('duplicate active Delta protection must not create another pair');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-duplicate-active-protection',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'CROSSUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.105765',
+        stopLossPrice: '0.107121129922',
+        takeProfitTargets: ['0.101696610234'],
+        dedupeKey: 'dedupe-delta-duplicate-active-protection',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-order-duplicate-active',
+        executionState: 'filled',
+        orderStatus: 'CLOSED',
+        entryPrice: '0.105765',
+        stopLossPrice: '0.107121129922',
+        takeProfitPrice: '0.101696610234',
+        filledPrice: '0.10485',
+        protectionState: 'failed',
+        protectionAttempts: 1,
+        protectionLastError:
+          'Delta Exchange attached protection is inactive or missing for an open position (SL old-sl CANCELLED, TP old-tp CANCELLED); replacement protection is required before this execution can be marked attached.',
+      },
+      [
+        {
+          externalId: '84924',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: '84924',
+            product_symbol: 'CROSSUSD',
+            side: 'Short',
+            entry_price: '0.10485',
+            mark_price: '0.1045',
+            quantity_contracts: '100',
+          },
+        },
+      ]
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.equal(nextExecution.protectionState, 'manual_unlinked');
+    assert.match(String(nextExecution.protectionLastError || ''), /active reduce-only protection orders already exist/);
+    assert.match(String(nextExecution.protectionLastError || ''), /manual cleanup is required/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+      stopLossStatus: null,
+      takeProfitStatus: null,
+      activeOrderIds: [],
+    });
+    service.resolveLiveAutoAssetRoute = async () => ({
+      assetId: '84924',
+      requestedSymbol: 'CROSSUSDT',
+      brokerSymbol: 'CROSSUSD',
+      candidateSymbols: ['CROSSUSDT', 'CROSSUSD'],
+      resolvedVia: 'catalog_equivalent',
+    });
+    service.resolveActiveDeltaProtectionOrdersForSymbol = async () => ({
+      stopLossOrderIds: ['delta-sl-existing'],
+      takeProfitOrderIds: ['delta-tp-existing'],
+      unclassifiedOrderIds: [],
+      activeOrderIds: ['delta-sl-existing', 'delta-tp-existing'],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('existing Delta protection pair must be linked without replacement');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-single-active-protection',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'CROSSUSDT',
+        timeframe: '5m',
+        side: 'SELL',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '0.105765',
+        stopLossPrice: '0.107121129922',
+        takeProfitTargets: ['0.101696610234'],
+        dedupeKey: 'dedupe-delta-single-active-protection',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-order-single-active',
+        executionState: 'filled',
+        orderStatus: 'CLOSED',
+        entryPrice: '0.105765',
+        stopLossPrice: '0.107121129922',
+        takeProfitPrice: '0.101696610234',
+        filledPrice: '0.10485',
+        protectionState: 'failed',
+        protectionAttempts: 1,
+        protectionLastError:
+          'Delta Exchange attached protection is inactive or missing for an open position (SL old-sl CANCELLED, TP old-tp CANCELLED); replacement protection is required before this execution can be marked attached.',
+      },
+      [
+        {
+          externalId: '84924',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: '84924',
+            product_symbol: 'CROSSUSD',
+            side: 'Short',
+            entry_price: '0.10485',
+            mark_price: '0.1045',
+            quantity_contracts: '100',
+          },
+        },
+      ]
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.equal(
+      (nextExecution.protectionPlan as Record<string, unknown>)?.stopLossOrderId,
+      'delta-sl-existing'
+    );
+    assert.equal(
+      (nextExecution.protectionPlan as Record<string, unknown>)?.takeProfitOrderId,
+      'delta-tp-existing'
+    );
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'delta-replacement-sl-1',
+      takeProfitOrderId: 'delta-replacement-tp-1',
+      stopLossStatus: 'PENDING',
+      takeProfitStatus: 'OPEN',
+      activeOrderIds: ['delta-replacement-sl-1', 'delta-replacement-tp-1'],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('snapshot verification must not place another replacement order');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-protection-replacement-verified',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'BTCUSDT',
+        timeframe: '5m',
+        side: 'BUY',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitTargets: ['110'],
+        dedupeKey: 'dedupe-delta-protection-replacement-verified',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-order-verified',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitPrice: '110',
+        filledPrice: '102',
+        protectionState: 'attaching',
+        protectionAttempts: 2,
+        protectionPlan: {
+          stopLossOrderId: 'delta-replacement-sl-1',
+          takeProfitOrderId: 'delta-replacement-tp-1',
+        },
+      },
+      [
+        {
+          externalId: '45678',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: '45678',
+            status: 'open',
+            side: 'Long',
+            entry_price: '102',
+            quantity_contracts: '3',
+          },
+        },
+      ]
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.protectionAttempts, 2);
+    assert.equal(
+      (nextExecution.protectionPlan as Record<string, unknown>)?.stopLossOrderId,
+      'delta-replacement-sl-1'
+    );
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'delta-replacement-sl-2',
+      takeProfitOrderId: 'delta-replacement-tp-2',
+      stopLossStatus: 'PENDING',
+      takeProfitStatus: 'PENDING',
+      activeOrderIds: ['delta-replacement-sl-2', 'delta-replacement-tp-2'],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('already-active failed protection must not place another order');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-failed-protection-now-active',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'BTCUSDT',
+        timeframe: '5m',
+        side: 'BUY',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitTargets: ['110'],
+        dedupeKey: 'dedupe-delta-failed-protection-now-active',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-order-active-after-failure',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitPrice: '110',
+        filledPrice: '102',
+        protectionState: 'failed',
+        protectionAttempts: 3,
+        protectionLastError:
+          'Delta Exchange attached protection is inactive or missing for an open position (SL old-sl missing_snapshot, TP old-tp missing_snapshot); replacement protection is required before this execution can be marked attached.',
+      },
+      [
+        {
+          externalId: '45678',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: '45678',
+            status: 'open',
+            side: 'Long',
+            entry_price: '102',
+            quantity_contracts: '3',
+          },
+        },
+      ]
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.protectionAttempts, 3);
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.equal(
+      (nextExecution.protectionPlan as Record<string, unknown>)?.takeProfitOrderId,
+      'delta-replacement-tp-2'
+    );
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let savedExecutionPayload: Record<string, unknown> | null = null;
+    const trade = {
+      id: 'st-live-blocked-no-order-protection',
+      automationId: 'auto-1',
+      automationRunId: 'run-1',
+      userId: 'user-1',
+      symbol: 'ETHUSDT',
+      timeframe: '15m',
+      side: 'BUY',
+      signalTime: new Date('2026-04-04T10:00:00.000Z'),
+      status: 'Open',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitTargets: ['110'],
+      dedupeKey: 'dedupe-live-blocked-no-order-protection',
+      meta: null,
+      executionRecord: {
+        executionMode: 'live',
+        preTradeState: 'blocked',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitPrice: '110',
+        protectionState: 'pending',
+        protectionAttempts: 0,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      createdAt: new Date('2026-04-04T10:00:00.000Z'),
+      updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+    };
+
+    service.suggestedTradeRepository = {
+      async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+        savedExecutionPayload = { ...payload };
+        return {
+          ...payload,
+          createdAt: new Date('2026-04-04T10:01:00.000Z'),
+          updatedAt: new Date('2026-04-04T10:01:00.000Z'),
+        };
+      },
+    };
+
+    const refreshed = await service.refreshExecutionOutcomes('user-1', [trade], {
+      resolveStaleGaps: true,
+    });
+
+    assert.equal(refreshed, 1);
+    assert.equal(savedExecutionPayload?.['protectionState'], 'not_required');
+    assert.ok(savedExecutionPayload?.['protectionCheckedAt']);
+    assert.match(String(savedExecutionPayload?.['note'] || ''), /No broker order was created/);
+  }
 }
 
 async function runSuggestedTradeMudrexLeverageReconciliationAssertions(): Promise<void> {
@@ -2913,6 +6076,28 @@ async function runSuggestedTradesHealthServiceAssertions(): Promise<void> {
           queueToOrderConversionRate: 0.6,
         };
       },
+      async getProtectionOperationalSnapshot() {
+        return {
+          tracked: 9,
+          pending: 1,
+          waitingForFill: 0,
+          waitingForPosition: 1,
+          attaching: 1,
+          attached: 4,
+          failed: 1,
+          manualUnlinked: 2,
+          staleManualUnlinked: 1,
+          staleAttaching: 1,
+          notRequired: 1,
+          unknown: 0,
+          actionable: 3,
+          unresolved: 4,
+          retriableFailed: 1,
+          lastCheckedAt: new Date('2026-04-08T00:02:00.000Z'),
+          lastAttachedAt: new Date('2026-04-08T00:01:00.000Z'),
+          lastManualActionAt: new Date('2026-04-08T00:02:00.000Z'),
+        };
+      },
     };
     service.suggestedTradeExecutionSyncService = {
       async getOperationalStatus() {
@@ -3026,6 +6211,20 @@ async function runSuggestedTradesHealthServiceAssertions(): Promise<void> {
     assert.equal(response.rolloutEnabled, env.suggestedTrades.rolloutEnabled);
     assert.equal(response.totalSuggestedTrades, 12);
     assert.equal(response.convertedToOrderCount, 3);
+    assert.equal(response.protectionTrackedTrades, 9);
+    assert.equal(response.protectionAttachedTrades, 4);
+    assert.equal(response.protectionFailedTrades, 1);
+    assert.equal(response.protectionManualActionTrades, 2);
+    assert.equal(response.protectionStaleManualActionTrades, 1);
+    assert.equal(response.protectionManualRecoveryStaleAfterMs, 600000);
+    assert.equal(response.protectionStaleAttachingTrades, 1);
+    assert.equal(response.protectionAttachingStaleAfterMs, 600000);
+    assert.equal(response.protectionActionableTrades, 3);
+    assert.equal(response.protectionUnresolvedTrades, 4);
+    assert.equal(response.protectionRetriableFailedTrades, 1);
+    assert.equal(response.protectionAttachmentRate, 0.4);
+    assert.equal(response.protectionLastCheckedAt, '2026-04-08T00:02:00.000Z');
+    assert.equal(response.protectionLastAttachedAt, '2026-04-08T00:01:00.000Z');
     assert.equal(response.queueToOrderSuccess24h, 2);
     assert.equal(response.duplicateSuggestions24h, 1);
     assert.equal(response.openAlerts, 1);
@@ -3051,6 +6250,18 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const proofSource = read('scripts/proofs/proof-suggested-trades-live.ts');
   const smokeSource = read('scripts/smokes/smoke-suggested-trades-lifecycle.ts');
   const checkSource = read('scripts/checks/check-suggested-trades-health.ts');
+  const protectionDryRunSource = read(
+    'scripts/checks/check-suggested-trades-protection-dry-run.ts'
+  );
+  const protectionActionsSource = read(
+    'scripts/checks/check-suggested-trades-protection-actions.ts'
+  );
+  const protectionRecoverySource = read(
+    'scripts/checks/check-suggested-trades-protection-recovery.ts'
+  );
+  const terminalProtectionRepairSource = read(
+    'scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
+  );
   const releaseGateSource = read('scripts/release-gates/release-gate-suggested-trades.ts');
   const signoffSource = read('scripts/signoffs/signoff-suggested-trades.ts');
   const canaryReadinessSource = read('scripts/checks/check-broker-auto-canary-readiness.ts');
@@ -3071,6 +6282,22 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/checks/check-broker-auto-canary-readiness.ts'
   );
   assert.equal(
+    packageScripts['check:suggested-trades-protection-dry-run'],
+    'node --import tsx scripts/checks/check-suggested-trades-protection-dry-run.ts'
+  );
+  assert.equal(
+    packageScripts['check:suggested-trades-protection-actions'],
+    'node --import tsx scripts/checks/check-suggested-trades-protection-actions.ts'
+  );
+  assert.equal(
+    packageScripts['check:suggested-trades-protection-recovery'],
+    'node --import tsx scripts/checks/check-suggested-trades-protection-recovery.ts'
+  );
+  assert.equal(
+    packageScripts['repair:suggested-trades-terminal-protection'],
+    'node --import tsx scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
+  );
+  assert.equal(
     runPackageSuiteSource.includes("'suggested-trades': ['test:suggested-trades']"),
     true
   );
@@ -3079,6 +6306,21 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     coverageManifestSource.includes('check:broker-auto-canary-readiness'),
     true,
     'system coverage manifest must include the broker-auto canary readiness check'
+  );
+  assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-protection-dry-run'),
+    true,
+    'system coverage manifest must include the suggested-trades protection dry-run check'
+  );
+  assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-protection-actions'),
+    true,
+    'system coverage manifest must include the suggested-trades protection action check'
+  );
+  assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-protection-recovery'),
+    true,
+    'system coverage manifest must include the suggested-trades protection recovery check'
   );
 
   assert.equal(
@@ -3090,6 +6332,21 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     proofSource.includes('scripts/checks/check-suggested-trades-health.ts'),
     true,
     'suggested trades live proof must run health check'
+  );
+  assert.equal(
+    proofSource.includes('scripts/checks/check-suggested-trades-protection-dry-run.ts'),
+    true,
+    'suggested trades live proof must run protection dry-run audit'
+  );
+  assert.equal(
+    proofSource.includes('scripts/checks/check-suggested-trades-protection-actions.ts'),
+    true,
+    'suggested trades live proof must run protection action report'
+  );
+  assert.equal(
+    proofSource.includes('scripts/checks/check-suggested-trades-protection-recovery.ts'),
+    true,
+    'suggested trades live proof must run protection recovery freshness check'
   );
   assert.equal(
     smokeSource.includes('/suggested-trades/overview') &&
@@ -3108,11 +6365,115 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     true,
     'suggested trades release gate must read suggested trades health endpoint'
   );
+  for (const marker of [
+    'suggested-trades-protection-dry-run',
+    'WOULD_REPLACE_INACTIVE_PROTECTION',
+    'MANUAL_STOP_ALREADY_CROSSED',
+    'MANUAL_UNLINKED',
+    'WAITING_FOR_FILL',
+    'WAITING_FOR_POSITION',
+    'replacementPreview',
+    'dryRun: true',
+    'scheduler_positions_snapshots',
+    'scheduler_orders_snapshots',
+  ]) {
+    assert.equal(
+      protectionDryRunSource.includes(marker),
+      true,
+      `suggested trades protection dry-run check must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-protection-actions',
+    'SUGGESTED_TRADES_MAX_PROTECTION_ACTION_ITEMS',
+    'manual_unlinked',
+    'staleAttaching',
+    'SUGGESTED_TRADES_PROTECTION_ATTACHING_STALE_MINUTES',
+    'position_status',
+    'recommendedAction',
+    'recoveryFreshness',
+    'staleManualRecoveryItems',
+    'protectionCheckedAgeSeconds',
+    'SUGGESTED_TRADES_PROTECTION_RECOVERY_STALE_MINUTES',
+    'protection action items',
+  ]) {
+    assert.equal(
+      protectionActionsSource.includes(marker),
+      true,
+      `suggested trades protection action check must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-protection-recovery',
+    'SUGGESTED_TRADES_PROTECTION_RECOVERY_STALE_MINUTES',
+    'SUGGESTED_TRADES_MAX_STALE_MANUAL_PROTECTION_TRADES',
+    'manual_unlinked',
+    'staleManualProtectionTrades',
+    'protection recovery stale manual trades',
+  ]) {
+    assert.equal(
+      protectionRecoverySource.includes(marker),
+      true,
+      `suggested trades protection recovery check must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-terminal-protection-repair',
+    'SUGGESTED_TRADES_TERMINAL_PROTECTION_REPAIR_APPLY',
+    'dry_run',
+    'not_required',
+    'position_status',
+  ]) {
+    assert.equal(
+      terminalProtectionRepairSource.includes(marker),
+      true,
+      `suggested trades terminal protection repair must retain ${marker}`
+    );
+  }
   assert.equal(
     releaseGateSource.includes('smoke-suggested-trades-lifecycle.ts'),
     true,
     'suggested trades release gate must execute lifecycle smoke'
   );
+  assert.equal(
+    releaseGateSource.includes('APP_API_KEY') && releaseGateSource.includes('API_KEY'),
+    true,
+    'suggested trades release gate must support API-key auth for production health polling'
+  );
+  for (const marker of [
+    'SUGGESTED_TRADES_MAX_PROTECTION_FAILED_TRADES',
+    'SUGGESTED_TRADES_MAX_PROTECTION_MANUAL_ACTION_TRADES',
+    'SUGGESTED_TRADES_MAX_STALE_MANUAL_PROTECTION_TRADES',
+    'SUGGESTED_TRADES_MAX_STALE_ATTACHING_PROTECTION_TRADES',
+    'SUGGESTED_TRADES_MAX_PROTECTION_ACTIONABLE_TRADES',
+    'SUGGESTED_TRADES_MAX_PROTECTION_UNRESOLVED_TRADES',
+    'SUGGESTED_TRADES_MAX_PROTECTION_RETRIABLE_FAILED_TRADES',
+    'SUGGESTED_TRADES_MIN_PROTECTION_ATTACHMENT_RATE',
+  ]) {
+    assert.equal(
+      checkSource.includes(marker) && releaseGateSource.includes(marker),
+      true,
+      `suggested trades health gates must retain protection threshold ${marker}`
+    );
+  }
+  for (const marker of [
+    'protectionFailedTrades',
+    'protectionManualActionTrades',
+    'protectionStaleManualActionTrades',
+    'protectionManualRecoveryStaleAfterMs',
+    'protectionStaleAttachingTrades',
+    'protectionAttachingStaleAfterMs',
+    'protectionActionableTrades',
+    'protectionUnresolvedTrades',
+    'protectionRetriableFailedTrades',
+    'protectionAttachmentRate',
+  ]) {
+    assert.equal(
+      releaseGateSource.includes(marker) && signoffSource.includes(marker),
+      true,
+      `suggested trades release gate and signoff must retain protection metric ${marker}`
+    );
+  }
   assert.equal(
     signoffSource.includes('SUGGESTED_TRADES_SIGNOFF_OPERATOR_FLOW_VERIFIED'),
     true,
@@ -3135,6 +6496,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING',
     'SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST',
     'SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST',
+    'SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST',
   ]) {
     assert.equal(
       envSource.includes(marker),
@@ -3147,6 +6509,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'Accepted automatically by live automation execution policy',
     'Live auto execution currently supports only mudrex and delta_exchange routes',
     'Native SL/TP protection attached',
+    'awaiting entry fill and active order snapshot verification',
     'using equivalent broker symbol',
     'Shadow route would select',
     'pre_trade_check',
@@ -3182,13 +6545,19 @@ async function main(): Promise<void> {
   runSuggestedTradeExecutionEntitySchemaAssertions();
   runSuggestedTradeValidationAssertions();
   await runSuggestedTradeExecutionStorageMigrationAssertions();
+  await runSuggestedTradeExecutionProtectionMigrationAssertions();
   await runSuggestedTradesReadPathAssertions();
   await runSuggestedTradesSummaryFilterAssertions();
   await runSuggestedTradeTransitionAssertions();
   await runSuggestedTradeExecutionPersistenceAssertions();
   await runSuggestedTradeLiveAutoRolloutAssertions();
   await runSuggestedTradeAdaptiveRouteSelectionAssertions();
+  await runSuggestedTradeDeltaProductPreflightAssertions();
   await runSuggestedTradeReconcileAssertions();
+  await runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions();
+  runSuggestedTradeDeltaClosedFilledTimestampAssertions();
+  await runSuggestedTradeLimitOrderExpiryAssertions();
+  await runSuggestedTradeProtectionRemediationAssertions();
   await runSuggestedTradeSiblingProtectionAutoCancelAssertions();
   await runSuggestedTradeMudrexLeverageReconciliationAssertions();
   await runSuggestedTradesBulkReconcileAssertions();

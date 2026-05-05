@@ -297,6 +297,11 @@ async function runExchangeAssetsProviderCompatibilityAssertions(): Promise<void>
     assets: Array<Record<string, unknown>>;
     attempted: number;
   }> = [];
+  const upsertCaptures: Array<{
+    source: string;
+    assets: Array<Record<string, unknown>>;
+    attempted: number;
+  }> = [];
   const syncRequests: Array<{
     source: string;
     assets: Array<{ id: string; symbol: string }>;
@@ -420,6 +425,21 @@ async function runExchangeAssetsProviderCompatibilityAssertions(): Promise<void>
           totalStored: assets.length,
         };
       },
+      async upsertSystemAssets(
+        source: string,
+        assets: Array<Record<string, unknown>>,
+        attempted: number
+      ) {
+        upsertCaptures.push({ source, assets, attempted });
+        return {
+          attempted,
+          matched: assets.length,
+          inserted: assets.length,
+          updated: 0,
+          skipped: Math.max(attempted - assets.length, 0),
+          totalStored: assets.length,
+        };
+      },
     }),
   });
 
@@ -483,6 +503,12 @@ async function runExchangeAssetsProviderCompatibilityAssertions(): Promise<void>
   assert.equal(replaceCaptures[1].attempted, 2);
   assert.equal(replaceCaptures[1].assets.length, 2);
   assert.equal(replaceCaptures[1].assets[0].brokerId, 'broker-mudrex');
+  assert.equal(upsertCaptures.length, 1);
+  assert.equal(upsertCaptures[0].source, 'delta_exchange');
+  assert.equal(upsertCaptures[0].attempted, 2);
+  assert.equal(upsertCaptures[0].assets.length, 2);
+  assert.equal(upsertCaptures[0].assets[0].brokerId, 'broker-delta');
+  assert.equal(mudrexSync.data.deltaInsertedAssets, 2);
 }
 
 async function runExchangeAssetsVisibilityAssertions(): Promise<void> {
@@ -529,10 +555,10 @@ async function runExchangeAssetsVisibilityAssertions(): Promise<void> {
             id: 'asset-row-delta-1',
             source: 'delta_exchange',
             brokerId: 'broker-delta',
-            externalId: 'delta:BTCUSDT',
+            externalId: 'delta:BTCUSD',
             assetId: 'asset-btc',
             name: 'Bitcoin',
-            symbol: 'BTCUSDT',
+            symbol: 'BTCUSD',
             createdAt: new Date('2026-04-04T09:00:00.000Z'),
             updatedAt: new Date('2026-04-04T09:00:00.000Z'),
           },
@@ -563,7 +589,7 @@ async function runExchangeAssetsVisibilityAssertions(): Promise<void> {
     {
       userId: 'user-1',
       source: 'delta_exchange',
-      symbols: ['BTCUSDT'],
+      symbols: ['BTCUSDT', 'BTCUSD', 'BTCUSDC'],
     },
   ]);
   assert.equal(response.data.total, 1);
@@ -571,8 +597,8 @@ async function runExchangeAssetsVisibilityAssertions(): Promise<void> {
   assert.equal(response.data.offset, 5);
   assert.equal(response.data.assets.length, 1);
   assert.equal(response.data.assets[0].symbol, 'BTCUSDT');
-  assert.equal(response.data.assets[0].deltaExternalId, 'delta:BTCUSDT');
-  assert.equal(response.data.assets[0].deltaSymbol, 'BTCUSDT');
+  assert.equal(response.data.assets[0].deltaExternalId, 'delta:BTCUSD');
+  assert.equal(response.data.assets[0].deltaSymbol, 'BTCUSD');
   assert.equal(response.data.assets[0].isDeltaMapped, true);
 }
 

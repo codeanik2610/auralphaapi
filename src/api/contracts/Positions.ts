@@ -32,9 +32,56 @@ export interface PositionSummary {
   leverageSource?: string | null;
   liquidationPrice: number | null;
   exposure: number | null;
+  timeframe?: string | null;
+  tradeTimeframe?: string | null;
+  signalTime?: string | null;
+  entryOrderType?: string | null;
+  entryTriggerType?: string | null;
+  entrySubmittedAt?: string | null;
+  entryFilledAt?: string | null;
+  entryOrderId?: string | null;
+  executionProtection?: PositionExecutionProtectionContext | null;
+  suggestedTradeId?: string | null;
+  automationId?: string | null;
+  automationRunId?: string | null;
   createdAt?: string;
   updatedAt?: string;
   closedAt?: string;
+}
+
+export interface PositionExecutionProtectionContext {
+  state: string | null;
+  source: string | null;
+  attempts: number | null;
+  lastError: string | null;
+  checkedAt: string | null;
+  attachedAt: string | null;
+  stopLossPrice: number | null;
+  takeProfitPrice: number | null;
+  stopLossOrderId: string | null;
+  takeProfitOrderId: string | null;
+}
+
+export interface PositionAutomationTradeContext {
+  suggestedTradeId: string;
+  automationId: string | null;
+  automationRunId: string | null;
+  timeframe: string;
+  signalTime: string | null;
+  side: string | null;
+  entryOrderId: string | null;
+  entryOrderType: string | null;
+  entryTriggerType: string | null;
+  entrySubmittedAt: string | null;
+  entryFilledAt: string | null;
+  entryPrice: number | null;
+  filledPrice: number | null;
+  executionState: string | null;
+  positionStatus: string | null;
+  protection: PositionExecutionProtectionContext | null;
+  sourceTemplateId: string | null;
+  sourceBacktestId: string | null;
+  traceMethod: 'position_id' | 'symbol_entry' | 'unmatched';
 }
 
 export interface PositionRecord extends Record<string, unknown> {
@@ -73,6 +120,31 @@ export interface PositionRecord extends Record<string, unknown> {
   accountName?: string;
   accountKey?: string;
   brokerKey?: string;
+  timeframe?: string | null;
+  trade_timeframe?: string | null;
+  tradeTimeframe?: string | null;
+  signal_time?: string | null;
+  signalTime?: string | null;
+  entry_order_type?: string | null;
+  entryOrderType?: string | null;
+  entry_trigger_type?: string | null;
+  entryTriggerType?: string | null;
+  entry_submitted_at?: string | null;
+  entrySubmittedAt?: string | null;
+  entry_filled_at?: string | null;
+  entryFilledAt?: string | null;
+  entry_order_id?: string | null;
+  entryOrderId?: string | null;
+  executionProtection?: PositionExecutionProtectionContext | null;
+  suggested_trade_id?: string | null;
+  suggestedTradeId?: string | null;
+  automation_id?: string | null;
+  automationId?: string | null;
+  automation_run_id?: string | null;
+  automationRunId?: string | null;
+  trade_context_source?: PositionAutomationTradeContext['traceMethod'];
+  tradeContextSource?: PositionAutomationTradeContext['traceMethod'];
+  automationTrade?: PositionAutomationTradeContext | null;
   positionSummary?: PositionSummary;
 }
 
