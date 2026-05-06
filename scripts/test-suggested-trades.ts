@@ -1334,23 +1334,21 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     service.runPreTradeGate = async (...args: unknown[]) => {
       const result = await originalRunPreTradeGate.apply(service, args);
       result.result.request.order.orderType = 'market';
+      result.execution.orderType = 'market';
       return result;
     };
-    const marketBlocked = await service.attemptAutoLiveExecutionForAutomation(
+    const marketNormalized = await service.attemptAutoLiveExecutionForAutomation(
       'user-1',
       'st-live-auto',
       {
         async createOrder() {
-          throw new Error('market-blocked path should not create orders');
+          throw new Error('market-normalized path should not create orders');
         },
       }
     );
-    assert.equal(marketBlocked.outcome, 'blocked');
-    assert.match(marketBlocked.message, /must be limit orders/);
-    assert.equal(
-      (persistedExecution?.['executionState'] as string | undefined) ?? null,
-      'rejected'
-    );
+    assert.equal(marketNormalized.outcome, 'ready');
+    assert.equal((persistedExecution?.['orderType'] as string | undefined) ?? null, 'limit');
+    assert.equal((persistedExecution?.['triggerType'] as string | undefined) ?? null, 'GTC');
     service.runPreTradeGate = originalRunPreTradeGate;
 
     baseTrade.signalTime = new Date(Date.now() - 3 * 60 * 60 * 1000);

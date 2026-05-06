@@ -166,8 +166,10 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     const product = resolvedProduct.product;
     const size = this.resolveOrderSize(body.quantity, product, body, productId);
     const side = this.resolveOrderSide(body);
-    const orderType = this.resolveOrderType(body.order_type);
-    const timeInForce = this.resolveTimeInForce(body.trigger_type, orderType);
+    const orderType = this.resolveOrderType(body);
+    const timeInForce = this.isPrimaryEntryOrder(body)
+      ? 'gtc'
+      : this.resolveTimeInForce(body.trigger_type, orderType);
     const shouldAttachProtection = this.shouldAttachLiveAutoProtection(body);
     if (shouldAttachProtection) {
       this.assertLiveAutoProtectivePrices(side, body);
@@ -796,8 +798,12 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     return body.side === 'short' ? 'sell' : 'buy';
   }
 
-  private resolveOrderType(orderType: string): 'market_order' | 'limit_order' {
-    const normalized = orderType.trim().toLowerCase();
+  private resolveOrderType(body: ValidatedCreateOrderRouteBody): 'market_order' | 'limit_order' {
+    if (this.isPrimaryEntryOrder(body)) {
+      return 'limit_order';
+    }
+
+    const normalized = body.order_type.trim().toLowerCase();
     if (normalized === 'market' || normalized === 'market_order') {
       return 'market_order';
     }
@@ -806,6 +812,14 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     }
 
     throw new BadRequestAppError('Delta Exchange order_type must be market or limit');
+  }
+
+  private isPrimaryEntryOrder(body: ValidatedCreateOrderRouteBody): boolean {
+    return (
+      body.reduce_only !== true &&
+      body.is_stoploss !== true &&
+      body.is_takeprofit !== true
+    );
   }
 
   private resolveTimeInForce(

@@ -2870,6 +2870,40 @@ export class BrokerOrdersFacadeService {
     return normalized.includes('limit') ? 'limit' : 'market';
   }
 
+  private isLimitOnlyLiveEntryBroker(brokerKey: string | null | undefined): boolean {
+    const normalized = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    return normalized === 'mudrex' || normalized === 'delta_exchange';
+  }
+
+  private isPrimaryLiveEntryOrder(body: ValidatedCreateOrderBody): boolean {
+    return (
+      body.execution_mode === 'live' &&
+      body.reduce_only !== true &&
+      body.is_stoploss !== true &&
+      body.is_takeprofit !== true
+    );
+  }
+
+  private normalizeLimitOnlyBrokerEntryOrder(
+    brokerKey: string,
+    body: ValidatedCreateOrderBody
+  ): ValidatedCreateOrderBody {
+    if (
+      !this.isLimitOnlyLiveEntryBroker(brokerKey) ||
+      !this.isPrimaryLiveEntryOrder(body)
+    ) {
+      return body;
+    }
+
+    return {
+      ...body,
+      order_type: 'limit',
+      trigger_type: 'GTC',
+    };
+  }
+
   private buildLiveOrderPreTradeCheckBody(
     assetId: string,
     brokerKey: string,
@@ -3064,7 +3098,7 @@ export class BrokerOrdersFacadeService {
     let activeSubmissionRequest: OrderSubmissionRequest | null = null;
     let normalizeCreateMutationError = false;
     try {
-      const validatedBody = validateCreateOrderBody(body);
+      let validatedBody = validateCreateOrderBody(body);
       const placementSuggestedTradeId =
         String(options.suggestedTradeId || validatedBody.suggested_trade_id || '').trim() || null;
       if (validatedBody.execution_mode === 'live' && placementSuggestedTradeId) {
@@ -3090,6 +3124,10 @@ export class BrokerOrdersFacadeService {
       if (!resolvedBrokerKey || !resolvedAccountId) {
         throw new BadRequestAppError('A broker route is required to create an order');
       }
+      validatedBody = this.normalizeLimitOnlyBrokerEntryOrder(
+        resolvedBrokerKey,
+        validatedBody
+      );
 
       if (validatedBody.execution_mode === 'live') {
         await this.riskKillSwitchService?.assertLiveTradingAllowed(userId, {

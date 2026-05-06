@@ -1507,6 +1507,12 @@ export class SuggestedTradesService {
       } catch {
         equivalentAssetRoute = null;
       }
+      const candidateOrderType = this.resolveBrokerEntryOrderType(
+        route.brokerKey,
+        request.executionMode,
+        request.order.orderType,
+        request.order.entryPrice
+      );
       const candidateRequest = await this.applyBrokerPolicyTradeSize(
         userId,
         {
@@ -1519,6 +1525,13 @@ export class SuggestedTradesService {
           order: {
             ...request.order,
             symbol: equivalentAssetRoute?.brokerSymbol ?? request.order.symbol,
+            orderType: candidateOrderType,
+            timeInForce: this.resolveBrokerEntryTimeInForce(
+              route.brokerKey,
+              request.executionMode,
+              candidateOrderType,
+              request.order.timeInForce
+            ),
           },
         },
         sourceType
@@ -1882,6 +1895,37 @@ export class SuggestedTradesService {
       .trim()
       .toLowerCase();
     return normalized === 'mudrex' || normalized === 'delta_exchange';
+  }
+
+  private resolveBrokerEntryOrderType(
+    brokerKey: string | null | undefined,
+    executionMode: 'paper' | 'live',
+    requestedOrderType: string | null | undefined,
+    entryPrice?: number | null
+  ): 'market' | 'limit' {
+    if (executionMode === 'live' && this.isLimitOnlyLiveAutoBroker(brokerKey)) {
+      return 'limit';
+    }
+
+    const normalized = this.normalizeLiveAutoEntryOrderType(requestedOrderType);
+    return normalized === 'limit' && entryPrice && entryPrice > 0 ? 'limit' : 'market';
+  }
+
+  private resolveBrokerEntryTimeInForce(
+    brokerKey: string | null | undefined,
+    executionMode: 'paper' | 'live',
+    orderType: 'market' | 'limit',
+    requestedTimeInForce: 'GTC' | 'IOC' | 'FOK' | null | undefined
+  ): 'GTC' | 'IOC' | 'FOK' | null {
+    if (
+      executionMode === 'live' &&
+      orderType === 'limit' &&
+      this.isLimitOnlyLiveAutoBroker(brokerKey)
+    ) {
+      return 'GTC';
+    }
+
+    return requestedTimeInForce ?? null;
   }
 
   private isDeltaLimitEntryProtectionProvisional(
@@ -3041,7 +3085,12 @@ export class SuggestedTradesService {
       const leverage = routeMetrics.leverage;
       const stopLossPrice = routeMetrics.stopLossPrice;
       const takeProfitPrice = routeMetrics.takeProfitPrice;
-      const orderType = this.normalizeLiveAutoEntryOrderType(routeMetrics.orderType);
+      const orderType = this.resolveBrokerEntryOrderType(
+        brokerKey,
+        'live',
+        routeMetrics.orderType,
+        entryPrice
+      );
       const triggerType = this.resolveLiveAutoTriggerType(orderType);
       const side = routeMetrics.orderSide === 'sell' ? 'short' : 'long';
 
@@ -3062,35 +3111,6 @@ export class SuggestedTradesService {
         };
       }
 
-      if (this.isLimitOnlyLiveAutoBroker(brokerKey) && orderType !== 'limit') {
-        const message = `Live auto entry orders for ${brokerKey} must be limit orders. Update the automation order template before broker placement.`;
-        await this.persistExecutionState(trade, {
-          ...gatedExecution.execution,
-          executionState: 'rejected',
-          preTradeState: 'blocked',
-          preTradeBlockedReason: message,
-          note: message,
-        });
-        await this.operationalEventService.logActivity(userId, {
-          type: 'Suggested Trade',
-          title: `Live auto limit-only blocked: ${trade.symbol}`,
-          status: 'Warning',
-          route: 'Suggested Trades',
-          stream: 'Execution',
-          related: `${brokerKey} · ${accountId}`,
-          referenceId: trade.id,
-          symbol: trade.symbol,
-          description: message,
-        });
-        return {
-          outcome: 'blocked',
-          message,
-          suggestedTradeId: trade.id,
-          brokerKey,
-          accountId,
-          preTradeCheckId: persistedPreTradeCheckId,
-        };
-      }
 
       if (!leverage || leverage <= 0) {
         const message =
@@ -3242,7 +3262,14 @@ export class SuggestedTradesService {
         const readyMessage = `Live auto rollout guard passed. Broker placement remains disabled until live auto execution is explicitly enabled. ${policyLeverageNote}${normalizedSizingNote ? ` ${normalizedSizingNote}` : ''}`;
         await this.persistExecutionState(trade, {
           ...gatedExecution.execution,
+          brokerKey,
+          accountId,
+          orderType,
+          triggerType,
           quantity: normalizedQuantity,
+          entryPrice: this.formatNumericString(normalizedEntryPrice) ?? null,
+          stopLossPrice: this.formatNumericString(normalizedStopLossPrice) ?? null,
+          takeProfitPrice: this.formatNumericString(normalizedTakeProfitPrice) ?? null,
           note: readyMessage,
         });
         await this.operationalEventService.logActivity(userId, {
@@ -3402,11 +3429,16 @@ export class SuggestedTradesService {
       }
 
       const linkedAt = new Date().toISOString();
+      const needsPostFillProtection = Boolean(
+        normalizedStopLossPrice > 0 && normalizedTakeProfitPrice > 0
+      );
       const linkedProtectionState: SuggestedTradeProtectionState | undefined = protectionAttached
         ? 'attached'
         : deltaLimitProtectionProvisional
           ? 'waiting_for_fill'
-          : (submittingExecution.protectionState ?? undefined);
+          : needsPostFillProtection
+            ? 'waiting_for_fill'
+            : (submittingExecution.protectionState ?? undefined);
       const linkedExecution: SuggestedTradeExecutionLink = {
         ...submittingExecution,
         orderId: createdOrderId,
@@ -4656,8 +4688,18 @@ export class SuggestedTradesService {
       executionPolicy.orderType === 'limit'
         ? 'limit'
         : 'market';
-    const orderType =
-      requestedOrderType === 'limit' && entryPrice && entryPrice > 0 ? 'limit' : 'market';
+    const orderType = this.resolveBrokerEntryOrderType(
+      routingBrokerKey,
+      executionMode,
+      requestedOrderType,
+      entryPrice
+    );
+    const timeInForce = this.resolveBrokerEntryTimeInForce(
+      routingBrokerKey,
+      executionMode,
+      orderType,
+      executionPolicy.timeInForce
+    );
 
     return {
       suggestedTradeId: trade.id,
@@ -4682,7 +4724,7 @@ export class SuggestedTradesService {
             ? 'SELL'
             : 'BUY',
         orderType,
-        timeInForce: executionPolicy.timeInForce,
+        timeInForce,
         quantityMode,
         quantity,
         notional,

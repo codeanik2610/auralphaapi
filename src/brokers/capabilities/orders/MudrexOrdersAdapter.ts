@@ -71,7 +71,7 @@ export class MudrexOrdersAdapter implements BrokerOrdersAdapter {
     return {
       ...body,
       order_type: this.resolveMudrexOrderType(body.side),
-      trigger_type: this.resolveMudrexTriggerType(body.order_type),
+      trigger_type: this.resolveMudrexTriggerType(body),
     };
   }
 
@@ -85,14 +85,26 @@ export class MudrexOrdersAdapter implements BrokerOrdersAdapter {
     return 'LONG';
   }
 
-  private resolveMudrexTriggerType(orderType: string | undefined): string {
-    const normalized = String(orderType || '')
+  private resolveMudrexTriggerType(body: ValidatedCreateOrderRouteBody): string {
+    if (this.isPrimaryEntryOrder(body)) {
+      return 'LIMIT';
+    }
+
+    const normalized = String(body.order_type || '')
       .trim()
       .toLowerCase();
     if (normalized === 'limit') {
       return 'LIMIT';
     }
     return 'MARKET';
+  }
+
+  private isPrimaryEntryOrder(body: ValidatedCreateOrderRouteBody): boolean {
+    return (
+      body.reduce_only !== true &&
+      body.is_stoploss !== true &&
+      body.is_takeprofit !== true
+    );
   }
 
   private assertConfirmedLeverage(

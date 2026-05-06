@@ -404,7 +404,7 @@ async function runDirectLivePreTradeBlockAssertions(): Promise<void> {
         symbol: 'BTCUSDT',
         timeframe: null,
         side: 'BUY',
-        orderType: 'market',
+        orderType: 'limit',
         timeInForce: null,
         quantityMode: 'quantity',
         quantity: 1,
