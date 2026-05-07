@@ -667,6 +667,16 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       script('check:suggested-trades-delta-live-routing'),
       script('check:suggested-trades-delta-live-canary'),
       script(
+        'check:first60-deploy-readiness',
+        'scripts/checks/check-first60-deploy-readiness.ts'
+      ),
+      script(
+        'check:first60-observe-only',
+        'scripts/checks/check-first60-observe-only-monitor.ts'
+      ),
+      script('check:broker-order-orphans'),
+      script('check:broker-orphan-entry-lineage'),
+      script(
         'check:suggested-trades-protection-dry-run',
         'scripts/checks/check-suggested-trades-protection-dry-run.ts'
       ),

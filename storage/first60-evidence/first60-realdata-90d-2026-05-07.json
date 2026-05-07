@@ -1,0 +1,260 @@
+{
+  "generatedAt": "2026-05-07T11:02:29.722Z",
+  "source": {
+    "signalSource": "suggested_trades",
+    "templateId": "34b6eb3c-6269-4760-9d7c-1f05794073af",
+    "sourceBacktestId": "9faa221e-a30e-4d2b-89cb-a7c0a99b89be",
+    "filterLineage": true,
+    "timeframe": "5m",
+    "start": "2026-02-06T11:02:18.068Z",
+    "end": "2026-05-07T11:02:18.068Z",
+    "lookbackDays": 90,
+    "limit": 5000,
+    "candleSource": null,
+    "maxHoldMinutes": 1440
+  },
+  "template": {
+    "id": "34b6eb3c-6269-4760-9d7c-1f05794073af",
+    "userId": "aed8a75e-0113-4659-9582-28fc2120278c",
+    "name": "Supertrend 10,3 Red-Green Breakout v2",
+    "status": "Draft",
+    "templateVersion": 1,
+    "profileSource": "template+default-first60"
+  },
+  "counts": {
+    "signals": 1339,
+    "symbols": 75,
+    "candles": 510389
+  },
+  "warnings": [
+    "Template has no enabled First60 profile; default plan was injected in memory."
+  ],
+  "sides": {
+    "long": {
+      "side": "long",
+      "totalTrades": 662,
+      "simulatedTrades": 662,
+      "passedFirst60": 221,
+      "failedFirst60": 441,
+      "targetHits": 71,
+      "stopHits": 202,
+      "timeouts": 45,
+      "invalidTrades": 0,
+      "passRate": 0.3338368580060423,
+      "targetHitRate": 0.10725075528700906,
+      "targetHitRateAfterPass": 0.3212669683257919,
+      "avgR": 0.35560750252063156,
+      "totalR": 235.4121666686581,
+      "avgPassedR": 1.4701500927654008,
+      "totalPassedR": 324.90317050115357,
+      "maxAdverseR": 10.493851871363928,
+      "bestSymbols": [
+        {
+          "symbol": "PIEVERSEUSDT",
+          "trades": 8,
+          "passedFirst60": 7,
+          "targetHits": 4,
+          "totalR": 16,
+          "avgR": 2,
+          "targetHitRate": 0.5
+        },
+        {
+          "symbol": "SUSHIUSDT",
+          "trades": 12,
+          "passedFirst60": 6,
+          "targetHits": 3,
+          "totalR": 15.915978161575746,
+          "avgR": 1.3263315134646454,
+          "targetHitRate": 0.25
+        },
+        {
+          "symbol": "TURTLEUSDT",
+          "trades": 10,
+          "passedFirst60": 3,
+          "targetHits": 3,
+          "totalR": 15.361967298071544,
+          "avgR": 1.5361967298071544,
+          "targetHitRate": 0.3
+        },
+        {
+          "symbol": "TLMUSDT",
+          "trades": 15,
+          "passedFirst60": 6,
+          "targetHits": 3,
+          "totalR": 14.018612467465019,
+          "avgR": 0.934574164497668,
+          "targetHitRate": 0.2
+        },
+        {
+          "symbol": "XAUTUSDT",
+          "trades": 10,
+          "passedFirst60": 3,
+          "targetHits": 3,
+          "totalR": 13.861141847127257,
+          "avgR": 1.3861141847127256,
+          "targetHitRate": 0.3
+        }
+      ],
+      "worstSymbols": [
+        {
+          "symbol": "TRUMPUSDT",
+          "trades": 13,
+          "passedFirst60": 5,
+          "targetHits": 0,
+          "totalR": -6.456869408420803,
+          "avgR": -0.49668226218621564,
+          "targetHitRate": 0
+        },
+        {
+          "symbol": "METUSDT",
+          "trades": 9,
+          "passedFirst60": 3,
+          "targetHits": 0,
+          "totalR": -4.529532041085527,
+          "avgR": -0.5032813378983918,
+          "targetHitRate": 0
+        },
+        {
+          "symbol": "CETUSUSDT",
+          "trades": 13,
+          "passedFirst60": 2,
+          "targetHits": 0,
+          "totalR": -4.500002568794496,
+          "avgR": -0.3461540437534228,
+          "targetHitRate": 0
+        },
+        {
+          "symbol": "LUNA2USDT",
+          "trades": 9,
+          "passedFirst60": 1,
+          "targetHits": 0,
+          "totalR": -4.201606669929758,
+          "avgR": -0.4668451855477509,
+          "targetHitRate": 0
+        },
+        {
+          "symbol": "FLOWUSDT",
+          "trades": 8,
+          "passedFirst60": 2,
+          "targetHits": 0,
+          "totalR": -4.120232432642096,
+          "avgR": -0.515029054080262,
+          "targetHitRate": 0
+        }
+      ]
+    },
+    "short": {
+      "side": "short",
+      "totalTrades": 677,
+      "simulatedTrades": 677,
+      "passedFirst60": 155,
+      "failedFirst60": 522,
+      "targetHits": 16,
+      "stopHits": 226,
+      "timeouts": 24,
+      "invalidTrades": 0,
+      "passRate": 0.22895125553914328,
+      "targetHitRate": 0.023633677991137372,
+      "targetHitRateAfterPass": 0.1032258064516129,
+      "avgR": -0.16087080753226132,
+      "totalR": -108.90953669934092,
+      "avgPassedR": -0.040773706594401306,
+      "totalPassedR": -6.319924522132203,
+      "maxAdverseR": 40.084252405901836,
+      "bestSymbols": [
+        {
+          "symbol": "PIEVERSEUSDT",
+          "trades": 8,
+          "passedFirst60": 2,
+          "targetHits": 1,
+          "totalR": 7.7294326803530335,
+          "avgR": 0.9661790850441292,
+          "targetHitRate": 0.125
+        },
+        {
+          "symbol": "WAXPUSDT",
+          "trades": 9,
+          "passedFirst60": 4,
+          "targetHits": 0,
+          "totalR": 6.878089415999163,
+          "avgR": 0.7642321573332403,
+          "targetHitRate": 0
+        },
+        {
+          "symbol": "LUMIAUSDT",
+          "trades": 13,
+          "passedFirst60": 2,
+          "targetHits": 2,
+          "totalR": 5.885351693479072,
+          "avgR": 0.45271936103685173,
+          "targetHitRate": 0.15384615384615385
+        },
+        {
+          "symbol": "BSBUSDT",
+          "trades": 5,
+          "passedFirst60": 2,
+          "targetHits": 1,
+          "totalR": 3.8493543444204703,
+          "avgR": 0.7698708688840941,
+          "targetHitRate": 0.2
+        },
+        {
+          "symbol": "CROSSUSDT",
+          "trades": 14,
+          "passedFirst60": 3,
+          "targetHits": 1,
+          "totalR": 3.6356306046931937,
+          "avgR": 0.2596879003352281,
+          "targetHitRate": 0.07142857142857142
+        }
+      ],
+      "worstSymbols": [
+        {
+          "symbol": "TNSRUSDT",
+          "trades": 20,
+          "passedFirst60": 8,
+          "targetHits": 0,
+          "totalR": -10.036380371167512,
+          "avgR": -0.5018190185583756,
+          "targetHitRate": 0
+        },
+        {
+          "symbol": "SUSHIUSDT",
+          "trades": 15,
+          "passedFirst60": 1,
+          "targetHits": 0,
+          "totalR": -8.712760302559865,
+          "avgR": -0.5808506868373243,
+          "targetHitRate": 0
+        },
+        {
+          "symbol": "TRXUSDT",
+          "trades": 14,
+          "passedFirst60": 2,
+          "targetHits": 0,
+          "totalR": -6.59519265277491,
+          "avgR": -0.47108518948392214,
+          "targetHitRate": 0
+        },
+        {
+          "symbol": "METUSDT",
+          "trades": 11,
+          "passedFirst60": 4,
+          "targetHits": 0,
+          "totalR": -6.06186306626398,
+          "avgR": -0.5510784605694528,
+          "targetHitRate": 0
+        },
+        {
+          "symbol": "NILUSDT",
+          "trades": 9,
+          "passedFirst60": 3,
+          "targetHits": 0,
+          "totalR": -6.043793071874139,
+          "avgR": -0.671532563541571,
+          "targetHitRate": 0
+        }
+      ]
+    }
+  }
+}

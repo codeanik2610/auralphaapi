@@ -4421,6 +4421,10 @@ async function runSourceMarkerAssertions(): Promise<void> {
     path.join(process.cwd(), 'src', 'api', 'services', 'InternalPositionsSyncService.ts'),
     'utf8'
   );
+  const positionReadModelRepositorySource = await readFile(
+    path.join(process.cwd(), 'src', 'database', 'repositories', 'PositionReadModelRepository.ts'),
+    'utf8'
+  );
 
   assert.equal(
     packageSource.includes('"test:positions-orders-sync"'),
@@ -4568,6 +4572,30 @@ async function runSourceMarkerAssertions(): Promise<void> {
     internalPositionsSyncServiceSource.includes('requested_order_submission'),
     true,
     'InternalPositionsSyncService.ts must label requested order leverage fallback provenance'
+  );
+  assert.equal(
+    internalOrdersSyncServiceSource.includes(
+      'refreshOpenDeltaProtectionFromOrderSnapshots?.'
+    ),
+    true,
+    'InternalOrdersSyncService.ts must refresh Delta read-model protection after order snapshots update'
+  );
+  assert.equal(
+    internalPositionsSyncServiceSource.includes(
+      'refreshOpenDeltaProtectionFromOrderSnapshots?.'
+    ),
+    true,
+    'InternalPositionsSyncService.ts must refresh Delta read-model protection after positions refreshes'
+  );
+  assert.equal(
+    positionReadModelRepositorySource.includes('refreshOpenDeltaProtectionFromOrderSnapshots('),
+    true,
+    'PositionReadModelRepository.ts must expose the Delta protection refresh query'
+  );
+  assert.equal(
+    positionReadModelRepositorySource.includes("LOWER(prm.broker_key) = 'delta_exchange'"),
+    true,
+    'PositionReadModelRepository.ts must scope protection refreshes to Delta open positions'
   );
 }
 

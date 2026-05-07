@@ -471,6 +471,12 @@ export class StrategyTemplatesService {
       mutable.filters && typeof mutable.filters === 'object' && !Array.isArray(mutable.filters)
         ? (mutable.filters as Record<string, unknown>)
         : {};
+    const tradeManagement =
+      mutable.tradeManagement &&
+      typeof mutable.tradeManagement === 'object' &&
+      !Array.isArray(mutable.tradeManagement)
+        ? (mutable.tradeManagement as Record<string, unknown>)
+        : null;
     const maxRisk = this.cleanText(risk.maxRisk ?? risk.max_per_trade);
     const sizingNotes = this.cleanText(risk.sizingNotes);
     const executionRisk = this.extractExecutionRiskFromCodeDefinition(rawCode);
@@ -583,6 +589,7 @@ export class StrategyTemplatesService {
         useRegimeFilter: Boolean(filters.useRegimeFilter),
         paperTradeFirst: Boolean(filters.paperTradeFirst),
       },
+      ...(tradeManagement ? { tradeManagement } : {}),
       description: description || '',
     };
 

@@ -307,6 +307,8 @@ async function ordersGuard08(): Promise<void> {
   const { BadRequestAppError, UnauthorizedAppError } = await import("../src/api/errors/AppError");
   const { BrokerOrdersFacadeService } = await import("../src/api/services/BrokerOrdersFacadeService");
   const { InternalOrdersSyncService } = await import("../src/api/services/InternalOrdersSyncService");
+  const { DeltaExchangeOrdersAdapter } = await import("../src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter");
+  const { MudrexOrdersAdapter } = await import("../src/brokers/capabilities/orders/MudrexOrdersAdapter");
   const { coreDataSource } = await import("../src/database/data-source");
 
 function createSuccess<T>(data: T) {
@@ -321,6 +323,7 @@ function createServiceHarness() {
   const linkedSuggestedOrders: Array<Record<string, unknown>> = [];
   const freshnessChecks: string[] = [];
   const preTradeChecks: Array<Record<string, unknown>> = [];
+  const adapterBodies: Array<Record<string, unknown>> = [];
   let adapterCalls = 0;
   let nextAdapterResult: unknown = createSuccess({
     order_id: 'live-1',
@@ -630,8 +633,9 @@ function createServiceHarness() {
   service.brokerRuntimeRegistry = {
     getOrdersAdapter() {
       return {
-        async createOrder() {
+        async createOrder(_assetId: string, body: Record<string, unknown>) {
           adapterCalls += 1;
+          adapterBodies.push({ ...body });
           if (nextAdapterResult instanceof Error) {
             throw nextAdapterResult;
           }
@@ -693,6 +697,7 @@ function createServiceHarness() {
     linkedSuggestedOrders,
     freshnessChecks,
     preTradeChecks,
+    adapterBodies,
     getAdapterCalls: () => adapterCalls,
     setAdapterResult: (value: unknown) => {
       nextAdapterResult = value;
@@ -749,7 +754,7 @@ async function runReplayAssertion(): Promise<void> {
       symbol: 'BTCUSDT',
       timeframe: null,
       side: 'BUY',
-      orderType: 'market',
+      orderType: 'limit',
       timeInForce: null,
       quantityMode: 'quantity',
       quantity: 1,
@@ -762,6 +767,8 @@ async function runReplayAssertion(): Promise<void> {
       reduceOnly: false,
     },
   });
+  assert.equal(harness.adapterBodies[0]?.order_type, 'limit');
+  assert.equal(harness.adapterBodies[0]?.trigger_type, 'GTC');
   assert.deepEqual(harness.freshnessChecks, ['user-1:st-auto-1', 'user-1:st-auto-1']);
   const stored = harness.submissions.get('user-1:order-submit-8-replay');
   assert.equal(stored?.status, 'completed');
@@ -793,6 +800,8 @@ async function runReplayAssertion(): Promise<void> {
     'pretrade-1'
   );
   assert.equal(harness.linkedSuggestedOrders.length, 1);
+  assert.equal(harness.linkedSuggestedOrders[0]?.orderType, 'limit');
+  assert.equal(harness.linkedSuggestedOrders[0]?.triggerType, 'GTC');
   assert.equal(
     String(harness.linkedSuggestedOrders[0]?.note || '').includes('native SL/TP protection'),
     true,
@@ -1296,12 +1305,80 @@ async function runAutomaticSyncReconciliationAssertion(): Promise<void> {
   }
 }
 
+async function runLimitOnlyBrokerAdapterAssertion(): Promise<void> {
+  const baseBody = {
+    brokerKey: 'mudrex',
+    accountId: 'acct-1',
+    idempotency_key: 'order-submit-8-limit-normalize',
+    symbol: 'BTCUSDT',
+    side: 'long' as const,
+    execution_mode: 'live' as const,
+    leverage: 5,
+    quantity: 1,
+    order_price: 100,
+    order_type: 'market',
+    trigger_type: 'immediate',
+    is_takeprofit: false,
+    is_stoploss: false,
+    stoploss_price: 95,
+    takeprofit_price: 110,
+    reduce_only: false,
+  };
+
+  const mudrexAdapter = new MudrexOrdersAdapter() as any;
+  let mudrexPayload: Record<string, unknown> | null = null;
+  mudrexAdapter.ordersService = {
+    async createFuturesOrder(_assetId: string, body: Record<string, unknown>) {
+      mudrexPayload = { ...body };
+      return {
+        success: true,
+        data: {
+          leverage: '5',
+          amount: '100',
+          quantity: '1',
+          price: '100',
+          order_id: 'mudrex-limit-1',
+          status: 'OPEN',
+          message: 'Order submitted',
+        },
+      };
+    },
+  };
+  await mudrexAdapter.createOrder('asset-1', baseBody);
+  const capturedMudrexPayload = mudrexPayload as Record<string, unknown> | null;
+  assert.equal(capturedMudrexPayload?.order_type, 'LONG');
+  assert.equal(capturedMudrexPayload?.trigger_type, 'LIMIT');
+
+  const deltaAdapter = new DeltaExchangeOrdersAdapter() as any;
+  const deltaPosts: Array<{ path: string; payload: Record<string, unknown> }> = [];
+  deltaAdapter.deltaHttpClient = {
+    async signedPost(
+      _accountId: string,
+      path: string,
+      payload: Record<string, unknown>
+    ) {
+      deltaPosts.push({ path, payload });
+      if (path.includes('/orders/leverage')) {
+        return { leverage: '5' };
+      }
+      return { id: 'delta-limit-1', state: 'open' };
+    },
+  };
+  deltaAdapter.exchangeAssetRepository = {};
+  await deltaAdapter.createOrder('123', { ...baseBody, brokerKey: 'delta_exchange' });
+  const deltaOrderPost = deltaPosts.find((item) => item.path === '/v2/orders');
+  assert.equal(deltaOrderPost?.payload.order_type, 'limit_order');
+  assert.equal(deltaOrderPost?.payload.time_in_force, 'gtc');
+  assert.equal(deltaOrderPost?.payload.limit_price, '100');
+}
+
 async function main(): Promise<void> {
   await runReplayAssertion();
   await runProtectionGapAssertion();
   await runConflictAssertion();
   await runNormalizationAssertion();
   await runAutomaticSyncReconciliationAssertion();
+  await runLimitOnlyBrokerAdapterAssertion();
   console.log('Orders phase 8 checks passed');
 }
 

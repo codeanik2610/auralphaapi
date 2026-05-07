@@ -7665,6 +7665,66 @@ RISK max_per_trade=1.5 signal_threshold=0.82`,
     /def entry_short\(self, ctx\):\n {8}return ema\(ctx, 20\) < ema\(ctx, 50\)/
   );
 
+  const normalizedFirst60 = service.coerceTemplateConfigToPython(
+    {
+      codeTarget: 'dsl',
+      codeDefinition: `STRATEGY First60 Managed
+MARKET crypto-futures
+ENTRY ema(20) > ema(50)
+EXIT ema(20) < ema(50)
+ENTRY_SHORT ema(20) < ema(50)
+EXIT_SHORT ema(20) > ema(50)`,
+      entryLogic: 'ema(20) > ema(50)',
+      exitLogic: 'ema(20) < ema(50)',
+      shortEnabled: true,
+      entryShortLogic: 'ema(20) < ema(50)',
+      exitShortLogic: 'ema(20) > ema(50)',
+      tradeManagement: {
+        first60: {
+          enabled: true,
+          mode: 'post_entry_hold_or_exit',
+          dataSource: 'market_candles_1m',
+          buy: {
+            requiredFavorableR: 1,
+            maxAdverseR: 0.75,
+            targetR: 5,
+          },
+          sell: {
+            requiredFavorableR: 1,
+            maxAdverseR: 0.75,
+            targetR: 4.5,
+          },
+        },
+      },
+    },
+    'First60 Managed'
+  );
+  const normalizedFirst60Management = normalizedFirst60.tradeManagement as Record<string, unknown>;
+  const normalizedFirst60Profile = normalizedFirst60.automationProfile as Record<string, unknown>;
+  const normalizedFirst60ProfileManagement = normalizedFirst60Profile.tradeManagement as Record<
+    string,
+    unknown
+  >;
+  const normalizedFirst60Block = normalizedFirst60Management.first60 as Record<string, unknown>;
+  const normalizedFirst60ProfileBlock = normalizedFirst60ProfileManagement.first60 as Record<
+    string,
+    unknown
+  >;
+  const normalizedFirst60ProfileLong = normalizedFirst60ProfileBlock.long as Record<
+    string,
+    unknown
+  >;
+  const normalizedFirst60ProfileShort = normalizedFirst60ProfileBlock.short as Record<
+    string,
+    unknown
+  >;
+
+  assert.equal(normalizedFirst60Block.enabled, true);
+  assert.equal(normalizedFirst60ProfileLong.targetR, 5);
+  assert.equal(normalizedFirst60ProfileLong.maxAdverseR, 0.75);
+  assert.equal(normalizedFirst60ProfileShort.targetR, 4.5);
+  assert.equal(normalizedFirst60ProfileShort.stopBasis, 'signal_candle_high');
+
   const mappedTemplate = service.mapTemplate({
     id: 'template-1',
     userId: 'user-1',

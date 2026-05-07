@@ -1260,9 +1260,10 @@ async function runDeltaLookupAssertions(): Promise<void> {
       product_id: 45678,
       size: 3000,
       side: 'sell',
-      order_type: 'market_order',
-      time_in_force: 'ioc',
+      order_type: 'limit_order',
+      time_in_force: 'gtc',
       client_order_id: expectedClientOrderId('live-auto:delta-market-short'),
+      limit_price: '100',
     },
     userId: 'user-1',
   });
@@ -1390,9 +1391,10 @@ async function runDeltaLookupAssertions(): Promise<void> {
       product_id: 45678,
       size: 1,
       side: 'buy',
-      order_type: 'market_order',
-      time_in_force: 'ioc',
+      order_type: 'limit_order',
+      time_in_force: 'gtc',
       client_order_id: expectedClientOrderId('live-auto:delta-notional-contract-conversion'),
+      limit_price: '74739.2',
     },
     userId: 'user-1',
   });
@@ -1884,7 +1886,7 @@ async function runMudrexLeverageVerificationAssertions(): Promise<void> {
     accountId: 'acct-1',
     leverage: 12,
     orderType: 'LONG',
-    triggerType: 'MARKET',
+    triggerType: 'LIMIT',
     reduceOnly: false,
   });
   assert.equal((response as any).data.leverage, '12');

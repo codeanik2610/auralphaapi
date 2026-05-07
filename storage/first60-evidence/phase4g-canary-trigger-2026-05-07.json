@@ -1,0 +1,135 @@
+{
+  "phase": "4g",
+  "name": "manual one-shot trigger for First60 suggestion-only canary",
+  "generatedAt": "2026-05-07T13:48:32.349Z",
+  "droplet": {
+    "host": "168.144.66.167",
+    "apiContainer": "auralpha-auralpha-api-1"
+  },
+  "canary": {
+    "automationId": "60905546-9a5d-43dd-86f0-74ee3fe075fd",
+    "automationName": "Phase 4f First60 suggestion-only canary \u00b7 5m \u00b7 3 assets",
+    "templateId": "f7d16c3d-12f8-4f64-b52a-2cf8fa48835b",
+    "statusBefore": "Paused",
+    "statusAfter": "Paused",
+    "trigger": "manual",
+    "automationType": "trade-suggestion",
+    "executionMode": "suggestion_only",
+    "approvalMode": "manual_review",
+    "liveConsentEnabled": false,
+    "nextRunAfter": null,
+    "scope": {
+      "symbols": [
+        "BSBUSDT",
+        "MERLUSDT",
+        "LDOUSDT"
+      ],
+      "timeframe": "5m"
+    }
+  },
+  "manualTrigger": {
+    "runId": "b145ebe7-4fa1-4a47-aac8-ada268f4d176",
+    "status": "Success",
+    "scheduledFor": "2026-05-07T13:29:12.667Z",
+    "trigger": "manual-paused-canary",
+    "result": {
+      "inserted": 0,
+      "duplicates": 0,
+      "symbolsProcessed": 3,
+      "symbolsSkipped": 0,
+      "symbolsEvaluated": 3,
+      "signalsDetected": 0,
+      "autoPaperPlaced": 0,
+      "autoPaperBlocked": 0,
+      "autoPaperSkipped": 0,
+      "autoPaperFailed": 0,
+      "autoLiveReady": 0,
+      "autoLivePlaced": 0,
+      "autoLiveBlocked": 0,
+      "autoLiveSkipped": 0,
+      "autoLiveDisabled": 0,
+      "autoLiveFailed": 0
+    },
+    "counts": {
+      "automationRunsBefore": 0,
+      "automationRunsAfter": 1,
+      "suggestedTradesBefore": 0,
+      "suggestedTradesAfter": 0,
+      "createdInRun": 0
+    },
+    "createdTrades": []
+  },
+  "phase4dRerun": {
+    "generatedAt": "2026-05-07T13:30:48.300Z",
+    "since": "2026-05-07T13:29:12.667Z",
+    "lookbackHours": 72,
+    "postDeploy": {
+      "total": 0,
+      "buyCount": 0,
+      "sellCount": 0,
+      "snapshotCount": 0,
+      "gateSnapshotCount": 0,
+      "observeOnlyGateCount": 0,
+      "blockedGateCount": 0,
+      "observeResultCount": 0,
+      "firstCreatedAt": null,
+      "lastCreatedAt": null
+    },
+    "lookback": {
+      "total": 792,
+      "snapshotCount": 0,
+      "gateSnapshotCount": 0,
+      "observeResultCount": 0
+    },
+    "recentPostDeployTrades": []
+  },
+  "observeOnlyMonitorDryRun": {
+    "generatedAt": "2026-05-07T13:31:02.928Z",
+    "mode": "dry-run",
+    "source": {
+      "lookbackHours": 72,
+      "minAgeMinutes": 1,
+      "limit": 250,
+      "maxOutcomeLookaheadMinutes": 1440,
+      "reevaluate": false
+    },
+    "counts": {
+      "candidates": 0,
+      "candles": 0,
+      "evaluated": 0,
+      "writeEligible": 0,
+      "written": 0
+    },
+    "observeOnlyBuy": {
+      "evaluated": 0,
+      "passed": 0,
+      "failed": 0,
+      "targetHits": 0,
+      "stopHits": 0
+    },
+    "diagnosticsOnlySell": {
+      "evaluated": 0,
+      "passed": 0,
+      "failed": 0,
+      "targetHits": 0,
+      "stopHits": 0
+    },
+    "items": []
+  },
+  "sideEffects": {
+    "automationStatus": "Paused",
+    "nextRun": null,
+    "runOutputs": 0,
+    "suggestedTrades": 0,
+    "orderSubmissions": 0,
+    "paperOrders": 0,
+    "failedChecks": []
+  },
+  "conclusion": {
+    "canaryTriggeredOnce": true,
+    "newSuggestedTradeGenerated": false,
+    "first60SnapshotCaptured": false,
+    "reason": "The latest closed 5m candle evaluation processed all 3 canary symbols but detected 0 entry signals.",
+    "nextStep": "Use a cursor-gap or historical-signal canary pass if the next phase requires forcing at least one suggested trade for First60 snapshot validation."
+  }
+}

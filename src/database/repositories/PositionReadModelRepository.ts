@@ -96,6 +96,12 @@ export interface PositionReadModelCoverageSummary {
   latestReadModelSeenAt: Date | null;
 }
 
+export interface PositionProtectionRefreshScope {
+  userId?: string;
+  accountId?: string;
+  brokerKey?: string;
+}
+
 export interface PositionReadModelRebuildScopeResult {
   userId: string;
   accountId: string;
@@ -208,6 +214,147 @@ export class PositionReadModelRepository {
     }
 
     await this.upsertReadModelsWithExecutor(coreDataSource, normalizedRows);
+  }
+
+  async refreshOpenDeltaProtectionFromOrderSnapshots(
+    scope: PositionProtectionRefreshScope = {}
+  ): Promise<number> {
+    const where: string[] = [
+      'prm.status_rank > 0',
+      'prm.status_rank <= 2',
+      "LOWER(prm.broker_key) = 'delta_exchange'",
+    ];
+    const params: unknown[] = [];
+
+    const userId = String(scope.userId || '').trim();
+    if (userId) {
+      where.push('prm.user_id = ?');
+      params.push(userId);
+    }
+
+    const accountId = String(scope.accountId || '').trim();
+    if (accountId) {
+      where.push('prm.account_id = ?');
+      params.push(accountId);
+    }
+
+    const brokerKey = String(scope.brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (brokerKey && brokerKey !== 'delta_exchange') {
+      return 0;
+    }
+
+    const result = await coreDataSource.query(
+      `UPDATE position_read_models prm
+          LEFT JOIN (
+            SELECT base.user_id,
+                   base.account_id,
+                   LOWER(base.broker_key) AS broker_key,
+                   base.symbol,
+                   CASE
+                     WHEN LOWER(COALESCE(base.side_key, '')) = 'short'
+                       THEN MIN(CASE WHEN orders.order_kind = 'SL' THEN orders.order_price END)
+                     ELSE MAX(CASE WHEN orders.order_kind = 'SL' THEN orders.order_price END)
+                   END AS stoploss_price,
+                   CASE
+                     WHEN LOWER(COALESCE(base.side_key, '')) = 'short'
+                       THEN MAX(CASE WHEN orders.order_kind = 'TP' THEN orders.order_price END)
+                     ELSE MIN(CASE WHEN orders.order_kind = 'TP' THEN orders.order_price END)
+                   END AS takeprofit_price,
+                   SUBSTRING_INDEX(
+                     GROUP_CONCAT(
+                       CASE WHEN orders.order_kind = 'SL' THEN orders.external_id END
+                       ORDER BY
+                         CASE WHEN LOWER(COALESCE(base.side_key, '')) = 'short' THEN orders.order_price END ASC,
+                         CASE WHEN LOWER(COALESCE(base.side_key, '')) <> 'short' THEN orders.order_price END DESC,
+                         orders.last_seen_at DESC
+                       SEPARATOR ','
+                     ),
+                     ',',
+                     1
+                   ) AS stoploss_order_id,
+                   SUBSTRING_INDEX(
+                     GROUP_CONCAT(
+                       CASE WHEN orders.order_kind = 'TP' THEN orders.external_id END
+                       ORDER BY
+                         CASE WHEN LOWER(COALESCE(base.side_key, '')) = 'short' THEN orders.order_price END DESC,
+                         CASE WHEN LOWER(COALESCE(base.side_key, '')) <> 'short' THEN orders.order_price END ASC,
+                         orders.last_seen_at DESC
+                       SEPARATOR ','
+                     ),
+                     ',',
+                     1
+                   ) AS takeprofit_order_id
+              FROM position_read_models base
+              INNER JOIN (
+                SELECT user_id,
+                       account_id,
+                       LOWER(broker_key) AS broker_key,
+                       symbol,
+                       external_id,
+                       last_seen_at,
+                       CASE
+                         WHEN LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_order_type')), '')) = 'stop_loss_order'
+                           THEN 'SL'
+                         WHEN LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_order_type')), '')) = 'take_profit_order'
+                           THEN 'TP'
+                         ELSE NULL
+                       END AS order_kind,
+                       CAST(
+                         NULLIF(
+                           NULLIF(
+                             COALESCE(
+                               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.price')),
+                               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_price')),
+                               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stopPrice')),
+                               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.trigger_price')),
+                               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.triggerPrice')),
+                               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.limit_price')),
+                               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.limitPrice'))
+                             ),
+                             'null'
+                           ),
+                           ''
+                         ) AS DECIMAL(30, 12)
+                       ) AS order_price
+                  FROM scheduler_orders_snapshots
+                 WHERE status_rank > 0
+                   AND status_rank <= 2
+                   AND LOWER(broker_key) = 'delta_exchange'
+                   AND symbol IS NOT NULL
+                   AND LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.reduce_only')), 'false')) IN ('true', '1')
+                   AND LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_order_type')), '')) IN ('stop_loss_order', 'take_profit_order')
+              ) orders
+                      ON orders.user_id = base.user_id
+                     AND orders.account_id = base.account_id
+                     AND orders.broker_key = LOWER(base.broker_key)
+                     AND LOWER(COALESCE(orders.symbol, '')) = LOWER(COALESCE(base.symbol, ''))
+             WHERE base.status_rank > 0
+               AND base.status_rank <= 2
+               AND LOWER(base.broker_key) = 'delta_exchange'
+               AND base.symbol IS NOT NULL
+             GROUP BY base.user_id,
+                      base.account_id,
+                      LOWER(base.broker_key),
+                      base.symbol,
+                      base.side_key,
+                      LOWER(COALESCE(base.side_key, ''))
+          ) protection
+                 ON protection.user_id = prm.user_id
+                AND protection.account_id = prm.account_id
+                AND protection.broker_key = LOWER(prm.broker_key)
+                AND LOWER(COALESCE(protection.symbol, '')) = LOWER(COALESCE(prm.symbol, ''))
+           SET prm.stoploss_price = protection.stoploss_price,
+               prm.takeprofit_price = protection.takeprofit_price,
+               prm.stoploss_order_id = NULLIF(protection.stoploss_order_id, ''),
+               prm.takeprofit_order_id = NULLIF(protection.takeprofit_order_id, ''),
+               prm.updated_at = NOW()
+         WHERE ${where.join(' AND ')}`,
+      params
+    );
+
+    return this.readAffectedRows(result);
   }
 
   async getReadModelCoverageByAccountIds(
@@ -1474,14 +1621,7 @@ export class PositionReadModelRepository {
       .trim()
       .toLowerCase();
     if (
-      [
-        'blocked',
-        'canceled',
-        'cancelled',
-        'failed',
-        'rejected',
-        'closed',
-      ].includes(executionState)
+      ['blocked', 'canceled', 'cancelled', 'failed', 'rejected', 'closed'].includes(executionState)
     ) {
       return 2;
     }
@@ -1665,6 +1805,17 @@ export class PositionReadModelRepository {
     const context = row ? this.mapSuggestedTradeContext(row) : null;
     const timeframe = context?.timeframe || 'unknown';
     const traceMethod = context?.traceMethod || 'unmatched';
+    const entryFilledAt =
+      context?.entryFilledAt ??
+      this.toIsoString(
+        record.entryFilledAt ??
+          record.entry_filled_at ??
+          record.positionSummary?.entryFilledAt ??
+          record.created_at ??
+          record.positionSummary?.createdAt ??
+          record.first_seen_at ??
+          null
+      );
 
     record.timeframe = timeframe;
     record.trade_timeframe = timeframe;
@@ -1677,8 +1828,8 @@ export class PositionReadModelRepository {
     record.entryTriggerType = context?.entryTriggerType ?? null;
     record.entry_submitted_at = context?.entrySubmittedAt ?? null;
     record.entrySubmittedAt = context?.entrySubmittedAt ?? null;
-    record.entry_filled_at = context?.entryFilledAt ?? null;
-    record.entryFilledAt = context?.entryFilledAt ?? null;
+    record.entry_filled_at = entryFilledAt;
+    record.entryFilledAt = entryFilledAt;
     record.entry_order_id = context?.entryOrderId ?? null;
     record.entryOrderId = context?.entryOrderId ?? null;
     record.executionProtection = context?.protection ?? null;
@@ -1699,7 +1850,7 @@ export class PositionReadModelRepository {
       record.positionSummary.entryOrderType = context?.entryOrderType ?? null;
       record.positionSummary.entryTriggerType = context?.entryTriggerType ?? null;
       record.positionSummary.entrySubmittedAt = context?.entrySubmittedAt ?? null;
-      record.positionSummary.entryFilledAt = context?.entryFilledAt ?? null;
+      record.positionSummary.entryFilledAt = entryFilledAt;
       record.positionSummary.entryOrderId = context?.entryOrderId ?? null;
       record.positionSummary.executionProtection = context?.protection ?? null;
       record.positionSummary.suggestedTradeId = context?.suggestedTradeId ?? null;
@@ -1848,6 +1999,15 @@ export class PositionReadModelRepository {
   private toIsoString(value: unknown): string | null {
     const date = this.toDate(value);
     return date ? date.toISOString() : null;
+  }
+
+  private readAffectedRows(result: unknown): number {
+    const header =
+      Array.isArray(result) && result.length > 0 && typeof result[0] === 'object'
+        ? (result[0] as { affectedRows?: number })
+        : (result as { affectedRows?: number });
+    const value = Number(header?.affectedRows || 0);
+    return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
   }
 
   private groupRowsByAccount(rows: PositionReadModelRow[]): Map<string, PositionRecord[]> {

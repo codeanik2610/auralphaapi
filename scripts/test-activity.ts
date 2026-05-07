@@ -1015,6 +1015,54 @@ async function runActivityStrategyLibraryLinkAssertions(): Promise<void> {
   assert.equal(response.data.linkedEntity?.description, 'Imported from Momentum Template · v8');
 }
 
+async function runActivitySignalLinkAssertions(): Promise<void> {
+  const service = new ActivityService() as any;
+  const createdAt = new Date('2026-05-07T10:00:00.000Z');
+  const updatedAt = new Date('2026-05-07T10:05:00.000Z');
+
+  service.activityRepository = {
+    async getActivityById() {
+      return {
+        id: 'activity-signal-1',
+        userId: 'user-1',
+        type: 'Signals',
+        title: 'Signal triggered: BTCUSDT',
+        status: 'Needs review',
+        actor: 'system',
+        symbol: 'BTCUSDT',
+        route: 'Signals',
+        description: 'Momentum scan found a fresh signal',
+        referenceId: 'signal 1',
+        stream: 'Signals',
+        related: 'momentum',
+        flags: [],
+        createdAt,
+        updatedAt,
+      };
+    },
+  };
+  service.signalRepository = {
+    async getSignalById(userId: string, signalId: string) {
+      assert.equal(userId, 'user-1');
+      assert.equal(signalId, 'signal 1');
+      return {
+        id: 'signal 1',
+        symbol: 'BTCUSDT',
+        source: 'Momentum Engine',
+        timeframe: '5m',
+        status: 'Triggered',
+        updatedAt,
+      };
+    },
+  };
+
+  const response = await service.getActivityById('user-1', 'activity-signal-1');
+
+  assert.equal(response.data.linkedEntity?.kind, 'signal');
+  assert.equal(response.data.linkedEntity?.path, '/suggested-trades?tab=signals&signalId=signal%201');
+  assert.equal(response.data.linkedEntity?.description, 'Momentum Engine · 5m');
+}
+
 async function runActivityExportAssertions(): Promise<void> {
   const { readFile } = await import('node:fs/promises');
   const service = new ActivityService() as any;
@@ -1508,6 +1556,7 @@ async function main(): Promise<void> {
   await runActivityMaintenanceAssertions();
   await runActivityDetailAssertions();
   await runActivityStrategyLibraryLinkAssertions();
+  await runActivitySignalLinkAssertions();
   await runActivityExportAssertions();
   await runActivitySavedViewAssertions();
   await runActivityReadStateAssertions();

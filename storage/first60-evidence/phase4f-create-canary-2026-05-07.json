@@ -1,0 +1,99 @@
+{
+  "phase": "4f",
+  "name": "create First60 suggestion_only canary template/automation",
+  "generatedAt": "2026-05-07T12:48:12.267Z",
+  "droplet": {
+    "host": "168.144.66.167",
+    "apiContainer": "auralpha-auralpha-api-1"
+  },
+  "normalizerPatch": {
+    "generatedAt": "2026-05-07T12:46:51.987Z",
+    "action": "patched",
+    "functionName": "public.normalize_strategy_template_config",
+    "preserves": [
+      "tradeManagement"
+    ],
+    "localMigration": "src/database/pg-migrations_baseline/1800000100000-PreserveStrategyTemplateTradeManagement.ts"
+  },
+  "sourceTemplate": {
+    "id": "34b6eb3c-6269-4760-9d7c-1f05794073af",
+    "name": "Supertrend 10,3 Red-Green Breakout v2",
+    "status": "Draft"
+  },
+  "canaryTemplate": {
+    "id": "f7d16c3d-12f8-4f64-b52a-2cf8fa48835b",
+    "action": "updated-after-normalizer-patch",
+    "name": "Phase 4f First60 Suggestion-Only Canary \u00b7 Supertrend 5m",
+    "status": "Draft",
+    "templateVersion": 2,
+    "hasTradeManagement": true,
+    "hasFirst60": true,
+    "first60": {
+      "enabled": true,
+      "buyGate": {
+        "status": "observe_only",
+        "observeOnlyEnabled": true,
+        "managementEnabled": false,
+        "diagnosticsEnabled": true,
+        "reason": "Phase 4f canary: BUY is approved for observe-only diagnostics after 90d/2d evidence.",
+        "evidenceRef": "storage/first60-evidence/phase4f-create-canary-summary-2026-05-07.md",
+        "decidedAt": "2026-05-07T00:00:00.000Z"
+      },
+      "sellGate": {
+        "status": "blocked",
+        "observeOnlyEnabled": false,
+        "managementEnabled": false,
+        "diagnosticsEnabled": true,
+        "reason": "Phase 4f canary: SELL remains diagnostics-only until sell-side evidence improves.",
+        "evidenceRef": "storage/first60-evidence/phase4f-create-canary-summary-2026-05-07.md",
+        "decidedAt": "2026-05-07T00:00:00.000Z"
+      }
+    }
+  },
+  "canaryAutomation": {
+    "id": "60905546-9a5d-43dd-86f0-74ee3fe075fd",
+    "action": "updated",
+    "name": "Phase 4f First60 suggestion-only canary \u00b7 5m \u00b7 3 assets",
+    "status": "Paused",
+    "trigger": "manual",
+    "automationType": "trade-suggestion",
+    "nextRun": null,
+    "sourceTemplateId": "f7d16c3d-12f8-4f64-b52a-2cf8fa48835b",
+    "scopeSymbol": "BSBUSDT",
+    "scopeTimeframe": "5m",
+    "symbols": [
+      "BSBUSDT",
+      "MERLUSDT",
+      "LDOUSDT"
+    ],
+    "executionMode": "suggestion_only",
+    "approvalMode": "manual_review",
+    "liveConsentEnabled": false
+  },
+  "sideEffects": {
+    "automationRuns": 0,
+    "suggestedTrades": 0
+  },
+  "checks": {
+    "normalizerPreservesTradeManagement": true,
+    "templateHasTradeManagement": true,
+    "templateHasFirst60": true,
+    "profileFirst60Enabled": true,
+    "buyObserveOnly": true,
+    "sellBlocked": true,
+    "automationPaused": true,
+    "automationSuggestionOnly": true,
+    "automationManualReview": true,
+    "liveConsentDisabled": true,
+    "scheduleDisabled": true,
+    "nextRunCleared": true,
+    "noAutomationRuns": true,
+    "noSuggestedTrades": true
+  },
+  "failed": [],
+  "notes": [
+    "No canary trigger or automation run was executed in Phase 4f.",
+    "Existing paused live_trade_auto automations were not resumed or triggered.",
+    "SELL First60 remains diagnostics-only/blocked; BUY is observe-only only, with management disabled."
+  ]
+}

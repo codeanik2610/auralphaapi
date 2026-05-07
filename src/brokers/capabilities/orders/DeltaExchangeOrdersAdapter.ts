@@ -799,19 +799,17 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
   }
 
   private resolveOrderType(body: ValidatedCreateOrderRouteBody): 'market_order' | 'limit_order' {
-    if (this.isPrimaryEntryOrder(body)) {
-      return 'limit_order';
-    }
-
     const normalized = body.order_type.trim().toLowerCase();
+    let requestedOrderType: 'market_order' | 'limit_order';
     if (normalized === 'market' || normalized === 'market_order') {
-      return 'market_order';
-    }
-    if (normalized === 'limit' || normalized === 'limit_order') {
-      return 'limit_order';
+      requestedOrderType = 'market_order';
+    } else if (normalized === 'limit' || normalized === 'limit_order') {
+      requestedOrderType = 'limit_order';
+    } else {
+      throw new BadRequestAppError('Delta Exchange order_type must be market or limit');
     }
 
-    throw new BadRequestAppError('Delta Exchange order_type must be market or limit');
+    return this.isPrimaryEntryOrder(body) ? 'limit_order' : requestedOrderType;
   }
 
   private isPrimaryEntryOrder(body: ValidatedCreateOrderRouteBody): boolean {

@@ -1,5 +1,12 @@
 export type StrategyTradeSide = 'long' | 'short';
 
+export type StrategyTemplateFirst60DecisionStatus =
+  | 'candidate'
+  | 'observe_only'
+  | 'blocked'
+  | 'disabled'
+  | 'management_enabled';
+
 export interface StrategyTemplateTradePlanLeg {
   side: StrategyTradeSide;
   enabled: boolean;
@@ -12,6 +19,43 @@ export interface StrategyTemplateTradePlanLeg {
   riskRewardRatio?: number | null;
   rationale: string;
   source: 'rule-based' | 'custom-python';
+}
+
+export interface StrategyTemplateFirst60ManagementLeg {
+  side: StrategyTradeSide;
+  enabled: boolean;
+  decisionGate: StrategyTemplateFirst60DecisionGate;
+  windowMinutes: number;
+  evaluationTimeframe: string;
+  requiredFavorableR: number;
+  maxAdverseR: number;
+  targetR: number;
+  entryBasis: string;
+  stopBasis: string;
+  passAction: string;
+  failAction: string;
+}
+
+export interface StrategyTemplateFirst60DecisionGate {
+  status: StrategyTemplateFirst60DecisionStatus;
+  observeOnlyEnabled: boolean;
+  managementEnabled: boolean;
+  diagnosticsEnabled: boolean;
+  reason: string | null;
+  evidenceRef: string | null;
+  decidedAt: string | null;
+}
+
+export interface StrategyTemplateFirst60ManagementProfile {
+  enabled: boolean;
+  mode: string;
+  dataSource: string | null;
+  long: StrategyTemplateFirst60ManagementLeg | null;
+  short: StrategyTemplateFirst60ManagementLeg | null;
+}
+
+export interface StrategyTemplateTradeManagementProfile {
+  first60: StrategyTemplateFirst60ManagementProfile | null;
 }
 
 export interface StrategyTemplateAutomationProfile {
@@ -30,6 +74,7 @@ export interface StrategyTemplateAutomationProfile {
     long: StrategyTemplateTradePlanLeg | null;
     short: StrategyTemplateTradePlanLeg | null;
   };
+  tradeManagement?: StrategyTemplateTradeManagementProfile;
 }
 
 const DEFAULT_MARKET = 'crypto-futures';
@@ -98,13 +143,83 @@ const parseRecord = (value: unknown): Record<string, unknown> | null => {
   return value as Record<string, unknown>;
 };
 
+const parseBoolean = (value: unknown): boolean | null => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const normalized = value.trim().toLowerCase();
+    if (['true', 'yes', 'enabled', 'on', '1'].includes(normalized)) {
+      return true;
+    }
+    if (['false', 'no', 'disabled', 'off', '0'].includes(normalized)) {
+      return false;
+    }
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  return null;
+};
+
+const parsePositiveNumber = (...values: unknown[]): number | null => {
+  for (const value of values) {
+    const parsed = parseNumber(value);
+    if (parsed !== null && parsed > 0) {
+      return parsed;
+    }
+  }
+  return null;
+};
+
+const parseNonNegativeNumber = (...values: unknown[]): number | null => {
+  for (const value of values) {
+    const parsed = parseNumber(value);
+    if (parsed !== null && parsed >= 0) {
+      return parsed;
+    }
+  }
+  return null;
+};
+
 const normalizeCodeTarget = (value: unknown): string => {
-  const normalized = String(value || '').trim().toLowerCase();
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
   if (!normalized) return '';
   if (normalized === 'py' || normalized === 'python') return 'python';
   if (normalized === 'js' || normalized === 'javascript') return 'javascript';
   if (normalized === 'dsl') return 'dsl';
   return normalized;
+};
+
+const normalizeFirst60DecisionStatus = (
+  value: unknown
+): StrategyTemplateFirst60DecisionStatus | null => {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  if (!normalized) {
+    return null;
+  }
+  if (['candidate', 'ready_candidate', 'research'].includes(normalized)) {
+    return 'candidate';
+  }
+  if (['observe', 'observe_only', 'observe_only_ready', 'paper_observe'].includes(normalized)) {
+    return 'observe_only';
+  }
+  if (['blocked', 'paused', 'research_only', 'diagnostics_only'].includes(normalized)) {
+    return 'blocked';
+  }
+  if (['disabled', 'off'].includes(normalized)) {
+    return 'disabled';
+  }
+  if (['management_enabled', 'paper_management', 'live_management', 'enabled'].includes(normalized)) {
+    return 'management_enabled';
+  }
+  return null;
 };
 
 const extractPythonRiskBlock = (codeDefinition: string): string => {
@@ -322,12 +437,12 @@ const buildTemplateSearchSpace = (
   return search;
 };
 
-const extractRiskConfig = (searchSpace: Array<Record<string, unknown>>): Record<string, unknown> => {
+const extractRiskConfig = (
+  searchSpace: Array<Record<string, unknown>>
+): Record<string, unknown> => {
   for (const scope of searchSpace) {
     const risk =
-      parseRecord(scope.risk) ||
-      parseRecord(scope.riskConfig) ||
-      parseRecord(scope.risk_config);
+      parseRecord(scope.risk) || parseRecord(scope.riskConfig) || parseRecord(scope.risk_config);
     if (risk) {
       return risk;
     }
@@ -335,7 +450,9 @@ const extractRiskConfig = (searchSpace: Array<Record<string, unknown>>): Record<
   return {};
 };
 
-const extractParameters = (searchSpace: Array<Record<string, unknown>>): Record<string, unknown> => {
+const extractParameters = (
+  searchSpace: Array<Record<string, unknown>>
+): Record<string, unknown> => {
   for (const scope of searchSpace) {
     const parameters = parseRecord(scope.parameters) || parseRecord(scope.params);
     if (parameters) {
@@ -345,6 +462,258 @@ const extractParameters = (searchSpace: Array<Record<string, unknown>>): Record<
   return {};
 };
 
+const extractTradeManagementConfig = (
+  searchSpace: Array<Record<string, unknown>>
+): Record<string, unknown> | null => {
+  for (const scope of searchSpace) {
+    const management =
+      parseRecord(scope.tradeManagement) ||
+      parseRecord(scope.trade_management) ||
+      parseRecord(scope.management);
+    if (management) {
+      return management;
+    }
+
+    const first60 = parseRecord(scope.first60) || parseRecord(scope.first_60);
+    if (first60) {
+      return { first60 };
+    }
+  }
+  return null;
+};
+
+const buildFirst60Leg = (
+  side: StrategyTradeSide,
+  first60: Record<string, unknown>
+): StrategyTemplateFirst60ManagementLeg | null => {
+  const hasSideSpecificConfig = Boolean(
+    parseRecord(first60.long) ||
+    parseRecord(first60.buy) ||
+    parseRecord(first60.short) ||
+    parseRecord(first60.sell)
+  );
+  const sideConfig =
+    side === 'long'
+      ? parseRecord(first60.long) || parseRecord(first60.buy)
+      : parseRecord(first60.short) || parseRecord(first60.sell);
+  if (!sideConfig && (hasSideSpecificConfig || parseBoolean(first60.enabled) !== true)) {
+    return null;
+  }
+
+  const config = sideConfig || {};
+  const enabled =
+    parseBoolean(config.enabled) ?? parseBoolean(first60.enabled) ?? Boolean(sideConfig);
+  if (!enabled) {
+    return null;
+  }
+  const decisionGate = buildFirst60DecisionGate(config, first60);
+
+  const windowMinutes =
+    parsePositiveNumber(
+      config.windowMinutes,
+      config.window_minutes,
+      first60.windowMinutes,
+      first60.window_minutes
+    ) ?? 60;
+  const evaluationTimeframe =
+    readText(
+      config.evaluationTimeframe,
+      config.evaluation_timeframe,
+      first60.evaluationTimeframe,
+      first60.evaluation_timeframe
+    ) || '1m';
+  const requiredFavorableR =
+    parsePositiveNumber(
+      config.requiredFavorableR,
+      config.required_favorable_r,
+      config.favorableR,
+      config.favorable_r,
+      config.minFavorableR,
+      config.min_favorable_r,
+      first60.requiredFavorableR,
+      first60.required_favorable_r
+    ) ?? 1;
+  const maxAdverseR =
+    parseNonNegativeNumber(
+      config.maxAdverseR,
+      config.max_adverse_r,
+      config.adverseR,
+      config.adverse_r,
+      config.maxHeatR,
+      config.max_heat_r,
+      first60.maxAdverseR,
+      first60.max_adverse_r
+    ) ?? 0.75;
+  const targetR =
+    parsePositiveNumber(
+      config.targetR,
+      config.target_r,
+      config.takeProfitR,
+      config.take_profit_r,
+      config.riskRewardRatio,
+      config.risk_reward_ratio,
+      first60.targetR,
+      first60.target_r
+    ) ?? (side === 'long' ? 5 : 4.5);
+
+  return {
+    side,
+    enabled,
+    decisionGate,
+    windowMinutes,
+    evaluationTimeframe,
+    requiredFavorableR,
+    maxAdverseR,
+    targetR,
+    entryBasis:
+      readText(config.entryBasis, config.entry_basis, first60.entryBasis, first60.entry_basis) ||
+      'signal_5m_close',
+    stopBasis:
+      readText(config.stopBasis, config.stop_basis, first60.stopBasis, first60.stop_basis) ||
+      (side === 'long' ? 'signal_candle_low' : 'signal_candle_high'),
+    passAction:
+      readText(config.passAction, config.pass_action, first60.passAction, first60.pass_action) ||
+      'hold_for_target',
+    failAction:
+      readText(config.failAction, config.fail_action, first60.failAction, first60.fail_action) ||
+      'paper_tighten_or_exit',
+  };
+};
+
+const buildFirst60DecisionGate = (
+  config: Record<string, unknown>,
+  first60: Record<string, unknown>
+): StrategyTemplateFirst60DecisionGate => {
+  const gate =
+    parseRecord(config.decisionGate) ||
+    parseRecord(config.decision_gate) ||
+    parseRecord(config.gate) ||
+    {};
+  const status =
+    normalizeFirst60DecisionStatus(
+      gate.status ??
+        gate.decisionStatus ??
+        gate.decision_status ??
+        gate.decision ??
+        config.status ??
+        config.decisionStatus ??
+        config.decision_status ??
+        config.decision
+    ) ?? null;
+  const blocked = status === 'blocked' || status === 'disabled';
+  const observeOnlyEnabled = blocked
+    ? false
+    : (parseBoolean(
+        gate.observeOnlyEnabled ??
+          gate.observe_only_enabled ??
+          gate.observeOnly ??
+          gate.observe_only ??
+          config.observeOnlyEnabled ??
+          config.observe_only_enabled ??
+          config.observeOnly ??
+          config.observe_only ??
+          first60.observeOnlyEnabled ??
+          first60.observe_only_enabled
+      ) ?? status === 'observe_only');
+  const managementEnabled = blocked
+    ? false
+    : (parseBoolean(
+        gate.managementEnabled ??
+          gate.management_enabled ??
+          gate.manageEnabled ??
+          gate.manage_enabled ??
+          config.managementEnabled ??
+          config.management_enabled ??
+          config.manageEnabled ??
+          config.manage_enabled ??
+          first60.managementEnabled ??
+          first60.management_enabled
+      ) ?? status === 'management_enabled');
+  const diagnosticsEnabled =
+    parseBoolean(
+      gate.diagnosticsEnabled ??
+        gate.diagnostics_enabled ??
+        gate.diagnosticEnabled ??
+        gate.diagnostic_enabled ??
+        config.diagnosticsEnabled ??
+        config.diagnostics_enabled ??
+        config.diagnosticEnabled ??
+        config.diagnostic_enabled ??
+        first60.diagnosticsEnabled ??
+        first60.diagnostics_enabled
+    ) ?? status !== 'disabled';
+
+  return {
+    status:
+      status ??
+      (managementEnabled ? 'management_enabled' : observeOnlyEnabled ? 'observe_only' : 'candidate'),
+    observeOnlyEnabled,
+    managementEnabled,
+    diagnosticsEnabled,
+    reason:
+      readText(
+        gate.reason,
+        gate.decisionReason,
+        gate.decision_reason,
+        gate.blockedReason,
+        gate.blocked_reason,
+        config.reason,
+        config.decisionReason,
+        config.decision_reason,
+        config.blockedReason,
+        config.blocked_reason
+      ) || null,
+    evidenceRef:
+      readText(
+        gate.evidenceRef,
+        gate.evidence_ref,
+        gate.evidence,
+        gate.evidenceArtifact,
+        gate.evidence_artifact,
+        config.evidenceRef,
+        config.evidence_ref,
+        config.evidence,
+        config.evidenceArtifact,
+        config.evidence_artifact
+      ) || null,
+    decidedAt:
+      readText(
+        gate.decidedAt,
+        gate.decided_at,
+        gate.updatedAt,
+        gate.updated_at,
+        config.decidedAt,
+        config.decided_at
+      ) || null,
+  };
+};
+
+const buildTradeManagementProfile = (
+  searchSpace: Array<Record<string, unknown>>
+): StrategyTemplateTradeManagementProfile | undefined => {
+  const management = extractTradeManagementConfig(searchSpace);
+  const first60 = parseRecord(management?.first60) || parseRecord(management?.first_60);
+  if (!first60) {
+    return undefined;
+  }
+
+  const long = buildFirst60Leg('long', first60);
+  const short = buildFirst60Leg('short', first60);
+  const enabled = (parseBoolean(first60.enabled) ?? true) && Boolean(long || short);
+
+  return {
+    first60: {
+      enabled,
+      mode:
+        readText(first60.mode, first60.decisionMode, first60.decision_mode) ||
+        'post_entry_hold_or_exit',
+      dataSource: readText(first60.dataSource, first60.data_source, first60.source) || null,
+      long,
+      short,
+    },
+  };
+};
+
 export const buildStrategyTemplateAutomationProfile = (
   config: Record<string, unknown> | null | undefined
 ): StrategyTemplateAutomationProfile => {
@@ -352,6 +721,7 @@ export const buildStrategyTemplateAutomationProfile = (
   const searchSpace = buildTemplateSearchSpace(root);
   const baseRiskConfig = extractRiskConfig(searchSpace);
   const parameters = extractParameters(searchSpace);
+  const tradeManagement = buildTradeManagementProfile(searchSpace);
 
   const entryLogic = readText(...searchSpace.map((scope) => scope.entryLogic ?? scope.entry_logic));
   const exitLogic = readText(...searchSpace.map((scope) => scope.exitLogic ?? scope.exit_logic));
@@ -401,14 +771,8 @@ export const buildStrategyTemplateAutomationProfile = (
 
   const supportsLong = ruleBasedLong || pythonLong;
   const supportsShort = ruleBasedShort || pythonShort;
-  const stopLossMode = readText(
-    riskConfig.stopLossMode,
-    riskConfig.stop_loss_mode
-  );
-  const takeProfitMode = readText(
-    riskConfig.takeProfitMode,
-    riskConfig.take_profit_mode
-  );
+  const stopLossMode = readText(riskConfig.stopLossMode, riskConfig.stop_loss_mode);
+  const takeProfitMode = readText(riskConfig.takeProfitMode, riskConfig.take_profit_mode);
   const riskRewardRatio =
     parseNumber(riskConfig.riskRewardRatio ?? riskConfig.risk_reward_ratio) ?? null;
   const usesDynamicStopLoss = stopLossMode.toLowerCase().startsWith('dynamic');
@@ -437,15 +801,15 @@ export const buildStrategyTemplateAutomationProfile = (
     ) ?? (usesDynamicTakeProfit ? null : DEFAULT_TAKE_PROFIT_PCT);
   const resolvedTargets = takeProfitTargetsPct.length
     ? takeProfitTargetsPct
-    : (fallbackTakeProfitPct === null ? [] : [fallbackTakeProfitPct]);
+    : fallbackTakeProfitPct === null
+      ? []
+      : [fallbackTakeProfitPct];
   const signalThreshold =
     parseNumber(parameters.signalThreshold ?? parameters.signal_threshold) ?? null;
   const market =
     readText(...searchSpace.map((scope) => scope.market), root.market) || DEFAULT_MARKET;
 
-  const longSource: 'rule-based' | 'custom-python' = ruleBasedLong
-    ? 'rule-based'
-    : 'custom-python';
+  const longSource: 'rule-based' | 'custom-python' = ruleBasedLong ? 'rule-based' : 'custom-python';
   const shortSource: 'rule-based' | 'custom-python' = ruleBasedShort
     ? 'rule-based'
     : 'custom-python';
@@ -523,5 +887,6 @@ export const buildStrategyTemplateAutomationProfile = (
       long: longPlan,
       short: shortPlan,
     },
+    ...(tradeManagement ? { tradeManagement } : {}),
   };
 };

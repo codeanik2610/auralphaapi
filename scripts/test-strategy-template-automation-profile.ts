@@ -1,5 +1,24 @@
 import assert from 'node:assert/strict';
 import { buildStrategyTemplateAutomationProfile } from '../src/api/utils/strategyTemplateAutomation';
+import {
+  First60TemplateSimulationCandle,
+  simulateFirst60TemplateProfile,
+} from '../src/api/utils/first60TemplateSimulator';
+import { evaluateFirst60ObserveOnlyTrade } from '../src/api/utils/first60ObserveOnlyMonitor';
+
+const buildCandles = (
+  startIso: string,
+  count: number,
+  defaults: Omit<First60TemplateSimulationCandle, 'openTime'>,
+  overrides: Record<number, Partial<First60TemplateSimulationCandle>> = {}
+): First60TemplateSimulationCandle[] => {
+  const start = new Date(startIso).getTime();
+  return Array.from({ length: count }, (_, index) => ({
+    openTime: new Date(start + index * 60_000).toISOString(),
+    ...defaults,
+    ...(overrides[index] || {}),
+  }));
+};
 
 const pythonTemplate = {
   codeTarget: 'python',
@@ -52,5 +71,242 @@ const explicitRiskWins = buildStrategyTemplateAutomationProfile({
 
 assert.equal(explicitRiskWins.tradePlan.long?.stopLossPct, 1.8);
 assert.deepEqual(explicitRiskWins.tradePlan.long?.takeProfitTargetsPct, [3.4]);
+
+const first60Managed = buildStrategyTemplateAutomationProfile({
+  ...pythonTemplate,
+  tradeManagement: {
+    first60: {
+      enabled: true,
+      mode: 'post_entry_hold_or_exit',
+      dataSource: 'market_candles_1m',
+      buy: {
+        observeOnlyEnabled: true,
+        managementEnabled: false,
+        diagnosticsEnabled: true,
+        decisionGate: {
+          status: 'observe_only',
+          reason: 'BUY passed Phase 3c evidence',
+          evidenceRef: 'storage/first60-evidence/phase3c-summary-2026-05-07.md',
+          decidedAt: '2026-05-07',
+        },
+        requiredFavorableR: 1,
+        maxAdverseR: 0.75,
+        targetR: 5,
+        stopBasis: 'signal_candle_low',
+      },
+      sell: {
+        observeOnlyEnabled: true,
+        decisionGate: {
+          status: 'blocked',
+          reason: 'SELL failed Phase 3c evidence',
+          evidenceRef: 'storage/first60-evidence/phase3c-summary-2026-05-07.md',
+          decidedAt: '2026-05-07',
+        },
+        requiredFavorableR: 1,
+        maxAdverseR: 0.75,
+        targetR: 4.5,
+        stopBasis: 'signal_candle_high',
+      },
+    },
+  },
+});
+
+assert.equal(first60Managed.tradeManagement?.first60?.enabled, true);
+assert.equal(first60Managed.tradeManagement?.first60?.dataSource, 'market_candles_1m');
+assert.equal(first60Managed.tradeManagement?.first60?.long?.targetR, 5);
+assert.equal(first60Managed.tradeManagement?.first60?.long?.maxAdverseR, 0.75);
+assert.equal(first60Managed.tradeManagement?.first60?.long?.stopBasis, 'signal_candle_low');
+assert.equal(first60Managed.tradeManagement?.first60?.long?.decisionGate.status, 'observe_only');
+assert.equal(
+  first60Managed.tradeManagement?.first60?.long?.decisionGate.observeOnlyEnabled,
+  true
+);
+assert.equal(first60Managed.tradeManagement?.first60?.long?.decisionGate.managementEnabled, false);
+assert.equal(
+  first60Managed.tradeManagement?.first60?.long?.decisionGate.evidenceRef,
+  'storage/first60-evidence/phase3c-summary-2026-05-07.md'
+);
+assert.equal(first60Managed.tradeManagement?.first60?.short?.targetR, 4.5);
+assert.equal(first60Managed.tradeManagement?.first60?.short?.stopBasis, 'signal_candle_high');
+assert.equal(first60Managed.tradeManagement?.first60?.short?.decisionGate.status, 'blocked');
+assert.equal(
+  first60Managed.tradeManagement?.first60?.short?.decisionGate.observeOnlyEnabled,
+  false
+);
+assert.equal(first60Managed.tradeManagement?.first60?.short?.decisionGate.managementEnabled, false);
+assert.equal(first60Managed.tradeManagement?.first60?.short?.decisionGate.diagnosticsEnabled, true);
+
+const first60Report = simulateFirst60TemplateProfile(
+  first60Managed,
+  [
+    {
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      signalTime: '2026-04-04T10:00:00.000Z',
+      entryPrice: 100,
+      signalCandleLow: 98,
+    },
+    {
+      symbol: 'ETHUSDT',
+      side: 'SELL',
+      signalTime: '2026-04-04T10:00:00.000Z',
+      entryPrice: 100,
+      signalCandleHigh: 102,
+    },
+    {
+      symbol: 'SOLUSDT',
+      side: 'long',
+      signalTime: '2026-04-04T10:00:00.000Z',
+      entryPrice: 100,
+      stopLossPrice: 98,
+    },
+    {
+      symbol: 'XRPUSDT',
+      side: 'short',
+      signalTime: '2026-04-04T10:00:00.000Z',
+      entryPrice: 100,
+      stopLossPrice: 102,
+    },
+  ],
+  {
+    BTCUSDT: buildCandles(
+      '2026-04-04T10:00:00.000Z',
+      70,
+      { open: 100, high: 102.5, low: 99, close: 101 },
+      {
+        65: { high: 111, low: 101, close: 110 },
+      }
+    ),
+    ETHUSDT: buildCandles(
+      '2026-04-04T10:00:00.000Z',
+      70,
+      { open: 100, high: 101.4, low: 97.5, close: 99 },
+      {
+        65: { high: 99, low: 90, close: 91 },
+      }
+    ),
+    SOLUSDT: buildCandles('2026-04-04T10:00:00.000Z', 60, {
+      open: 100,
+      high: 101.5,
+      low: 99,
+      close: 101,
+    }),
+    XRPUSDT: buildCandles('2026-04-04T10:00:00.000Z', 60, {
+      open: 100,
+      high: 101.8,
+      low: 98.5,
+      close: 101,
+    }),
+  },
+  { maxHoldMinutes: 180, topSymbolsLimit: 2 }
+);
+
+assert.deepEqual(first60Report.warnings, []);
+assert.equal(first60Report.sides.long.totalTrades, 2);
+assert.equal(first60Report.sides.long.passedFirst60, 1);
+assert.equal(first60Report.sides.long.failedFirst60, 1);
+assert.equal(first60Report.sides.long.targetHits, 1);
+assert.equal(first60Report.sides.long.targetHitRate, 0.5);
+assert.equal(first60Report.sides.long.targetHitRateAfterPass, 1);
+assert.equal(first60Report.sides.long.totalR, 5.5);
+assert.equal(first60Report.sides.short.totalTrades, 2);
+assert.equal(first60Report.sides.short.passedFirst60, 1);
+assert.equal(first60Report.sides.short.failedFirst60, 1);
+assert.equal(first60Report.sides.short.targetHits, 1);
+assert.equal(first60Report.sides.short.targetHitRate, 0.5);
+assert.equal(first60Report.sides.short.targetHitRateAfterPass, 1);
+assert.equal(first60Report.sides.short.totalR, 4);
+assert.equal(first60Report.trades[0]?.outcome, 'target');
+assert.equal(first60Report.trades[0]?.targetPrice, 110);
+assert.equal(first60Report.trades[1]?.outcome, 'target');
+assert.equal(first60Report.trades[1]?.targetPrice, 91);
+assert.equal(first60Report.trades[2]?.outcome, 'first60_failed');
+assert.equal(first60Report.trades[2]?.realizedR, 0.5);
+assert.equal(first60Report.trades[3]?.outcome, 'first60_failed');
+assert.equal(first60Report.trades[3]?.realizedR, -0.5);
+
+const buildObserveMeta = (side: 'long' | 'short') => ({
+  tradeManagementSnapshot: {
+    first60: {
+      enabled: true,
+      windowMinutes: 60,
+      requiredFavorableR: 1,
+      maxAdverseR: 0.75,
+      targetR: side === 'long' ? 5 : 4.5,
+      decisionGate:
+        side === 'long'
+          ? {
+              status: 'observe_only',
+              observeOnlyEnabled: true,
+              managementEnabled: false,
+              diagnosticsEnabled: true,
+              reason: 'BUY passed Phase 3c evidence',
+              evidenceRef: 'storage/first60-evidence/phase3c-summary-2026-05-07.md',
+              decidedAt: '2026-05-07',
+            }
+          : {
+              status: 'blocked',
+              observeOnlyEnabled: false,
+              managementEnabled: false,
+              diagnosticsEnabled: true,
+              reason: 'SELL failed Phase 3c evidence',
+              evidenceRef: 'storage/first60-evidence/phase3c-summary-2026-05-07.md',
+              decidedAt: '2026-05-07',
+            },
+    },
+  },
+});
+
+const longObserveOnly = evaluateFirst60ObserveOnlyTrade(
+  {
+    id: 'trade-buy-observe',
+    symbol: 'BTCUSDT',
+    side: 'BUY',
+    signalTime: '2026-04-04T10:00:00.000Z',
+    entryPrice: 100,
+    stopLossPrice: 98,
+    meta: buildObserveMeta('long'),
+  },
+  buildCandles('2026-04-04T10:00:00.000Z', 61, {
+    open: 100,
+    high: 102,
+    low: 99,
+    close: 101,
+  }),
+  { now: '2026-04-04T11:01:00.000Z' }
+);
+
+assert.equal(longObserveOnly.action, 'observe_only');
+assert.equal(longObserveOnly.eligibleForObserveOnly, true);
+assert.equal(longObserveOnly.outcome, 'first60_passed');
+assert.equal(longObserveOnly.first60Passed, true);
+assert.equal(longObserveOnly.favorableR, 1);
+assert.equal(longObserveOnly.adverseR, 0.5);
+assert.equal(longObserveOnly.first60CloseR, 0.5);
+
+const sellDiagnosticsOnly = evaluateFirst60ObserveOnlyTrade(
+  {
+    id: 'trade-sell-diagnostic',
+    symbol: 'ETHUSDT',
+    side: 'SELL',
+    signalTime: '2026-04-04T10:00:00.000Z',
+    entryPrice: 100,
+    stopLossPrice: 102,
+    meta: buildObserveMeta('short'),
+  },
+  buildCandles('2026-04-04T10:00:00.000Z', 61, {
+    open: 100,
+    high: 101,
+    low: 98,
+    close: 99,
+  }),
+  { now: '2026-04-04T11:01:00.000Z' }
+);
+
+assert.equal(sellDiagnosticsOnly.action, 'diagnostics_only');
+assert.equal(sellDiagnosticsOnly.eligibleForObserveOnly, false);
+assert.equal(sellDiagnosticsOnly.outcome, 'first60_passed');
+assert.equal(sellDiagnosticsOnly.first60Passed, true);
+assert.equal(sellDiagnosticsOnly.reason, 'Decision gate is diagnostics-only for this side');
 
 console.log('Strategy template automation profile tests passed.');

@@ -1628,6 +1628,20 @@ async function positionsGuard09(): Promise<void> {
     };
 
     try {
+      const unmatchedRecord = {
+        created_at: '2026-04-09T12:34:00.000Z',
+        positionSummary: {
+          createdAt: '2026-04-09T12:34:00.000Z',
+        },
+      } as any;
+
+      (repository as any).applySuggestedTradeContext(unmatchedRecord, null);
+      assert.equal(unmatchedRecord.entryFilledAt, '2026-04-09T12:34:00.000Z');
+      assert.equal(
+        unmatchedRecord.positionSummary.entryFilledAt,
+        '2026-04-09T12:34:00.000Z'
+      );
+
       const summary = await repository.getOpenPositionSummaryForAccounts('user-1', [
         'acc-1',
         'acc-2',

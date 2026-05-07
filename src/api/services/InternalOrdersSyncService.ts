@@ -16,6 +16,7 @@ import { OrdersSyncRequest } from '../contracts/InternalSync';
 import { OperationalEventService } from './OperationalEventService';
 import { SchedulerRuntimeSchemaService } from './SchedulerRuntimeSchemaService';
 import { SuggestedTradesService } from './SuggestedTradesService';
+import { PositionReadModelRepository } from '../../database/repositories/PositionReadModelRepository';
 import {
   POSITIONS_ORDERS_PRODUCT_SYNC_SCOPE,
   POSITIONS_ORDERS_SYSTEM_SYNC_SCOPE,
@@ -53,9 +54,14 @@ export class InternalOrdersSyncService {
   @Inject(() => SchedulerRuntimeSchemaService)
   private schedulerRuntimeSchemaService!: SchedulerRuntimeSchemaService;
 
-  private checkpointTableColumns:
-    | { hasId: boolean; hasCreatedAt: boolean; hasUpdatedAt: boolean }
-    | null = null;
+  @Inject(() => PositionReadModelRepository)
+  private positionReadModelRepository!: PositionReadModelRepository;
+
+  private checkpointTableColumns: {
+    hasId: boolean;
+    hasCreatedAt: boolean;
+    hasUpdatedAt: boolean;
+  } | null = null;
 
   // ── Helpers ──────────────────────────────────────────────────
 
@@ -98,17 +104,27 @@ export class InternalOrdersSyncService {
     return new Date(Math.floor(value / 1000) * 1000);
   }
 
-  private buildDateWindows(startDate: string, endDate: string, windowDays: number): Array<{ startDate: string; endDate: string }> {
+  private buildDateWindows(
+    startDate: string,
+    endDate: string,
+    windowDays: number
+  ): Array<{ startDate: string; endDate: string }> {
     const start = this.parseIsoDate(startDate);
     const end = this.parseIsoDate(endDate);
     if (!start || !end) return [{ startDate, endDate }];
-    const safeWindowDays = Math.min(30, Math.max(1, Math.floor(Number(windowDays || DEFAULT_WINDOW_DAYS))));
+    const safeWindowDays = Math.min(
+      30,
+      Math.max(1, Math.floor(Number(windowDays || DEFAULT_WINDOW_DAYS)))
+    );
     const windows: Array<{ startDate: string; endDate: string }> = [];
     let cursor = start;
     while (cursor.getTime() <= end.getTime()) {
       const windowEnd = this.addDays(cursor, safeWindowDays - 1);
       const cappedEnd = windowEnd.getTime() > end.getTime() ? end : windowEnd;
-      windows.push({ startDate: this.formatIsoDate(cursor), endDate: this.formatIsoDate(cappedEnd) });
+      windows.push({
+        startDate: this.formatIsoDate(cursor),
+        endDate: this.formatIsoDate(cappedEnd),
+      });
       cursor = this.addDays(cappedEnd, 1);
     }
     return windows.length ? windows : [{ startDate, endDate }];
@@ -222,11 +238,14 @@ export class InternalOrdersSyncService {
   // ── Status helpers ───────────────────────────────────────────
 
   private computeOrderStatusRank(status: string): number {
-    const normalized = String(status || '').trim().toUpperCase();
+    const normalized = String(status || '')
+      .trim()
+      .toUpperCase();
     if (['OPEN', 'PENDING'].includes(normalized)) return 1;
     if (['PARTIALLY_FILLED', 'PARTIAL', 'TRIGGER_PENDING'].includes(normalized)) return 2;
     if (['FILLED', 'COMPLETED', 'EXECUTED'].includes(normalized)) return 3;
-    if (['CLOSED', 'CANCELLED', 'CANCELED', 'REJECTED', 'FAILED', 'EXPIRED'].includes(normalized)) return 4;
+    if (['CLOSED', 'CANCELLED', 'CANCELED', 'REJECTED', 'FAILED', 'EXPIRED'].includes(normalized))
+      return 4;
     return 0;
   }
 
@@ -249,13 +268,13 @@ export class InternalOrdersSyncService {
   }
 
   private readOrderExternalId(order: Record<string, unknown>): string {
-    return (
-      String(order.id || order.order_id || '').trim() || this.buildOrderSyntheticId(order)
-    );
+    return String(order.id || order.order_id || '').trim() || this.buildOrderSyntheticId(order);
   }
 
   private buildOrderSyntheticId(order: Record<string, unknown>): string {
-    const symbol = String(order.symbol || '').trim().toUpperCase();
+    const symbol = String(order.symbol || '')
+      .trim()
+      .toUpperCase();
     const createdAt = String(order.created_at || '').trim();
     const price = String(order.price || '').trim();
     return [symbol || 'NA', createdAt || 'NA', price || 'NA'].join(':');
@@ -330,7 +349,13 @@ export class InternalOrdersSyncService {
          AND table_name = 'scheduler_sync_checkpoints'`
     )) as Array<{ column_name?: string }>;
     const columns = new Set(
-      rows.map((row) => String(row.column_name || '').trim().toLowerCase()).filter(Boolean)
+      rows
+        .map((row) =>
+          String(row.column_name || '')
+            .trim()
+            .toLowerCase()
+        )
+        .filter(Boolean)
     );
 
     this.checkpointTableColumns = {
@@ -412,7 +437,9 @@ export class InternalOrdersSyncService {
     trackedOrderIds: string[],
     alreadyFetchedOrderIds: ReadonlySet<string>
   ): Promise<{ items: unknown[]; failures: Array<{ orderId: string; error: string }> }> {
-    const normalizedBrokerKey = String(brokerKey || '').trim().toLowerCase();
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
     if (normalizedBrokerKey !== 'delta_exchange') {
       return { items: [], failures: [] };
     }
@@ -553,7 +580,11 @@ export class InternalOrdersSyncService {
     historyOrders: unknown[],
     runLogId?: string,
     protectedExternalIds: string[] = []
-  ): Promise<{ deletedOutsideLookback: number; deletedMissingHistory: number; orderIds: string[] }> {
+  ): Promise<{
+    deletedOutsideLookback: number;
+    deletedMissingHistory: number;
+    orderIds: string[];
+  }> {
     const historyStartIso = historyStart.toISOString();
     const historyEndIso = historyEnd.toISOString();
     const protectedIds = new Set(
@@ -638,7 +669,7 @@ export class InternalOrdersSyncService {
         map.set(id, { item, rank });
       }
     }
-    return Array.from(map.values()).map(e => e.item);
+    return Array.from(map.values()).map((e) => e.item);
   }
 
   // ── Row building ─────────────────────────────────────────────
@@ -712,9 +743,17 @@ export class InternalOrdersSyncService {
          FROM scheduler_orders_snapshots
          WHERE user_id = ? AND account_id = ? AND external_id IN (${chunkExternalIds.map(() => '?').join(',')})`,
         [chunk[0].userId, chunk[0].accountId, ...chunkExternalIds]
-      )) as Array<{ external_id: string; order_status: string | null; payload_hash: string | null; status_rank: number }>;
+      )) as Array<{
+        external_id: string;
+        order_status: string | null;
+        payload_hash: string | null;
+        status_rank: number;
+      }>;
 
-      const existingMap = new Map<string, { orderStatus: string | null; payloadHash: string | null; statusRank: number }>();
+      const existingMap = new Map<
+        string,
+        { orderStatus: string | null; payloadHash: string | null; statusRank: number }
+      >();
       for (const row of existingRows) {
         existingMap.set(row.external_id, {
           orderStatus: row.order_status,
@@ -796,9 +835,10 @@ export class InternalOrdersSyncService {
             message = `status rank lower: ${existingStatusLabel}(${existing.statusRank}) > ${incomingStatusLabel}(${row.statusRank})`;
           } else {
             actionType = 'updated';
-            message = existing.orderStatus !== row.orderStatus
-              ? `status: ${existing.orderStatus || 'UNKNOWN'} → ${row.orderStatus || 'UNKNOWN'}`
-              : `status: ${row.orderStatus || 'UNKNOWN'} (unchanged)`;
+            message =
+              existing.orderStatus !== row.orderStatus
+                ? `status: ${existing.orderStatus || 'UNKNOWN'} → ${row.orderStatus || 'UNKNOWN'}`
+                : `status: ${row.orderStatus || 'UNKNOWN'} (unchanged)`;
           }
 
           logEntries.push({
@@ -819,7 +859,9 @@ export class InternalOrdersSyncService {
       inserted,
       updated,
       skipped,
-      orderIds: Array.from(new Set(rows.map((row) => String(row.externalId || '').trim()).filter(Boolean))),
+      orderIds: Array.from(
+        new Set(rows.map((row) => String(row.externalId || '').trim()).filter(Boolean))
+      ),
     };
   }
 
@@ -866,7 +908,11 @@ export class InternalOrdersSyncService {
   private normalizeBrokerKeys(input?: string[]): Array<string> {
     const raw = Array.isArray(input) ? input : [];
     const normalized = raw
-      .map((item) => String(item || '').trim().toLowerCase())
+      .map((item) =>
+        String(item || '')
+          .trim()
+          .toLowerCase()
+      )
       .filter(Boolean);
     return Array.from(new Set(normalized));
   }
@@ -922,7 +968,9 @@ export class InternalOrdersSyncService {
   }
 
   private async resolveExecutionUserIds(request: OrdersSyncRequest): Promise<string[]> {
-    const executionScope = String(request.executionScope || '').trim().toLowerCase();
+    const executionScope = String(request.executionScope || '')
+      .trim()
+      .toLowerCase();
     if (executionScope === POSITIONS_ORDERS_PRODUCT_SYNC_SCOPE) {
       const requestUserId = String(request.requestUserId || '').trim();
       if (!requestUserId) {
@@ -934,7 +982,9 @@ export class InternalOrdersSyncService {
     if (executionScope === POSITIONS_ORDERS_SYSTEM_SYNC_SCOPE) {
       const systemUserId = String(env.scheduler.systemUserId || '').trim();
       if (!systemUserId) {
-        throw new Error('System scheduler orders sync requests require env.scheduler.systemUserId.');
+        throw new Error(
+          'System scheduler orders sync requests require env.scheduler.systemUserId.'
+        );
       }
       return [systemUserId];
     }
@@ -960,7 +1010,10 @@ export class InternalOrdersSyncService {
     await this.schedulerRuntimeSchemaService.assertOrdersRuntimeSchemaReady();
 
     const now = new Date();
-    const lookbackDays = Math.min(MAX_LOOKBACK_DAYS, Math.max(1, Math.floor(Number(request.lookbackDays || MAX_LOOKBACK_DAYS))));
+    const lookbackDays = Math.min(
+      MAX_LOOKBACK_DAYS,
+      Math.max(1, Math.floor(Number(request.lookbackDays || MAX_LOOKBACK_DAYS)))
+    );
     const historyWindowDays =
       typeof request.historyWindowDays === 'number'
         ? Math.floor(request.historyWindowDays)
@@ -1158,13 +1211,10 @@ export class InternalOrdersSyncService {
             // Step 6: Close stale open orders not seen in this run
             if (!openError) {
               const closeRank = this.computeOrderStatusRank('CLOSED');
-              const staleSnapshotSeenBefore =
-                this.toSqlSecondSafeStaleCutoff(accountSyncStartedAt);
+              const staleSnapshotSeenBefore = this.toSqlSecondSafeStaleCutoff(accountSyncStartedAt);
               const staleCloseProtectedOrderIds = Array.from(
                 new Set(
-                  trackedSubmissionOrderIds
-                    .map((item) => String(item || '').trim())
-                    .filter(Boolean)
+                  trackedSubmissionOrderIds.map((item) => String(item || '').trim()).filter(Boolean)
                 )
               );
               const staleCloseProtectionSql = staleCloseProtectedOrderIds.length
@@ -1189,7 +1239,11 @@ export class InternalOrdersSyncService {
                   staleSnapshotSeenBefore,
                   ...staleCloseProtectedOrderIds,
                 ]
-              )) as Array<{ external_id: string; symbol: string | null; order_status: string | null }>;
+              )) as Array<{
+                external_id: string;
+                symbol: string | null;
+                order_status: string | null;
+              }>;
 
               const closeResult = await coreDataSource.query(
                 `UPDATE scheduler_orders_snapshots
@@ -1217,15 +1271,16 @@ export class InternalOrdersSyncService {
 
               // Log stale-closed orders
               if (request.runLogId && staleOrders.length > 0) {
-                const closeLogEntries: QueryDeepPartialEntity<ExchangeAssetUpdateLog>[] = staleOrders.map((row) => ({
-                  runLogId: request.runLogId,
-                  source: 'orders',
-                  accountId: resolvedAccountId,
-                  actionType: 'closed',
-                  symbol: row.symbol,
-                  externalId: row.external_id,
-                  message: `stale-closed: ${row.order_status || 'UNKNOWN'} → CLOSED`,
-                }));
+                const closeLogEntries: QueryDeepPartialEntity<ExchangeAssetUpdateLog>[] =
+                  staleOrders.map((row) => ({
+                    runLogId: request.runLogId,
+                    source: 'orders',
+                    accountId: resolvedAccountId,
+                    actionType: 'closed',
+                    symbol: row.symbol,
+                    externalId: row.external_id,
+                    message: `stale-closed: ${row.order_status || 'UNKNOWN'} → CLOSED`,
+                  }));
                 await this.exchangeAssetUpdateLogRepository.createMany(closeLogEntries);
               }
 
@@ -1251,6 +1306,16 @@ export class InternalOrdersSyncService {
               for (const orderId of reconciliation.orderIds) {
                 affectedOrderIds.add(orderId);
               }
+            }
+
+            if (resolvedBrokerKey.toLowerCase() === 'delta_exchange') {
+              await this.positionReadModelRepository.refreshOpenDeltaProtectionFromOrderSnapshots?.(
+                {
+                  userId,
+                  accountId: resolvedAccountId,
+                  brokerKey: resolvedBrokerKey,
+                }
+              );
             }
 
             if (affectedOrderIds.size > 0) {
@@ -1354,7 +1419,8 @@ export class InternalOrdersSyncService {
       route: 'Schedulers',
       stream: 'Runs',
       related: CHECKPOINT_SCHEDULER_KEY,
-      description: `Processed ${accountGroups.length || userIds.length} user(s) in ${Date.now() - startedAt.getTime()}ms. ` +
+      description:
+        `Processed ${accountGroups.length || userIds.length} user(s) in ${Date.now() - startedAt.getTime()}ms. ` +
         `Accounts processed=${processedAccounts}, inserted=${insertedRecords}, updated=${updatedRecords}, ` +
         `skipped=${skippedRecords}, failures=${failed}.`,
     });

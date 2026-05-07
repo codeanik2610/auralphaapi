@@ -3412,6 +3412,77 @@ async function runSuggestedTradeSiblingProtectionAutoCancelAssertions(): Promise
     String(savedExecutionPayload?.['note'] || ''),
     /Sibling protection cancel requested after position close: tp-1/
   );
+
+  {
+    const guardedService = new SuggestedTradesService() as any;
+    let cancelCalled = false;
+    guardedService.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'current-sl',
+      takeProfitOrderId: 'current-tp',
+      stopLossStatus: 'PENDING',
+      takeProfitStatus: 'PENDING',
+      activeOrderIds: ['current-sl', 'current-tp'],
+    });
+    guardedService.brokerRuntimeRegistry = {
+      supportsOrdersAdapter() {
+        return true;
+      },
+      getOrdersAdapter() {
+        return {
+          async cancelOrder() {
+            cancelCalled = true;
+            throw new Error('closed historical execution must not cancel current protection');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await guardedService.maybeAutoCancelSiblingProtectionOrders(
+      'user-1',
+      trade,
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+        orderId: 'old-entry',
+        positionId: 'old-closed-position',
+        positionStatus: 'CLOSED',
+        executionState: 'closed',
+        protectionState: 'attached',
+      },
+      [
+        {
+          externalId: 'old-closed-position',
+          status: 'CLOSED',
+          statusRank: 3,
+          firstSeenAt: '2026-04-04T10:02:00.000Z',
+          lastSeenAt: '2026-04-04T10:06:00.000Z',
+          payload: {
+            status: 'closed',
+            side: 'long',
+            created_at: '2026-04-04T10:02:00.000Z',
+            closed_at: '2026-04-04T10:06:00.000Z',
+          },
+        },
+        {
+          externalId: 'new-open-position',
+          status: 'OPEN',
+          statusRank: 1,
+          firstSeenAt: '2026-04-04T10:30:00.000Z',
+          lastSeenAt: '2026-04-04T10:31:00.000Z',
+          payload: {
+            status: 'open',
+            side: 'long',
+            created_at: '2026-04-04T10:30:00.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(cancelCalled, false);
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.note, undefined);
+  }
 }
 
 async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
@@ -5101,6 +5172,248 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
   {
     const service = new SuggestedTradesService() as any;
     let createProtectionCalled = false;
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('stale Delta execution must not protect a newer same-symbol position');
+          },
+        };
+      },
+    };
+
+    const trade = {
+      id: 'st-delta-stale-position-owner',
+      automationId: 'auto-1',
+      automationRunId: 'run-1',
+      userId: 'user-1',
+      symbol: 'TRXUSDT',
+      timeframe: '5m',
+      side: 'SELL',
+      signalTime: new Date('2026-05-05T20:10:00.000Z'),
+      status: 'Accepted',
+      entryPrice: '0.34395',
+      stopLossPrice: '0.34513562002',
+      takeProfitTargets: ['0.34037313994'],
+      dedupeKey: 'dedupe-delta-stale-position-owner',
+      meta: null,
+      createdAt: new Date('2026-05-05T20:15:31.000Z'),
+      updatedAt: new Date('2026-05-05T20:15:31.000Z'),
+    };
+    const staleExecution = {
+      executionMode: 'live',
+      brokerKey: 'delta_exchange',
+      accountId: 'delta-acc-1',
+      orderId: '1304070143',
+      executionState: 'filled',
+      orderStatus: 'CLOSED',
+      positionId: '20193',
+      positionStatus: 'OPEN',
+      submittedAt: '2026-05-05T20:15:39.000Z',
+      filledAt: '2026-05-05T20:22:58.000Z',
+      entryPrice: '0.34395',
+      stopLossPrice: '0.34513562002',
+      takeProfitPrice: '0.34037313994',
+      quantity: 298,
+      protectionState: 'failed',
+      protectionAttempts: 1,
+      protectionLastError:
+        'Delta Exchange attached protection is inactive or missing for an open position; replacement protection is required before this execution can be marked attached.',
+    };
+    const snapshots = [
+      {
+        externalId: '20193',
+        status: 'OPEN',
+        statusRank: 1,
+        firstSeenAt: '2026-05-06T05:40:58.000Z',
+        lastSeenAt: '2026-05-06T05:46:29.000Z',
+        payload: {
+          id: '20193',
+          product_symbol: 'TRXUSD',
+          status: 'open',
+          side: 'Short',
+          entry_price: '0.3442',
+          mark_price: '0.3432',
+          quantity: '282',
+          quantity_contracts: '282',
+          created_at: '2026-05-06T05:40:58.000Z',
+          updated_at: '2026-05-06T05:46:29.000Z',
+        },
+      },
+      {
+        externalId: 'trx-closed-old-position',
+        status: 'CLOSED',
+        statusRank: 9,
+        firstSeenAt: '2026-05-05T20:22:58.000Z',
+        lastSeenAt: '2026-05-05T21:44:47.000Z',
+        payload: {
+          id: 'trx-closed-old-position',
+          product_symbol: 'TRXUSD',
+          status: 'closed',
+          side: 'Short',
+          entry_price: '0.34395',
+          quantity: '298',
+          quantity_contracts: '298',
+          created_at: '2026-05-05T20:22:58.000Z',
+          closed_at: '2026-05-05T21:44:47.000Z',
+          updated_at: '2026-05-05T21:44:47.000Z',
+        },
+      },
+    ];
+
+    const mergedExecution = service.mergePositionOutcome(trade, staleExecution, snapshots);
+    assert.equal(mergedExecution.positionId, 'trx-closed-old-position');
+    assert.equal(mergedExecution.positionStatus, 'CLOSED');
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      trade,
+      mergedExecution,
+      snapshots
+    );
+
+    assert.equal(createProtectionCalled, false);
+    assert.equal(nextExecution.protectionState, 'not_required');
+    assert.match(String(nextExecution.note || ''), /Terminal execution no longer requires/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    const originalQuery = coreDataSource.query;
+    let listOpenOrdersCalled = false;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+      stopLossStatus: null,
+      takeProfitStatus: null,
+      activeOrderIds: [],
+    });
+    service.resolveLiveAutoAssetRoute = async () => ({
+      assetId: 'xrp-asset-1',
+      requestedSymbol: 'XRPUSDT',
+      brokerSymbol: 'XRPUSD',
+      candidateSymbols: ['XRPUSDT', 'XRPUSD'],
+      resolvedVia: 'catalog_equivalent',
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async listOpenOrders() {
+            listOpenOrdersCalled = true;
+            return [
+              {
+                id: 'delta-live-sl',
+                symbol: 'XRPUSD',
+                status: 'pending',
+                side: 'sell',
+                reduce_only: true,
+                stop_order_type: 'stop_loss_order',
+                order_type: 'market_order',
+              },
+              {
+                id: 'delta-live-tp',
+                symbol: 'XRPUSD',
+                status: 'pending',
+                side: 'sell',
+                reduce_only: true,
+                stop_order_type: 'take_profit_order',
+                order_type: 'market_order',
+              },
+            ];
+          },
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('live Delta protection lookup must block duplicate replacement');
+          },
+        };
+      },
+    };
+    (coreDataSource as any).query = async (sql: string) => {
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    };
+
+    try {
+      const nextExecution = await service.maybeRemediateLiveProtection(
+        'user-1',
+        {
+          id: 'st-delta-live-open-protection-check',
+          automationId: 'auto-1',
+          automationRunId: 'run-1',
+          userId: 'user-1',
+          symbol: 'XRPUSDT',
+          timeframe: '5m',
+          side: 'BUY',
+          signalTime: new Date('2026-04-04T10:00:00.000Z'),
+          status: 'Accepted',
+          entryPrice: '1',
+          stopLossPrice: '0.95',
+          takeProfitTargets: ['1.1'],
+          dedupeKey: 'dedupe-delta-live-open-protection-check',
+          meta: null,
+          createdAt: new Date('2026-04-04T10:00:00.000Z'),
+          updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+        },
+        {
+          executionMode: 'live',
+          brokerKey: 'delta_exchange',
+          accountId: 'delta-acc-1',
+          orderId: 'delta-live-check-entry',
+          executionState: 'filled',
+          orderStatus: 'CLOSED',
+          entryPrice: '1',
+          stopLossPrice: '0.95',
+          takeProfitPrice: '1.1',
+          filledPrice: '1',
+          protectionState: 'failed',
+          protectionAttempts: 1,
+          protectionLastError:
+            'Delta Exchange attached protection is inactive or missing for an open position (SL old-sl CANCELLED, TP old-tp CANCELLED); replacement protection is required before this execution can be marked attached.',
+        },
+        [
+          {
+            externalId: 'xrp-position-1',
+            status: 'OPEN',
+            statusRank: 2,
+            firstSeenAt: '2026-04-04T10:03:05.000Z',
+            lastSeenAt: '2026-04-04T10:03:05.000Z',
+            payload: {
+              id: 'xrp-position-1',
+              product_symbol: 'XRPUSD',
+              status: 'open',
+              side: 'Long',
+              entry_price: '1',
+              quantity_contracts: '10',
+              created_at: '2026-04-04T10:03:05.000Z',
+              updated_at: '2026-04-04T10:03:05.000Z',
+            },
+          },
+        ]
+      );
+
+      assert.equal(listOpenOrdersCalled, true);
+      assert.equal(createProtectionCalled, false);
+      assert.equal(nextExecution.protectionState, 'attached');
+      assert.equal(
+        (nextExecution.protectionPlan as Record<string, unknown>)?.stopLossOrderId,
+        'delta-live-sl'
+      );
+      assert.equal(
+        (nextExecution.protectionPlan as Record<string, unknown>)?.takeProfitOrderId,
+        'delta-live-tp'
+      );
+    } finally {
+      (coreDataSource as any).query = originalQuery;
+    }
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
     service.resolveLiveProtectionOrderContext = async () => {
       throw new Error('terminal unfilled Delta entry should not inspect protection snapshots');
     };
@@ -5272,7 +5585,10 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
 
     assert.equal(createProtectionCalled, false);
     assert.equal(nextExecution.protectionState, 'manual_unlinked');
-    assert.match(String(nextExecution.protectionLastError || ''), /active reduce-only protection orders already exist/);
+    assert.match(
+      String(nextExecution.protectionLastError || ''),
+      /active reduce-only protection orders already exist/
+    );
     assert.match(String(nextExecution.protectionLastError || ''), /manual cleanup is required/);
   }
 

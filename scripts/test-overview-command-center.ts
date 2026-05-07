@@ -178,7 +178,7 @@ function createOverviewData() {
           regime: 'Trend',
           aiScore: 82,
           thesis: 'Momentum continuation.',
-          route: '/signals',
+          route: '/suggested-trades?tab=signals',
           createdAt: observedAt,
           updatedAt: observedAt,
         },

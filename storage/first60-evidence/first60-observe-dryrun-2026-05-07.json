@@ -1,0 +1,41 @@
+{
+  "generatedAt": "2026-05-07T11:43:07.801Z",
+  "mode": "dry-run",
+  "writeAttempted": false,
+  "noWriteVerification": {
+    "first60ObserveOnlyBefore": 0,
+    "first60ObserveOnlyAfter": 0,
+    "unchanged": true
+  },
+  "source": {
+    "lookbackHours": 72,
+    "minAgeMinutes": 60,
+    "limit": 250,
+    "maxOutcomeLookaheadMinutes": 1440,
+    "reevaluate": false
+  },
+  "counts": {
+    "tradesWithFirst60SnapshotTotal": 0,
+    "candidates": 0,
+    "candles": 0,
+    "evaluated": 0
+  },
+  "sideCounts": {},
+  "actionCounts": {},
+  "outcomeCounts": {},
+  "observeOnlyBuy": {
+    "evaluated": 0,
+    "passed": 0,
+    "failed": 0,
+    "targetHits": 0,
+    "stopHits": 0
+  },
+  "diagnosticsOnlySell": {
+    "evaluated": 0,
+    "passed": 0,
+    "failed": 0,
+    "targetHits": 0,
+    "stopHits": 0
+  },
+  "items": []
+}

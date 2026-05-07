@@ -605,6 +605,11 @@ async function runSignalsOverviewServiceAssertions(): Promise<void> {
     true
   );
   assert.equal(response.data.quickActions[2]?.id, 'pause_scan');
+  assert.equal(
+    response.data.quickActions.find((action: { id: string }) => action.id === 'scan_settings')
+      ?.target,
+    '/suggested-trades?tab=signals'
+  );
   assert.equal(response.data.scanStatus.state, 'running');
   assert.equal(response.data.scanStatus.schedulerKey, 'signals-scan-sync');
   assert.equal(response.data.scanStatus.activeRunId, 'run-1');

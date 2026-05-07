@@ -1474,7 +1474,7 @@ export class OverviewCommandCenterService {
       '/brokers': '/brokers-data',
       'trade-ideas': '/suggested-trades',
       '/trade-ideas': '/suggested-trades',
-      signals: '/signals',
+      signals: '/suggested-trades?tab=signals',
       orders: '/orders',
       automations: '/automations',
       alerts: '/alerts',

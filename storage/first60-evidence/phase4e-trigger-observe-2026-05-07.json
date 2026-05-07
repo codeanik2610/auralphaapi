@@ -1,0 +1,125 @@
+{
+  "generatedAt": "2026-05-07T12:32:04.071Z",
+  "phase": "4e",
+  "name": "trigger/observe fresh suggested trades, then rerun Phase 4d",
+  "deployCutoff": "2026-05-07T12:17:00.000Z",
+  "gateStatus": "blocked_by_production_setup",
+  "triggerDecision": {
+    "triggerAttempted": false,
+    "reason": "No safe trigger target was available. Production has no running trade-suggestion automations; the only trade-suggestion automations are paused and configured as live_trade_auto. Their referenced template does not contain First60 metadata.",
+    "safeAlternative": "Create or update a First60-enabled suggestion_only canary/template before running a controlled generation cycle."
+  },
+  "inventory": {
+    "generatedAt": "2026-05-07T12:31:12.923Z",
+    "automationSummary": [
+      {
+        "status": "Paused",
+        "automationType": "trade-suggestion",
+        "count": 3
+      }
+    ],
+    "tradeSuggestionAutomations": [
+      {
+        "id": "012ce346-0d5f-4aba-9b07-c832cdc69653",
+        "name": "Supertrend 10,3 Red-Green Breakout v2 batch · 5m · 76 assets",
+        "status": "Paused",
+        "executionMode": "live_trade_auto",
+        "approvalMode": "auto_if_safe",
+        "sourceTemplateId": "34b6eb3c-6269-4760-9d7c-1f05794073af",
+        "timeframe": "5m",
+        "hasTradeManagement": false
+      },
+      {
+        "id": "76a37001-d928-40c5-9d66-4a1ace06371b",
+        "name": "Supertrend 10,3 Red-Green Breakout v2 batch · 1h · 15 assets",
+        "status": "Paused",
+        "executionMode": "live_trade_auto",
+        "approvalMode": "auto_if_safe",
+        "sourceTemplateId": "34b6eb3c-6269-4760-9d7c-1f05794073af",
+        "timeframe": "1h",
+        "hasTradeManagement": false
+      },
+      {
+        "id": "a84c276d-1cfa-484d-8cac-9be7d7bc04a2",
+        "name": "Supertrend 10,3 Red-Green Breakout v2 batch · 15m · 58 assets",
+        "status": "Paused",
+        "executionMode": "live_trade_auto",
+        "approvalMode": "auto_if_safe",
+        "sourceTemplateId": "34b6eb3c-6269-4760-9d7c-1f05794073af",
+        "timeframe": "15m",
+        "hasTradeManagement": false
+      }
+    ],
+    "templates": [
+      {
+        "id": "34b6eb3c-6269-4760-9d7c-1f05794073af",
+        "name": "Supertrend 10,3 Red-Green Breakout v2",
+        "status": "Draft",
+        "hasFirst60": false
+      },
+      {
+        "id": "a866fd5b-4b0d-4089-a266-5e5662123e59",
+        "name": "Alert Confirm",
+        "status": "Active",
+        "hasFirst60": false
+      }
+    ]
+  },
+  "postDeployProbe": {
+    "generatedAt": "2026-05-07T12:32:03.896Z",
+    "since": "2026-05-07T12:17:00.000Z",
+    "lookbackHours": 72,
+    "postDeploy": {
+      "total": 0,
+      "buyCount": 0,
+      "sellCount": 0,
+      "snapshotCount": 0,
+      "gateSnapshotCount": 0,
+      "observeOnlyGateCount": 0,
+      "blockedGateCount": 0,
+      "observeResultCount": 0,
+      "firstCreatedAt": null,
+      "lastCreatedAt": null
+    },
+    "lookback": {
+      "total": 805,
+      "snapshotCount": 0,
+      "gateSnapshotCount": 0,
+      "observeResultCount": 0
+    },
+    "recentPostDeployTrades": []
+  },
+  "liveReadiness": {
+    "generatedAt": "2026-05-07T12:32:04.071Z",
+    "status": "warn",
+    "failures": 0,
+    "expectedWarnings": [
+      "Runtime image does not include docs/first60-deploy-readiness-runbook.md",
+      "No recent First60 snapshots found in the last 72 hour(s)"
+    ],
+    "live": {
+      "enabled": true,
+      "lookbackHours": 72,
+      "snapshotCount": 0,
+      "gateSnapshotCount": 0,
+      "observeResultCount": 0
+    }
+  },
+  "observeOnlyDryRun": {
+    "generatedAt": "2026-05-07T12:32:03.348Z",
+    "mode": "dry-run",
+    "counts": {
+      "candidates": 0,
+      "candles": 0,
+      "evaluated": 0,
+      "writeEligible": 0,
+      "written": 0
+    },
+    "items": []
+  },
+  "conclusion": {
+    "passed": false,
+    "reason": "Phase 4e cannot safely trigger fresh First60 suggested trades until production has a First60-enabled suggestion-only/manual-review canary or an explicitly approved temporary change to the existing live-auto automations.",
+    "safeOutcome": "No production automation was resumed, no live-auto strategy was triggered, and the observe-only monitor dry-run made zero writes."
+  }
+}

@@ -166,7 +166,7 @@ export class SignalsOverviewService {
         description: 'Review your cadence, retention, and recent scan history from Signals.',
         intent: 'secondary',
         method: 'GET',
-        target: '/signals',
+        target: '/suggested-trades?tab=signals',
       },
       enabled
         ? {

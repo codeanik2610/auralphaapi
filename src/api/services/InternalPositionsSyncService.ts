@@ -20,10 +20,7 @@ import {
   POSITIONS_ORDERS_PRODUCT_SYNC_SCOPE,
   POSITIONS_ORDERS_SYSTEM_SYNC_SCOPE,
 } from '../utils/positionsOrdersSyncScopeContract';
-import {
-  buildPositionReadModelUpsert,
-  PositionReadModelUpsert,
-} from '../utils/positionsReadModel';
+import { buildPositionReadModelUpsert, PositionReadModelUpsert } from '../utils/positionsReadModel';
 
 const MAX_LOOKBACK_DAYS = 90;
 const DEFAULT_WINDOW_DAYS = 7;
@@ -57,9 +54,11 @@ export class InternalPositionsSyncService {
   @Inject(() => SuggestedTradesService)
   private suggestedTradesService!: SuggestedTradesService;
 
-  private checkpointTableColumns:
-    | { hasId: boolean; hasCreatedAt: boolean; hasUpdatedAt: boolean }
-    | null = null;
+  private checkpointTableColumns: {
+    hasId: boolean;
+    hasCreatedAt: boolean;
+    hasUpdatedAt: boolean;
+  } | null = null;
 
   // ── Helpers ──────────────────────────────────────────────────
 
@@ -71,7 +70,11 @@ export class InternalPositionsSyncService {
   private parsePayloadJson(value: unknown): Record<string, unknown> | null {
     let obj: unknown;
     if (typeof value === 'string') {
-      try { obj = JSON.parse(value); } catch { return null; }
+      try {
+        obj = JSON.parse(value);
+      } catch {
+        return null;
+      }
     } else {
       obj = value;
     }
@@ -111,7 +114,9 @@ export class InternalPositionsSyncService {
     return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
   }
 
-  private resolveHistoryOverlapDays(adapter: { historyOverlapDays?: number } | null | undefined): number {
+  private resolveHistoryOverlapDays(
+    adapter: { historyOverlapDays?: number } | null | undefined
+  ): number {
     const raw = Number(adapter?.historyOverlapDays);
     if (!Number.isFinite(raw)) {
       return 1;
@@ -119,17 +124,27 @@ export class InternalPositionsSyncService {
     return Math.min(MAX_LOOKBACK_DAYS, Math.max(1, Math.floor(raw)));
   }
 
-  private buildDateWindows(startDate: string, endDate: string, windowDays: number): Array<{ startDate: string; endDate: string }> {
+  private buildDateWindows(
+    startDate: string,
+    endDate: string,
+    windowDays: number
+  ): Array<{ startDate: string; endDate: string }> {
     const start = this.parseIsoDate(startDate);
     const end = this.parseIsoDate(endDate);
     if (!start || !end) return [{ startDate, endDate }];
-    const safeWindowDays = Math.min(30, Math.max(1, Math.floor(Number(windowDays || DEFAULT_WINDOW_DAYS))));
+    const safeWindowDays = Math.min(
+      30,
+      Math.max(1, Math.floor(Number(windowDays || DEFAULT_WINDOW_DAYS)))
+    );
     const windows: Array<{ startDate: string; endDate: string }> = [];
     let cursor = start;
     while (cursor.getTime() <= end.getTime()) {
       const windowEnd = this.addDays(cursor, safeWindowDays - 1);
       const cappedEnd = windowEnd.getTime() > end.getTime() ? end : windowEnd;
-      windows.push({ startDate: this.formatIsoDate(cursor), endDate: this.formatIsoDate(cappedEnd) });
+      windows.push({
+        startDate: this.formatIsoDate(cursor),
+        endDate: this.formatIsoDate(cappedEnd),
+      });
       cursor = this.addDays(cappedEnd, 1);
     }
     return windows.length ? windows : [{ startDate, endDate }];
@@ -145,7 +160,9 @@ export class InternalPositionsSyncService {
   }
 
   private normalizeMarketSymbol(value: unknown): string | null {
-    const raw = String(value || '').trim().toUpperCase();
+    const raw = String(value || '')
+      .trim()
+      .toUpperCase();
     if (!raw) return null;
     if (raw.endsWith('USDT')) return raw;
     if (raw.endsWith('USD')) return `${raw.slice(0, -3)}USDT`;
@@ -175,11 +192,17 @@ export class InternalPositionsSyncService {
   }
 
   private readObservedPositionLeverageValue(item: Record<string, unknown>): number | null {
-    const leverageSource = String(item.leverage_source ?? '').trim().toLowerCase();
+    const leverageSource = String(item.leverage_source ?? '')
+      .trim()
+      .toLowerCase();
     if (leverageSource === 'derived_position_margin') {
       return null;
     }
-    for (const candidate of [item.observed_position_leverage, item.leverage, item.position_leverage]) {
+    for (const candidate of [
+      item.observed_position_leverage,
+      item.leverage,
+      item.position_leverage,
+    ]) {
       const numeric = this.toPositiveFiniteNumber(candidate);
       if (numeric !== null) {
         return numeric;
@@ -189,11 +212,20 @@ export class InternalPositionsSyncService {
   }
 
   private readDerivedPositionLeverageValue(item: Record<string, unknown>): number | null {
-    const leverageSource = String(item.leverage_source ?? '').trim().toLowerCase();
-    if (leverageSource !== 'derived_position_margin' && item.derived_position_leverage === undefined) {
+    const leverageSource = String(item.leverage_source ?? '')
+      .trim()
+      .toLowerCase();
+    if (
+      leverageSource !== 'derived_position_margin' &&
+      item.derived_position_leverage === undefined
+    ) {
       return null;
     }
-    for (const candidate of [item.derived_position_leverage, item.leverage, item.position_leverage]) {
+    for (const candidate of [
+      item.derived_position_leverage,
+      item.leverage,
+      item.position_leverage,
+    ]) {
       const numeric = this.toPositiveFiniteNumber(candidate);
       if (numeric !== null) {
         return numeric;
@@ -213,9 +245,15 @@ export class InternalPositionsSyncService {
   }
 
   private resolvePositionDirection(position: Record<string, unknown>): number {
-    const side = String(position.side ?? '').trim().toLowerCase();
-    const positionType = String(position.position_type ?? '').trim().toLowerCase();
-    const orderType = String(position.order_type ?? '').trim().toLowerCase();
+    const side = String(position.side ?? '')
+      .trim()
+      .toLowerCase();
+    const positionType = String(position.position_type ?? '')
+      .trim()
+      .toLowerCase();
+    const orderType = String(position.order_type ?? '')
+      .trim()
+      .toLowerCase();
 
     if (side === 'short' || positionType === 'short' || orderType === 'sell') return -1;
     if (side === 'long' || positionType === 'long' || orderType === 'buy') return 1;
@@ -225,7 +263,10 @@ export class InternalPositionsSyncService {
     return 1;
   }
 
-  private computeUnrealizedPnl(position: Record<string, unknown>, markPrice: number): number | null {
+  private computeUnrealizedPnl(
+    position: Record<string, unknown>,
+    markPrice: number
+  ): number | null {
     const entry = Number(
       position.entry_price ?? position.avg_entry_price ?? position.average_entry_price ?? 0
     );
@@ -255,18 +296,30 @@ export class InternalPositionsSyncService {
 
     if (!symbols.size) return;
 
-    let rows: Array<{ symbol?: string; price?: unknown; retrievedAt?: Date | string; source?: string }> = [];
+    let rows: Array<{
+      symbol?: string;
+      price?: unknown;
+      retrievedAt?: Date | string;
+      source?: string;
+    }> = [];
     try {
       rows = (await this.assetPriceRepository.getBySymbols(Array.from(symbols), {
         sources: ['mudrex'],
-      })) as Array<{ symbol?: string; price?: unknown; retrievedAt?: Date | string; source?: string }>;
+      })) as Array<{
+        symbol?: string;
+        price?: unknown;
+        retrievedAt?: Date | string;
+        source?: string;
+      }>;
     } catch {
       return;
     }
 
     const priceMap = new Map<string, { price: number; retrievedAt?: string; source?: string }>();
     for (const row of rows) {
-      const symbol = String(row.symbol || '').trim().toUpperCase();
+      const symbol = String(row.symbol || '')
+        .trim()
+        .toUpperCase();
       const price = Number(row.price);
       if (!symbol || !Number.isFinite(price)) continue;
       const retrievedAt =
@@ -277,7 +330,10 @@ export class InternalPositionsSyncService {
             : null;
       priceMap.set(symbol, {
         price,
-        retrievedAt: retrievedAt && !Number.isNaN(retrievedAt.getTime()) ? retrievedAt.toISOString() : undefined,
+        retrievedAt:
+          retrievedAt && !Number.isNaN(retrievedAt.getTime())
+            ? retrievedAt.toISOString()
+            : undefined,
         source: row.source || 'binance',
       });
     }
@@ -307,7 +363,9 @@ export class InternalPositionsSyncService {
     brokerKey: string,
     items: unknown[]
   ): Promise<void> {
-    const normalizedBrokerKey = String(brokerKey || '').trim().toLowerCase();
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
     if (normalizedBrokerKey !== 'delta_exchange') {
       return;
     }
@@ -351,7 +409,11 @@ export class InternalPositionsSyncService {
       const requestedLeverage = leverageContext?.requestedLeverage ?? null;
       const confirmedOrderLeverage = leverageContext?.confirmedOrderLeverage ?? null;
       const resolvedLeverage =
-        observedLeverage ?? derivedPositionLeverage ?? confirmedOrderLeverage ?? requestedLeverage ?? null;
+        observedLeverage ??
+        derivedPositionLeverage ??
+        confirmedOrderLeverage ??
+        requestedLeverage ??
+        null;
 
       if (requestedLeverage !== null) {
         item.requested_leverage = String(requestedLeverage);
@@ -454,7 +516,9 @@ export class InternalPositionsSyncService {
   // ── Status helpers ───────────────────────────────────────────
 
   private computePositionStatusRank(status: string): number {
-    const normalized = String(status || '').trim().toUpperCase();
+    const normalized = String(status || '')
+      .trim()
+      .toUpperCase();
     if (['OPEN'].includes(normalized)) return 1;
     if (['PARTIAL', 'PARTIALLY_CLOSED'].includes(normalized)) return 2;
     if (['CLOSED'].includes(normalized)) return 3;
@@ -470,14 +534,19 @@ export class InternalPositionsSyncService {
     if (['OPEN'].includes(normalized)) return 'OPEN';
     if (['CLOSED', 'CLOSE'].includes(normalized)) return 'CLOSED';
     if (['LIQUIDATED', 'LIQUIDATION'].includes(normalized)) return 'LIQUIDATED';
-    if (['PARTIAL', 'PARTIALLY_CLOSED', 'PARTIALLY_CLOSED_POSITION'].includes(normalized)) return 'PARTIAL';
+    if (['PARTIAL', 'PARTIALLY_CLOSED', 'PARTIALLY_CLOSED_POSITION'].includes(normalized))
+      return 'PARTIAL';
 
     return normalized;
   }
 
   private buildPositionSyntheticId(position: Record<string, unknown>): string {
-    const symbol = String(position.symbol || '').trim().toUpperCase();
-    const status = String(position.status || '').trim().toUpperCase();
+    const symbol = String(position.symbol || '')
+      .trim()
+      .toUpperCase();
+    const status = String(position.status || '')
+      .trim()
+      .toUpperCase();
     const createdAt = String(position.created_at || '').trim();
     return [symbol || 'NA', status || 'NA', createdAt || 'NA'].join(':');
   }
@@ -574,7 +643,11 @@ export class InternalPositionsSyncService {
 
     const columnNames = new Set(
       rows
-        .map((row) => String(row.columnName || '').trim().toLowerCase())
+        .map((row) =>
+          String(row.columnName || '')
+            .trim()
+            .toLowerCase()
+        )
         .filter(Boolean)
     );
 
@@ -591,16 +664,18 @@ export class InternalPositionsSyncService {
 
   private deduplicateByExternalId(items: unknown[], brokerKey: string): unknown[] {
     const map = new Map<string, { item: unknown; rank: number }>();
-    const brokerKeyLower = String(brokerKey || '').trim().toLowerCase();
+    const brokerKeyLower = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
     for (const item of items) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
       const rec = item as Record<string, unknown>;
       const mudrexExternalId =
-        brokerKeyLower === 'mudrex' ? this.buildMudrexPositionExternalId(brokerKeyLower, rec) : null;
+        brokerKeyLower === 'mudrex'
+          ? this.buildMudrexPositionExternalId(brokerKeyLower, rec)
+          : null;
       const id =
-        mudrexExternalId ||
-        String(rec.id || '').trim() ||
-        this.buildPositionSyntheticId(rec);
+        mudrexExternalId || String(rec.id || '').trim() || this.buildPositionSyntheticId(rec);
       if (!id) continue;
       const status = this.normalizePositionStatus(String(rec.status || '').trim() || null);
       const rank = this.computePositionStatusRank(status || '');
@@ -646,9 +721,10 @@ export class InternalPositionsSyncService {
       accountId,
       brokerKey,
       externalId,
-      legacyExternalId: mudrexExternalId && rawExternalId && mudrexExternalId !== rawExternalId
-        ? rawExternalId
-        : null,
+      legacyExternalId:
+        mudrexExternalId && rawExternalId && mudrexExternalId !== rawExternalId
+          ? rawExternalId
+          : null,
       symbol,
       status,
       statusRank,
@@ -671,8 +747,14 @@ export class InternalPositionsSyncService {
         item.updated_at = closedAt.toISOString();
       }
     }
-    const normalized = String(status || '').trim().toUpperCase();
-    if ((normalized === 'CLOSED' || normalized === 'LIQUIDATED') && item.closed_at && !item.updated_at) {
+    const normalized = String(status || '')
+      .trim()
+      .toUpperCase();
+    if (
+      (normalized === 'CLOSED' || normalized === 'LIQUIDATED') &&
+      item.closed_at &&
+      !item.updated_at
+    ) {
       item.updated_at = String(item.closed_at);
     }
   }
@@ -681,12 +763,18 @@ export class InternalPositionsSyncService {
     brokerKey: string,
     item: Record<string, unknown>
   ): string | null {
-    if (String(brokerKey || '').trim().toLowerCase() !== 'mudrex') {
+    if (
+      String(brokerKey || '')
+        .trim()
+        .toLowerCase() !== 'mudrex'
+    ) {
       return null;
     }
     const assetUuid = String(item.asset_uuid || '').trim();
     const createdAt = String(item.created_at || '').trim();
-    const side = String(item.position_type || item.order_type || item.side || '').trim().toUpperCase();
+    const side = String(item.position_type || item.order_type || item.side || '')
+      .trim()
+      .toUpperCase();
     if (!assetUuid || !createdAt) {
       return null;
     }
@@ -737,9 +825,17 @@ export class InternalPositionsSyncService {
          FROM scheduler_positions_snapshots
          WHERE user_id = ? AND account_id = ? AND external_id IN (${chunkExternalIds.map(() => '?').join(',')})`,
         [chunk[0].userId, chunk[0].accountId, ...chunkExternalIds]
-      )) as Array<{ external_id: string; status: string | null; payload_hash: string | null; status_rank: number }>;
+      )) as Array<{
+        external_id: string;
+        status: string | null;
+        payload_hash: string | null;
+        status_rank: number;
+      }>;
 
-      const existingMap = new Map<string, { status: string | null; payloadHash: string | null; statusRank: number }>();
+      const existingMap = new Map<
+        string,
+        { status: string | null; payloadHash: string | null; statusRank: number }
+      >();
       for (const row of existingRows) {
         existingMap.set(row.external_id, {
           status: row.status,
@@ -821,9 +917,10 @@ export class InternalPositionsSyncService {
             message = `status rank lower: ${existingStatusLabel}(${existing.statusRank}) > ${incomingStatusLabel}(${row.statusRank})`;
           } else {
             actionType = 'updated';
-            message = existing.status !== row.status
-              ? `status: ${existing.status || 'UNKNOWN'} → ${row.status || 'UNKNOWN'}`
-              : `status: ${row.status || 'UNKNOWN'} (unchanged)`;
+            message =
+              existing.status !== row.status
+                ? `status: ${existing.status || 'UNKNOWN'} → ${row.status || 'UNKNOWN'}`
+                : `status: ${row.status || 'UNKNOWN'} (unchanged)`;
           }
 
           logEntries.push({
@@ -845,7 +942,15 @@ export class InternalPositionsSyncService {
       updated,
       skipped,
       symbols: Array.from(
-        new Set(rows.map((row) => String(row.symbol || '').trim().toUpperCase()).filter(Boolean))
+        new Set(
+          rows
+            .map((row) =>
+              String(row.symbol || '')
+                .trim()
+                .toUpperCase()
+            )
+            .filter(Boolean)
+        )
       ),
     };
   }
@@ -881,7 +986,12 @@ export class InternalPositionsSyncService {
 
     for (const item of items) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
-      const row = this.buildPositionRow(userId, accountId, brokerKey, item as Record<string, unknown>);
+      const row = this.buildPositionRow(
+        userId,
+        accountId,
+        brokerKey,
+        item as Record<string, unknown>
+      );
       if (!row) continue;
       prepared.push(row);
       const readModelRow = buildPositionReadModelUpsert({
@@ -904,6 +1014,11 @@ export class InternalPositionsSyncService {
     const delta = await this.upsertPositionSnapshotBatch(prepared, runLogId);
     if (readModelRows.length) {
       await this.positionReadModelRepository.upsertReadModels(readModelRows);
+      await this.positionReadModelRepository.refreshOpenDeltaProtectionFromOrderSnapshots?.({
+        userId,
+        accountId,
+        brokerKey,
+      });
     }
     return delta;
   }
@@ -980,7 +1095,11 @@ export class InternalPositionsSyncService {
   private normalizeBrokerKeys(input?: string[]): Array<string> {
     const raw = Array.isArray(input) ? input : [];
     const normalized = raw
-      .map((item) => String(item || '').trim().toLowerCase())
+      .map((item) =>
+        String(item || '')
+          .trim()
+          .toLowerCase()
+      )
       .filter(Boolean);
     return Array.from(new Set(normalized));
   }
@@ -991,7 +1110,10 @@ export class InternalPositionsSyncService {
     accountIdFilter: ReadonlySet<string>
   ): BrokerAccount[] {
     return accounts.filter((account) => {
-      if (brokerKeyFilter.size > 0 && !brokerKeyFilter.has(String(account.brokerKey || '').toLowerCase())) {
+      if (
+        brokerKeyFilter.size > 0 &&
+        !brokerKeyFilter.has(String(account.brokerKey || '').toLowerCase())
+      ) {
         return false;
       }
       if (accountIdFilter.size > 0 && !accountIdFilter.has(String(account.id || ''))) {
@@ -1033,7 +1155,9 @@ export class InternalPositionsSyncService {
   }
 
   private async resolveExecutionUserIds(request: PositionsSyncRequest): Promise<string[]> {
-    const executionScope = String(request.executionScope || '').trim().toLowerCase();
+    const executionScope = String(request.executionScope || '')
+      .trim()
+      .toLowerCase();
     if (executionScope === POSITIONS_ORDERS_PRODUCT_SYNC_SCOPE) {
       const requestUserId = String(request.requestUserId || '').trim();
       if (!requestUserId) {
@@ -1074,7 +1198,10 @@ export class InternalPositionsSyncService {
     await this.ensureCheckpointTable();
 
     const now = new Date();
-    const lookbackDays = Math.min(MAX_LOOKBACK_DAYS, Math.max(1, Math.floor(Number(request.lookbackDays || MAX_LOOKBACK_DAYS))));
+    const lookbackDays = Math.min(
+      MAX_LOOKBACK_DAYS,
+      Math.max(1, Math.floor(Number(request.lookbackDays || MAX_LOOKBACK_DAYS)))
+    );
     const historyWindowDays =
       typeof request.historyWindowDays === 'number'
         ? Math.floor(request.historyWindowDays)
@@ -1139,7 +1266,9 @@ export class InternalPositionsSyncService {
 
             // Use MySQL's clock for stale-close comparison so both last_seen_at (set via NOW())
             // and this timestamp are from the same source — avoids JS/MySQL timezone mismatch.
-            const [{ now: dbNow }] = (await coreDataSource.query('SELECT NOW() AS now')) as [{ now: Date }];
+            const [{ now: dbNow }] = (await coreDataSource.query('SELECT NOW() AS now')) as [
+              { now: Date },
+            ];
             const accountSyncStartedAt = dbNow;
             const route = isSystemUser
               ? { userId, brokerKey, accountId }
@@ -1266,10 +1395,18 @@ export class InternalPositionsSyncService {
                   closeRank,
                   accountSyncStartedAt,
                 ]
-              )) as Array<{ id: string; external_id: string; symbol: string | null; status: string | null; payload_json: unknown }>;
+              )) as Array<{
+                id: string;
+                external_id: string;
+                symbol: string | null;
+                status: string | null;
+                payload_json: unknown;
+              }>;
 
               // Fetch closing fills from broker if adapter supports it
-              let closingFills: Map<string, { closePrice: number; closedAt: string; fillType: string | null }> | undefined;
+              let closingFills:
+                | Map<string, { closePrice: number; closedAt: string; fillType: string | null }>
+                | undefined;
               if (stalePositions.length > 0) {
                 if (typeof adapter.getClosingFills === 'function') {
                   try {
@@ -1289,9 +1426,11 @@ export class InternalPositionsSyncService {
                 if (payload) {
                   payload.status = 'closed';
                   const entryPrice = this.toFiniteNumber(payload.entry_price);
-                  const quantity = Math.abs(this.toFiniteNumber(payload.quantity) || this.toFiniteNumber(payload.size));
+                  const quantity = Math.abs(
+                    this.toFiniteNumber(payload.quantity) || this.toFiniteNumber(payload.size)
+                  );
                   const side = String(payload.side || payload.position_type || '').toLowerCase();
-                  const direction = (side === 'long' || side === 'buy') ? 1 : -1;
+                  const direction = side === 'long' || side === 'buy' ? 1 : -1;
 
                   // Prefer close price from fills, fall back to mark_price
                   const fill = closingFills?.get(stale.external_id);
@@ -1301,7 +1440,9 @@ export class InternalPositionsSyncService {
                     payload.closed_at = fill.closedAt;
                     if (fill.fillType) payload.fill_type = fill.fillType;
                   } else {
-                    closePrice = this.toFiniteNumber(payload.mark_price) || this.toFiniteNumber(payload.closed_price);
+                    closePrice =
+                      this.toFiniteNumber(payload.mark_price) ||
+                      this.toFiniteNumber(payload.closed_price);
                   }
 
                   if (entryPrice > 0 && closePrice > 0 && quantity > 0) {
@@ -1357,25 +1498,35 @@ export class InternalPositionsSyncService {
                   accountSyncStartedAt
                 );
               }
+              await this.positionReadModelRepository.refreshOpenDeltaProtectionFromOrderSnapshots?.(
+                {
+                  userId,
+                  accountId: resolvedAccountId,
+                  brokerKey: resolvedBrokerKey,
+                }
+              );
               const closedCount = stalePositions.length;
               updatedRecords += closedCount;
 
               // Log stale-closed positions
               if (request.runLogId && stalePositions.length > 0) {
-                const closeLogEntries: QueryDeepPartialEntity<ExchangeAssetUpdateLog>[] = stalePositions.map((row) => ({
-                  runLogId: request.runLogId,
-                  source: 'positions',
-                  accountId: resolvedAccountId,
-                  actionType: 'updated',
-                  symbol: row.symbol,
-                  externalId: row.external_id,
-                  message: `stale-closed: ${row.status || 'UNKNOWN'} → CLOSED`,
-                }));
+                const closeLogEntries: QueryDeepPartialEntity<ExchangeAssetUpdateLog>[] =
+                  stalePositions.map((row) => ({
+                    runLogId: request.runLogId,
+                    source: 'positions',
+                    accountId: resolvedAccountId,
+                    actionType: 'updated',
+                    symbol: row.symbol,
+                    externalId: row.external_id,
+                    message: `stale-closed: ${row.status || 'UNKNOWN'} → CLOSED`,
+                  }));
                 await this.exchangeAssetUpdateLogRepository.createMany(closeLogEntries);
               }
 
               for (const row of stalePositions) {
-                const symbol = String(row.symbol || '').trim().toUpperCase();
+                const symbol = String(row.symbol || '')
+                  .trim()
+                  .toUpperCase();
                 if (symbol) {
                   affectedSymbols.add(symbol);
                 }
@@ -1468,7 +1619,8 @@ export class InternalPositionsSyncService {
       route: 'Schedulers',
       stream: 'Runs',
       related: CHECKPOINT_SCHEDULER_KEY,
-      description: `Processed ${accountGroups.length || requestedUserIds.length} user(s) in ${Date.now() - startedAt.getTime()}ms. ` +
+      description:
+        `Processed ${accountGroups.length || requestedUserIds.length} user(s) in ${Date.now() - startedAt.getTime()}ms. ` +
         `Accounts processed=${processedAccounts}, inserted=${insertedRecords}, updated=${updatedRecords}, ` +
         `skipped=${skippedRecords}, failures=${failed}.`,
     });

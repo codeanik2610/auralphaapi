@@ -1,0 +1,23 @@
+{
+  "generatedAt": "2026-05-07T11:56:44.274Z",
+  "phase": "4d-post-deploy-dryrun-probe",
+  "deployedFiles": {
+    "readinessScript": false,
+    "observeScript": false,
+    "strategyTemplateAutomation": true,
+    "automationExecutionService": true
+  },
+  "recent72h": {
+    "total": 808,
+    "first60Snapshots": "0",
+    "gatedSnapshots": "0",
+    "observeResults": "0"
+  },
+  "allSuggestedTrades": {
+    "total": 1498,
+    "first60Snapshots": "0",
+    "gatedSnapshots": "0",
+    "observeResults": "0"
+  },
+  "canRunPostDeployDryRun": false
+}

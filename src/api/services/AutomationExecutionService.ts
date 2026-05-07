@@ -1044,6 +1044,12 @@ export class AutomationExecutionService {
         const protection = this.resolveSuggestedTradeProtection(entryPrice, leg, tradePlan);
         const stopLossPrice = protection.stopLossPrice;
         const takeProfitTargets = protection.takeProfitTargets;
+        const tradeManagementSnapshot = this.buildSuggestedTradeManagementSnapshot(profile, leg, {
+          sourceTemplateId: profileInfo.sourceTemplateId,
+          signalTime,
+          capturedAt: signalBaseTime,
+          timeframe,
+        });
         const dedupeKey = [
           automation.id,
           item.symbol,
@@ -1089,6 +1095,7 @@ export class AutomationExecutionService {
             evaluationMode: 'latest-closed-candle',
             signalSelectionMode,
             signalTradePlan: tradePlan,
+            tradeManagementSnapshot,
             resolvedProtection: {
               stopLossPrice,
               takeProfitTargets,
@@ -1127,6 +1134,7 @@ export class AutomationExecutionService {
             sourceTemplateId: profileInfo.sourceTemplateId,
             score,
             confidence,
+            ...(tradeManagementSnapshot ? { tradeManagementSnapshot } : {}),
           },
         });
 
@@ -2177,6 +2185,53 @@ export class AutomationExecutionService {
       takeProfitTargets: resolvedTakeProfitTargets,
       riskRewardRatio,
       planLabel,
+    };
+  }
+
+  private buildSuggestedTradeManagementSnapshot(
+    profile: StrategyTemplateAutomationProfile,
+    leg: StrategyTemplateTradePlanLeg,
+    context: {
+      sourceTemplateId: string | null;
+      signalTime: Date;
+      capturedAt: Date;
+      timeframe: string;
+    }
+  ): Record<string, unknown> | null {
+    const first60 = profile.tradeManagement?.first60;
+    if (!first60?.enabled) {
+      return null;
+    }
+
+    const first60Leg = leg.side === 'long' ? first60.long : first60.short;
+    if (!first60Leg?.enabled) {
+      return null;
+    }
+
+    return {
+      schemaVersion: 'trade-management-snapshot.v1',
+      source: 'strategy-template',
+      sourceTemplateId: context.sourceTemplateId,
+      profileContractVersion: profile.contractVersion,
+      side: leg.side,
+      signalTime: context.signalTime.toISOString(),
+      capturedAt: context.capturedAt.toISOString(),
+      timeframe: context.timeframe,
+      first60: {
+        enabled: true,
+        mode: first60.mode,
+        dataSource: first60.dataSource,
+        decisionGate: { ...first60Leg.decisionGate },
+        windowMinutes: first60Leg.windowMinutes,
+        evaluationTimeframe: first60Leg.evaluationTimeframe,
+        requiredFavorableR: first60Leg.requiredFavorableR,
+        maxAdverseR: first60Leg.maxAdverseR,
+        targetR: first60Leg.targetR,
+        entryBasis: first60Leg.entryBasis,
+        stopBasis: first60Leg.stopBasis,
+        passAction: first60Leg.passAction,
+        failAction: first60Leg.failAction,
+      },
     };
   }
 

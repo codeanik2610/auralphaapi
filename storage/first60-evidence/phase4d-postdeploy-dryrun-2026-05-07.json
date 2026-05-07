@@ -1,0 +1,88 @@
+{
+  "generatedAt": "2026-05-07T12:21:41.937Z",
+  "phase": "4d",
+  "name": "post-deploy dry-run on newly generated trades",
+  "deployCutoff": "2026-05-07T12:17:00.000Z",
+  "gateStatus": "waiting_for_fresh_trades",
+  "postDeployProbe": {
+    "generatedAt": "2026-05-07T12:21:23.595Z",
+    "since": "2026-05-07T12:17:00.000Z",
+    "lookbackHours": 72,
+    "postDeploy": {
+      "total": 0,
+      "buyCount": 0,
+      "sellCount": 0,
+      "snapshotCount": 0,
+      "gateSnapshotCount": 0,
+      "observeOnlyGateCount": 0,
+      "blockedGateCount": 0,
+      "observeResultCount": 0,
+      "firstCreatedAt": null,
+      "lastCreatedAt": null
+    },
+    "lookback": {
+      "total": 806,
+      "snapshotCount": 0,
+      "gateSnapshotCount": 0,
+      "observeResultCount": 0
+    },
+    "recentPostDeployTrades": []
+  },
+  "liveReadiness": {
+    "generatedAt": "2026-05-07T12:21:23.613Z",
+    "status": "warn",
+    "failures": 0,
+    "expectedWarnings": [
+      "Runtime image does not include docs/first60-deploy-readiness-runbook.md",
+      "No recent First60 snapshots found in the last 72 hour(s)"
+    ],
+    "live": {
+      "enabled": true,
+      "lookbackHours": 72,
+      "snapshotCount": 0,
+      "gateSnapshotCount": 0,
+      "observeResultCount": 0
+    }
+  },
+  "observeOnlyDryRun": {
+    "generatedAt": "2026-05-07T12:21:41.937Z",
+    "mode": "dry-run",
+    "source": {
+      "lookbackHours": 72,
+      "minAgeMinutes": 60,
+      "limit": 250,
+      "maxOutcomeLookaheadMinutes": 1440,
+      "reevaluate": false
+    },
+    "counts": {
+      "candidates": 0,
+      "candles": 0,
+      "evaluated": 0,
+      "writeEligible": 0,
+      "written": 0
+    },
+    "sideCounts": {},
+    "actionCounts": {},
+    "outcomeCounts": {},
+    "observeOnlyBuy": {
+      "evaluated": 0,
+      "passed": 0,
+      "failed": 0,
+      "targetHits": 0,
+      "stopHits": 0
+    },
+    "diagnosticsOnlySell": {
+      "evaluated": 0,
+      "passed": 0,
+      "failed": 0,
+      "targetHits": 0,
+      "stopHits": 0
+    },
+    "items": []
+  },
+  "conclusion": {
+    "passed": false,
+    "reason": "No suggested trades were generated after the Phase 4c deployment cutoff, so Phase 4d cannot yet prove First60 snapshots on newly generated trades.",
+    "safeOutcome": "Dry-run monitor executed with zero writes and zero order actions."
+  }
+}

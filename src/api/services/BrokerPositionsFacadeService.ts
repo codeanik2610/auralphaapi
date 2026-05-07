@@ -1421,7 +1421,9 @@ export class BrokerPositionsFacadeService {
     });
     push('signal', signalId, {
       label: 'Source signal',
-      url: signalId ? `/signals?selected=${encodeURIComponent(signalId)}` : undefined,
+      url: signalId
+        ? `/suggested-trades?tab=signals&signalId=${encodeURIComponent(signalId)}`
+        : undefined,
       relation: 'source',
     });
     push('live_order', this.readString(execution?.orderId), {

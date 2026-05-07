@@ -273,12 +273,26 @@ interface DeltaActiveProtectionOrders {
   activeOrderIds: string[];
 }
 
+interface DeltaProtectionOrderCandidate {
+  externalId?: unknown;
+  orderStatus?: unknown;
+  statusRank?: unknown;
+  side?: unknown;
+  reduceOnly?: unknown;
+  stopOrderType?: unknown;
+  orderType?: unknown;
+}
+
 interface MudrexLiveAutoProtectionAttachmentResult {
   attached: boolean;
   note: string | null;
 }
 
 interface DeltaProtectionOrdersAdapter {
+  listOpenOrders?: (
+    query: { limit: number },
+    context?: { userId?: string; brokerKey?: string; accountId?: string }
+  ) => Promise<unknown>;
   createLiveAutoProtectiveOrdersForPosition?: (
     assetId: string,
     body: {
@@ -3111,7 +3125,6 @@ export class SuggestedTradesService {
         };
       }
 
-
       if (!leverage || leverage <= 0) {
         const message =
           'Live auto execution requires a positive min_leverage in the effective broker risk policy';
@@ -5673,7 +5686,7 @@ export class SuggestedTradesService {
     if (signalId) {
       push('signal', signalId, {
         label: 'Source signal',
-        url: `/signals?selected=${encodeURIComponent(signalId)}`,
+        url: `/suggested-trades?tab=signals&signalId=${encodeURIComponent(signalId)}`,
         relation: 'source',
       });
     }
@@ -6026,6 +6039,18 @@ export class SuggestedTradesService {
     if (protectionState === 'attached') {
       if (brokerKey === 'delta_exchange' && hasActivePosition && position) {
         return this.validateAttachedDeltaLiveProtection(userId, trade, execution, position, nowIso);
+      }
+      if (!hasActivePosition && terminalForProtection) {
+        return {
+          ...execution,
+          protectionState: 'not_required',
+          protectionCheckedAt: nowIso,
+          protectionLastError: null,
+          note: this.appendExecutionNote(
+            execution.note,
+            'Terminal execution no longer requires manual SL/TP protection.'
+          ),
+        };
       }
       return execution;
     }
@@ -6673,6 +6698,7 @@ export class SuggestedTradesService {
         accountId: input.accountId,
         symbols: [route.brokerSymbol, input.trade.symbol, ...route.candidateSymbols],
         entrySide,
+        includeLiveBroker: true,
       });
       if (existingSymbolProtection.activeOrderIds.length > 0) {
         if (this.hasExactlyOneDeltaProtectionPair(existingSymbolProtection)) {
@@ -6820,10 +6846,10 @@ export class SuggestedTradesService {
     const filledQuantity = this.readNumberValue(execution.filledQuantity);
     const hasFillEvidence = Boolean(
       execution.filledAt ||
-        executionState === 'filled' ||
-        orderStatus === 'FILLED' ||
-        orderStatus === 'CLOSED' ||
-        (filledQuantity && filledQuantity > 0)
+      executionState === 'filled' ||
+      orderStatus === 'FILLED' ||
+      orderStatus === 'CLOSED' ||
+      (filledQuantity && filledQuantity > 0)
     );
     if (hasFillEvidence) {
       return false;
@@ -6831,7 +6857,7 @@ export class SuggestedTradesService {
 
     return Boolean(
       ['cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '') ||
-        ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus ?? '')
+      ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus ?? '')
     );
   }
 
@@ -6915,9 +6941,7 @@ export class SuggestedTradesService {
 
   private describeDeltaActiveProtectionOrders(context: DeltaActiveProtectionOrders): string {
     const parts = [
-      context.stopLossOrderIds.length
-        ? `SL ${context.stopLossOrderIds.join(',')}`
-        : 'SL missing',
+      context.stopLossOrderIds.length ? `SL ${context.stopLossOrderIds.join(',')}` : 'SL missing',
       context.takeProfitOrderIds.length
         ? `TP ${context.takeProfitOrderIds.join(',')}`
         : 'TP missing',
@@ -6934,6 +6958,7 @@ export class SuggestedTradesService {
     accountId: string;
     symbols: string[];
     entrySide: 'buy' | 'sell';
+    includeLiveBroker?: boolean;
   }): Promise<DeltaActiveProtectionOrders> {
     const normalizedBrokerKey = String(input.brokerKey || '')
       .trim()
@@ -6986,64 +7011,147 @@ export class SuggestedTradesService {
             OR UPPER(COALESCE(order_status, '')) IN ('OPEN', 'PENDING', 'PARTIALLY_FILLED')
           )`,
       [input.userId, input.accountId, normalizedBrokerKey, ...symbols]
-    )) as Array<{
-      externalId?: string | null;
-      orderStatus?: string | null;
-      statusRank?: number | string | null;
-      side?: string | null;
-      reduceOnly?: string | number | boolean | null;
-      stopOrderType?: string | null;
-      orderType?: string | null;
-    }>;
+    )) as DeltaProtectionOrderCandidate[];
 
-    const stopLossOrderIds: string[] = [];
-    const takeProfitOrderIds: string[] = [];
-    const unclassifiedOrderIds: string[] = [];
-    const activeOrderIds: string[] = [];
+    const context: DeltaActiveProtectionOrders = {
+      stopLossOrderIds: [],
+      takeProfitOrderIds: [],
+      unclassifiedOrderIds: [],
+      activeOrderIds: [],
+    };
 
     for (const row of rows) {
-      const orderId = this.readStringValue(row.externalId);
-      if (!orderId) {
-        continue;
-      }
-      const orderStatus = this.normalizeOrderStatus(this.readStringValue(row.orderStatus));
-      const statusRank =
-        row.statusRank === undefined || row.statusRank === null ? null : Number(row.statusRank);
-      if (!this.isActiveLiveProtectionOrder(orderStatus, statusRank)) {
-        continue;
-      }
+      this.addDeltaActiveProtectionOrder(context, row, protectionSide);
+    }
 
-      const side = this.readStringValue(row.side)?.toLowerCase();
-      if (side !== protectionSide) {
-        continue;
-      }
-
-      const reduceOnly = this.readBooleanValue(row.reduceOnly);
-      if (reduceOnly !== true) {
-        continue;
-      }
-
-      activeOrderIds.push(orderId);
-      const stopOrderType = String(
-        this.readStringValue(row.stopOrderType) ?? this.readStringValue(row.orderType) ?? ''
-      )
-        .trim()
-        .toLowerCase();
-      if (stopOrderType.includes('stop_loss')) {
-        stopLossOrderIds.push(orderId);
-      } else if (stopOrderType.includes('take_profit')) {
-        takeProfitOrderIds.push(orderId);
-      } else {
-        unclassifiedOrderIds.push(orderId);
+    if (input.includeLiveBroker) {
+      const liveOrders = await this.listLiveDeltaProtectionOrderCandidates(input);
+      for (const row of liveOrders) {
+        this.addDeltaActiveProtectionOrder(context, row, protectionSide);
       }
     }
 
-    return {
-      stopLossOrderIds,
-      takeProfitOrderIds,
-      unclassifiedOrderIds,
-      activeOrderIds,
-    };
+    return context;
+  }
+
+  private async listLiveDeltaProtectionOrderCandidates(input: {
+    userId: string;
+    brokerKey: string;
+    accountId: string;
+    symbols: string[];
+  }): Promise<DeltaProtectionOrderCandidate[]> {
+    const adapter = this.brokerRuntimeRegistry?.getOrdersAdapter?.(
+      'delta_exchange'
+    ) as DeltaProtectionOrdersAdapter;
+    if (!adapter?.listOpenOrders) {
+      return [];
+    }
+
+    const symbols = new Set(
+      input.symbols
+        .map((symbol) =>
+          String(symbol || '')
+            .trim()
+            .toUpperCase()
+        )
+        .filter(Boolean)
+    );
+    const raw = await adapter.listOpenOrders(
+      { limit: 100 },
+      {
+        userId: input.userId,
+        brokerKey: input.brokerKey,
+        accountId: input.accountId,
+      }
+    );
+    const rows = this.extractUnknownList(raw);
+    return rows
+      .map((row) => this.readRecordValue(row))
+      .filter((row): row is Record<string, unknown> => Boolean(row))
+      .filter((row) => {
+        const symbol =
+          this.readStringValue(row.symbol) ??
+          this.readStringValue(row.product_symbol) ??
+          this.readStringValue(row.productSymbol);
+        return Boolean(symbol && symbols.has(symbol.toUpperCase()));
+      })
+      .map((row) => ({
+        externalId: row.id ?? row.order_id ?? row.orderId,
+        orderStatus: row.status ?? row.state ?? row.order_status ?? row.orderStatus,
+        statusRank: 1,
+        side: row.side,
+        reduceOnly: row.reduce_only ?? row.reduceOnly,
+        stopOrderType: row.stop_order_type ?? row.stopOrderType,
+        orderType: row.order_type ?? row.orderType ?? row.type,
+      }));
+  }
+
+  private addDeltaActiveProtectionOrder(
+    context: DeltaActiveProtectionOrders,
+    row: DeltaProtectionOrderCandidate,
+    protectionSide: 'buy' | 'sell'
+  ): void {
+    const orderId = this.readStringValue(row.externalId);
+    if (!orderId) {
+      return;
+    }
+    const orderStatus = this.normalizeOrderStatus(this.readStringValue(row.orderStatus));
+    const statusRank =
+      row.statusRank === undefined || row.statusRank === null ? null : Number(row.statusRank);
+    if (!this.isActiveLiveProtectionOrder(orderStatus, statusRank)) {
+      return;
+    }
+
+    const side = this.readStringValue(row.side)?.toLowerCase();
+    if (side !== protectionSide) {
+      return;
+    }
+
+    const reduceOnly = this.readBooleanValue(row.reduceOnly);
+    if (reduceOnly !== true) {
+      return;
+    }
+
+    const stopOrderType = String(
+      this.readStringValue(row.stopOrderType) ?? this.readStringValue(row.orderType) ?? ''
+    )
+      .trim()
+      .toLowerCase();
+    if (!context.activeOrderIds.includes(orderId)) {
+      context.activeOrderIds.push(orderId);
+    }
+    if (stopOrderType.includes('stop_loss')) {
+      if (!context.stopLossOrderIds.includes(orderId)) {
+        context.stopLossOrderIds.push(orderId);
+      }
+    } else if (stopOrderType.includes('take_profit')) {
+      if (!context.takeProfitOrderIds.includes(orderId)) {
+        context.takeProfitOrderIds.push(orderId);
+      }
+    } else if (!context.unclassifiedOrderIds.includes(orderId)) {
+      context.unclassifiedOrderIds.push(orderId);
+    }
+  }
+
+  private extractUnknownList(value: unknown): unknown[] {
+    if (Array.isArray(value)) {
+      return value;
+    }
+    const record = this.readRecordValue(value);
+    if (!record) {
+      return [];
+    }
+    for (const key of ['data', 'items', 'result']) {
+      const child = record[key];
+      if (Array.isArray(child)) {
+        return child;
+      }
+      const childRecord = this.readRecordValue(child);
+      if (childRecord && Array.isArray(childRecord.items)) {
+        return childRecord.items;
+      }
+    }
+    return [];
   }
 
   private isProtectionDirectionValid(
@@ -7327,6 +7435,16 @@ export class SuggestedTradesService {
     }
 
     if (!this.isExecutionPositionClosed(execution, positionSnapshots)) {
+      return execution;
+    }
+    const linkedPositionId = this.readStringValue(execution.positionId);
+    const hasDifferentActivePosition = positionSnapshots.some((snapshot) => {
+      if (linkedPositionId && snapshot.externalId === linkedPositionId) {
+        return false;
+      }
+      return this.isActivePositionSnapshot(snapshot);
+    });
+    if (hasDifferentActivePosition) {
       return execution;
     }
 
@@ -7988,6 +8106,9 @@ export class SuggestedTradesService {
       if (direction !== expectedDirection) {
         continue;
       }
+      if (!this.isPositionCandidateFillTimeCompatible(execution, snapshot)) {
+        continue;
+      }
 
       const exactPositionMatch =
         Boolean(linkedPositionId) && snapshot.externalId === linkedPositionId;
@@ -8054,6 +8175,30 @@ export class SuggestedTradesService {
       return null;
     }
     return best.snapshot;
+  }
+
+  private isPositionCandidateFillTimeCompatible(
+    execution: SuggestedTradeExecutionLink,
+    snapshot: {
+      firstSeenAt: Date | string | null;
+      payload: Record<string, unknown> | null;
+    }
+  ): boolean {
+    const filledMs = this.toTimestamp(execution.filledAt);
+    if (!filledMs) {
+      return true;
+    }
+
+    const payload = snapshot.payload ?? {};
+    const openedMs =
+      this.toTimestamp(payload.created_at) ?? this.toTimestamp(payload.createdAt) ?? null;
+    if (!openedMs) {
+      return true;
+    }
+
+    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase();
+    const toleranceMs = brokerKey === 'delta_exchange' ? 30 * 60 * 1000 : 2 * 60 * 60 * 1000;
+    return openedMs <= filledMs + toleranceMs;
   }
 
   private shouldPreferOpenPositionCandidate(

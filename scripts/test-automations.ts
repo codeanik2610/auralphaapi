@@ -2149,6 +2149,234 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
 
     {
       const { service } = createService();
+      const createdSuggestions: Array<Record<string, unknown>> = [];
+      const outputs: Array<Record<string, unknown>> = [];
+      const automationTradeSuggestion = {
+        ...automation,
+        automationType: 'trade-suggestion',
+      };
+      const profile = {
+        automationReady: true,
+        readinessReasons: [],
+        contractVersion: 'trade-suggestion.v1',
+        market: 'crypto-futures',
+        signalThreshold: 0.81,
+        tradePlan: {
+          long: {
+            enabled: true,
+            side: 'long',
+            stopLossPct: 2,
+            takeProfitTargetsPct: [4],
+            rationale: 'First60 long continuation',
+            entryRule: 'Break above range high',
+            exitRule: 'Stop at invalidation',
+          },
+          short: {
+            enabled: true,
+            side: 'short',
+            stopLossPct: 2,
+            takeProfitTargetsPct: [4],
+            rationale: 'First60 short continuation',
+            entryRule: 'Break below range low',
+            exitRule: 'Stop at invalidation',
+          },
+        },
+        tradeManagement: {
+          first60: {
+            enabled: true,
+            mode: 'post_entry_hold_or_exit',
+            dataSource: 'market_candles_1m',
+            long: {
+              side: 'long',
+              enabled: true,
+              decisionGate: {
+                status: 'observe_only',
+                observeOnlyEnabled: true,
+                managementEnabled: false,
+                diagnosticsEnabled: true,
+                reason: 'BUY passed Phase 3c evidence',
+                evidenceRef: 'storage/first60-evidence/phase3c-summary-2026-05-07.md',
+                decidedAt: '2026-05-07',
+              },
+              windowMinutes: 60,
+              evaluationTimeframe: '1m',
+              requiredFavorableR: 1,
+              maxAdverseR: 0.75,
+              targetR: 5,
+              entryBasis: 'signal_5m_close',
+              stopBasis: 'signal_candle_low',
+              passAction: 'hold_for_target',
+              failAction: 'paper_tighten_or_exit',
+            },
+            short: {
+              side: 'short',
+              enabled: true,
+              decisionGate: {
+                status: 'blocked',
+                observeOnlyEnabled: false,
+                managementEnabled: false,
+                diagnosticsEnabled: true,
+                reason: 'SELL failed Phase 3c evidence',
+                evidenceRef: 'storage/first60-evidence/phase3c-summary-2026-05-07.md',
+                decidedAt: '2026-05-07',
+              },
+              windowMinutes: 60,
+              evaluationTimeframe: '1m',
+              requiredFavorableR: 1,
+              maxAdverseR: 0.75,
+              targetR: 4.5,
+              entryBasis: 'signal_5m_close',
+              stopBasis: 'signal_candle_high',
+              passAction: 'hold_for_target',
+              failAction: 'paper_tighten_or_exit',
+            },
+          },
+        },
+      };
+
+      service.resolveTradeSuggestionProfile = async () => ({
+        sourceTemplateId: 'template-first60',
+        templateConfig: {},
+        profile,
+      });
+      service.automationCursorRepository = {
+        listByAutomationAndScope: async () => [],
+        upsertCursor: async () => undefined,
+      };
+      service.automationSignalEvaluatorService = {
+        evaluateLatestSignals: async () => ({
+          evaluatedSymbols: 1,
+          items: [
+            {
+              symbol: 'BTCUSDT',
+              status: 'ok',
+              latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+              signals: [
+                {
+                  side: 'long',
+                  signalTime: '2026-04-04T10:00:00.000Z',
+                  entryPrice: 100,
+                },
+                {
+                  side: 'short',
+                  signalTime: '2026-04-04T10:00:00.000Z',
+                  entryPrice: 100,
+                },
+              ],
+            },
+          ],
+        }),
+      };
+      service.suggestedTradeRepository = {
+        createSuggestedTrade: async (payload: Record<string, unknown>) => {
+          createdSuggestions.push(payload);
+          return {
+            duplicate: false,
+            item: { id: `st-first60-${createdSuggestions.length}` },
+          };
+        },
+      };
+      service.suggestedTradesService = {};
+      service.automationRunOutputRepository = {
+        createOutput: async (payload: Record<string, unknown>) => {
+          outputs.push(payload);
+          return payload;
+        },
+      };
+      service.operationalEventService = {
+        logActivity: async () => undefined,
+        emitNotificationAlert: async () => null,
+      };
+
+      const result = await service.generateTradeSuggestions(
+        automationTradeSuggestion,
+        'run-trade-first60-snapshot',
+        {
+          symbols: ['BTCUSDT'],
+          timeframe: '5m',
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'suggestion_only',
+            },
+          },
+        },
+        new Date('2026-04-04T10:05:00.000Z')
+      );
+
+      assert.equal(result.inserted, 2);
+      assert.equal(createdSuggestions.length, 2);
+
+      const longMeta = createdSuggestions[0]?.meta as Record<string, unknown>;
+      const longSnapshot = longMeta.tradeManagementSnapshot as Record<string, unknown>;
+      const longFirst60 = longSnapshot.first60 as Record<string, unknown>;
+      const shortMeta = createdSuggestions[1]?.meta as Record<string, unknown>;
+      const shortSnapshot = shortMeta.tradeManagementSnapshot as Record<string, unknown>;
+      const shortFirst60 = shortSnapshot.first60 as Record<string, unknown>;
+
+      assert.equal(longSnapshot.schemaVersion, 'trade-management-snapshot.v1');
+      assert.equal(longSnapshot.sourceTemplateId, 'template-first60');
+      assert.equal(longSnapshot.side, 'long');
+      assert.equal(longSnapshot.signalTime, '2026-04-04T10:00:00.000Z');
+      assert.equal(longSnapshot.capturedAt, '2026-04-04T10:05:00.000Z');
+      assert.equal(longFirst60.requiredFavorableR, 1);
+      assert.equal(longFirst60.maxAdverseR, 0.75);
+      assert.equal(longFirst60.targetR, 5);
+      assert.equal(longFirst60.stopBasis, 'signal_candle_low');
+      assert.deepEqual(longFirst60.decisionGate, {
+        status: 'observe_only',
+        observeOnlyEnabled: true,
+        managementEnabled: false,
+        diagnosticsEnabled: true,
+        reason: 'BUY passed Phase 3c evidence',
+        evidenceRef: 'storage/first60-evidence/phase3c-summary-2026-05-07.md',
+        decidedAt: '2026-05-07',
+      });
+      assert.equal(shortSnapshot.side, 'short');
+      assert.equal(shortFirst60.requiredFavorableR, 1);
+      assert.equal(shortFirst60.maxAdverseR, 0.75);
+      assert.equal(shortFirst60.targetR, 4.5);
+      assert.equal(shortFirst60.stopBasis, 'signal_candle_high');
+      assert.deepEqual(shortFirst60.decisionGate, {
+        status: 'blocked',
+        observeOnlyEnabled: false,
+        managementEnabled: false,
+        diagnosticsEnabled: true,
+        reason: 'SELL failed Phase 3c evidence',
+        evidenceRef: 'storage/first60-evidence/phase3c-summary-2026-05-07.md',
+        decidedAt: '2026-05-07',
+      });
+      assert.equal(
+        (
+          (
+            (outputs[0]?.payload as Record<string, unknown>)?.tradeManagementSnapshot as Record<
+              string,
+              unknown
+            >
+          )?.first60 as Record<string, unknown>
+        )?.targetR,
+        5
+      );
+      assert.equal(
+        (
+          (
+            (outputs[1]?.payload as Record<string, unknown>)?.tradeManagementSnapshot as Record<
+              string,
+              unknown
+            >
+          )?.first60 as Record<string, unknown>
+        )?.targetR,
+        4.5
+      );
+
+      profile.tradeManagement.first60.long.targetR = 99;
+      profile.tradeManagement.first60.short.targetR = 99;
+
+      assert.equal(longFirst60.targetR, 5);
+      assert.equal(shortFirst60.targetR, 4.5);
+    }
+
+    {
+      const { service } = createService();
       const activityLogs: Array<Record<string, unknown>> = [];
       const automationTradeSuggestion = {
         ...automation,

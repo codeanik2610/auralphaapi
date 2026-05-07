@@ -1,0 +1,230 @@
+{
+  "phase": "4h",
+  "name": "cursor-gap historical-signal canary for First60 snapshot validation",
+  "generatedAt": "2026-05-07T14:45:06.859Z",
+  "droplet": {
+    "host": "168.144.66.167",
+    "apiContainer": "auralpha-auralpha-api-1"
+  },
+  "signalFinder": {
+    "generatedAt": "2026-05-07T14:41:15.152Z",
+    "symbols": [
+      "BSBUSDT",
+      "MERLUSDT",
+      "LDOUSDT"
+    ],
+    "timeframe": "5m",
+    "attempts": [
+      {
+        "lookbackDays": 3,
+        "evaluatedSymbols": 3,
+        "skippedSymbols": 0,
+        "signalCount": 40,
+        "newestSignal": {
+          "symbol": "MERLUSDT",
+          "timeframe": "5m",
+          "side": "long",
+          "signalTime": "2026-05-07T12:40:00.000Z",
+          "entryPrice": 0.038360000000000005
+        }
+      }
+    ],
+    "selected": {
+      "symbol": "MERLUSDT",
+      "timeframe": "5m",
+      "side": "long",
+      "signalTime": "2026-05-07T12:40:00.000Z",
+      "entryPrice": 0.038360000000000005,
+      "cursorSeedTime": "2026-05-07T12:35:00.000Z",
+      "evaluationAt": "2026-05-07T12:45:01.000Z",
+      "minSignalAgeMinutes": 90,
+      "selectedFromLookbackDays": 3
+    }
+  },
+  "canaryRun": {
+    "runId": "f2057105-41f6-48fb-bb5a-ea80db83ac29",
+    "status": "Success",
+    "trigger": "manual-historical-signal-canary",
+    "scheduledFor": "2026-05-07T12:45:01.000Z",
+    "actualStartedAt": "2026-05-07T14:44:25.000Z",
+    "finishedAt": "2026-05-07T14:44:30.000Z",
+    "target": {
+      "symbol": "MERLUSDT",
+      "timeframe": "5m",
+      "signalTime": "2026-05-07T12:40:00.000Z",
+      "cursorSeedTime": "2026-05-07T12:35:00.000Z",
+      "evaluationAt": "2026-05-07T12:45:01.000Z"
+    },
+    "automation": {
+      "id": "60905546-9a5d-43dd-86f0-74ee3fe075fd",
+      "name": "Phase 4f First60 suggestion-only canary \u00b7 5m \u00b7 3 assets",
+      "statusBefore": "Paused",
+      "statusAfter": "Paused",
+      "nextRunAfter": null,
+      "automationType": "trade-suggestion",
+      "sourceTemplateId": "f7d16c3d-12f8-4f64-b52a-2cf8fa48835b",
+      "executionMode": "suggestion_only",
+      "approvalMode": "manual_review",
+      "liveConsentEnabled": false
+    },
+    "cursor": {
+      "previous": {
+        "id": "b72c1aea-f0bb-426b-b719-7e1862fb708e",
+        "lastEvaluatedSignalTime": "2026-05-07T13:20:00.000Z",
+        "lastTriggeredSignalTime": null,
+        "lastRunId": "b145ebe7-4fa1-4a47-aac8-ada268f4d176",
+        "lastStatus": "ok"
+      },
+      "seededLastEvaluatedSignalTime": "2026-05-07T12:35:00.000Z",
+      "restored": true
+    },
+    "result": {
+      "inserted": 1,
+      "duplicates": 0,
+      "symbolsProcessed": 1,
+      "symbolsSkipped": 0,
+      "symbolsEvaluated": 1,
+      "signalsDetected": 1,
+      "autoPaperPlaced": 0,
+      "autoPaperBlocked": 0,
+      "autoPaperSkipped": 0,
+      "autoPaperFailed": 0,
+      "autoLiveReady": 0,
+      "autoLivePlaced": 0,
+      "autoLiveBlocked": 0,
+      "autoLiveSkipped": 0,
+      "autoLiveDisabled": 0,
+      "autoLiveFailed": 0
+    },
+    "createdTrade": {
+      "id": "0304599b-f7a8-4cf5-81e9-086477342ef2",
+      "symbol": "MERLUSDT",
+      "timeframe": "5m",
+      "side": "BUY",
+      "status": "Open",
+      "signalTime": "2026-05-07T12:40:00.000Z",
+      "createdAt": "2026-05-07T14:44:29.000Z",
+      "sourceTemplateId": "f7d16c3d-12f8-4f64-b52a-2cf8fa48835b",
+      "entryPrice": "0.038360000000",
+      "stopLossPrice": "0.037706626234",
+      "takeProfitTargets": [
+        "0.040320121298"
+      ],
+      "hasFirst60Snapshot": true,
+      "first60Snapshot": {
+        "enabled": true,
+        "mode": "post_entry_hold_or_exit",
+        "dataSource": "market_candles_1m",
+        "decisionGate": {
+          "status": "observe_only",
+          "observeOnlyEnabled": true,
+          "managementEnabled": false,
+          "diagnosticsEnabled": true,
+          "reason": "Phase 4f canary: BUY is approved for observe-only diagnostics after 90d/2d evidence.",
+          "evidenceRef": "storage/first60-evidence/phase4f-create-canary-summary-2026-05-07.md",
+          "decidedAt": "2026-05-07T00:00:00.000Z"
+        },
+        "windowMinutes": 60,
+        "evaluationTimeframe": "1m",
+        "requiredFavorableR": 1,
+        "maxAdverseR": 0.75,
+        "targetR": 5,
+        "entryBasis": "signal_5m_close",
+        "stopBasis": "signal_candle_low",
+        "passAction": "hold_for_target",
+        "failAction": "paper_tighten_or_exit"
+      },
+      "hasObserveResult": false
+    }
+  },
+  "phase4dRerun": {
+    "generatedAt": "2026-05-07T14:45:06.859Z",
+    "since": "2026-05-07T14:44:00.000Z",
+    "lookbackHours": 72,
+    "postDeploy": {
+      "total": 1,
+      "buyCount": 1,
+      "sellCount": 0,
+      "snapshotCount": 1,
+      "gateSnapshotCount": 1,
+      "observeOnlyGateCount": 1,
+      "blockedGateCount": 0,
+      "observeResultCount": 0,
+      "firstCreatedAt": "2026-05-07T14:44:29.000Z",
+      "lastCreatedAt": "2026-05-07T14:44:29.000Z"
+    },
+    "recentPostDeployTrades": [
+      {
+        "id": "0304599b-f7a8-4cf5-81e9-086477342ef2",
+        "symbol": "MERLUSDT",
+        "side": "BUY",
+        "status": "Open",
+        "createdAt": "2026-05-07T14:44:29.000Z",
+        "hasFirst60": true,
+        "gateStatus": "observe_only",
+        "hasObserveResult": false
+      }
+    ]
+  },
+  "observeOnlyMonitorDryRun": {
+    "generatedAt": "2026-05-07T14:45:06.095Z",
+    "mode": "dry-run",
+    "counts": {
+      "candidates": 1,
+      "candles": 122,
+      "evaluated": 1,
+      "writeEligible": 1,
+      "written": 0
+    },
+    "sideCounts": {
+      "long": 1
+    },
+    "actionCounts": {
+      "observe_only": 1
+    },
+    "outcomeCounts": {
+      "first60_failed": 1
+    },
+    "observeOnlyBuy": {
+      "evaluated": 1,
+      "passed": 0,
+      "failed": 1,
+      "targetHits": 0,
+      "stopHits": 0
+    },
+    "item": {
+      "suggestedTradeId": "0304599b-f7a8-4cf5-81e9-086477342ef2",
+      "symbol": "MERLUSDT",
+      "side": "long",
+      "action": "observe_only",
+      "outcome": "first60_failed",
+      "first60Passed": false,
+      "favorableR": 0.642817360989674,
+      "adverseR": 0.30610350523317353,
+      "first60CloseR": -0.19896727840156123,
+      "followThroughExit": {
+        "outcome": "stop",
+        "exitPrice": 0.037706626234,
+        "exitTime": "2026-05-07T14:17:00.000Z"
+      },
+      "candleCount": 60
+    }
+  },
+  "sideEffects": {
+    "automationStatus": "Paused",
+    "nextRun": null,
+    "runOutputs": 1,
+    "suggestedTrades": 1,
+    "orderSubmissions": 0,
+    "paperOrders": 0,
+    "failedChecks": []
+  },
+  "conclusion": {
+    "newSuggestedTradeGenerated": true,
+    "first60SnapshotCaptured": true,
+    "snapshotGateStatus": "observe_only",
+    "managementEnabled": false,
+    "observeOnlyDryRunEvaluated": true,
+    "observeOnlyDryRunWritten": false
+  }
+}

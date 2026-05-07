@@ -1,0 +1,78 @@
+{
+  "phase": "4-end-to-end-deploy",
+  "generatedAt": "2026-05-07T15:00:21.491Z",
+  "droplet": {
+    "host": "168.144.66.167",
+    "sourceDir": "/opt/auralpha/Backend/aurAlpha",
+    "apiContainer": "auralpha-auralpha-api-1",
+    "apiImage": "auralpha-backend:prod"
+  },
+  "deployment": {
+    "copiedMigrationSource": "src/database/pg-migrations_baseline/1800000100000-PreserveStrategyTemplateTradeManagement.ts",
+    "rebuiltImage": "auralpha-backend:prod",
+    "recreatedServices": [
+      "auralpha-api"
+    ],
+    "migrationCommand": "node /app/dist/scripts/db/db-run-migrations.js",
+    "migrationsApplied": {
+      "mysql": 0,
+      "postgres": [
+        "PreserveStrategyTemplateTradeManagement1800000100000"
+      ]
+    }
+  },
+  "containerFiles": {
+    "/app/dist/src/database/pg-migrations_baseline/1800000100000-PreserveStrategyTemplateTradeManagement.js": true,
+    "/app/dist/scripts/db/db-run-migrations.js": true,
+    "/app/dist/src/api/utils/first60ObserveOnlyMonitor.js": true,
+    "/app/dist/scripts/checks/check-first60-observe-only-monitor.js": true,
+    "/app/dist/scripts/checks/check-first60-deploy-readiness.js": true,
+    "/app/dist/scripts/diagnostics/run-first60-template-simulator.js": true
+  },
+  "readiness": {
+    "status": "warn",
+    "warnings": [
+      "Optional source-tree artifact missing in runtime: docs/first60-deploy-readiness-runbook.md",
+      "Live DB checks skipped unless FIRST60_DEPLOY_READINESS_LIVE=true"
+    ],
+    "coreChecksPassed": true
+  },
+  "finalVerifier": {
+    "migrationFilePresent": true,
+    "migrationRecorded": true,
+    "normalizerPreservesTradeManagement": true,
+    "templateFirst60Enabled": true,
+    "buyGateObserveOnly": true,
+    "buyManagementDisabled": true,
+    "sellGateBlocked": true,
+    "automationPaused": true,
+    "automationSuggestionOnly": true,
+    "automationManualReview": true,
+    "liveConsentDisabled": true,
+    "nextRunCleared": true,
+    "phase4hRunSuccess": true,
+    "phase4hTradeExists": true,
+    "phase4hTradeFirst60Snapshot": true,
+    "phase4hTradeGateObserveOnly": true,
+    "phase4hTradeManagementDisabled": true,
+    "runOutputCreated": true,
+    "noOrderSubmissions": true,
+    "noPaperOrders": true,
+    "failed": []
+  },
+  "observeOnlyDryRun": {
+    "candidates": 1,
+    "candles": 137,
+    "evaluated": 1,
+    "writeEligible": 1,
+    "written": 0,
+    "action": "observe_only",
+    "outcome": "first60_failed"
+  },
+  "health": {
+    "auralpha-auralpha-api-1": "healthy",
+    "auralphaapp": "healthy",
+    "discovery-engine": "healthy",
+    "auralpha-scheduler-worker": "healthy"
+  }
+}

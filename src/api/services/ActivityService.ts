@@ -1301,7 +1301,7 @@ export class ActivityService {
             kind: 'signal',
             id: signal.id,
             title: signal.symbol,
-            path: `/signals?signalId=${encodeURIComponent(signal.id)}`,
+            path: `/suggested-trades?tab=signals&signalId=${encodeURIComponent(signal.id)}`,
             status: signal.status,
             description: `${signal.source} · ${signal.timeframe ?? 'no timeframe'}`,
             updatedAt: signal.updatedAt.toISOString(),
