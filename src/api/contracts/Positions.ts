@@ -56,8 +56,11 @@ export interface PositionExecutionProtectionContext {
   lastError: string | null;
   checkedAt: string | null;
   attachedAt: string | null;
+  replacementSubmittedAt?: string | null;
   stopLossPrice: number | null;
   takeProfitPrice: number | null;
+  plannedStopLossPrice?: number | null;
+  plannedTakeProfitPrice?: number | null;
   stopLossOrderId: string | null;
   takeProfitOrderId: string | null;
 }
@@ -208,6 +211,18 @@ export interface PositionLifecycleSuggestedTradeItem {
   linkedPositionId?: string | null;
   linkedOrderId?: string | null;
   linkedPaperOrderId?: string | null;
+  orderStatus?: string | null;
+  paperOrderStatus?: string | null;
+  entrySubmittedAt?: string | null;
+  entryFilledAt?: string | null;
+  filledPrice?: number | null;
+  filledQuantity?: number | null;
+  remainingQuantity?: number | null;
+  positionOpenedAt?: string | null;
+  positionClosedAt?: string | null;
+  exitPrice?: number | null;
+  realizedPnl?: number | null;
+  protection?: PositionExecutionProtectionContext | null;
   sourceTemplateId?: string | null;
   sourceBacktestId?: string | null;
   stopLossPrice?: number | null;

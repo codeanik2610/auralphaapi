@@ -54,6 +54,9 @@ type PositionSuggestedTradeContextRow = {
   protectionAttachedAt?: Date | string | null;
   protectionStopLossPrice?: number | string | null;
   protectionTakeProfitPrice?: number | string | null;
+  protectionAttachedStopLossPrice?: number | string | null;
+  protectionAttachedTakeProfitPrice?: number | string | null;
+  protectionReplacementSubmittedAt?: Date | string | null;
   protectionStopLossOrderId?: string | null;
   protectionTakeProfitOrderId?: string | null;
   sourceTemplateId?: string | null;
@@ -1735,6 +1738,9 @@ export class PositionReadModelRepository {
                    execution_row.protection_attached_at AS protectionAttachedAt,
                    execution_row.stop_loss_price AS protectionStopLossPrice,
                    execution_row.take_profit_price AS protectionTakeProfitPrice,
+                   NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.attachedStopLossPrice')), 'null'), '') AS protectionAttachedStopLossPrice,
+                   NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.attachedTakeProfitPrice')), 'null'), '') AS protectionAttachedTakeProfitPrice,
+                   NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.replacementSubmittedAt')), 'null'), '') AS protectionReplacementSubmittedAt,
                    NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.stopLossOrderId')), 'null'), '') AS protectionStopLossOrderId,
                    NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.takeProfitOrderId')), 'null'), '') AS protectionTakeProfitOrderId,
                    '${traceMethod}' AS traceMethod
@@ -1899,10 +1905,15 @@ export class PositionReadModelRepository {
     const stopLossOrderId = String(row.protectionStopLossOrderId || '').trim() || null;
     const takeProfitOrderId = String(row.protectionTakeProfitOrderId || '').trim() || null;
     const attempts = this.toNumberValue(row.protectionAttempts);
-    const stopLossPrice = this.toNumberValue(row.protectionStopLossPrice);
-    const takeProfitPrice = this.toNumberValue(row.protectionTakeProfitPrice);
+    const plannedStopLossPrice = this.toNumberValue(row.protectionStopLossPrice);
+    const plannedTakeProfitPrice = this.toNumberValue(row.protectionTakeProfitPrice);
+    const stopLossPrice =
+      this.toNumberValue(row.protectionAttachedStopLossPrice) ?? plannedStopLossPrice;
+    const takeProfitPrice =
+      this.toNumberValue(row.protectionAttachedTakeProfitPrice) ?? plannedTakeProfitPrice;
     const checkedAt = this.toIsoString(row.protectionCheckedAt);
     const attachedAt = this.toIsoString(row.protectionAttachedAt);
+    const replacementSubmittedAt = this.toIsoString(row.protectionReplacementSubmittedAt);
 
     if (
       !state &&
@@ -1913,8 +1924,11 @@ export class PositionReadModelRepository {
       attempts === null &&
       stopLossPrice === null &&
       takeProfitPrice === null &&
+      plannedStopLossPrice === null &&
+      plannedTakeProfitPrice === null &&
       !checkedAt &&
-      !attachedAt
+      !attachedAt &&
+      !replacementSubmittedAt
     ) {
       return null;
     }
@@ -1926,8 +1940,11 @@ export class PositionReadModelRepository {
       lastError,
       checkedAt,
       attachedAt,
+      replacementSubmittedAt,
       stopLossPrice,
       takeProfitPrice,
+      plannedStopLossPrice,
+      plannedTakeProfitPrice,
       stopLossOrderId,
       takeProfitOrderId,
     };

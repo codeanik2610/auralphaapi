@@ -21,6 +21,7 @@ import {
   PositionLifecycleOrderItem,
   PositionLifecycleResponse,
   PositionLifecycleSuggestedTradeItem,
+  PositionExecutionProtectionContext,
   PositionsAccountFreshness,
   PositionsFreshnessIndicator,
   PositionsFreshnessState,
@@ -1549,6 +1550,7 @@ export class BrokerPositionsFacadeService {
           .map((value) => this.toNumber(value))
           .find((value): value is number => value !== null) ?? null
       : null;
+    const protection = this.mapLifecycleSuggestedTradeProtection(execution);
     return {
       id: item.id,
       symbol: item.symbol,
@@ -1566,12 +1568,84 @@ export class BrokerPositionsFacadeService {
       linkedPositionId: execution?.positionId ?? null,
       linkedOrderId: execution?.orderId ?? null,
       linkedPaperOrderId: execution?.paperOrderId ?? null,
+      orderStatus: execution?.orderStatus ?? null,
+      paperOrderStatus: execution?.paperOrderStatus ?? null,
+      entrySubmittedAt: this.toIsoString(execution?.submittedAt) || null,
+      entryFilledAt: this.toIsoString(execution?.filledAt) || null,
+      filledPrice: this.toNumber(execution?.filledPrice),
+      filledQuantity: this.toNumber(execution?.filledQuantity),
+      remainingQuantity: this.toNumber(execution?.remainingQuantity),
+      positionOpenedAt: this.toIsoString(execution?.positionOpenedAt) || null,
+      positionClosedAt: this.toIsoString(execution?.positionClosedAt) || null,
+      exitPrice: this.toNumber(execution?.exitPrice),
+      realizedPnl: this.toNumber(execution?.realizedPnl),
+      protection,
       sourceTemplateId: item.sourceTemplateId ?? null,
       sourceBacktestId: item.sourceBacktestId ?? null,
       stopLossPrice: this.toNumber(execution?.stopLossPrice ?? item.stopLossPrice),
       targetPrice: this.toNumber(execution?.takeProfitPrice) ?? fallbackTarget,
       detailUrl: `/suggested-trades?selected=${encodeURIComponent(item.id)}`,
       linkedEntities: this.buildSuggestedTradeLinks(item),
+    };
+  }
+
+  private mapLifecycleSuggestedTradeProtection(
+    execution: SuggestedTrade['executionRecord'] | null | undefined
+  ): PositionExecutionProtectionContext | null {
+    if (!execution) {
+      return null;
+    }
+
+    const protectionPlan = this.toRecord(execution.protectionPlan) || {};
+    const state = this.readString(execution.protectionState) || null;
+    const source = this.readString(execution.protectionSource) || null;
+    const attempts = this.toNumber(execution.protectionAttempts);
+    const lastError = this.readString(execution.protectionLastError) || null;
+    const checkedAt = this.toIsoString(execution.protectionCheckedAt) || null;
+    const attachedAt = this.toIsoString(execution.protectionAttachedAt) || null;
+    const replacementSubmittedAt =
+      this.toIsoString(protectionPlan.replacementSubmittedAt) || null;
+    const plannedStopLossPrice = this.toNumber(execution.stopLossPrice);
+    const plannedTakeProfitPrice = this.toNumber(execution.takeProfitPrice);
+    const stopLossPrice =
+      this.toNumber(protectionPlan.attachedStopLossPrice) ?? plannedStopLossPrice;
+    const takeProfitPrice =
+      this.toNumber(protectionPlan.attachedTakeProfitPrice) ?? plannedTakeProfitPrice;
+    const stopLossOrderId = this.readString(protectionPlan.stopLossOrderId) || null;
+    const takeProfitOrderId = this.readString(protectionPlan.takeProfitOrderId) || null;
+
+    if (
+      !state &&
+      !source &&
+      attempts === null &&
+      !lastError &&
+      !checkedAt &&
+      !attachedAt &&
+      !replacementSubmittedAt &&
+      stopLossPrice === null &&
+      takeProfitPrice === null &&
+      plannedStopLossPrice === null &&
+      plannedTakeProfitPrice === null &&
+      !stopLossOrderId &&
+      !takeProfitOrderId
+    ) {
+      return null;
+    }
+
+    return {
+      state,
+      source,
+      attempts,
+      lastError,
+      checkedAt,
+      attachedAt,
+      replacementSubmittedAt,
+      stopLossPrice,
+      takeProfitPrice,
+      plannedStopLossPrice,
+      plannedTakeProfitPrice,
+      stopLossOrderId,
+      takeProfitOrderId,
     };
   }
 

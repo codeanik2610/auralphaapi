@@ -774,6 +774,19 @@ async function positionsGuard05(): Promise<void> {
             positionClosedAt: null,
             exitPrice: null,
             realizedPnl: null,
+            protectionState: 'attached',
+            protectionSource: 'suggested_trade_execution',
+            protectionPlan: {
+              attachedStopLossPrice: '65600',
+              attachedTakeProfitPrice: '68950',
+              replacementSubmittedAt: '2026-04-09T09:00:00.000Z',
+              stopLossOrderId: 'sl-1',
+              takeProfitOrderId: 'tp-1',
+            },
+            protectionAttempts: 1,
+            protectionLastError: null,
+            protectionCheckedAt: new Date('2026-04-09T08:59:30.000Z'),
+            protectionAttachedAt: new Date('2026-04-09T09:00:05.000Z'),
             outcome: 'open',
             note: null,
           },
@@ -966,6 +979,24 @@ async function positionsGuard05(): Promise<void> {
       assert.equal(response.relatedAlerts[0].id, 'alert-1');
       assert.equal(response.relatedSuggestedTrades[0].id, 'trade-1');
       assert.equal(response.relatedSuggestedTrades[0].linkedPositionId, 'pos-1');
+      assert.equal(response.relatedSuggestedTrades[0].orderStatus, 'FILLED');
+      assert.equal(response.relatedSuggestedTrades[0].entrySubmittedAt, '2026-04-09T08:56:00.000Z');
+      assert.equal(response.relatedSuggestedTrades[0].entryFilledAt, '2026-04-09T08:58:00.000Z');
+      assert.equal(response.relatedSuggestedTrades[0].positionOpenedAt, '2026-04-09T08:58:00.000Z');
+      assert.equal(response.relatedSuggestedTrades[0].filledPrice, 66810);
+      assert.equal(response.relatedSuggestedTrades[0].filledQuantity, 0.25);
+      assert.equal(response.relatedSuggestedTrades[0].protection?.state, 'attached');
+      assert.equal(response.relatedSuggestedTrades[0].protection?.checkedAt, '2026-04-09T08:59:30.000Z');
+      assert.equal(response.relatedSuggestedTrades[0].protection?.attachedAt, '2026-04-09T09:00:05.000Z');
+      assert.equal(
+        response.relatedSuggestedTrades[0].protection?.replacementSubmittedAt,
+        '2026-04-09T09:00:00.000Z'
+      );
+      assert.equal(response.relatedSuggestedTrades[0].protection?.plannedStopLossPrice, 65500);
+      assert.equal(response.relatedSuggestedTrades[0].protection?.plannedTakeProfitPrice, 69000);
+      assert.equal(response.relatedSuggestedTrades[0].protection?.stopLossPrice, 65600);
+      assert.equal(response.relatedSuggestedTrades[0].protection?.takeProfitPrice, 68950);
+      assert.equal(response.relatedSuggestedTrades[0].protection?.stopLossOrderId, 'sl-1');
       assert.equal(
         response.relatedLinks.some(
           (item: { entity: string; id: string }) => item.entity === 'account' && item.id === 'acc-1'
@@ -1613,6 +1644,9 @@ async function positionsGuard09(): Promise<void> {
               protectionAttachedAt: '2026-04-09T10:02:00.000Z',
               protectionStopLossPrice: '3234',
               protectionTakeProfitPrice: '3432',
+              protectionAttachedStopLossPrice: '3234.5',
+              protectionAttachedTakeProfitPrice: '3432.5',
+              protectionReplacementSubmittedAt: '2026-04-09T10:01:30.000Z',
               protectionStopLossOrderId: 'sl-eth',
               protectionTakeProfitOrderId: 'tp-eth',
               traceMethod: 'position_id',
@@ -1714,8 +1748,14 @@ async function positionsGuard09(): Promise<void> {
       assert.equal(overview.items[0].automationTrade?.traceMethod, 'position_id');
       assert.equal(overview.items[0].positionSummary?.entryFilledAt, '2026-04-09T10:00:00.000Z');
       assert.equal(overview.items[0].executionProtection?.state, 'attached');
+      assert.equal(overview.items[0].executionProtection?.plannedStopLossPrice, 3234);
+      assert.equal(overview.items[0].executionProtection?.stopLossPrice, 3234.5);
+      assert.equal(
+        overview.items[0].executionProtection?.replacementSubmittedAt,
+        '2026-04-09T10:01:30.000Z'
+      );
       assert.equal(overview.items[0].executionProtection?.stopLossOrderId, 'sl-eth');
-      assert.equal(overview.items[0].positionSummary?.executionProtection?.takeProfitPrice, 3432);
+      assert.equal(overview.items[0].positionSummary?.executionProtection?.takeProfitPrice, 3432.5);
       assert.equal(overview.items[1].id, 'pos-1');
       assert.equal(overview.items[1].positionSummary?.unrealizedPnl, 100);
       assert.equal(overview.items[1].timeframe, '5m');
