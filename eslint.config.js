@@ -18,6 +18,21 @@ module.exports = [
       },
     },
   },
+  {
+    files: ['**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      ecmaVersion: 'latest',
+      globals: {
+        console: 'readonly',
+        module: 'readonly',
+        process: 'readonly',
+        require: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+      },
+    },
+  },
   js.configs.recommended,
   {
     files: ['**/*.ts'],
