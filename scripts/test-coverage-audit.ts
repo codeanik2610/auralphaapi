@@ -24,11 +24,18 @@ function listDirFiles(relativeDir: string): string[] {
 }
 
 function listBasenames(relativeDir: string): string[] {
-  return fs
-    .readdirSync(path.join(ROOT, relativeDir), { withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
-    .sort();
+  const absoluteDir = path.join(ROOT, relativeDir);
+  const items: string[] = [];
+  for (const entry of fs.readdirSync(absoluteDir, { withFileTypes: true })) {
+    if (entry.isFile()) {
+      items.push(entry.name);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      items.push(...listBasenames(path.posix.join(relativeDir, entry.name)));
+    }
+  }
+  return items.sort();
 }
 
 function flattenSurfaces(

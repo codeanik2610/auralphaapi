@@ -57,6 +57,12 @@ const getArray = (key: string): string[] => {
     .filter(Boolean);
 };
 
+const getBoolWithEnvFallback = (
+  key: string,
+  fallbackKey: string,
+  fallbackDefault: boolean
+): boolean => getBool(key, getBool(fallbackKey, fallbackDefault));
+
 const resolveActivityExportStorageMode = (value: string | undefined): 'filesystem' => {
   const normalized = normalizeEnvValue(value).toLowerCase();
   if (!normalized || normalized === 'filesystem') {
@@ -323,10 +329,7 @@ const schedulerExecutionMode: 'direct' | 'queue' =
   process.env.SCHEDULER_EXECUTION_MODE === 'queue' ? 'queue' : 'direct';
 const loginMaxAttempts = Math.max(1, getNumber('AUTH_LOGIN_MAX_ATTEMPTS', 5));
 const loginIpMaxAttempts = Math.max(loginMaxAttempts, getNumber('AUTH_LOGIN_IP_MAX_ATTEMPTS', 20));
-const automationSignalTimeoutMs = Math.max(
-  1000,
-  getNumber('AUTOMATION_SIGNAL_TIMEOUT_MS', 60000)
-);
+const automationSignalTimeoutMs = Math.max(1000, getNumber('AUTOMATION_SIGNAL_TIMEOUT_MS', 60000));
 const automationSignalTimeoutPerSymbolMs = Math.max(
   0,
   getNumber('AUTOMATION_SIGNAL_TIMEOUT_PER_SYMBOL_MS', 2000)
@@ -546,6 +549,16 @@ export const env = {
     liveAuto: {
       enabled: getBool('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', false),
       executionEnabled: getBool('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED', false),
+      mudrexEnabled: getBoolWithEnvFallback(
+        'SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED',
+        'SUGGESTED_TRADES_LIVE_AUTO_ENABLED',
+        false
+      ),
+      deltaExchangeEnabled: getBoolWithEnvFallback(
+        'SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED',
+        'SUGGESTED_TRADES_LIVE_AUTO_ENABLED',
+        false
+      ),
       adaptiveRoutingMode: resolveSuggestedTradesAdaptiveRoutingMode(
         process.env.SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE
       ),
@@ -559,6 +572,13 @@ export const env = {
       ),
       shadowBrokerAllowlist: getArray('SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST').map(
         (item) => item.trim().toLowerCase()
+      ),
+    },
+    protectionRepair: {
+      mudrexEnabled: getBool('SUGGESTED_TRADES_PROTECTION_REPAIR_MUDREX_ENABLED', true),
+      deltaExchangeEnabled: getBool(
+        'SUGGESTED_TRADES_PROTECTION_REPAIR_DELTA_EXCHANGE_ENABLED',
+        true
       ),
     },
   },

@@ -1054,6 +1054,8 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     rolloutEnabled: process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED,
     enabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_ENABLED,
     executionEnabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED,
+    mudrexEnabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED,
+    deltaExchangeEnabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED,
     adaptiveRoutingMode: process.env.SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE,
     requireFixedRouting: process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING,
     userAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST,
@@ -1063,6 +1065,8 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
   const originalLiveAuto = {
     enabled: env.suggestedTrades.liveAuto.enabled,
     executionEnabled: env.suggestedTrades.liveAuto.executionEnabled,
+    mudrexEnabled: env.suggestedTrades.liveAuto.mudrexEnabled,
+    deltaExchangeEnabled: env.suggestedTrades.liveAuto.deltaExchangeEnabled,
     adaptiveRoutingMode: env.suggestedTrades.liveAuto.adaptiveRoutingMode,
     requireFixedRouting: env.suggestedTrades.liveAuto.requireFixedRouting,
     userAllowlist: [...env.suggestedTrades.liveAuto.userAllowlist],
@@ -1274,6 +1278,8 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     env.suggestedTrades.rolloutEnabled = true;
     env.suggestedTrades.liveAuto.enabled = false;
     env.suggestedTrades.liveAuto.executionEnabled = false;
+    env.suggestedTrades.liveAuto.mudrexEnabled = false;
+    env.suggestedTrades.liveAuto.deltaExchangeEnabled = false;
     env.suggestedTrades.liveAuto.requireFixedRouting = true;
     env.suggestedTrades.liveAuto.userAllowlist = ['user-1'];
     env.suggestedTrades.liveAuto.brokerAllowlist = ['mudrex'];
@@ -1314,6 +1320,27 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST = 'user-1';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = 'mudrex';
     process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'false';
+
+    env.suggestedTrades.liveAuto.mudrexEnabled = false;
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED = 'false';
+    const brokerControlBlocked = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto',
+      {
+        async createOrder() {
+          throw new Error('broker-control path should not create orders');
+        },
+      }
+    );
+    assert.equal(brokerControlBlocked.outcome, 'blocked');
+    assert.equal(
+      brokerControlBlocked.message,
+      'Broker mudrex live auto is disabled by broker-specific control'
+    );
+    assert.equal(preTradeGateCalls, 0);
+
+    env.suggestedTrades.liveAuto.mudrexEnabled = true;
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED = 'true';
 
     const ready = await service.attemptAutoLiveExecutionForAutomation('user-1', 'st-live-auto', {
       async createOrder() {
@@ -1549,6 +1576,8 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
     env.suggestedTrades.liveAuto.enabled = originalLiveAuto.enabled;
     env.suggestedTrades.liveAuto.executionEnabled = originalLiveAuto.executionEnabled;
+    env.suggestedTrades.liveAuto.mudrexEnabled = originalLiveAuto.mudrexEnabled;
+    env.suggestedTrades.liveAuto.deltaExchangeEnabled = originalLiveAuto.deltaExchangeEnabled;
     env.suggestedTrades.liveAuto.adaptiveRoutingMode = originalLiveAuto.adaptiveRoutingMode;
     env.suggestedTrades.liveAuto.requireFixedRouting = originalLiveAuto.requireFixedRouting;
     env.suggestedTrades.liveAuto.userAllowlist = [...originalLiveAuto.userAllowlist];
@@ -1559,6 +1588,11 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     restoreEnv('SUGGESTED_TRADES_ROLLOUT_ENABLED', originalEnvFlags.rolloutEnabled);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', originalEnvFlags.enabled);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED', originalEnvFlags.executionEnabled);
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED', originalEnvFlags.mudrexEnabled);
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED',
+      originalEnvFlags.deltaExchangeEnabled
+    );
     restoreEnv(
       'SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE',
       originalEnvFlags.adaptiveRoutingMode
@@ -4277,6 +4311,91 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
   }
 
   {
+    const originalMudrexRepairEnabled = env.suggestedTrades.protectionRepair.mudrexEnabled;
+    const originalMudrexRepairEnv = process.env.SUGGESTED_TRADES_PROTECTION_REPAIR_MUDREX_ENABLED;
+    const service = new SuggestedTradesService() as any;
+    let riskOrderCalled = false;
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder() {
+            riskOrderCalled = true;
+            throw new Error('disabled Mudrex protection repair must not create a risk order');
+          },
+        };
+      },
+    };
+
+    try {
+      env.suggestedTrades.protectionRepair.mudrexEnabled = false;
+      process.env.SUGGESTED_TRADES_PROTECTION_REPAIR_MUDREX_ENABLED = 'false';
+      const nextExecution = await service.maybeRemediateLiveProtection(
+        'user-1',
+        {
+          id: 'st-mudrex-repair-control-disabled',
+          automationId: 'auto-1',
+          automationRunId: 'run-1',
+          userId: 'user-1',
+          symbol: 'GOATUSDT',
+          timeframe: '5m',
+          side: 'SELL',
+          signalTime: new Date('2026-04-04T10:00:00.000Z'),
+          status: 'Accepted',
+          entryPrice: '0.018',
+          stopLossPrice: '0.019',
+          takeProfitTargets: ['0.016'],
+          dedupeKey: 'dedupe-mudrex-repair-control-disabled',
+          meta: null,
+          createdAt: new Date('2026-04-04T10:00:00.000Z'),
+          updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+        },
+        {
+          executionMode: 'live',
+          brokerKey: 'mudrex',
+          accountId: 'acc-1',
+          orderId: 'mudrex-order-repair-control-disabled',
+          executionState: 'filled',
+          orderStatus: 'FILLED',
+          entryPrice: '0.018',
+          stopLossPrice: '0.019',
+          takeProfitPrice: '0.016',
+          protectionState: 'waiting_for_position',
+          protectionAttempts: 0,
+        },
+        [
+          {
+            externalId: 'mudrex:asset-1:2026-04-04T10:03:05Z:SHORT',
+            status: 'OPEN',
+            statusRank: 2,
+            firstSeenAt: '2026-04-04T10:03:05.000Z',
+            lastSeenAt: '2026-04-04T10:03:05.000Z',
+            payload: {
+              id: 'mudrex-native-position-repair-control-disabled',
+              status: 'open',
+              order_type: 'SHORT',
+              entry_price: '0.0182',
+              current_price: '0.0182',
+              quantity: '100',
+              created_at: '2026-04-04T10:03:05.000Z',
+              updated_at: '2026-04-04T10:03:05.000Z',
+            },
+          },
+        ]
+      );
+
+      assert.equal(riskOrderCalled, false);
+      assert.equal(nextExecution.protectionState, 'manual_unlinked');
+      assert.match(
+        String(nextExecution.protectionLastError || ''),
+        /Mudrex automatic SL\/TP protection repair is disabled/
+      );
+    } finally {
+      env.suggestedTrades.protectionRepair.mudrexEnabled = originalMudrexRepairEnabled;
+      restoreEnv('SUGGESTED_TRADES_PROTECTION_REPAIR_MUDREX_ENABLED', originalMudrexRepairEnv);
+    }
+  }
+
+  {
     const service = new SuggestedTradesService() as any;
     let riskOrderCalled = false;
     service.brokerRuntimeRegistry = {
@@ -4702,6 +4821,114 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
       (nextExecution.protectionPlan as Record<string, unknown> | undefined)?.stopLossOrderId,
       'delta-sl-manual-1'
     );
+  }
+
+  {
+    const originalDeltaRepairEnabled = env.suggestedTrades.protectionRepair.deltaExchangeEnabled;
+    const originalDeltaRepairEnv =
+      process.env.SUGGESTED_TRADES_PROTECTION_REPAIR_DELTA_EXCHANGE_ENABLED;
+    const service = new SuggestedTradesService() as any;
+    let createProtectionCalled = false;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+      stopLossStatus: null,
+      takeProfitStatus: null,
+      activeOrderIds: [],
+    });
+    service.resolveLiveAutoAssetRoute = async () => ({
+      assetId: 'delta-asset-1',
+      requestedSymbol: 'BTCUSDT',
+      brokerSymbol: 'BTCUSDT',
+      candidateSymbols: ['BTCUSDT'],
+      resolvedVia: 'catalog_exact',
+    });
+    service.resolveActiveDeltaProtectionOrdersForSymbol = async () => ({
+      stopLossOrderIds: [],
+      takeProfitOrderIds: [],
+      unclassifiedOrderIds: [],
+      activeOrderIds: [],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition() {
+            createProtectionCalled = true;
+            throw new Error('disabled Delta protection repair must not place replacement orders');
+          },
+        };
+      },
+    };
+
+    try {
+      env.suggestedTrades.protectionRepair.deltaExchangeEnabled = false;
+      process.env.SUGGESTED_TRADES_PROTECTION_REPAIR_DELTA_EXCHANGE_ENABLED = 'false';
+      const nextExecution = await service.maybeRemediateLiveProtection(
+        'user-1',
+        {
+          id: 'st-delta-repair-control-disabled',
+          automationId: 'auto-1',
+          automationRunId: 'run-1',
+          userId: 'user-1',
+          symbol: 'BTCUSDT',
+          timeframe: '5m',
+          side: 'BUY',
+          signalTime: new Date('2026-04-04T10:00:00.000Z'),
+          status: 'Accepted',
+          entryPrice: '100',
+          stopLossPrice: '95',
+          takeProfitTargets: ['110'],
+          dedupeKey: 'dedupe-delta-repair-control-disabled',
+          meta: null,
+          createdAt: new Date('2026-04-04T10:00:00.000Z'),
+          updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+        },
+        {
+          executionMode: 'live',
+          brokerKey: 'delta_exchange',
+          accountId: 'delta-acc-1',
+          orderId: 'delta-entry-repair-control-disabled',
+          executionState: 'filled',
+          orderStatus: 'CLOSED',
+          entryPrice: '100',
+          stopLossPrice: '95',
+          takeProfitPrice: '110',
+          protectionState: 'waiting_for_position',
+          protectionAttempts: 0,
+        },
+        [
+          {
+            externalId: 'delta:btc-position-repair-disabled',
+            status: 'OPEN',
+            statusRank: 2,
+            firstSeenAt: '2026-04-04T10:03:05.000Z',
+            lastSeenAt: '2026-04-04T10:03:05.000Z',
+            payload: {
+              product_symbol: 'BTCUSDT',
+              side: 'long',
+              entry_price: '100',
+              current_price: '100',
+              size: '1',
+              created_at: '2026-04-04T10:03:05.000Z',
+              updated_at: '2026-04-04T10:03:05.000Z',
+            },
+          },
+        ]
+      );
+
+      assert.equal(createProtectionCalled, false);
+      assert.equal(nextExecution.protectionState, 'manual_unlinked');
+      assert.match(
+        String(nextExecution.protectionLastError || ''),
+        /Delta Exchange automatic SL\/TP protection repair is disabled/
+      );
+    } finally {
+      env.suggestedTrades.protectionRepair.deltaExchangeEnabled = originalDeltaRepairEnabled;
+      restoreEnv(
+        'SUGGESTED_TRADES_PROTECTION_REPAIR_DELTA_EXCHANGE_ENABLED',
+        originalDeltaRepairEnv
+      );
+    }
   }
 
   {
@@ -6953,11 +7180,15 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   for (const marker of [
     'SUGGESTED_TRADES_LIVE_AUTO_ENABLED',
     'SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED',
+    'SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED',
+    'SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED',
     'SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE',
     'SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING',
     'SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST',
     'SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST',
     'SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST',
+    'SUGGESTED_TRADES_PROTECTION_REPAIR_MUDREX_ENABLED',
+    'SUGGESTED_TRADES_PROTECTION_REPAIR_DELTA_EXCHANGE_ENABLED',
   ]) {
     assert.equal(
       envSource.includes(marker),

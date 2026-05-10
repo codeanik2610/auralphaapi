@@ -178,14 +178,20 @@ function summarizeFreshness(
 }
 
 function buildNextActions(gates: Gate[]): string[] {
-  const blockedKeys = new Set(gates.filter((gate) => gate.status === 'block').map((gate) => gate.key));
+  const blockedKeys = new Set(
+    gates.filter((gate) => gate.status === 'block').map((gate) => gate.key)
+  );
   const actions: string[] = [];
 
   if (blockedKeys.has('live_auto_control_plane_enabled')) {
-    actions.push('Enable SUGGESTED_TRADES_LIVE_AUTO_ENABLED only when you are ready for broker-auto canary evaluation.');
+    actions.push(
+      'Enable SUGGESTED_TRADES_LIVE_AUTO_ENABLED only when you are ready for broker-auto canary evaluation.'
+    );
   }
   if (blockedKeys.has('live_auto_execution_enabled')) {
-    actions.push('Keep SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED=false for dry-run proof; enable it only for the final live canary.');
+    actions.push(
+      'Keep SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED=false for dry-run proof; enable it only for the final live canary.'
+    );
   }
   if (blockedKeys.has('target_user_allowlisted')) {
     actions.push('Add the target admin user id to SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST.');
@@ -193,34 +199,53 @@ function buildNextActions(gates: Gate[]): string[] {
   if (blockedKeys.has('target_broker_allowlisted')) {
     actions.push('Add the target broker key to SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST.');
   }
+  if (blockedKeys.has('target_broker_live_auto_control_enabled')) {
+    actions.push(
+      'Enable the matching broker control: SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED or SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED.'
+    );
+  }
   if (blockedKeys.has('canary_live_automation')) {
-    actions.push('Create or update one tiny canary automation: live_trade_auto, auto_if_safe, fixed route, explicit live consent, max 1 order/run/day/open trade.');
+    actions.push(
+      'Create or update one tiny canary automation: live_trade_auto, auto_if_safe, fixed route, explicit live consent, max 1 order/run/day/open trade.'
+    );
   }
   if (blockedKeys.has('suggested_trade_candidate')) {
-    actions.push('Run or wait for the canary automation to produce one open suggested trade before attempting broker-auto.');
+    actions.push(
+      'Run or wait for the canary automation to produce one open suggested trade before attempting broker-auto.'
+    );
   }
   if (blockedKeys.has('target_broker_supported')) {
-    actions.push('Use a broker with a certified live-auto placement path: mudrex or delta_exchange.');
+    actions.push(
+      'Use a broker with a certified live-auto placement path: mudrex or delta_exchange.'
+    );
   }
   if (blockedKeys.has('admin_broker_route') || blockedKeys.has('admin_broker_credentials')) {
     actions.push('Fix the admin broker connection/account before canary execution.');
   }
   if (blockedKeys.has('system_broker_route')) {
-    actions.push('Fix the system broker route so schedulers can refresh broker data before the canary.');
+    actions.push(
+      'Fix the system broker route so schedulers can refresh broker data before the canary.'
+    );
   }
   if (blockedKeys.has('risk_policy_hard_block')) {
     actions.push('Enable an enforcing risk policy for the target broker route.');
   }
   if (blockedKeys.has('target_broker_asset_mapping')) {
-    actions.push('Refresh exchange-assets-sync so the canary symbol maps to the current live broker product.');
+    actions.push(
+      'Refresh exchange-assets-sync so the canary symbol maps to the current live broker product.'
+    );
   }
   if (blockedKeys.has('target_delta_product_live')) {
-    actions.push('Refresh the Delta broker_assets mapping before enabling live execution; stale or expired products are blocked.');
+    actions.push(
+      'Refresh the Delta broker_assets mapping before enabling live execution; stale or expired products are blocked.'
+    );
   }
 
   return actions.length
     ? actions
-    : ['All blocking gates passed; run the canary with max-1 limits and watch order submission reconciliation.'];
+    : [
+        'All blocking gates passed; run the canary with max-1 limits and watch order submission reconciliation.',
+      ];
 }
 
 function normalizeDeltaSymbol(value: unknown): string {
@@ -266,7 +291,8 @@ function isDeltaSymbolCompatible(productSymbol: unknown, requestedSymbol: string
   return (
     normalizedProductSymbol === normalizedRequestedSymbol ||
     normalizedProductSymbol === normalizeDeltaUsdQuoteSymbol(normalizedRequestedSymbol) ||
-    resolveDeltaBaseSymbol(normalizedProductSymbol) === resolveDeltaBaseSymbol(normalizedRequestedSymbol)
+    resolveDeltaBaseSymbol(normalizedProductSymbol) ===
+      resolveDeltaBaseSymbol(normalizedRequestedSymbol)
   );
 }
 
@@ -276,7 +302,7 @@ function resolveDeltaProduct(
   requestedSymbol: string
 ): DeltaProductResolution {
   const mappedProduct = productId
-    ? products.find((product) => readString(product.id) === productId) ?? null
+    ? (products.find((product) => readString(product.id) === productId) ?? null)
     : null;
   if (
     mappedProduct &&
@@ -329,7 +355,8 @@ async function fetchDeltaProducts(baseUrl: string): Promise<{ products: Row[]; e
 }
 
 async function run(): Promise<void> {
-  const targetEmail = readString(process.env.BROKER_AUTO_CANARY_USER_EMAIL) || DEFAULT_CANARY_USER_EMAIL;
+  const targetEmail =
+    readString(process.env.BROKER_AUTO_CANARY_USER_EMAIL) || DEFAULT_CANARY_USER_EMAIL;
   const targetBroker = (
     readString(process.env.BROKER_AUTO_CANARY_BROKER) || DEFAULT_CANARY_BROKER
   ).toLowerCase();
@@ -373,6 +400,8 @@ async function run(): Promise<void> {
       rolloutStage: env.suggestedTrades.rolloutStage,
       liveAutoEnabled: env.suggestedTrades.liveAuto.enabled,
       liveAutoExecutionEnabled: env.suggestedTrades.liveAuto.executionEnabled,
+      mudrexLiveAutoEnabled: env.suggestedTrades.liveAuto.mudrexEnabled,
+      deltaExchangeLiveAutoEnabled: env.suggestedTrades.liveAuto.deltaExchangeEnabled,
       requireFixedRouting: env.suggestedTrades.liveAuto.requireFixedRouting,
       userAllowlistSize: env.suggestedTrades.liveAuto.userAllowlist.length,
       brokerAllowlist: env.suggestedTrades.liveAuto.brokerAllowlist,
@@ -381,6 +410,12 @@ async function run(): Promise<void> {
       targetUserId && env.suggestedTrades.liveAuto.userAllowlist.includes(targetUserId)
     );
     const brokerAllowlisted = env.suggestedTrades.liveAuto.brokerAllowlist.includes(targetBroker);
+    const brokerLiveAutoControlEnabled =
+      targetBroker === 'mudrex'
+        ? runtime.mudrexLiveAutoEnabled
+        : targetBroker === 'delta_exchange'
+          ? runtime.deltaExchangeLiveAutoEnabled
+          : true;
 
     addGate(gates, {
       key: 'suggested_trades_rollout_enabled',
@@ -402,7 +437,8 @@ async function run(): Promise<void> {
       summary: runtime.liveAutoExecutionEnabled
         ? 'Live broker placement is enabled'
         : 'Live broker placement is disabled',
-      detail: 'This should stay disabled for dry-run proof and be enabled only for the final live canary.',
+      detail:
+        'This should stay disabled for dry-run proof and be enabled only for the final live canary.',
     });
     addGate(gates, {
       key: 'target_user_allowlisted',
@@ -418,6 +454,13 @@ async function run(): Promise<void> {
       summary: brokerAllowlisted
         ? `Broker ${targetBroker} is allowlisted`
         : `Broker ${targetBroker} is not allowlisted`,
+    });
+    addGate(gates, {
+      key: 'target_broker_live_auto_control_enabled',
+      status: brokerLiveAutoControlEnabled ? 'pass' : 'block',
+      summary: brokerLiveAutoControlEnabled
+        ? `Broker ${targetBroker} live-auto control is enabled`
+        : `Broker ${targetBroker} live-auto control is disabled`,
     });
     const brokerLiveSupported = SUPPORTED_LIVE_AUTO_BROKERS.has(targetBroker);
     const brokerDryRunSupported = SUPPORTED_DRY_RUN_CANARY_BROKERS.has(targetBroker);
@@ -544,9 +587,9 @@ async function run(): Promise<void> {
         readNumber(targetAssetRow?.total) > 0
           ? `${targetBroker} broker assets are available`
           : `${targetBroker} broker assets are missing`,
-      detail: `${readNumber(targetAssetRow?.total)} assets; latest update ${readDateIso(
-        targetAssetRow?.latestUpdatedAt
-      ) ?? 'unknown'}.`,
+      detail: `${readNumber(targetAssetRow?.total)} assets; latest update ${
+        readDateIso(targetAssetRow?.latestUpdatedAt) ?? 'unknown'
+      }.`,
     });
 
     const schedulerRows = targetUserId
@@ -769,9 +812,9 @@ async function run(): Promise<void> {
           ? `Delta mapping exists for ${targetCanarySymbol}`
           : `Delta mapping is missing for ${targetCanarySymbol}`,
         detail: targetBrokerAsset
-          ? `externalId/product_id=${readString(targetBrokerAsset.externalId)}, updated=${readDateIso(
-              targetBrokerAsset.updatedAt
-            ) ?? 'unknown'}.`
+          ? `externalId/product_id=${readString(targetBrokerAsset.externalId)}, updated=${
+              readDateIso(targetBrokerAsset.updatedAt) ?? 'unknown'
+            }.`
           : undefined,
       });
 
@@ -793,10 +836,11 @@ async function run(): Promise<void> {
         const contractType = readString(product?.contract_type).toLowerCase();
         const productSymbol = readString(product?.symbol).toUpperCase();
         const resolvedProductId = readString(product?.id);
-        const isLive = Boolean(product && isDeltaProductLive(product) && isDeltaSymbolCompatible(
-          productSymbol,
-          targetCanarySymbol
-        ));
+        const isLive = Boolean(
+          product &&
+          isDeltaProductLive(product) &&
+          isDeltaSymbolCompatible(productSymbol, targetCanarySymbol)
+        );
         deltaProductResolutionReport = {
           lookupBaseUrl: deltaBaseUrl,
           requestedSymbol: targetCanarySymbol,
@@ -807,12 +851,7 @@ async function run(): Promise<void> {
           mappedProductFound: Boolean(mappedProduct),
           error: resolution.error ?? null,
         };
-        if (
-          isLive &&
-          productId &&
-          resolvedProductId &&
-          productId !== resolvedProductId
-        ) {
+        if (isLive && productId && resolvedProductId && productId !== resolvedProductId) {
           addGate(gates, {
             key: 'target_delta_product_mapping_alias',
             status: 'warn',
@@ -856,9 +895,9 @@ async function run(): Promise<void> {
         readNumber(suggestedTradeSnapshot?.openCount) > 0
           ? 'Open suggested-trade candidate exists'
           : 'No open suggested-trade candidate exists',
-      detail: `${readNumber(suggestedTradeSnapshot?.total)} total suggested trade(s); latest ${readDateIso(
-        suggestedTradeSnapshot?.latestCreatedAt
-      ) ?? 'never'}.`,
+      detail: `${readNumber(suggestedTradeSnapshot?.total)} total suggested trade(s); latest ${
+        readDateIso(suggestedTradeSnapshot?.latestCreatedAt) ?? 'never'
+      }.`,
     });
 
     const [submissionSnapshot] = targetUserId
