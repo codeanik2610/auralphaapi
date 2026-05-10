@@ -3921,14 +3921,31 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
     assert.equal(riskOrders[0]?.body.takeprofit_price, '0.074120');
     assert.equal(savedExecutionPayload?.['orderStatus'], 'FILLED');
     assert.equal(savedExecutionPayload?.['executionState'], 'filled');
+    assert.equal(
+      savedExecutionPayload?.['positionId'],
+      'mudrex:asset-1:2026-05-10T00:06:34Z:SHORT'
+    );
+    assert.equal(savedExecutionPayload?.['positionOpenedAt'], '2026-05-10T00:06:34.000Z');
     assert.equal(savedExecutionPayload?.['filledAt'], '2026-05-10T00:20:25.000Z');
     assert.equal(savedExecutionPayload?.['protectionState'], 'attached');
     assert.equal(savedExecutionPayload?.['protectionAttempts'], 1);
+    assert.ok(
+      Number.isFinite(Date.parse(String(savedExecutionPayload?.['protectionCheckedAt'])))
+    );
     assert.equal(
-      (savedExecutionPayload?.['protectionPlan'] as Record<string, unknown> | undefined)
-        ?.snapshotPositionId,
+      savedExecutionPayload?.['protectionAttachedAt'],
+      savedExecutionPayload?.['protectionCheckedAt']
+    );
+    const mudrexProtectionPlan = savedExecutionPayload?.['protectionPlan'] as
+      | Record<string, unknown>
+      | undefined;
+    assert.equal(
+      mudrexProtectionPlan?.snapshotPositionId,
       'mudrex:asset-1:2026-05-10T00:06:34Z:SHORT'
     );
+    assert.equal(mudrexProtectionPlan?.attachedAt, savedExecutionPayload?.['protectionCheckedAt']);
+    assert.equal(mudrexProtectionPlan?.attachedStopLossPrice, '0.074490');
+    assert.equal(mudrexProtectionPlan?.attachedTakeProfitPrice, '0.074120');
   }
 
   {
@@ -5538,9 +5555,15 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
     assert.equal(attachedBody.stopLossPrice, 96.9);
     assert.equal(attachedBody.takeProfitPrice, 112.2);
     assert.equal(
-      (nextExecution.protectionPlan as Record<string, unknown>)?.stopLossOrderId,
-      'delta-sl-1'
+      attachedBody.idempotencyKey,
+      'live-auto-protection:st-delta-protection-remediate:delta-order-1'
     );
+    assert.ok(Number.isFinite(Date.parse(String(nextExecution.protectionCheckedAt))));
+    const deltaProtectionPlan = nextExecution.protectionPlan as Record<string, unknown>;
+    assert.equal(deltaProtectionPlan.positionId, '45678');
+    assert.equal(deltaProtectionPlan.stopLossOrderId, 'delta-sl-1');
+    assert.equal(deltaProtectionPlan.takeProfitOrderId, 'delta-tp-1');
+    assert.equal(deltaProtectionPlan.replacementSubmittedAt, nextExecution.protectionCheckedAt);
   }
 
   {

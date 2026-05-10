@@ -1161,6 +1161,15 @@ async function testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolat
   const originalQuery = (coreDataSource as any).query;
   const routingCalls: Array<{ userId: string; brokerKey: string; accountId: string }> = [];
   const adapterCalls: string[] = [];
+  const sameCycleEvents: string[] = [];
+  const readModelRows: Array<Record<string, unknown>> = [];
+  const protectionRefreshCalls: Array<{ userId: string; brokerKey: string; accountId: string }> = [];
+  const suggestedTradePositionSyncCalls: Array<{
+    userId: string;
+    brokerKey: string;
+    accountId: string;
+    symbols: string[];
+  }> = [];
   let getAllActiveCalls = 0;
   let getActiveSystemCalls = 0;
 
@@ -1255,7 +1264,18 @@ async function testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolat
     },
   };
   service.positionReadModelRepository = {
-    async upsertReadModels() {
+    async upsertReadModels(rows: Array<Record<string, unknown>>) {
+      sameCycleEvents.push(`read-model:${rows.map((row) => row.symbol).join(',')}`);
+      readModelRows.push(...rows);
+      return undefined;
+    },
+    async refreshOpenDeltaProtectionFromOrderSnapshots(input: {
+      userId: string;
+      brokerKey: string;
+      accountId: string;
+    }) {
+      sameCycleEvents.push(`protection-refresh:${input.brokerKey}:${input.accountId}`);
+      protectionRefreshCalls.push(input);
       return undefined;
     },
     async markPositionsClosed() {
@@ -1263,8 +1283,15 @@ async function testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolat
     },
   };
   service.suggestedTradesService = {
-    async syncExecutionForPositionUpdates() {
-      return undefined;
+    async syncExecutionForPositionUpdates(
+      userId: string,
+      brokerKey: string,
+      accountId: string,
+      symbols: string[]
+    ) {
+      sameCycleEvents.push(`suggested-trades:${brokerKey}:${accountId}:${symbols.join(',')}`);
+      suggestedTradePositionSyncCalls.push({ userId, brokerKey, accountId, symbols });
+      return 1;
     },
   };
   service.operationalEventService = {
@@ -1275,14 +1302,13 @@ async function testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolat
       return undefined;
     },
   };
-  service.upsertPositionSnapshotsFromItems = async (
-    userId: string,
-    accountId: string,
-    brokerKey: string
-  ) => {
-    assert.equal(userId, 'user-1');
-    assert.equal(accountId, 'acct-mudrex');
-    assert.equal(brokerKey, 'mudrex');
+  service.upsertPositionSnapshotBatch = async (rows: Array<Record<string, unknown>>) => {
+    sameCycleEvents.push(`snapshot-batch:${rows.map((row) => row.symbol).join(',')}`);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.userId, 'user-1');
+    assert.equal(rows[0]?.accountId, 'acct-mudrex');
+    assert.equal(rows[0]?.brokerKey, 'mudrex');
+    assert.equal(rows[0]?.symbol, 'BTCUSDT');
     return {
       inserted: 1,
       updated: 0,
@@ -1332,6 +1358,28 @@ async function testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolat
     assert.equal(result.processedAccounts, 2);
     assert.equal(result.failedAccounts, 1);
     assert.equal(result.insertedRecords, 1);
+    assert.equal(readModelRows.length, 1);
+    assert.equal(readModelRows[0]?.userId, 'user-1');
+    assert.equal(readModelRows[0]?.accountId, 'acct-mudrex');
+    assert.equal(readModelRows[0]?.brokerKey, 'mudrex');
+    assert.equal(readModelRows[0]?.symbol, 'BTCUSDT');
+    assert.deepEqual(protectionRefreshCalls, [
+      { userId: 'user-1', brokerKey: 'mudrex', accountId: 'acct-mudrex' },
+    ]);
+    assert.deepEqual(suggestedTradePositionSyncCalls, [
+      {
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        accountId: 'acct-mudrex',
+        symbols: ['BTCUSDT'],
+      },
+    ]);
+    assert.deepEqual(sameCycleEvents, [
+      'snapshot-batch:BTCUSDT',
+      'read-model:BTCUSDT',
+      'protection-refresh:mudrex:acct-mudrex',
+      'suggested-trades:mudrex:acct-mudrex:BTCUSDT',
+    ]);
     assert.ok(
       result.failures.some((item: { error: string }) =>
         String(item.error || '').includes(
