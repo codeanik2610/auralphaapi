@@ -75,25 +75,28 @@ import {
   describeDeltaActiveProtectionOrders,
   describeLiveProtectionOrderContext,
   hasExactlyOneDeltaProtectionPair,
-  isDeltaExchangeSuggestedTradeBroker,
   normalizeDeltaLiveAutoOrderSizing as normalizeDeltaLiveAutoOrderSizingForBroker,
   remediateDeltaLiveProtection as remediateDeltaLiveProtectionForBroker,
-  resolveDeltaExchangeSuggestedTradeLiveAutoEnabled,
-  resolveDeltaExchangeSuggestedTradeProtectionRepairEnabled,
   resolveDeltaInactiveAttachedProtectionManualReason,
   resolveDeltaProtectionLookupSymbols,
 } from './suggested-trades/DeltaExchangeSuggestedTradeBroker';
 import {
   MudrexLiveAutoProtectionAttachmentResult,
   attachMudrexLiveAutoProtectionIfNeeded as attachMudrexLiveAutoProtectionIfNeededForBroker,
-  isMudrexSuggestedTradeBroker,
   mudrexPositionHasProtection,
   normalizeMudrexLiveAutoOrderSizing as normalizeMudrexLiveAutoOrderSizingForBroker,
   remediateMudrexLiveProtection as remediateMudrexLiveProtectionForBroker,
-  resolveMudrexSuggestedTradeLiveAutoEnabled,
-  resolveMudrexSuggestedTradeProtectionRepairEnabled,
   validateMudrexProtectionAttachability,
 } from './suggested-trades/MudrexSuggestedTradeBroker';
+import {
+  isSuggestedTradeLiveAutoBrokerEnabled,
+  isSuggestedTradeProtectionRepairEnabledForBroker,
+  resolveSuggestedTradeLiveAutoRuntimeConfig,
+} from './suggested-trades/SuggestedTradeBrokerControls';
+import type {
+  LiveAutoAdaptiveRoutingMode,
+  LiveAutoRuntimeConfig,
+} from './suggested-trades/SuggestedTradeBrokerControls';
 
 type TradeSuggestionExecutionMode = 'suggestion_only' | 'paper_trade_auto' | 'live_trade_auto';
 type TradeSuggestionApprovalMode = 'manual_review' | 'auto_if_safe';
@@ -101,8 +104,6 @@ type TradeSuggestionRouteMode = 'strategy_default' | 'user_default' | 'fixed';
 type TradeSuggestionOrderType = 'market' | 'limit';
 type TradeSuggestionQuantityMode = 'quantity' | 'notional' | 'risk_percent';
 type SuggestedTradePreTradeState = NonNullable<SuggestedTradeExecutionLink['preTradeState']>;
-type LiveAutoAdaptiveRoutingMode = 'off' | 'shadow' | 'live';
-
 const SUGGESTED_TRADES_FRESHNESS_AUDIT_LOOKBACK_DAYS = 7;
 const SUGGESTED_TRADES_FRESHNESS_AUDIT_LIMIT = 5000;
 const SUGGESTED_TRADE_PROTECTION_STATES = new Set<SuggestedTradeProtectionState>([
@@ -188,19 +189,6 @@ interface LiveAutoRolloutGuardDecision {
   message: string;
   brokerKey: string | null;
   accountId: string | null;
-}
-
-interface LiveAutoRuntimeConfig {
-  rolloutEnabled: boolean;
-  enabled: boolean;
-  executionEnabled: boolean;
-  mudrexEnabled: boolean;
-  deltaExchangeEnabled: boolean;
-  adaptiveRoutingMode: LiveAutoAdaptiveRoutingMode;
-  requireFixedRouting: boolean;
-  userAllowlist: string[];
-  brokerAllowlist: string[];
-  shadowBrokerAllowlist: string[];
 }
 
 interface SuggestedTradePreTradeRequest {
@@ -3679,90 +3667,24 @@ export class SuggestedTradesService {
   }
 
   private resolveLiveAutoRuntimeConfig(): LiveAutoRuntimeConfig {
-    const rolloutEnabled =
-      this.readBooleanEnvOverride('SUGGESTED_TRADES_ROLLOUT_ENABLED') ??
-      env.suggestedTrades.rolloutEnabled;
-    const enabled =
-      this.readBooleanEnvOverride('SUGGESTED_TRADES_LIVE_AUTO_ENABLED') ??
-      env.suggestedTrades.liveAuto.enabled;
-    const executionEnabled =
-      this.readBooleanEnvOverride('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED') ??
-      env.suggestedTrades.liveAuto.executionEnabled;
-    const readBooleanEnvOverride = (name: string) => this.readBooleanEnvOverride(name);
-    const mudrexEnabled = resolveMudrexSuggestedTradeLiveAutoEnabled(
-      enabled,
-      readBooleanEnvOverride
-    );
-    const deltaExchangeEnabled = resolveDeltaExchangeSuggestedTradeLiveAutoEnabled(
-      enabled,
-      readBooleanEnvOverride
-    );
-    const adaptiveRoutingMode = this.resolveLiveAutoAdaptiveRoutingModeValue(
-      this.readStringEnvOverride('SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE') ??
-        env.suggestedTrades.liveAuto.adaptiveRoutingMode
-    );
-    const requireFixedRouting =
-      this.readBooleanEnvOverride('SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING') ??
-      env.suggestedTrades.liveAuto.requireFixedRouting;
-    const userAllowlist =
-      this.readArrayEnvOverride('SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST') ??
-      env.suggestedTrades.liveAuto.userAllowlist;
-    const brokerAllowlist =
-      this.readArrayEnvOverride('SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST') ??
-      env.suggestedTrades.liveAuto.brokerAllowlist;
-    const shadowBrokerAllowlist =
-      this.readArrayEnvOverride('SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST') ??
-      env.suggestedTrades.liveAuto.shadowBrokerAllowlist ??
-      [];
-
-    return {
-      rolloutEnabled,
-      enabled,
-      executionEnabled,
-      mudrexEnabled,
-      deltaExchangeEnabled,
-      adaptiveRoutingMode,
-      requireFixedRouting,
-      userAllowlist: userAllowlist.map((item) => String(item).trim()).filter(Boolean),
-      brokerAllowlist: brokerAllowlist
-        .map((item) => String(item).trim().toLowerCase())
-        .filter(Boolean),
-      shadowBrokerAllowlist: Array.from(
-        new Set(
-          shadowBrokerAllowlist.map((item) => String(item).trim().toLowerCase()).filter(Boolean)
-        )
-      ),
-    };
+    return resolveSuggestedTradeLiveAutoRuntimeConfig({
+      readBooleanEnvOverride: (name) => this.readBooleanEnvOverride(name),
+      readStringEnvOverride: (name) => this.readStringEnvOverride(name),
+      readArrayEnvOverride: (name) => this.readArrayEnvOverride(name),
+    });
   }
 
   private isLiveAutoBrokerEnabled(
     liveAutoConfig: LiveAutoRuntimeConfig,
     brokerKey: string | null | undefined
   ): boolean {
-    const normalizedBrokerKey = String(brokerKey || '')
-      .trim()
-      .toLowerCase();
-    if (isMudrexSuggestedTradeBroker(normalizedBrokerKey)) {
-      return liveAutoConfig.mudrexEnabled !== false;
-    }
-    if (isDeltaExchangeSuggestedTradeBroker(normalizedBrokerKey)) {
-      return liveAutoConfig.deltaExchangeEnabled !== false;
-    }
-    return true;
+    return isSuggestedTradeLiveAutoBrokerEnabled(liveAutoConfig, brokerKey);
   }
 
   private isProtectionRepairEnabledForBroker(brokerKey: string | null | undefined): boolean {
-    const normalizedBrokerKey = String(brokerKey || '')
-      .trim()
-      .toLowerCase();
-    const readBooleanEnvOverride = (name: string) => this.readBooleanEnvOverride(name);
-    if (isMudrexSuggestedTradeBroker(normalizedBrokerKey)) {
-      return resolveMudrexSuggestedTradeProtectionRepairEnabled(readBooleanEnvOverride);
-    }
-    if (isDeltaExchangeSuggestedTradeBroker(normalizedBrokerKey)) {
-      return resolveDeltaExchangeSuggestedTradeProtectionRepairEnabled(readBooleanEnvOverride);
-    }
-    return true;
+    return isSuggestedTradeProtectionRepairEnabledForBroker(brokerKey, (name) =>
+      this.readBooleanEnvOverride(name)
+    );
   }
 
   private async resolveEquivalentLiveAutoAssetRouteIfNeeded(
@@ -8213,20 +8135,6 @@ export class SuggestedTradesService {
   private readBooleanEnvOverride(name: string): boolean | null {
     const raw = process.env[name];
     return raw !== undefined ? this.readBooleanValue(raw) : null;
-  }
-
-  private resolveLiveAutoAdaptiveRoutingModeValue(value: unknown): LiveAutoAdaptiveRoutingMode {
-    const normalized = String(value || '')
-      .trim()
-      .toLowerCase();
-    if (!normalized || normalized === 'live') {
-      return 'live';
-    }
-    if (normalized === 'shadow' || normalized === 'off') {
-      return normalized;
-    }
-
-    return 'live';
   }
 
   private readArrayEnvOverride(name: string): string[] | null {

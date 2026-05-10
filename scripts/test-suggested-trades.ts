@@ -31,6 +31,12 @@ import {
   normalizeMudrexLiveAutoOrderSizing,
   remediateMudrexLiveProtection,
 } from '../src/api/services/suggested-trades/MudrexSuggestedTradeBroker';
+import {
+  isSuggestedTradeLiveAutoBrokerEnabled,
+  isSuggestedTradeProtectionRepairEnabledForBroker,
+  resolveLiveAutoAdaptiveRoutingModeValue,
+  resolveSuggestedTradeLiveAutoRuntimeConfig,
+} from '../src/api/services/suggested-trades/SuggestedTradeBrokerControls';
 
 function createSuccess<T>(data: T) {
   return { success: true as const, data };
@@ -49,6 +55,30 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 const authReq = { authUser: { sub: 'user-1' } } as any;
+
+function readBooleanEnvOverride(name: string): boolean | null {
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return null;
+  }
+  return ['1', 'true', 'yes', 'on'].includes(String(raw).trim().toLowerCase());
+}
+
+function readStringEnvOverride(name: string): string | null {
+  const raw = process.env[name];
+  return raw === undefined ? null : String(raw).trim();
+}
+
+function readArrayEnvOverride(name: string): string[] | null {
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return null;
+  }
+  return String(raw)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
 async function runSuggestedTradesControllerAssertions(): Promise<void> {
   const controller: any = new SuggestedTradesController();
@@ -1054,6 +1084,152 @@ async function runSuggestedTradeExecutionPersistenceAssertions(): Promise<void> 
   assert.equal(liveProtectionPayload.protectionState, 'waiting_for_fill');
   assert.equal(liveProtectionPayload.protectionSource, 'suggested_trade_execution');
   assert.equal(liveProtectionPayload.protectionPlan?.['stopLossPrice'], '95');
+}
+
+async function runSuggestedTradeBrokerControlHelperAssertions(): Promise<void> {
+  const originalRolloutEnabled = env.suggestedTrades.rolloutEnabled;
+  const originalEnvFlags = {
+    rolloutEnabled: process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED,
+    enabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_ENABLED,
+    executionEnabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED,
+    mudrexEnabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED,
+    deltaExchangeEnabled: process.env.SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED,
+    adaptiveRoutingMode: process.env.SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE,
+    requireFixedRouting: process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING,
+    userAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST,
+    brokerAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST,
+    shadowBrokerAllowlist: process.env.SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST,
+    mudrexRepairEnabled: process.env.SUGGESTED_TRADES_PROTECTION_REPAIR_MUDREX_ENABLED,
+    deltaRepairEnabled: process.env.SUGGESTED_TRADES_PROTECTION_REPAIR_DELTA_EXCHANGE_ENABLED,
+  };
+  const originalLiveAuto = {
+    enabled: env.suggestedTrades.liveAuto.enabled,
+    executionEnabled: env.suggestedTrades.liveAuto.executionEnabled,
+    mudrexEnabled: env.suggestedTrades.liveAuto.mudrexEnabled,
+    deltaExchangeEnabled: env.suggestedTrades.liveAuto.deltaExchangeEnabled,
+    adaptiveRoutingMode: env.suggestedTrades.liveAuto.adaptiveRoutingMode,
+    requireFixedRouting: env.suggestedTrades.liveAuto.requireFixedRouting,
+    userAllowlist: [...env.suggestedTrades.liveAuto.userAllowlist],
+    brokerAllowlist: [...env.suggestedTrades.liveAuto.brokerAllowlist],
+    shadowBrokerAllowlist: [...env.suggestedTrades.liveAuto.shadowBrokerAllowlist],
+  };
+  const originalProtectionRepair = {
+    mudrexEnabled: env.suggestedTrades.protectionRepair.mudrexEnabled,
+    deltaExchangeEnabled: env.suggestedTrades.protectionRepair.deltaExchangeEnabled,
+  };
+
+  try {
+    env.suggestedTrades.rolloutEnabled = false;
+    env.suggestedTrades.liveAuto.enabled = true;
+    env.suggestedTrades.liveAuto.executionEnabled = false;
+    env.suggestedTrades.liveAuto.mudrexEnabled = false;
+    env.suggestedTrades.liveAuto.deltaExchangeEnabled = true;
+    env.suggestedTrades.liveAuto.adaptiveRoutingMode = 'live';
+    env.suggestedTrades.liveAuto.requireFixedRouting = true;
+    env.suggestedTrades.liveAuto.userAllowlist = ['env-user'];
+    env.suggestedTrades.liveAuto.brokerAllowlist = ['mudrex'];
+    env.suggestedTrades.liveAuto.shadowBrokerAllowlist = [];
+
+    process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_ENABLED = 'false';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED = 'false';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE = 'shadow';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING = 'false';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST = 'user-1, user-2';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = ' MUDREX,delta_exchange ';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST =
+      'mudrex, delta_exchange, mudrex';
+
+    const config = resolveSuggestedTradeLiveAutoRuntimeConfig({
+      readBooleanEnvOverride,
+      readStringEnvOverride,
+      readArrayEnvOverride,
+    });
+
+    assert.equal(config.rolloutEnabled, true);
+    assert.equal(config.enabled, false);
+    assert.equal(config.executionEnabled, true);
+    assert.equal(config.mudrexEnabled, true);
+    assert.equal(config.deltaExchangeEnabled, false);
+    assert.equal(config.adaptiveRoutingMode, 'shadow');
+    assert.equal(config.requireFixedRouting, false);
+    assert.deepEqual(config.userAllowlist, ['user-1', 'user-2']);
+    assert.deepEqual(config.brokerAllowlist, ['mudrex', 'delta_exchange']);
+    assert.deepEqual(config.shadowBrokerAllowlist, ['mudrex', 'delta_exchange']);
+    assert.equal(isSuggestedTradeLiveAutoBrokerEnabled(config, 'mudrex'), true);
+    assert.equal(isSuggestedTradeLiveAutoBrokerEnabled(config, 'delta_exchange'), false);
+    assert.equal(isSuggestedTradeLiveAutoBrokerEnabled(config, 'binance'), true);
+    assert.equal(resolveLiveAutoAdaptiveRoutingModeValue('bad-value'), 'live');
+
+    env.suggestedTrades.protectionRepair.mudrexEnabled = true;
+    env.suggestedTrades.protectionRepair.deltaExchangeEnabled = false;
+    process.env.SUGGESTED_TRADES_PROTECTION_REPAIR_MUDREX_ENABLED = 'false';
+    process.env.SUGGESTED_TRADES_PROTECTION_REPAIR_DELTA_EXCHANGE_ENABLED = 'true';
+    assert.equal(
+      isSuggestedTradeProtectionRepairEnabledForBroker('mudrex', readBooleanEnvOverride),
+      false
+    );
+    assert.equal(
+      isSuggestedTradeProtectionRepairEnabledForBroker('delta_exchange', readBooleanEnvOverride),
+      true
+    );
+    assert.equal(
+      isSuggestedTradeProtectionRepairEnabledForBroker('unknown', readBooleanEnvOverride),
+      true
+    );
+  } finally {
+    env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
+    env.suggestedTrades.liveAuto.enabled = originalLiveAuto.enabled;
+    env.suggestedTrades.liveAuto.executionEnabled = originalLiveAuto.executionEnabled;
+    env.suggestedTrades.liveAuto.mudrexEnabled = originalLiveAuto.mudrexEnabled;
+    env.suggestedTrades.liveAuto.deltaExchangeEnabled = originalLiveAuto.deltaExchangeEnabled;
+    env.suggestedTrades.liveAuto.adaptiveRoutingMode = originalLiveAuto.adaptiveRoutingMode;
+    env.suggestedTrades.liveAuto.requireFixedRouting = originalLiveAuto.requireFixedRouting;
+    env.suggestedTrades.liveAuto.userAllowlist = [...originalLiveAuto.userAllowlist];
+    env.suggestedTrades.liveAuto.brokerAllowlist = [...originalLiveAuto.brokerAllowlist];
+    env.suggestedTrades.liveAuto.shadowBrokerAllowlist = [
+      ...originalLiveAuto.shadowBrokerAllowlist,
+    ];
+    env.suggestedTrades.protectionRepair.mudrexEnabled =
+      originalProtectionRepair.mudrexEnabled;
+    env.suggestedTrades.protectionRepair.deltaExchangeEnabled =
+      originalProtectionRepair.deltaExchangeEnabled;
+    restoreEnv('SUGGESTED_TRADES_ROLLOUT_ENABLED', originalEnvFlags.rolloutEnabled);
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', originalEnvFlags.enabled);
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED',
+      originalEnvFlags.executionEnabled
+    );
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED', originalEnvFlags.mudrexEnabled);
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED',
+      originalEnvFlags.deltaExchangeEnabled
+    );
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE',
+      originalEnvFlags.adaptiveRoutingMode
+    );
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_REQUIRE_FIXED_ROUTING',
+      originalEnvFlags.requireFixedRouting
+    );
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_USER_ALLOWLIST', originalEnvFlags.userAllowlist);
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST', originalEnvFlags.brokerAllowlist);
+    restoreEnv(
+      'SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST',
+      originalEnvFlags.shadowBrokerAllowlist
+    );
+    restoreEnv(
+      'SUGGESTED_TRADES_PROTECTION_REPAIR_MUDREX_ENABLED',
+      originalEnvFlags.mudrexRepairEnabled
+    );
+    restoreEnv(
+      'SUGGESTED_TRADES_PROTECTION_REPAIR_DELTA_EXCHANGE_ENABLED',
+      originalEnvFlags.deltaRepairEnabled
+    );
+  }
 }
 
 async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
@@ -7652,6 +7828,7 @@ async function main(): Promise<void> {
   await runSuggestedTradesSummaryFilterAssertions();
   await runSuggestedTradeTransitionAssertions();
   await runSuggestedTradeExecutionPersistenceAssertions();
+  await runSuggestedTradeBrokerControlHelperAssertions();
   await runSuggestedTradeLiveAutoRolloutAssertions();
   await runSuggestedTradeAdaptiveRouteSelectionAssertions();
   await runSuggestedTradeDeltaProductPreflightAssertions();

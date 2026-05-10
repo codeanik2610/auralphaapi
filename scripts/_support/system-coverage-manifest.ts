@@ -646,6 +646,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     controllers: ['SuggestedTradesController.ts', 'SuggestedTradesOverviewController.ts'],
     services: [
       'SuggestedTradesService.ts',
+      'SuggestedTradeBrokerControls.ts',
       'DeltaExchangeSuggestedTradeBroker.ts',
       'MudrexSuggestedTradeBroker.ts',
       'SuggestedTradesOverviewService.ts',
