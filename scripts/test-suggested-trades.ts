@@ -27,6 +27,7 @@ import {
   remediateDeltaLiveProtection,
 } from '../src/api/services/suggested-trades/DeltaExchangeSuggestedTradeBroker';
 import {
+  attachMudrexLiveAutoProtectionIfNeeded,
   normalizeMudrexLiveAutoOrderSizing,
   remediateMudrexLiveProtection,
 } from '../src/api/services/suggested-trades/MudrexSuggestedTradeBroker';
@@ -3754,6 +3755,80 @@ async function runSuggestedTradeBrokerLiveAutoSizingHandlerAssertions(): Promise
       /Mudrex requested leverage 15x exceeds the broker maximum leverage 5x for PUMPBTCUSDT/
     );
   }
+}
+
+async function runSuggestedTradeBrokerLiveAutoProtectionAttachHandlerAssertions(): Promise<void> {
+  const riskOrders: Array<{
+    positionId: string;
+    body: Record<string, unknown>;
+    context: Record<string, unknown> | undefined;
+  }> = [];
+  const positionQueries: Array<{
+    query: Record<string, unknown>;
+    context: Record<string, unknown> | undefined;
+  }> = [];
+
+  const result = await attachMudrexLiveAutoProtectionIfNeeded({
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    brokerSymbol: 'BTCUSDT',
+    side: 'buy',
+    orderId: 'mudrex-live-order-1',
+    requestedEntryPrice: 100,
+    requestedStopLossPrice: 95,
+    requestedTakeProfitPrice: 110,
+    waitForPoll: async () => undefined,
+    positionsAdapter: {
+      async getPositions(query, context) {
+        positionQueries.push({ query, context });
+        return {
+          data: {
+            positions: [
+              {
+                id: 'closed-position',
+                symbol: 'BTCUSDT',
+                side: 'Long',
+                status: 'closed',
+                entry_price: '99',
+                updated_at: '2026-05-10T00:00:00.000Z',
+              },
+              {
+                id: 'wrong-side-position',
+                symbol: 'BTCUSDT',
+                side: 'Short',
+                status: 'open',
+                entry_price: '101',
+                updated_at: '2026-05-10T00:01:00.000Z',
+              },
+              {
+                id: 'mudrex-live-position-1',
+                symbol: 'BTCUSDT',
+                side: 'Long',
+                status: 'open',
+                entry_price: '102',
+                updated_at: '2026-05-10T00:02:00.000Z',
+              },
+            ],
+          },
+        };
+      },
+      async createRiskOrder(positionId, body, context) {
+        riskOrders.push({ positionId, body, context });
+        return { success: true };
+      },
+    },
+  });
+
+  assert.equal(result.attached, true);
+  assert.match(String(result.note), /Derived Mudrex SL\/TP attached/);
+  assert.equal(positionQueries.length, 1);
+  assert.equal(positionQueries[0]?.context?.brokerKey, 'mudrex');
+  assert.equal(riskOrders.length, 1);
+  assert.equal(riskOrders[0]?.positionId, 'mudrex-live-position-1');
+  assert.equal(riskOrders[0]?.body.stoploss_price, '96.900000');
+  assert.equal(riskOrders[0]?.body.takeprofit_price, '112.200000');
+  assert.equal(riskOrders[0]?.context?.accountId, 'acc-1');
 }
 
 async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promise<void> {
@@ -7585,6 +7660,7 @@ async function main(): Promise<void> {
   runSuggestedTradeDeltaClosedFilledTimestampAssertions();
   await runSuggestedTradeLimitOrderExpiryAssertions();
   await runSuggestedTradeBrokerLiveAutoSizingHandlerAssertions();
+  await runSuggestedTradeBrokerLiveAutoProtectionAttachHandlerAssertions();
   await runSuggestedTradeBrokerProtectionRepairHandlerAssertions();
   await runSuggestedTradeProtectionRemediationAssertions();
   await runSuggestedTradeSiblingProtectionAutoCancelAssertions();

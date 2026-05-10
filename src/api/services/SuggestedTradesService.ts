@@ -84,6 +84,8 @@ import {
   resolveDeltaProtectionLookupSymbols,
 } from './suggested-trades/DeltaExchangeSuggestedTradeBroker';
 import {
+  MudrexLiveAutoProtectionAttachmentResult,
+  attachMudrexLiveAutoProtectionIfNeeded as attachMudrexLiveAutoProtectionIfNeededForBroker,
   isMudrexSuggestedTradeBroker,
   mudrexPositionHasProtection,
   normalizeMudrexLiveAutoOrderSizing as normalizeMudrexLiveAutoOrderSizingForBroker,
@@ -318,11 +320,6 @@ interface DeltaProtectionOrderCandidate {
   reduceOnly?: unknown;
   stopOrderType?: unknown;
   orderType?: unknown;
-}
-
-interface MudrexLiveAutoProtectionAttachmentResult {
-  attached: boolean;
-  note: string | null;
 }
 
 @Service()
@@ -3934,98 +3931,11 @@ export class SuggestedTradesService {
     requestedStopLossPrice: number | null;
     requestedTakeProfitPrice: number | null;
   }): Promise<MudrexLiveAutoProtectionAttachmentResult> {
-    if (
-      !(input.requestedEntryPrice > 0) ||
-      !(input.requestedStopLossPrice && input.requestedStopLossPrice > 0) ||
-      !(input.requestedTakeProfitPrice && input.requestedTakeProfitPrice > 0)
-    ) {
-      return {
-        attached: false,
-        note: null,
-      };
-    }
-
-    const positionsAdapter = this.brokerRuntimeRegistry?.getPositionsAdapter?.('mudrex');
-    if (!positionsAdapter?.getPositions || !positionsAdapter?.createRiskOrder) {
-      return {
-        attached: false,
-        note: 'Mudrex order created, but the positions adapter is unavailable for automatic SL/TP attachment.',
-      };
-    }
-
-    try {
-      const position = await this.pollMudrexLiveAutoPosition({
-        adapter: positionsAdapter,
-        userId: input.userId,
-        accountId: input.accountId,
-        brokerSymbol: input.brokerSymbol,
-        side: input.side,
-        orderId: input.orderId,
-      });
-      if (!position) {
-        return {
-          attached: false,
-          note: `Mudrex order ${input.orderId} was created, but no matching open position was found in time for automatic SL/TP attachment.`,
-        };
-      }
-
-      if (mudrexPositionHasProtection(position)) {
-        return {
-          attached: true,
-          note: 'Mudrex position already reports active SL/TP protection.',
-        };
-      }
-
-      const positionId =
-        this.readStringValue(position.id) ??
-        this.readStringValue(position.position_id) ??
-        this.readStringValue(position.positionId);
-      const actualEntryPrice = this.readNumberValue(
-        position.entry_price ?? position.entryPrice ?? position.avg_price ?? position.average_price
-      );
-      if (!positionId || !(actualEntryPrice && actualEntryPrice > 0)) {
-        return {
-          attached: false,
-          note: `Mudrex order ${input.orderId} opened a position, but the broker position payload did not include a usable id/entry price for automatic SL/TP attachment.`,
-        };
-      }
-
-      const stopLossPrice = this.deriveScaledProtectionPrice(
-        actualEntryPrice,
-        input.requestedEntryPrice,
-        input.requestedStopLossPrice
-      );
-      const takeProfitPrice = this.deriveScaledProtectionPrice(
-        actualEntryPrice,
-        input.requestedEntryPrice,
-        input.requestedTakeProfitPrice
-      );
-      await positionsAdapter.createRiskOrder(
-        positionId,
-        {
-          stoploss_price: stopLossPrice,
-          takeprofit_price: takeProfitPrice,
-          order_source: 'positions_desk',
-          is_stoploss: true,
-          is_takeprofit: true,
-        },
-        {
-          userId: input.userId,
-          brokerKey: input.brokerKey,
-          accountId: input.accountId,
-        }
-      );
-
-      return {
-        attached: true,
-        note: `Derived Mudrex SL/TP attached from actual fill price ${this.formatNumericString(actualEntryPrice) || actualEntryPrice} (SL ${stopLossPrice}, TP ${takeProfitPrice}).`,
-      };
-    } catch (error) {
-      return {
-        attached: false,
-        note: `Mudrex order ${input.orderId} was created, but automatic SL/TP attachment failed: ${error instanceof Error ? error.message : 'unknown error'}.`,
-      };
-    }
+    return attachMudrexLiveAutoProtectionIfNeededForBroker({
+      ...input,
+      positionsAdapter: this.brokerRuntimeRegistry?.getPositionsAdapter?.('mudrex'),
+      waitForPoll: (ms) => this.waitForLiveAutoProtectionPoll(ms),
+    });
   }
 
   private unwrapOrderPlacementResponse(value: unknown): Record<string, unknown> {
@@ -4099,124 +4009,6 @@ export class SuggestedTradesService {
       leverage,
       assetDetail,
     });
-  }
-
-  private async pollMudrexLiveAutoPosition(input: {
-    adapter: {
-      getPositions: (
-        query: { limit?: number },
-        context?: { userId?: string; brokerKey?: string; accountId?: string }
-      ) => Promise<unknown>;
-    };
-    userId: string;
-    accountId: string;
-    brokerSymbol: string;
-    side: 'buy' | 'sell' | 'long' | 'short';
-    orderId: string;
-  }): Promise<Record<string, unknown> | null> {
-    const normalizedSymbol = String(input.brokerSymbol || '')
-      .trim()
-      .toUpperCase();
-    const expectedDirection = input.side === 'sell' || input.side === 'short' ? 'short' : 'long';
-
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      const response = await input.adapter.getPositions(
-        { limit: 100 },
-        {
-          userId: input.userId,
-          brokerKey: 'mudrex',
-          accountId: input.accountId,
-        }
-      );
-      const positions = this.extractPositionRecords(response)
-        .filter((position) => {
-          const symbol = String(position.symbol ?? position.asset_symbol ?? '')
-            .trim()
-            .toUpperCase();
-          if (symbol !== normalizedSymbol) {
-            return false;
-          }
-          const status = this.normalizePositionStatus(
-            this.readStringValue(position.status) ?? this.readStringValue(position.position_status)
-          );
-          if (status && ['CLOSED', 'LIQUIDATED'].includes(status)) {
-            return false;
-          }
-          return this.resolvePositionDirection(position) === expectedDirection;
-        })
-        .sort(
-          (left, right) =>
-            this.extractPositionTimestamp(right) - this.extractPositionTimestamp(left)
-        );
-
-      if (positions[0]) {
-        return positions[0];
-      }
-
-      if (attempt < 7) {
-        await this.waitForLiveAutoProtectionPoll(750);
-      }
-    }
-
-    return null;
-  }
-
-  private extractPositionRecords(value: unknown): Record<string, unknown>[] {
-    if (Array.isArray(value)) {
-      return value.filter((item): item is Record<string, unknown> =>
-        Boolean(this.readRecordValue(item))
-      );
-    }
-
-    const record = this.readRecordValue(value);
-    if (!record) {
-      return [];
-    }
-
-    const directList = [record.items, record.positions, record.results, record.data].find(
-      (candidate) => Array.isArray(candidate)
-    );
-    if (Array.isArray(directList)) {
-      return directList.filter((item): item is Record<string, unknown> =>
-        Boolean(this.readRecordValue(item))
-      );
-    }
-
-    const dataRecord = this.readRecordValue(record.data);
-    if (!dataRecord) {
-      return [];
-    }
-
-    const nestedList = [dataRecord.items, dataRecord.positions, dataRecord.results].find(
-      (candidate) => Array.isArray(candidate)
-    );
-    return Array.isArray(nestedList)
-      ? nestedList.filter((item): item is Record<string, unknown> =>
-          Boolean(this.readRecordValue(item))
-        )
-      : [];
-  }
-
-  private extractPositionTimestamp(position: Record<string, unknown>): number {
-    const candidates = [
-      position.updated_at,
-      position.updatedAt,
-      position.created_at,
-      position.createdAt,
-      position.open_time,
-      position.openTime,
-    ];
-    for (const candidate of candidates) {
-      const raw = this.readStringValue(candidate);
-      if (!raw) {
-        continue;
-      }
-      const parsed = Date.parse(raw);
-      if (Number.isFinite(parsed)) {
-        return parsed;
-      }
-    }
-    return 0;
   }
 
   private deriveScaledProtectionPrice(

@@ -30,6 +30,10 @@ export interface MudrexProtectionPrices {
 }
 
 export interface MudrexProtectionPositionsAdapter {
+  getPositions?: (
+    query: { limit?: number },
+    context?: { userId?: string; brokerKey?: string; accountId?: string }
+  ) => Promise<unknown>;
   createRiskOrder?: (
     positionId: string,
     body: Record<string, unknown>,
@@ -96,6 +100,25 @@ export interface MudrexLiveAutoOrderSizingInput {
   orderType: string;
   leverage?: number | null;
   assetDetail: Record<string, unknown> | null;
+}
+
+export interface MudrexLiveAutoProtectionAttachmentResult {
+  attached: boolean;
+  note: string | null;
+}
+
+export interface MudrexLiveAutoProtectionAttachmentInput {
+  userId: string;
+  brokerKey: string;
+  accountId: string;
+  brokerSymbol: string;
+  side: 'buy' | 'sell' | 'long' | 'short';
+  orderId: string;
+  requestedEntryPrice: number;
+  requestedStopLossPrice: number | null;
+  requestedTakeProfitPrice: number | null;
+  positionsAdapter: MudrexProtectionPositionsAdapter | null | undefined;
+  waitForPoll?: (ms: number) => Promise<void>;
 }
 
 const readRecordValue = (value: unknown): Record<string, unknown> | null =>
@@ -433,6 +456,162 @@ export function normalizeMudrexOrderPriceForStep(
   return Number((roundedUnits * step).toFixed(precision));
 }
 
+export async function attachMudrexLiveAutoProtectionIfNeeded(
+  input: MudrexLiveAutoProtectionAttachmentInput
+): Promise<MudrexLiveAutoProtectionAttachmentResult> {
+  if (
+    !(input.requestedEntryPrice > 0) ||
+    !(input.requestedStopLossPrice && input.requestedStopLossPrice > 0) ||
+    !(input.requestedTakeProfitPrice && input.requestedTakeProfitPrice > 0)
+  ) {
+    return {
+      attached: false,
+      note: null,
+    };
+  }
+
+  const positionsAdapter = input.positionsAdapter;
+  if (!positionsAdapter?.getPositions || !positionsAdapter?.createRiskOrder) {
+    return {
+      attached: false,
+      note: 'Mudrex order created, but the positions adapter is unavailable for automatic SL/TP attachment.',
+    };
+  }
+
+  try {
+    const position = await pollMudrexLiveAutoPosition({
+      adapter: {
+        getPositions: positionsAdapter.getPositions,
+      },
+      userId: input.userId,
+      accountId: input.accountId,
+      brokerSymbol: input.brokerSymbol,
+      side: input.side,
+      waitForPoll: input.waitForPoll,
+    });
+    if (!position) {
+      return {
+        attached: false,
+        note: `Mudrex order ${input.orderId} was created, but no matching open position was found in time for automatic SL/TP attachment.`,
+      };
+    }
+
+    if (mudrexPositionHasProtection(position)) {
+      return {
+        attached: true,
+        note: 'Mudrex position already reports active SL/TP protection.',
+      };
+    }
+
+    const positionId =
+      readStringValue(position.id) ??
+      readStringValue(position.position_id) ??
+      readStringValue(position.positionId);
+    const actualEntryPrice = readNumberValue(
+      position.entry_price ?? position.entryPrice ?? position.avg_price ?? position.average_price
+    );
+    if (!positionId || !(actualEntryPrice && actualEntryPrice > 0)) {
+      return {
+        attached: false,
+        note: `Mudrex order ${input.orderId} opened a position, but the broker position payload did not include a usable id/entry price for automatic SL/TP attachment.`,
+      };
+    }
+
+    const stopLossPrice = deriveScaledProtectionPrice(
+      actualEntryPrice,
+      input.requestedEntryPrice,
+      input.requestedStopLossPrice
+    );
+    const takeProfitPrice = deriveScaledProtectionPrice(
+      actualEntryPrice,
+      input.requestedEntryPrice,
+      input.requestedTakeProfitPrice
+    );
+    await positionsAdapter.createRiskOrder(
+      positionId,
+      {
+        stoploss_price: stopLossPrice,
+        takeprofit_price: takeProfitPrice,
+        order_source: 'positions_desk',
+        is_stoploss: true,
+        is_takeprofit: true,
+      },
+      {
+        userId: input.userId,
+        brokerKey: input.brokerKey,
+        accountId: input.accountId,
+      }
+    );
+
+    return {
+      attached: true,
+      note: `Derived Mudrex SL/TP attached from actual fill price ${formatNumericString(actualEntryPrice) || actualEntryPrice} (SL ${stopLossPrice}, TP ${takeProfitPrice}).`,
+    };
+  } catch (error) {
+    return {
+      attached: false,
+      note: `Mudrex order ${input.orderId} was created, but automatic SL/TP attachment failed: ${error instanceof Error ? error.message : 'unknown error'}.`,
+    };
+  }
+}
+
+export async function pollMudrexLiveAutoPosition(input: {
+  adapter: {
+    getPositions: (
+      query: { limit?: number },
+      context?: { userId?: string; brokerKey?: string; accountId?: string }
+    ) => Promise<unknown>;
+  };
+  userId: string;
+  accountId: string;
+  brokerSymbol: string;
+  side: 'buy' | 'sell' | 'long' | 'short';
+  waitForPoll?: (ms: number) => Promise<void>;
+}): Promise<Record<string, unknown> | null> {
+  const normalizedSymbol = String(input.brokerSymbol || '')
+    .trim()
+    .toUpperCase();
+  const expectedDirection = input.side === 'sell' || input.side === 'short' ? 'short' : 'long';
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const response = await input.adapter.getPositions(
+      { limit: 100 },
+      {
+        userId: input.userId,
+        brokerKey: 'mudrex',
+        accountId: input.accountId,
+      }
+    );
+    const positions = extractPositionRecords(response)
+      .filter((position) => {
+        const symbol = String(position.symbol ?? position.asset_symbol ?? '')
+          .trim()
+          .toUpperCase();
+        if (symbol !== normalizedSymbol) {
+          return false;
+        }
+        const status = normalizeMudrexPositionStatus(
+          readStringValue(position.status) ?? readStringValue(position.position_status)
+        );
+        if (status && ['CLOSED', 'LIQUIDATED'].includes(status)) {
+          return false;
+        }
+        return resolveMudrexPositionDirection(position) === expectedDirection;
+      })
+      .sort((left, right) => extractPositionTimestamp(right) - extractPositionTimestamp(left));
+
+    if (positions[0]) {
+      return positions[0];
+    }
+
+    if (attempt < 7) {
+      await (input.waitForPoll ?? waitForPoll)(750);
+    }
+  }
+
+  return null;
+}
+
 export async function remediateMudrexLiveProtection(
   input: MudrexLiveProtectionRepairInput
 ): Promise<SuggestedTradeExecutionLink> {
@@ -536,6 +715,118 @@ export async function remediateMudrexLiveProtection(
       `Mudrex protection remediation failed: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+}
+
+function extractPositionRecords(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is Record<string, unknown> => Boolean(readRecordValue(item)));
+  }
+
+  const record = readRecordValue(value);
+  if (!record) {
+    return [];
+  }
+
+  const directList = [record.items, record.positions, record.results, record.data].find(
+    (candidate) => Array.isArray(candidate)
+  );
+  if (Array.isArray(directList)) {
+    return directList.filter((item): item is Record<string, unknown> =>
+      Boolean(readRecordValue(item))
+    );
+  }
+
+  const dataRecord = readRecordValue(record.data);
+  if (!dataRecord) {
+    return [];
+  }
+
+  const nestedList = [dataRecord.items, dataRecord.positions, dataRecord.results].find(
+    (candidate) => Array.isArray(candidate)
+  );
+  return Array.isArray(nestedList)
+    ? nestedList.filter((item): item is Record<string, unknown> => Boolean(readRecordValue(item)))
+    : [];
+}
+
+function extractPositionTimestamp(position: Record<string, unknown>): number {
+  const candidates = [
+    position.updated_at,
+    position.updatedAt,
+    position.created_at,
+    position.createdAt,
+    position.open_time,
+    position.openTime,
+  ];
+  for (const candidate of candidates) {
+    const raw = readStringValue(candidate);
+    if (!raw) {
+      continue;
+    }
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return 0;
+}
+
+function deriveScaledProtectionPrice(
+  actualEntryPrice: number,
+  requestedEntryPrice: number,
+  requestedTargetPrice: number
+): string {
+  const precision = Math.max(
+    6,
+    countNumericDecimals(requestedEntryPrice),
+    countNumericDecimals(requestedTargetPrice)
+  );
+  return Number(
+    ((actualEntryPrice * requestedTargetPrice) / requestedEntryPrice).toFixed(precision)
+  ).toFixed(precision);
+}
+
+function normalizeMudrexPositionStatus(status: string | null | undefined): string | null {
+  const raw = String(status || '').trim();
+  if (!raw) {
+    return null;
+  }
+
+  const normalized = raw.toUpperCase();
+  if (['OPEN'].includes(normalized)) return 'OPEN';
+  if (['CLOSED', 'CLOSE'].includes(normalized)) return 'CLOSED';
+  if (['LIQUIDATED', 'LIQUIDATION'].includes(normalized)) return 'LIQUIDATED';
+  if (['PARTIAL', 'PARTIALLY_CLOSED', 'PARTIALLY_CLOSED_POSITION'].includes(normalized)) {
+    return 'PARTIAL';
+  }
+  return normalized;
+}
+
+function resolveMudrexPositionDirection(payload: Record<string, unknown>): 'long' | 'short' {
+  const side = String(payload.side ?? '')
+    .trim()
+    .toLowerCase();
+  const positionType = String(payload.position_type ?? '')
+    .trim()
+    .toLowerCase();
+  const orderType = String(payload.order_type ?? '')
+    .trim()
+    .toLowerCase();
+
+  if (
+    side === 'short' ||
+    side === 'sell' ||
+    positionType === 'short' ||
+    orderType === 'sell' ||
+    orderType === 'short'
+  ) {
+    return 'short';
+  }
+  return 'long';
+}
+
+function waitForPoll(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function resolveMudrexPositionEntrySide(
