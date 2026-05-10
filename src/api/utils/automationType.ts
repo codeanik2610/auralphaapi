@@ -490,9 +490,11 @@ export const normalizeAutomationConfig = (
   const rawConfig = parseRecord(root.config) ?? parseRecord(suggestion.config) ?? null;
   const rawExecution = parseRecord(suggestion.execution) ?? rawConfig ?? null;
   const nestedConfig = readNestedRecord(rawExecution, 'config');
+  const configInputSnapshot = parseRecord(rawConfig?.inputSnapshot);
   const executionInputSnapshot =
     parseRecord(rawExecution?.inputSnapshot) ??
-    readNestedRecord(rawExecution, 'config', 'inputSnapshot');
+    readNestedRecord(rawExecution, 'config', 'inputSnapshot') ??
+    configInputSnapshot;
   const execution = normalizeTradeSuggestionExecutionPolicy(rawExecution);
   const setupScope = parseRecord(suggestion.setupScope) ?? parseRecord(root.setupScope) ?? null;
   const source = readString(suggestion.source, root.source, root.sourceType) ?? 'manual';
@@ -500,7 +502,8 @@ export const normalizeAutomationConfig = (
   const strategy = readString(suggestion.strategy, root.strategy) ?? null;
   const symbol = readString(suggestion.symbol, root.symbol, setupScope?.symbol) ?? null;
   const timeframe = readString(suggestion.timeframe, root.timeframe, setupScope?.timeframe) ?? null;
-  const market = readString(suggestion.market, root.market, rawExecution?.market) ?? null;
+  const market =
+    readString(suggestion.market, root.market, rawExecution?.market, rawConfig?.market) ?? null;
 
   // Extract template IDs with clear precedence:
   // Priority: explicit top-level > nested config > tradeSuggestion > execution
@@ -512,9 +515,11 @@ export const normalizeAutomationConfig = (
     readString(
       root.sourceTemplateId, // 1. Explicit top-level (highest priority)
       rawExecution?.sourceTemplateId, // 2. Nested in execution/config
+      rawConfig?.sourceTemplateId,
       nestedConfig?.sourceTemplateId, // 3. Double-nested legacy execution config
       suggestion.sourceTemplateId, // 3. Nested in tradeSuggestion
       executionInputSnapshot?.sourceTemplateId,
+      executionInputSnapshot?.templateId,
       executionTemplate?.id // 4. Nested template object
     ) ?? null;
 
@@ -522,6 +527,7 @@ export const normalizeAutomationConfig = (
     readString(
       root.templateId, // 1. Explicit top-level (highest priority)
       rawExecution?.templateId, // 2. Nested in execution/config
+      rawConfig?.templateId,
       nestedConfig?.templateId, // 3. Double-nested legacy execution config
       suggestion.templateId, // 3. Nested in tradeSuggestion
       executionInputSnapshot?.templateId,
