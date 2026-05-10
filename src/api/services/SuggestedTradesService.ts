@@ -70,11 +70,13 @@ import { BrokerReferenceDataService } from './BrokerReferenceDataService';
 import { RiskPreTradeService } from './RiskPreTradeService';
 import { RiskKillSwitchService } from './RiskKillSwitchService';
 import {
+  DeltaLiveAutoProductRulePreflightAdapter,
   DeltaProtectionOrdersAdapter,
   describeDeltaActiveProtectionOrders,
   describeLiveProtectionOrderContext,
   hasExactlyOneDeltaProtectionPair,
   isDeltaExchangeSuggestedTradeBroker,
+  normalizeDeltaLiveAutoOrderSizing as normalizeDeltaLiveAutoOrderSizingForBroker,
   remediateDeltaLiveProtection as remediateDeltaLiveProtectionForBroker,
   resolveDeltaExchangeSuggestedTradeLiveAutoEnabled,
   resolveDeltaExchangeSuggestedTradeProtectionRepairEnabled,
@@ -84,6 +86,7 @@ import {
 import {
   isMudrexSuggestedTradeBroker,
   mudrexPositionHasProtection,
+  normalizeMudrexLiveAutoOrderSizing as normalizeMudrexLiveAutoOrderSizingForBroker,
   remediateMudrexLiveProtection as remediateMudrexLiveProtectionForBroker,
   resolveMudrexSuggestedTradeLiveAutoEnabled,
   resolveMudrexSuggestedTradeProtectionRepairEnabled,
@@ -320,26 +323,6 @@ interface DeltaProtectionOrderCandidate {
 interface MudrexLiveAutoProtectionAttachmentResult {
   attached: boolean;
   note: string | null;
-}
-
-interface DeltaLiveAutoProductRulePreflightAdapter {
-  preflightLiveAutoOrder?: (
-    assetId: string,
-    body: {
-      symbol?: string | null;
-      quantity: number;
-      entryPrice: number;
-      stopLossPrice: number;
-      takeProfitPrice: number;
-      side: 'long' | 'short';
-    },
-    context?: { userId?: string; brokerKey?: string; accountId?: string }
-  ) => Promise<{
-    quantityContracts?: number;
-    contractValue?: number;
-    contractUnitCurrency?: string | null;
-    auditNote?: string | null;
-  }>;
 }
 
 @Service()
@@ -4078,34 +4061,17 @@ export class SuggestedTradesService {
         | DeltaLiveAutoProductRulePreflightAdapter
         | null
         | undefined;
-      if (!adapter?.preflightLiveAutoOrder) {
-        throw new BadRequestAppError(
-          'Delta Exchange product-rule preflight is unavailable for live-auto placement.'
-        );
-      }
-      const preflight = await adapter.preflightLiveAutoOrder(assetId, {
-        symbol: brokerSymbol,
+
+      return normalizeDeltaLiveAutoOrderSizingForBroker({
+        adapter,
+        assetId,
+        brokerSymbol,
         quantity,
         entryPrice,
         stopLossPrice,
         takeProfitPrice,
         side,
       });
-      const contracts = this.readNumberValue(preflight?.quantityContracts);
-      if (!(contracts && Number.isInteger(contracts) && contracts > 0)) {
-        throw new BadRequestAppError(
-          `Delta Exchange product-rule preflight did not return a valid integer contract size for ${brokerSymbol}.`
-        );
-      }
-      return {
-        quantity,
-        entryPrice,
-        stopLossPrice,
-        takeProfitPrice,
-        auditNote:
-          this.readStringValue(preflight?.auditNote) ??
-          `Delta product preflight passed for ${brokerSymbol}: ${contracts} contract${contracts === 1 ? '' : 's'}.`,
-      };
     }
 
     if (normalizedBrokerKey !== 'mudrex') {
@@ -4122,188 +4088,17 @@ export class SuggestedTradesService {
       await this.brokerReferenceDataService.getFuturesAssetDetailBySymbol('mudrex', brokerSymbol)
     ).data as unknown as Record<string, unknown> | null;
 
-    const step = this.readNumberValue(assetDetail?.quantity_step);
-    const minContract = this.readNumberValue(assetDetail?.min_contract);
-    const maxContract = this.readNumberValue(assetDetail?.max_contract);
-    const maxMarketContract = this.readNumberValue(assetDetail?.max_market_contract);
-    const minNotionalValue = this.readNumberValue(assetDetail?.min_notional_value);
-    const priceStep = this.readNumberValue(assetDetail?.price_step);
-    const minPrice = this.readNumberValue(assetDetail?.min_price);
-    const maxPrice = this.readNumberValue(assetDetail?.max_price);
-
-    this.assertMudrexLiveAutoLeverageWithinAssetLimits(brokerSymbol, assetDetail, leverage);
-
-    if (!(step && step > 0)) {
-      return {
-        quantity,
-        entryPrice,
-        stopLossPrice,
-        takeProfitPrice,
-        auditNote: null,
-      };
-    }
-
-    const precision = this.countNumericDecimals(assetDetail?.quantity_step);
-    const steppedQuantity = Math.floor(quantity / step) * step;
-    const normalizedQuantity = Number(steppedQuantity.toFixed(precision));
-
-    if (!(normalizedQuantity > 0)) {
-      throw new BadRequestAppError(
-        `Mudrex quantity ${this.formatNumericString(quantity) || quantity} rounds below the broker minimum step ${this.formatNumericString(step) || step} for ${brokerSymbol}.`
-      );
-    }
-
-    if (minContract && normalizedQuantity < minContract) {
-      throw new BadRequestAppError(
-        `Mudrex quantity ${this.formatNumericString(normalizedQuantity) || normalizedQuantity} is below the broker minimum contract ${this.formatNumericString(minContract) || minContract} for ${brokerSymbol}.`
-      );
-    }
-
-    const normalizedOrderType = String(orderType || '')
-      .trim()
-      .toLowerCase();
-    const maxAllowed =
-      normalizedOrderType === 'market' && maxMarketContract && maxMarketContract > 0
-        ? maxMarketContract
-        : maxContract;
-    if (maxAllowed && normalizedQuantity > maxAllowed) {
-      throw new BadRequestAppError(
-        `Mudrex quantity ${this.formatNumericString(normalizedQuantity) || normalizedQuantity} exceeds the broker maximum ${this.formatNumericString(maxAllowed) || maxAllowed} for ${brokerSymbol}.`
-      );
-    }
-
-    const normalizedEntryPrice =
-      priceStep && priceStep > 0
-        ? this.normalizeMudrexOrderPriceForStep(
-            entryPrice,
-            priceStep,
-            assetDetail?.price_step,
-            side === 'long' ? 'floor' : 'ceil'
-          )
-        : entryPrice;
-    const normalizedStopLossPrice =
-      priceStep && priceStep > 0
-        ? this.normalizeMudrexOrderPriceForStep(
-            stopLossPrice,
-            priceStep,
-            assetDetail?.price_step,
-            side === 'long' ? 'floor' : 'ceil'
-          )
-        : stopLossPrice;
-    const normalizedTakeProfitPrice =
-      priceStep && priceStep > 0
-        ? this.normalizeMudrexOrderPriceForStep(
-            takeProfitPrice,
-            priceStep,
-            assetDetail?.price_step,
-            side === 'long' ? 'ceil' : 'floor'
-          )
-        : takeProfitPrice;
-
-    for (const [label, value] of [
-      ['entry price', normalizedEntryPrice],
-      ['stop-loss price', normalizedStopLossPrice],
-      ['take-profit price', normalizedTakeProfitPrice],
-    ] as const) {
-      if (minPrice && value < minPrice) {
-        throw new BadRequestAppError(
-          `Mudrex ${label} ${this.formatNumericString(value) || value} is below the broker minimum price ${this.formatNumericString(minPrice) || minPrice} for ${brokerSymbol}.`
-        );
-      }
-      if (maxPrice && value > maxPrice) {
-        throw new BadRequestAppError(
-          `Mudrex ${label} ${this.formatNumericString(value) || value} exceeds the broker maximum price ${this.formatNumericString(maxPrice) || maxPrice} for ${brokerSymbol}.`
-        );
-      }
-    }
-
-    const normalizedNotional = normalizedQuantity * normalizedEntryPrice;
-    if (minNotionalValue && normalizedNotional < minNotionalValue) {
-      throw new BadRequestAppError(
-        `Mudrex order notional ${this.formatNumericString(normalizedNotional) || normalizedNotional} is below the broker minimum ${this.formatNumericString(minNotionalValue) || minNotionalValue} for ${brokerSymbol}.`
-      );
-    }
-
-    const notes: string[] = [];
-    const changed = Math.abs(normalizedQuantity - quantity) > 1e-12;
-    if (changed) {
-      notes.push(
-        `Normalized Mudrex quantity from ${this.formatNumericString(quantity) || quantity} to ${this.formatNumericString(normalizedQuantity) || normalizedQuantity} to satisfy broker quantity step ${this.formatNumericString(step) || step}.`
-      );
-    }
-    if (priceStep && priceStep > 0) {
-      const priceChanges = [
-        ['entry', entryPrice, normalizedEntryPrice],
-        ['stop-loss', stopLossPrice, normalizedStopLossPrice],
-        ['take-profit', takeProfitPrice, normalizedTakeProfitPrice],
-      ]
-        .filter(
-          ([, original, normalized]) => Math.abs(Number(normalized) - Number(original)) > 1e-12
-        )
-        .map(
-          ([label, original, normalized]) =>
-            `${label} ${this.formatNumericString(Number(original)) || original} -> ${this.formatNumericString(Number(normalized)) || normalized}`
-        );
-      if (priceChanges.length) {
-        notes.push(
-          `Normalized Mudrex prices to broker price step ${this.formatNumericString(priceStep) || priceStep}: ${priceChanges.join(', ')}.`
-        );
-      }
-    }
-
-    return {
-      quantity: normalizedQuantity,
-      entryPrice: normalizedEntryPrice,
-      stopLossPrice: normalizedStopLossPrice,
-      takeProfitPrice: normalizedTakeProfitPrice,
-      auditNote: notes.length ? notes.join(' ') : null,
-    };
-  }
-
-  private assertMudrexLiveAutoLeverageWithinAssetLimits(
-    brokerSymbol: string,
-    assetDetail: Record<string, unknown> | null,
-    leverage?: number | null
-  ): void {
-    const requestedLeverage = this.readNumberValue(leverage);
-    if (!(requestedLeverage && requestedLeverage > 0)) {
-      return;
-    }
-
-    const minLeverage = this.readNumberValue(assetDetail?.min_leverage);
-    const maxLeverage = this.readNumberValue(assetDetail?.max_leverage);
-    const formattedRequested = this.formatNumericString(requestedLeverage) ?? requestedLeverage;
-
-    if (minLeverage && requestedLeverage < minLeverage) {
-      throw new BadRequestAppError(
-        `Mudrex requested leverage ${formattedRequested}x is below the broker minimum leverage ${this.formatNumericString(minLeverage) ?? minLeverage}x for ${brokerSymbol}.`
-      );
-    }
-
-    if (maxLeverage && requestedLeverage > maxLeverage) {
-      throw new BadRequestAppError(
-        `Mudrex requested leverage ${formattedRequested}x exceeds the broker maximum leverage ${this.formatNumericString(maxLeverage) ?? maxLeverage}x for ${brokerSymbol}.`
-      );
-    }
-  }
-
-  private normalizeMudrexOrderPriceForStep(
-    price: number,
-    step: number,
-    rawStep: unknown,
-    mode: 'floor' | 'ceil'
-  ): number {
-    if (!(price > 0 && step > 0)) {
-      return price;
-    }
-
-    const precision = this.countNumericDecimals(rawStep);
-    const units = price / step;
-    const roundedUnits =
-      mode === 'ceil'
-        ? Math.ceil(units - Number.EPSILON * 10)
-        : Math.floor(units + Number.EPSILON * 10);
-    return Number((roundedUnits * step).toFixed(precision));
+    return normalizeMudrexLiveAutoOrderSizingForBroker({
+      brokerSymbol,
+      quantity,
+      entryPrice,
+      stopLossPrice,
+      takeProfitPrice,
+      side,
+      orderType,
+      leverage,
+      assetDetail,
+    });
   }
 
   private async pollMudrexLiveAutoPosition(input: {

@@ -22,8 +22,14 @@ import { HardenSuggestedTradeExecutionStorage1767300010000 } from './_fixtures/m
 import { DeltaExchangeOrdersAdapter } from '../src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter';
 import { env } from '../src/env';
 import { getMetadataArgsStorage } from 'typeorm';
-import { remediateDeltaLiveProtection } from '../src/api/services/suggested-trades/DeltaExchangeSuggestedTradeBroker';
-import { remediateMudrexLiveProtection } from '../src/api/services/suggested-trades/MudrexSuggestedTradeBroker';
+import {
+  normalizeDeltaLiveAutoOrderSizing,
+  remediateDeltaLiveProtection,
+} from '../src/api/services/suggested-trades/DeltaExchangeSuggestedTradeBroker';
+import {
+  normalizeMudrexLiveAutoOrderSizing,
+  remediateMudrexLiveProtection,
+} from '../src/api/services/suggested-trades/MudrexSuggestedTradeBroker';
 
 function createSuccess<T>(data: T) {
   return { success: true as const, data };
@@ -3651,6 +3657,103 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     String(savedExecutionPayload?.['note'] || ''),
     /Limit entry order expired after 15m for 5m/
   );
+}
+
+async function runSuggestedTradeBrokerLiveAutoSizingHandlerAssertions(): Promise<void> {
+  {
+    const calls: Array<{ assetId: string; symbol: string; side: string }> = [];
+    const sized = await normalizeDeltaLiveAutoOrderSizing({
+      assetId: 'delta-btc',
+      brokerSymbol: 'BTCUSD',
+      quantity: 0.002,
+      entryPrice: 100,
+      stopLossPrice: 105,
+      takeProfitPrice: 90,
+      side: 'short',
+      adapter: {
+        async preflightLiveAutoOrder(assetId, body) {
+          calls.push({
+            assetId,
+            symbol: String(body.symbol || ''),
+            side: body.side,
+          });
+          return {
+            quantityContracts: 2,
+          };
+        },
+      },
+    });
+
+    assert.deepEqual(calls, [{ assetId: 'delta-btc', symbol: 'BTCUSD', side: 'short' }]);
+    assert.equal(sized.quantity, 0.002);
+    assert.equal(sized.entryPrice, 100);
+    assert.match(String(sized.auditNote), /2 contracts/);
+
+    await assert.rejects(
+      () =>
+        normalizeDeltaLiveAutoOrderSizing({
+          assetId: 'delta-btc',
+          brokerSymbol: 'BTCUSD',
+          quantity: 0.002,
+          entryPrice: 100,
+          stopLossPrice: 105,
+          takeProfitPrice: 90,
+          side: 'short',
+          adapter: null,
+        }),
+      /Delta Exchange product-rule preflight is unavailable/
+    );
+  }
+
+  {
+    const assetDetail = {
+      quantity_step: '10',
+      min_contract: '10',
+      max_contract: '330000',
+      max_market_contract: '330000',
+      min_notional_value: '5',
+      price_step: '0.000001',
+      min_price: '0.000001',
+      max_price: '1000000',
+      min_leverage: '1',
+      max_leverage: '5',
+    };
+
+    const sized = normalizeMudrexLiveAutoOrderSizing({
+      brokerSymbol: 'PUMPBTCUSDT',
+      quantity: 11375,
+      entryPrice: 0.0158804,
+      stopLossPrice: 0.0170004,
+      takeProfitPrice: 0.0150004,
+      side: 'short',
+      orderType: 'limit',
+      leverage: 5,
+      assetDetail,
+    });
+
+    assert.equal(sized.quantity, 11370);
+    assert.equal(sized.entryPrice, 0.015881);
+    assert.equal(sized.stopLossPrice, 0.017001);
+    assert.equal(sized.takeProfitPrice, 0.015);
+    assert.match(String(sized.auditNote), /Normalized Mudrex quantity/);
+    assert.match(String(sized.auditNote), /Normalized Mudrex prices/);
+
+    assert.throws(
+      () =>
+        normalizeMudrexLiveAutoOrderSizing({
+          brokerSymbol: 'PUMPBTCUSDT',
+          quantity: 11370,
+          entryPrice: 0.01588,
+          stopLossPrice: 0.015,
+          takeProfitPrice: 0.017,
+          side: 'short',
+          orderType: 'limit',
+          leverage: 15,
+          assetDetail,
+        }),
+      /Mudrex requested leverage 15x exceeds the broker maximum leverage 5x for PUMPBTCUSDT/
+    );
+  }
 }
 
 async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promise<void> {
@@ -7481,6 +7584,7 @@ async function main(): Promise<void> {
   await runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions();
   runSuggestedTradeDeltaClosedFilledTimestampAssertions();
   await runSuggestedTradeLimitOrderExpiryAssertions();
+  await runSuggestedTradeBrokerLiveAutoSizingHandlerAssertions();
   await runSuggestedTradeBrokerProtectionRepairHandlerAssertions();
   await runSuggestedTradeProtectionRemediationAssertions();
   await runSuggestedTradeSiblingProtectionAutoCancelAssertions();

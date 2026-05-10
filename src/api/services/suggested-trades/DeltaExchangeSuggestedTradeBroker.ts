@@ -1,5 +1,6 @@
 import { env } from '../../../env';
 import { SuggestedTradeExecutionLink } from '../../contracts/SuggestedTrade';
+import { BadRequestAppError } from '../../errors/AppError';
 
 const DELTA_EXCHANGE_BROKER_KEY = 'delta_exchange';
 const DELTA_EXCHANGE_LIVE_AUTO_ENV = 'SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED';
@@ -61,6 +62,45 @@ export interface DeltaProtectionOrdersAdapter {
     },
     context?: { userId?: string; brokerKey?: string; accountId?: string }
   ) => Promise<unknown>;
+}
+
+export interface DeltaLiveAutoProductRulePreflightAdapter {
+  preflightLiveAutoOrder?: (
+    assetId: string,
+    body: {
+      symbol?: string | null;
+      quantity: number;
+      entryPrice: number;
+      stopLossPrice: number;
+      takeProfitPrice: number;
+      side: 'long' | 'short';
+    },
+    context?: { userId?: string; brokerKey?: string; accountId?: string }
+  ) => Promise<{
+    quantityContracts?: number;
+    contractValue?: number;
+    contractUnitCurrency?: string | null;
+    auditNote?: string | null;
+  }>;
+}
+
+export interface DeltaLiveAutoOrderSizingResult {
+  quantity: number;
+  entryPrice: number;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+  auditNote: string | null;
+}
+
+export interface DeltaLiveAutoOrderSizingInput {
+  adapter: DeltaLiveAutoProductRulePreflightAdapter | null | undefined;
+  assetId: string;
+  brokerSymbol: string;
+  quantity: number;
+  entryPrice: number;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+  side: 'long' | 'short';
 }
 
 export interface DeltaLiveProtectionRepairInput {
@@ -318,6 +358,43 @@ export function resolveDeltaInactiveAttachedProtectionManualReason(input: {
   }
 
   return null;
+}
+
+export async function normalizeDeltaLiveAutoOrderSizing(
+  input: DeltaLiveAutoOrderSizingInput
+): Promise<DeltaLiveAutoOrderSizingResult> {
+  if (!input.adapter?.preflightLiveAutoOrder) {
+    throw new BadRequestAppError(
+      'Delta Exchange product-rule preflight is unavailable for live-auto placement.'
+    );
+  }
+
+  const preflight = await input.adapter.preflightLiveAutoOrder(input.assetId, {
+    symbol: input.brokerSymbol,
+    quantity: input.quantity,
+    entryPrice: input.entryPrice,
+    stopLossPrice: input.stopLossPrice,
+    takeProfitPrice: input.takeProfitPrice,
+    side: input.side,
+  });
+  const contracts = readNumberValue(preflight?.quantityContracts);
+  if (!(contracts && Number.isInteger(contracts) && contracts > 0)) {
+    throw new BadRequestAppError(
+      `Delta Exchange product-rule preflight did not return a valid integer contract size for ${input.brokerSymbol}.`
+    );
+  }
+
+  return {
+    quantity: input.quantity,
+    entryPrice: input.entryPrice,
+    stopLossPrice: input.stopLossPrice,
+    takeProfitPrice: input.takeProfitPrice,
+    auditNote:
+      readStringValue(preflight?.auditNote) ??
+      `Delta product preflight passed for ${input.brokerSymbol}: ${contracts} contract${
+        contracts === 1 ? '' : 's'
+      }.`,
+  };
 }
 
 export async function remediateDeltaLiveProtection(
