@@ -570,7 +570,7 @@ function runAutomationLineageMappingAssertions(): void {
   );
 
   assert.equal(mappedRun.trigger, 'manual');
-  assert.equal(mappedRun.backtestId, null);
+  assert.equal(mappedRun.backtestId, 'backtest-7');
   assert.equal(mappedRun.lineage?.sourceType, 'strategy_library');
   assert.equal(mappedRun.recovery?.canRetry, false);
 

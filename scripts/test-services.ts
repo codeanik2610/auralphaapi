@@ -12086,6 +12086,23 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
     },
     createAutomationEvent: async () => undefined,
   };
+  service.strategyTemplateRepository = {
+    getStrategyTemplateById: async (_userId: string, templateId: string) => ({
+      id: templateId,
+      config: {
+        market: 'crypto-futures',
+        entryLogic: 'ema(20) > ema(50)',
+        exitLogic: 'ema(20) < ema(50)',
+        risk: {
+          stopLossPct: 2,
+          takeProfitTargetsPct: [4],
+        },
+        parameters: {
+          signalThreshold: '0.81',
+        },
+      },
+    }),
+  };
 
   const createResponse = await service.createAutomation('user-1', {
     name: 'Weekly Momentum',
@@ -12256,6 +12273,18 @@ async function runSuggestedTradesSummaryFilterAssertions(): Promise<void> {
         filled: 0,
         closed: 0,
       };
+    },
+    async listSuggestedTradesForFreshnessAudit() {
+      return {
+        sampled: 0,
+        total: 0,
+        items: [],
+      };
+    },
+  };
+  service.activityRepository = {
+    async countOperationalActivities() {
+      return 0;
     },
   };
 
@@ -13437,6 +13466,7 @@ async function runSignalsOverviewServiceAssertions(): Promise<void> {
 
 async function runSignalPresentationAssertions(): Promise<void> {
   const service = new SignalsService() as any;
+  const now = Date.now();
 
   const listSignal = {
     id: 'sig-1',
@@ -13450,14 +13480,14 @@ async function runSignalPresentationAssertions(): Promise<void> {
     aiScore: 88,
     thesis: 'Breakout continuation',
     route: 'signals',
-    createdAt: new Date('2026-04-04T10:00:00.000Z'),
-    updatedAt: new Date('2026-04-04T10:02:00.000Z'),
+    createdAt: new Date(now - 120_000),
+    updatedAt: new Date(now - 60_000),
     market: 'crypto-futures',
-    signalTime: new Date('2026-04-04T09:59:00.000Z'),
+    signalTime: new Date(now - 180_000),
     entryPrice: '100',
     sourceRefType: 'strategy_library',
     sourceRefId: 'template-1',
-    expiresAt: new Date('2026-05-04T11:00:00.000Z'),
+    expiresAt: new Date(now + 3_600_000),
     riskNote: 'Keep size controlled',
     promotionState: null,
     metadata: null,
@@ -13775,6 +13805,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       service.automationRepository = {
         ...service.automationRepository,
         getAutomationById: async () => automationRunner,
+        getAutomationCoreById: async () => automationRunner,
         createAutomationEvent: async (payload: Record<string, unknown>) => {
           events.push(payload);
           return payload;

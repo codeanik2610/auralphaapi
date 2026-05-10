@@ -1575,8 +1575,10 @@ export class AutomationsService {
       run?.meta && typeof run.meta === 'object' && !Array.isArray(run.meta)
         ? (run.meta as Record<string, unknown>)
         : {};
-    const lineage = extractAutomationLineage(meta.lineage ?? meta);
-    const backtestId = this.readRunChildBacktestId(meta);
+    const rawLineage = this.parseRecord(meta.lineage);
+    const lineage = extractAutomationLineage(rawLineage ?? meta);
+    const backtestId =
+      this.readRunChildBacktestId(meta) ?? this.readString(rawLineage?.backtestId);
     const backtestStatus =
       typeof meta.childBacktestStatus === 'string' && meta.childBacktestStatus.trim()
         ? meta.childBacktestStatus
