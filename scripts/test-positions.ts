@@ -900,6 +900,30 @@ async function positionsGuard05(): Promise<void> {
           },
         ];
       }
+      if (sql.includes('FROM risk_order_snapshots')) {
+        return [
+          {
+            externalId: 'risk-tp-1',
+            orderId: 'risk-tp-1',
+            symbol: 'BTCUSDT',
+            side: 'SELL',
+            status: 'CREATED',
+            orderType: 'TAKEPROFIT',
+            triggerType: 'MARKET',
+            quantity: '0.25',
+            price: '69000',
+            orderPrice: '69000',
+            triggerPrice: null,
+            stoplossPrice: null,
+            takeprofitPrice: null,
+            reduceOnly: false,
+            orderCreatedAt: '2026-04-09T09:02:00.000Z',
+            orderUpdatedAt: '2026-04-09T11:06:00.000Z',
+            firstSeenAt: '2026-04-09T09:02:00.000Z',
+            lastSeenAt: '2026-04-09T11:06:00.000Z',
+          },
+        ];
+      }
       return originalQuery(sql);
     }) as typeof coreDataSource.query;
 
@@ -909,7 +933,7 @@ async function positionsGuard05(): Promise<void> {
       assert.equal(response.position.id, 'pos-1');
       assert.equal(response.account?.id, 'acc-1');
       assert.equal(response.account?.isDefault, true);
-      assert.equal(response.summary.relatedOrders, 2);
+      assert.equal(response.summary.relatedOrders, 3);
       assert.equal(response.summary.openAlerts, 1);
       assert.equal(response.summary.linkedSuggestedTrades, 2);
       assert.equal(response.summary.recentActivity, 1);
@@ -922,6 +946,16 @@ async function positionsGuard05(): Promise<void> {
         response.relatedOrders.some(
           (item: { id: string; relation: string }) =>
             item.id === 'sl-1' && item.relation === 'position'
+        ),
+        true
+      );
+      assert.equal(
+        response.relatedOrders.some(
+          (item: { id: string; relation: string; orderType?: string; orderPrice?: number }) =>
+            item.id === 'risk-tp-1' &&
+            item.relation === 'protection' &&
+            item.orderType === 'TAKEPROFIT' &&
+            item.orderPrice === 69000
         ),
         true
       );

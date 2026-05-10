@@ -3752,6 +3752,153 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
 
   {
     const service = new SuggestedTradesService() as any;
+    let savedExecutionPayload: Record<string, unknown> | null = null;
+    const riskOrders: Array<{
+      positionId: string;
+      body: Record<string, unknown>;
+      context: Record<string, unknown> | undefined;
+    }> = [];
+    const trade = {
+      id: 'st-mudrex-position-sync-delayed-fill',
+      automationId: 'auto-1',
+      automationRunId: 'run-1',
+      userId: 'user-1',
+      symbol: 'AXLUSDT',
+      timeframe: '5m',
+      side: 'SELL',
+      signalTime: new Date('2026-05-10T00:05:00.000Z'),
+      status: 'Accepted',
+      confidence: 0.88,
+      score: 90,
+      entryPrice: '0.07443',
+      stopLossPrice: '0.07449',
+      takeProfitTargets: ['0.07412'],
+      entryRule: 'breakdown',
+      exitRule: 'fixed-risk',
+      rationale: null,
+      dedupeKey: 'dedupe-mudrex-position-sync-delayed-fill',
+      meta: null,
+      executionRecord: {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-delayed-fill',
+        orderStatus: 'OPEN',
+        executionState: 'linked',
+        orderType: 'limit',
+        linkedAt: '2026-05-10T00:06:34.000Z',
+        entryPrice: '0.07443',
+        stopLossPrice: '0.07449',
+        takeProfitPrice: '0.07412',
+        quantity: 1887,
+        protectionState: 'waiting_for_fill',
+        protectionCheckedAt: '2026-05-10T00:06:34.000Z',
+        protectionAttempts: 0,
+        createdAt: new Date('2026-05-10T00:06:34.000Z'),
+        updatedAt: new Date('2026-05-10T00:06:34.000Z'),
+      },
+      createdAt: new Date('2026-05-10T00:05:30.000Z'),
+      updatedAt: new Date('2026-05-10T00:06:34.000Z'),
+    };
+
+    service.suggestedTradeRepository = {
+      async findLinkedTradesBySymbols(
+        userId: string,
+        brokerKey: string,
+        accountId: string,
+        symbols: string[]
+      ) {
+        assert.equal(userId, 'user-1');
+        assert.equal(brokerKey, 'mudrex');
+        assert.equal(accountId, 'acc-1');
+        assert.deepEqual(symbols, ['AXLUSDT']);
+        return [trade];
+      },
+      async getLinkedOrderSnapshot() {
+        return {
+          orderStatus: 'OPEN',
+          statusRank: 1,
+          lastSeenAt: '2026-05-10T00:20:24.000Z',
+          payload: {
+            status: 'OPEN',
+            price: '0.07443',
+            quantity: '1887',
+            updated_at: '2026-05-10T00:20:24.000Z',
+          },
+        };
+      },
+      async getLinkedPositionSnapshots() {
+        return [
+          {
+            externalId: 'mudrex:asset-1:2026-05-10T00:06:34Z:SHORT',
+            status: 'OPEN',
+            statusRank: 1,
+            firstSeenAt: '2026-05-10T00:20:25.000Z',
+            lastSeenAt: '2026-05-10T00:20:25.000Z',
+            payload: {
+              id: 'mudrex-native-position-delayed-fill',
+              status: 'open',
+              symbol: 'AXLUSDT',
+              entry_price: '0.07443',
+              current_price: '0.07430',
+              liquidation_price: '0.07783',
+              quantity: '1887',
+              created_at: '2026-05-10T00:06:34.000Z',
+              updated_at: '2026-05-10T00:20:25.000Z',
+            },
+          },
+        ];
+      },
+      async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+        savedExecutionPayload = { ...payload };
+        return {
+          ...payload,
+          createdAt: new Date('2026-05-10T00:20:26.000Z'),
+          updatedAt: new Date('2026-05-10T00:20:26.000Z'),
+        };
+      },
+    };
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder(
+            positionId: string,
+            body: Record<string, unknown>,
+            context?: Record<string, unknown>
+          ) {
+            riskOrders.push({ positionId, body, context });
+            return { success: true };
+          },
+        };
+      },
+      supportsOrdersAdapter() {
+        return false;
+      },
+    };
+
+    const refreshed = await service.syncExecutionForPositionUpdates('user-1', 'mudrex', 'acc-1', [
+      'AXLUSDT',
+    ]);
+
+    assert.equal(refreshed, 1);
+    assert.equal(riskOrders.length, 1);
+    assert.equal(riskOrders[0]?.positionId, 'mudrex-native-position-delayed-fill');
+    assert.equal(riskOrders[0]?.body.stoploss_price, '0.074490');
+    assert.equal(riskOrders[0]?.body.takeprofit_price, '0.074120');
+    assert.equal(savedExecutionPayload?.['orderStatus'], 'FILLED');
+    assert.equal(savedExecutionPayload?.['executionState'], 'filled');
+    assert.equal(savedExecutionPayload?.['filledAt'], '2026-05-10T00:20:25.000Z');
+    assert.equal(savedExecutionPayload?.['protectionState'], 'attached');
+    assert.equal(savedExecutionPayload?.['protectionAttempts'], 1);
+    assert.equal(
+      (savedExecutionPayload?.['protectionPlan'] as Record<string, unknown> | undefined)
+        ?.snapshotPositionId,
+      'mudrex:asset-1:2026-05-10T00:06:34Z:SHORT'
+    );
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
     let riskOrderPositionId: string | null = null;
     service.brokerRuntimeRegistry = {
       getPositionsAdapter() {

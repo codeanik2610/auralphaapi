@@ -138,7 +138,7 @@ const getProvenanceSourceLabel = (
   const normalized = String(source || '').trim().toLowerCase();
 
   if (normalized === 'pg.market_candles_1m') {
-    return 'Postgres candle warehouse';
+    return 'Binance futures candles';
   }
   if (normalized === 'mudrex') {
     return 'Mudrex broker price cache';

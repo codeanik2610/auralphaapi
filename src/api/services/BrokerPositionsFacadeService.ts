@@ -1303,6 +1303,96 @@ export class BrokerPositionsFacadeService {
     };
   }
 
+  private mapRelatedLiveRiskOrderSnapshot(
+    row: {
+      externalId?: string | null;
+      orderId?: string | null;
+      symbol?: string | null;
+      side?: string | null;
+      status?: string | null;
+      orderType?: string | null;
+      triggerType?: string | null;
+      quantity?: number | string | null;
+      price?: number | string | null;
+      orderPrice?: number | string | null;
+      triggerPrice?: number | string | null;
+      stoplossPrice?: number | string | null;
+      takeprofitPrice?: number | string | null;
+      reduceOnly?: boolean | number | string | null;
+      orderCreatedAt?: Date | string | null;
+      orderUpdatedAt?: Date | string | null;
+      firstSeenAt?: Date | string | null;
+      lastSeenAt?: Date | string | null;
+    },
+    trackedOrderIds: string[]
+  ): PositionLifecycleOrderItem {
+    const orderId = this.readString(row.orderId) || this.readString(row.externalId) || '';
+    const orderType = this.readString(row.orderType);
+    const normalizedOrderType = orderType.toLowerCase();
+    const reduceOnly = this.readBoolean(row.reduceOnly);
+    const relation =
+      trackedOrderIds.includes(orderId) ||
+      normalizedOrderType.includes('stoploss') ||
+      normalizedOrderType.includes('takeprofit') ||
+      reduceOnly === true
+        ? 'protection'
+        : 'symbol';
+    const orderPrice =
+      this.toNumber(row.orderPrice) ??
+      this.toNumber(row.triggerPrice) ??
+      this.toNumber(row.price) ??
+      this.toNumber(row.stoplossPrice) ??
+      this.toNumber(row.takeprofitPrice);
+
+    return {
+      id: orderId,
+      externalId: orderId || undefined,
+      kind: 'live',
+      relation,
+      symbol: this.readString(row.symbol),
+      status: this.readString(row.status) || null,
+      side: this.readString(row.side),
+      orderType,
+      triggerType: this.readString(row.triggerType),
+      quantity: this.toNumber(row.quantity),
+      orderPrice,
+      stopLossPrice: this.toNumber(row.stoplossPrice),
+      takeProfitPrice: this.toNumber(row.takeprofitPrice),
+      reduceOnly,
+      linkedPositionId: null,
+      createdAt: this.toIsoString(row.orderCreatedAt) || this.toIsoString(row.firstSeenAt) || null,
+      updatedAt: this.toIsoString(row.orderUpdatedAt) || this.toIsoString(row.lastSeenAt) || null,
+      detailUrl: orderId ? `/orders?selected=${encodeURIComponent(orderId)}` : undefined,
+    };
+  }
+
+  private dedupeLifecycleOrders(items: PositionLifecycleOrderItem[]): PositionLifecycleOrderItem[] {
+    const byId = new Map<string, PositionLifecycleOrderItem>();
+    const score = (item: PositionLifecycleOrderItem): number => {
+      const status = this.readString(item.status).toLowerCase();
+      const updatedAt = Date.parse(String(item.updatedAt || item.createdAt || ''));
+      const statusScore =
+        status === 'filled' || status === 'closed'
+          ? 3
+          : status === 'open' || status === 'pending' || status === 'created'
+            ? 2
+            : status
+              ? 1
+              : 0;
+      return statusScore * 1_000_000_000_000 + (Number.isFinite(updatedAt) ? updatedAt : 0);
+    };
+
+    items.forEach((item, index) => {
+      const key = this.readString(item.id) || `${item.symbol || 'order'}:${index}`;
+      const existing = byId.get(key);
+      if (!existing || score(item) >= score(existing)) {
+        byId.set(key, item);
+      }
+    });
+
+    return Array.from(byId.values());
+  }
+
   private mapPaperLifecycleOrder(
     item: PaperOrder,
     position: PositionRecord
@@ -1614,8 +1704,65 @@ export class BrokerPositionsFacadeService {
       lastSeenAt?: Date | string | null;
     }>;
 
-    return rows
-      .map((row) => this.mapRelatedLiveOrderSnapshot(row, position, trackedOrderIds))
+    const riskRows = (await coreDataSource.query(
+      `SELECT external_id AS externalId,
+              order_id AS orderId,
+              symbol,
+              side,
+              status,
+              order_type AS orderType,
+              trigger_type AS triggerType,
+              quantity,
+              price,
+              order_price AS orderPrice,
+              trigger_price AS triggerPrice,
+              stoploss_price AS stoplossPrice,
+              takeprofit_price AS takeprofitPrice,
+              reduce_only AS reduceOnly,
+              order_created_at AS orderCreatedAt,
+              order_updated_at AS orderUpdatedAt,
+              first_seen_at AS firstSeenAt,
+              last_seen_at AS lastSeenAt
+         FROM risk_order_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND (${[
+            trackedOrderIds.length
+              ? `COALESCE(order_id, external_id) IN (${trackedOrderIds.map(() => '?').join(', ')})`
+              : '',
+            normalizedSymbol ? 'LOWER(COALESCE(symbol, \'\')) = ?' : '',
+          ]
+            .filter(Boolean)
+            .join(' OR ')})${windowSql}
+        ORDER BY last_seen_at DESC
+        LIMIT 20`,
+      params
+    )) as Array<{
+      externalId?: string | null;
+      orderId?: string | null;
+      symbol?: string | null;
+      side?: string | null;
+      status?: string | null;
+      orderType?: string | null;
+      triggerType?: string | null;
+      quantity?: number | string | null;
+      price?: number | string | null;
+      orderPrice?: number | string | null;
+      triggerPrice?: number | string | null;
+      stoplossPrice?: number | string | null;
+      takeprofitPrice?: number | string | null;
+      reduceOnly?: boolean | number | string | null;
+      orderCreatedAt?: Date | string | null;
+      orderUpdatedAt?: Date | string | null;
+      firstSeenAt?: Date | string | null;
+      lastSeenAt?: Date | string | null;
+    }>;
+
+    return this.dedupeLifecycleOrders([
+      ...rows.map((row) => this.mapRelatedLiveOrderSnapshot(row, position, trackedOrderIds)),
+      ...riskRows.map((row) => this.mapRelatedLiveRiskOrderSnapshot(row, trackedOrderIds)),
+    ])
       .sort((left, right) => {
         const rank = (item: PositionLifecycleOrderItem): number =>
           item.relation === 'position' ? 0 : item.relation === 'protection' ? 1 : 2;

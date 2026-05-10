@@ -352,6 +352,21 @@ async function runMarketsChartWarehouseSymbolResolutionAssertions(): Promise<voi
     assert.equal(capturedQueries.length, 1);
     assert.match(capturedQueries[0].sql, /symbol = ANY/);
     assert.deepEqual(capturedQueries[0].params, [['AVAXUSD', 'AVAXUSDT'], 'AVAXUSD']);
+
+    service.fetchChartCandles = async () => [
+      {
+        openTime: Date.parse('2026-04-13T03:00:00.000Z'),
+        open: '100',
+        high: '105',
+        low: '98',
+        close: '102',
+        volume: '1000',
+      },
+    ];
+
+    const chart = await service.getSymbolChart('AVAXUSD', { interval: '5m', limit: '1' });
+    assert.equal(chart.data.source, 'pg.market_candles_1m');
+    assert.equal(chart.data.provenance.sourceLabel, 'Binance futures candles');
   } finally {
     (strategyDataSource as any).query = originalQuery;
     (strategyDataSource as any).isInitialized = originalInitialized;

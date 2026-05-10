@@ -247,6 +247,7 @@ interface LiveAutoOrderPlacementHandler {
 
 interface ExecutionRefreshOptions {
   resolveStaleGaps?: boolean;
+  allowPositionEvidenceFill?: boolean;
 }
 
 interface LivePositionSnapshot {
@@ -746,7 +747,9 @@ export class SuggestedTradesService {
     if (!trades.length) {
       return 0;
     }
-    return this.refreshExecutionOutcomes(userId, trades);
+    return this.refreshExecutionOutcomes(userId, trades, {
+      allowPositionEvidenceFill: true,
+    });
   }
 
   async syncExecutionForPaperOrderUpdates(
@@ -5799,6 +5802,45 @@ export class SuggestedTradesService {
       );
 
       if (!snapshot) {
+        if (options.allowPositionEvidenceFill) {
+          const positionAnchor = this.buildPositionSearchAnchor(
+            execution?.submittedAt ??
+              execution?.filledAt ??
+              execution?.linkedAt ??
+              trade.signalTime.toISOString()
+          );
+          const positionSnapshots = await this.suggestedTradeRepository.getLinkedPositionSnapshots(
+            userId,
+            brokerKey,
+            accountId,
+            trade.symbol,
+            positionAnchor,
+            20
+          );
+          let nextExecution = this.mergePositionOutcome(trade, execution ?? {}, positionSnapshots, {
+            allowPositionEvidenceFill: true,
+          });
+          nextExecution = await this.maybeRemediateLiveProtection(
+            userId,
+            trade,
+            nextExecution,
+            positionSnapshots
+          );
+          nextExecution = await this.maybeAutoCancelSiblingProtectionOrders(
+            userId,
+            trade,
+            nextExecution,
+            positionSnapshots
+          );
+          const currentExecutionJson = JSON.stringify(execution ?? null);
+          const nextExecutionJson = JSON.stringify(nextExecution ?? null);
+          if (currentExecutionJson === nextExecutionJson) {
+            continue;
+          }
+          await this.persistExecutionState(trade, nextExecution);
+          refreshedTrades += 1;
+          continue;
+        }
         if (!options.resolveStaleGaps) {
           continue;
         }
@@ -5831,7 +5873,9 @@ export class SuggestedTradesService {
         positionAnchor,
         20
       );
-      nextExecution = this.mergePositionOutcome(trade, nextExecution, positionSnapshots);
+      nextExecution = this.mergePositionOutcome(trade, nextExecution, positionSnapshots, {
+        allowPositionEvidenceFill: options.allowPositionEvidenceFill === true,
+      });
       nextExecution = await this.maybeExpireLiveLimitEntryOrder(
         userId,
         trade,
@@ -7784,9 +7828,12 @@ export class SuggestedTradesService {
       firstSeenAt: Date | string | null;
       lastSeenAt: Date | string | null;
       payload: Record<string, unknown> | null;
-    }>
+    }>,
+    options: { allowPositionEvidenceFill?: boolean } = {}
   ): SuggestedTradeExecutionLink {
-    const candidate = this.selectBestPositionCandidate(trade, execution, snapshots);
+    const candidate = this.selectBestPositionCandidate(trade, execution, snapshots, {
+      allowPositionEvidenceFill: options.allowPositionEvidenceFill === true,
+    });
     if (!candidate) {
       return execution;
     }
@@ -7812,6 +7859,24 @@ export class SuggestedTradesService {
       this.toIsoString(candidate.firstSeenAt) ??
       execution.positionOpenedAt ??
       null;
+    const activePositionEvidence =
+      options.allowPositionEvidenceFill === true &&
+      (positionStatus === 'OPEN' || positionStatus === 'PARTIAL');
+    const positionObservedFillAt =
+      this.toIsoString(candidate.firstSeenAt) ??
+      this.toIsoString(candidate.lastSeenAt) ??
+      positionOpenedAt ??
+      null;
+    const positionEntryPrice =
+      this.readStringValue(candidate.payload?.entry_price) ??
+      this.readStringValue(candidate.payload?.entryPrice) ??
+      execution.filledPrice ??
+      null;
+    const positionQuantity =
+      this.readNumberValue(candidate.payload?.quantity) ??
+      this.readNumberValue(candidate.payload?.size) ??
+      execution.filledQuantity ??
+      null;
     const backfilledDeltaFilledAt =
       !execution.filledAt &&
       this.isDeltaClosedFilledOrder(
@@ -7835,9 +7900,24 @@ export class SuggestedTradesService {
         brokerKey === 'mudrex' && observedLeverage !== null
           ? observedLeverage
           : (execution.leverage ?? null),
+      orderStatus:
+        activePositionEvidence &&
+        !['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(
+          this.normalizeOrderStatus(execution.orderStatus) ?? ''
+        )
+          ? 'FILLED'
+          : (execution.orderStatus ?? null),
       positionId: candidate.externalId || execution.positionId || null,
       positionStatus,
-      filledAt: execution.filledAt ?? backfilledDeltaFilledAt ?? null,
+      filledAt:
+        execution.filledAt ??
+        backfilledDeltaFilledAt ??
+        (activePositionEvidence ? positionObservedFillAt : null),
+      filledPrice: execution.filledPrice ?? (activePositionEvidence ? positionEntryPrice : null),
+      filledQuantity:
+        execution.filledQuantity ?? (activePositionEvidence ? positionQuantity : null),
+      remainingQuantity:
+        execution.remainingQuantity ?? (activePositionEvidence && positionQuantity ? 0 : null),
       positionOpenedAt,
       positionClosedAt:
         positionStatus === 'OPEN' || positionStatus === 'PARTIAL'
@@ -7865,7 +7945,7 @@ export class SuggestedTradesService {
         positionStatus === 'CLOSED' || positionStatus === 'LIQUIDATED'
           ? 'closed'
           : (positionStatus === 'OPEN' || positionStatus === 'PARTIAL') &&
-              this.isExecutionOrderFilled(execution)
+              (this.isExecutionOrderFilled(execution) || activePositionEvidence)
             ? 'filled'
             : (execution.executionState ?? null),
     };
@@ -8063,7 +8143,8 @@ export class SuggestedTradesService {
       firstSeenAt: Date | string | null;
       lastSeenAt: Date | string | null;
       payload: Record<string, unknown> | null;
-    }>
+    }>,
+    options: { allowPositionEvidenceFill?: boolean } = {}
   ): {
     externalId: string;
     status: string | null;
@@ -8078,6 +8159,13 @@ export class SuggestedTradesService {
 
     const expectedDirection = String(trade.side || '').toUpperCase() === 'SELL' ? 'short' : 'long';
     const linkedPositionId = this.readStringValue(execution.positionId);
+    if (
+      !linkedPositionId &&
+      !this.isExecutionOrderFilled(execution) &&
+      options.allowPositionEvidenceFill !== true
+    ) {
+      return null;
+    }
     const preferOpenPosition = this.shouldPreferOpenPositionCandidate(execution, trade);
     const anchorMs = this.toTimestamp(
       execution.filledAt ??
@@ -8102,7 +8190,7 @@ export class SuggestedTradesService {
 
     for (const snapshot of snapshots) {
       const payload = snapshot.payload ?? {};
-      const direction = this.resolvePositionDirection(payload);
+      const direction = this.resolvePositionDirection(payload, snapshot.externalId);
       if (direction !== expectedDirection) {
         continue;
       }
@@ -8676,7 +8764,10 @@ export class SuggestedTradesService {
     return `${existing} ${next}`.trim();
   }
 
-  private resolvePositionDirection(payload: Record<string, unknown>): 'long' | 'short' {
+  private resolvePositionDirection(
+    payload: Record<string, unknown>,
+    externalId?: string | null
+  ): 'long' | 'short' {
     const side = String(payload.side ?? '')
       .trim()
       .toLowerCase();
@@ -8694,6 +8785,14 @@ export class SuggestedTradesService {
       orderType === 'sell' ||
       orderType === 'short'
     ) {
+      return 'short';
+    }
+    const externalIdSide = String(externalId || '')
+      .trim()
+      .split(':')
+      .pop()
+      ?.toLowerCase();
+    if (externalIdSide === 'short' || externalIdSide === 'sell') {
       return 'short';
     }
     return 'long';
