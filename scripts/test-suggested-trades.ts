@@ -22,6 +22,8 @@ import { HardenSuggestedTradeExecutionStorage1767300010000 } from './_fixtures/m
 import { DeltaExchangeOrdersAdapter } from '../src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter';
 import { env } from '../src/env';
 import { getMetadataArgsStorage } from 'typeorm';
+import { remediateDeltaLiveProtection } from '../src/api/services/suggested-trades/DeltaExchangeSuggestedTradeBroker';
+import { remediateMudrexLiveProtection } from '../src/api/services/suggested-trades/MudrexSuggestedTradeBroker';
 
 function createSuccess<T>(data: T) {
   return { success: true as const, data };
@@ -3651,6 +3653,215 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
   );
 }
 
+async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promise<void> {
+  {
+    const riskOrders: Array<{
+      positionId: string;
+      body: Record<string, unknown>;
+      context: Record<string, unknown> | undefined;
+    }> = [];
+
+    const nextExecution = await remediateMudrexLiveProtection({
+      userId: 'user-1',
+      trade: {
+        symbol: 'BTCUSDT',
+        side: 'BUY',
+        timeframe: '5m',
+      },
+      execution: {
+        orderId: 'mudrex-order-1',
+        entryPrice: '100',
+        protectionAttempts: 0,
+      } as any,
+      position: {
+        externalId: 'mudrex-snapshot-position-1',
+        payload: {
+          id: 'mudrex-native-position-1',
+          side: 'Long',
+          entry_price: '102',
+          current_price: '102',
+        },
+      },
+      prices: {
+        requestedEntryPrice: 100,
+        stopLossPrice: 95,
+        takeProfitPrice: 110,
+      },
+      nowIso: '2026-05-10T00:00:00.000Z',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+      positionsAdapter: {
+        async createRiskOrder(
+          positionId: string,
+          body: Record<string, unknown>,
+          context?: Record<string, unknown>
+        ) {
+          riskOrders.push({ positionId, body, context });
+          return { success: true };
+        },
+      },
+      protectionRepairEnabled: true,
+      resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
+      deriveScaledProtectionPrice: (actualEntryPrice, requestedEntryPrice, requestedTargetPrice) =>
+        Number(
+          ((actualEntryPrice * requestedTargetPrice) / requestedEntryPrice).toFixed(6)
+        ).toFixed(6),
+      formatNumericString: (value) =>
+        value === null || value === undefined ? null : String(value),
+      markProtectionAttached: (trade, execution, nowIso, note, planUpdate, attempted) =>
+        ({
+          ...execution,
+          protectionState: 'attached',
+          protectionCheckedAt: nowIso,
+          protectionAttachedAt: nowIso,
+          protectionAttempts: Number(execution.protectionAttempts ?? 0) + (attempted ? 1 : 0),
+          protectionLastError: null,
+          note,
+          protectionPlan: planUpdate,
+        }) as any,
+      markProtectionManualUnlinked: () => {
+        throw new Error('Mudrex handler should attach protection in this scenario');
+      },
+      markProtectionFailed: () => {
+        throw new Error('Mudrex handler should not fail protection in this scenario');
+      },
+    });
+
+    assert.equal(riskOrders.length, 1);
+    assert.equal(riskOrders[0]?.positionId, 'mudrex-native-position-1');
+    assert.equal(riskOrders[0]?.body.stoploss_price, '96.900000');
+    assert.equal(riskOrders[0]?.body.takeprofit_price, '112.200000');
+    assert.equal(riskOrders[0]?.context?.brokerKey, 'mudrex');
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.protectionAttempts, 1);
+  }
+
+  {
+    const protectiveOrders: Array<{
+      assetId: string;
+      body: Record<string, unknown>;
+      context: Record<string, unknown> | undefined;
+    }> = [];
+
+    const nextExecution = await remediateDeltaLiveProtection({
+      userId: 'user-1',
+      trade: {
+        id: 'st-delta-handler',
+        symbol: 'BTCUSDT',
+        side: 'SELL',
+        timeframe: '5m',
+      },
+      execution: {
+        orderId: 'delta-order-1',
+        entryPrice: '100',
+        quantity: '2',
+        protectionState: 'pending',
+        protectionAttempts: 0,
+      } as any,
+      position: {
+        externalId: 'delta-position-1',
+        payload: {
+          entry_price: '100',
+          size: '2',
+          mark_price: '99',
+        },
+      },
+      prices: {
+        requestedEntryPrice: 100,
+        stopLossPrice: 105,
+        takeProfitPrice: 90,
+      },
+      nowIso: '2026-05-10T00:01:00.000Z',
+      brokerKey: 'delta_exchange',
+      accountId: 'acc-delta-1',
+      ordersAdapter: {
+        async createLiveAutoProtectiveOrdersForPosition(
+          assetId: string,
+          body: {
+            size: number;
+            entrySide: 'buy' | 'sell';
+            stopLossPrice: number;
+            takeProfitPrice: number;
+            idempotencyKey?: string;
+          },
+          context?: Record<string, unknown>
+        ) {
+          protectiveOrders.push({ assetId, body, context });
+          return {
+            stop_loss_order_id: 'delta-sl-1',
+            take_profit_order_id: 'delta-tp-1',
+          };
+        },
+      },
+      protectionRepairEnabled: true,
+      resolveLiveProtectionOrderContext: async () => ({
+        stopLossOrderId: null,
+        takeProfitOrderId: null,
+        stopLossStatus: null,
+        takeProfitStatus: null,
+        activeOrderIds: [],
+      }),
+      hasUsableProtectionContext: () => false,
+      resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
+      resolvePositionCurrentPrice: (payload) => Number(payload.mark_price),
+      deriveScaledProtectionPrice: (actualEntryPrice, requestedEntryPrice, requestedTargetPrice) =>
+        Number(
+          ((actualEntryPrice * requestedTargetPrice) / requestedEntryPrice).toFixed(6)
+        ).toFixed(6),
+      resolveLiveAutoAssetRoute: async () => ({
+        assetId: 'delta-asset-1',
+        brokerSymbol: 'BTCUSD',
+        candidateSymbols: ['BTCUSDT'],
+      }),
+      resolveActiveProtectionOrdersForSymbol: async () => ({
+        stopLossOrderIds: [],
+        takeProfitOrderIds: [],
+        unclassifiedOrderIds: [],
+        activeOrderIds: [],
+      }),
+      unwrapOrderPlacementResponse: (response) => response as Record<string, unknown>,
+      markProtectionAttached: () => {
+        throw new Error('Delta handler should create replacement protection in this scenario');
+      },
+      markProtectionAttaching: (trade, execution, nowIso, note, planUpdate, attempted) =>
+        ({
+          ...execution,
+          protectionState: 'attaching',
+          protectionCheckedAt: nowIso,
+          protectionAttempts: Number(execution.protectionAttempts ?? 0) + (attempted ? 1 : 0),
+          note,
+          protectionPlan: planUpdate,
+        }) as any,
+      markProtectionManualUnlinked: () => {
+        throw new Error('Delta handler should not require manual action in this scenario');
+      },
+      markProtectionFailed: () => {
+        throw new Error('Delta handler should not fail protection in this scenario');
+      },
+    });
+
+    assert.equal(protectiveOrders.length, 1);
+    assert.equal(protectiveOrders[0]?.assetId, 'delta-asset-1');
+    assert.equal(protectiveOrders[0]?.body.entrySide, 'sell');
+    assert.equal(protectiveOrders[0]?.body.size, 2);
+    assert.equal(
+      protectiveOrders[0]?.body.idempotencyKey,
+      'live-auto-protection:st-delta-handler:delta-order-1'
+    );
+    assert.equal(protectiveOrders[0]?.context?.brokerKey, 'delta_exchange');
+    assert.equal(nextExecution.protectionState, 'attaching');
+    assert.equal(nextExecution.protectionAttempts, 1);
+    assert.equal(
+      (nextExecution.protectionPlan as Record<string, unknown>).stopLossOrderId,
+      'delta-sl-1'
+    );
+    assert.equal(
+      (nextExecution.protectionPlan as Record<string, unknown>).takeProfitOrderId,
+      'delta-tp-1'
+    );
+  }
+}
+
 async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void> {
   {
     const service = new SuggestedTradesService() as any;
@@ -3929,9 +4140,7 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
     assert.equal(savedExecutionPayload?.['filledAt'], '2026-05-10T00:20:25.000Z');
     assert.equal(savedExecutionPayload?.['protectionState'], 'attached');
     assert.equal(savedExecutionPayload?.['protectionAttempts'], 1);
-    assert.ok(
-      Number.isFinite(Date.parse(String(savedExecutionPayload?.['protectionCheckedAt'])))
-    );
+    assert.ok(Number.isFinite(Date.parse(String(savedExecutionPayload?.['protectionCheckedAt']))));
     assert.equal(
       savedExecutionPayload?.['protectionAttachedAt'],
       savedExecutionPayload?.['protectionCheckedAt']
@@ -7272,6 +7481,7 @@ async function main(): Promise<void> {
   await runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions();
   runSuggestedTradeDeltaClosedFilledTimestampAssertions();
   await runSuggestedTradeLimitOrderExpiryAssertions();
+  await runSuggestedTradeBrokerProtectionRepairHandlerAssertions();
   await runSuggestedTradeProtectionRemediationAssertions();
   await runSuggestedTradeSiblingProtectionAutoCancelAssertions();
   await runSuggestedTradeMudrexLeverageReconciliationAssertions();

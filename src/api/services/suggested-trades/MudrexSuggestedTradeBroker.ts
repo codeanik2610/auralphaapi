@@ -1,4 +1,5 @@
 import { env } from '../../../env';
+import { SuggestedTradeExecutionLink } from '../../contracts/SuggestedTrade';
 
 const MUDREX_BROKER_KEY = 'mudrex';
 const MUDREX_LIVE_AUTO_ENV = 'SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED';
@@ -12,7 +13,69 @@ type SuggestedTradeSideLike = {
 
 type LivePositionSnapshotLike = {
   externalId?: unknown;
+  payload?: Record<string, unknown> | null;
 };
+
+type SuggestedTradeProtectionTradeLike = {
+  symbol?: unknown;
+  side?: unknown;
+  timeframe?: unknown;
+};
+
+export interface MudrexProtectionPrices {
+  requestedEntryPrice: number | null;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+}
+
+export interface MudrexProtectionPositionsAdapter {
+  createRiskOrder?: (
+    positionId: string,
+    body: Record<string, unknown>,
+    context?: { userId?: string; brokerKey?: string; accountId?: string }
+  ) => Promise<unknown>;
+}
+
+export interface MudrexLiveProtectionRepairInput {
+  userId: string;
+  trade: SuggestedTradeProtectionTradeLike;
+  execution: SuggestedTradeExecutionLink;
+  position: LivePositionSnapshotLike;
+  prices: MudrexProtectionPrices;
+  nowIso: string;
+  brokerKey: string;
+  accountId: string;
+  positionsAdapter: MudrexProtectionPositionsAdapter | null | undefined;
+  protectionRepairEnabled: boolean;
+  resolvePositionEntryPrice: (
+    payload: Record<string, unknown>,
+    execution: SuggestedTradeExecutionLink
+  ) => number | null;
+  deriveScaledProtectionPrice: (
+    actualEntryPrice: number,
+    requestedEntryPrice: number,
+    requestedTargetPrice: number
+  ) => string;
+  formatNumericString: (value: number | null | undefined) => string | null;
+  markProtectionAttached: (
+    trade: SuggestedTradeProtectionTradeLike,
+    execution: SuggestedTradeExecutionLink,
+    nowIso: string,
+    note: string,
+    planUpdate: Record<string, unknown>,
+    attempted?: boolean
+  ) => SuggestedTradeExecutionLink;
+  markProtectionManualUnlinked: (
+    execution: SuggestedTradeExecutionLink,
+    nowIso: string,
+    message: string
+  ) => SuggestedTradeExecutionLink;
+  markProtectionFailed: (
+    execution: SuggestedTradeExecutionLink,
+    nowIso: string,
+    message: string
+  ) => SuggestedTradeExecutionLink;
+}
 
 const readRecordValue = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -151,6 +214,111 @@ export function validateMudrexProtectionAttachability(
     return `Mudrex protection needs manual action: planned stop-loss ${stopLossPrice} is at or beyond liquidation price ${formatNumericString(liquidationPrice) || liquidationPrice}.`;
   }
   return null;
+}
+
+export async function remediateMudrexLiveProtection(
+  input: MudrexLiveProtectionRepairInput
+): Promise<SuggestedTradeExecutionLink> {
+  const positionPayload = input.position.payload ?? {};
+  if (mudrexPositionHasProtection(positionPayload)) {
+    return input.markProtectionAttached(
+      input.trade,
+      input.execution,
+      input.nowIso,
+      'Mudrex position already reports active SL/TP protection.',
+      {
+        positionId: input.position.externalId,
+      }
+    );
+  }
+
+  if (!input.protectionRepairEnabled) {
+    return input.markProtectionManualUnlinked(
+      input.execution,
+      input.nowIso,
+      'Mudrex automatic SL/TP protection repair is disabled by broker-specific control.'
+    );
+  }
+
+  if (!input.positionsAdapter?.createRiskOrder) {
+    return input.markProtectionFailed(
+      input.execution,
+      input.nowIso,
+      'Mudrex positions adapter is unavailable for protection remediation.'
+    );
+  }
+
+  const positionId = resolveMudrexRiskOrderPositionId(input.position, positionPayload);
+  const actualEntryPrice = input.resolvePositionEntryPrice(positionPayload, input.execution);
+  if (!positionId || !(actualEntryPrice && actualEntryPrice > 0)) {
+    return {
+      ...input.execution,
+      protectionState: 'waiting_for_position',
+      protectionCheckedAt: input.nowIso,
+      protectionLastError:
+        'Mudrex position snapshot did not include a usable id and entry price yet.',
+    };
+  }
+
+  const requestedEntryPrice = input.prices.requestedEntryPrice ?? actualEntryPrice;
+  const stopLossPrice = input.deriveScaledProtectionPrice(
+    actualEntryPrice,
+    requestedEntryPrice,
+    input.prices.stopLossPrice
+  );
+  const takeProfitPrice = input.deriveScaledProtectionPrice(
+    actualEntryPrice,
+    requestedEntryPrice,
+    input.prices.takeProfitPrice
+  );
+  const attachabilityError = validateMudrexProtectionAttachability(
+    input.trade,
+    positionPayload,
+    stopLossPrice,
+    takeProfitPrice
+  );
+  if (attachabilityError) {
+    return input.markProtectionManualUnlinked(input.execution, input.nowIso, attachabilityError);
+  }
+
+  try {
+    await input.positionsAdapter.createRiskOrder(
+      positionId,
+      {
+        stoploss_price: stopLossPrice,
+        takeprofit_price: takeProfitPrice,
+        order_source: 'positions_desk',
+        is_stoploss: true,
+        is_takeprofit: true,
+      },
+      {
+        userId: input.userId,
+        brokerKey: input.brokerKey,
+        accountId: input.accountId,
+      }
+    );
+    return input.markProtectionAttached(
+      input.trade,
+      input.execution,
+      input.nowIso,
+      `Derived Mudrex SL/TP attached from actual fill price ${
+        input.formatNumericString(actualEntryPrice) || actualEntryPrice
+      } (SL ${stopLossPrice}, TP ${takeProfitPrice}).`,
+      {
+        positionId,
+        snapshotPositionId: input.position.externalId,
+        attachedStopLossPrice: stopLossPrice,
+        attachedTakeProfitPrice: takeProfitPrice,
+      },
+      true
+    );
+  } catch (error) {
+    return input.markProtectionFailed(
+      input.execution,
+      input.nowIso,
+      `Mudrex protection remediation failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 function resolveMudrexPositionEntrySide(

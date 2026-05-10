@@ -1,4 +1,5 @@
 import { env } from '../../../env';
+import { SuggestedTradeExecutionLink } from '../../contracts/SuggestedTrade';
 
 const DELTA_EXCHANGE_BROKER_KEY = 'delta_exchange';
 const DELTA_EXCHANGE_LIVE_AUTO_ENV = 'SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED';
@@ -16,7 +17,7 @@ type LivePositionSnapshotLike = {
   payload?: Record<string, unknown> | null;
 };
 
-type LiveProtectionOrderContextLike = {
+export type LiveProtectionOrderContextLike = {
   stopLossOrderId: string | null;
   takeProfitOrderId: string | null;
   stopLossStatus: string | null;
@@ -24,12 +25,113 @@ type LiveProtectionOrderContextLike = {
   activeOrderIds: string[];
 };
 
-type DeltaActiveProtectionOrdersLike = {
+export type DeltaActiveProtectionOrdersLike = {
   stopLossOrderIds: string[];
   takeProfitOrderIds: string[];
   unclassifiedOrderIds: string[];
   activeOrderIds: string[];
 };
+
+type SuggestedTradeProtectionTradeLike = {
+  id: string;
+  symbol: string;
+  side?: unknown;
+  timeframe?: unknown;
+};
+
+export interface DeltaProtectionPrices {
+  requestedEntryPrice: number | null;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+}
+
+export interface DeltaProtectionOrdersAdapter {
+  listOpenOrders?: (
+    query: { limit: number },
+    context?: { userId?: string; brokerKey?: string; accountId?: string }
+  ) => Promise<unknown>;
+  createLiveAutoProtectiveOrdersForPosition?: (
+    assetId: string,
+    body: {
+      size: number;
+      entrySide: 'buy' | 'sell';
+      stopLossPrice: number;
+      takeProfitPrice: number;
+      idempotencyKey?: string;
+    },
+    context?: { userId?: string; brokerKey?: string; accountId?: string }
+  ) => Promise<unknown>;
+}
+
+export interface DeltaLiveProtectionRepairInput {
+  userId: string;
+  trade: SuggestedTradeProtectionTradeLike;
+  execution: SuggestedTradeExecutionLink;
+  position: LivePositionSnapshotLike & { externalId?: unknown };
+  prices: DeltaProtectionPrices;
+  nowIso: string;
+  brokerKey: string;
+  accountId: string;
+  ordersAdapter: DeltaProtectionOrdersAdapter | null | undefined;
+  protectionRepairEnabled: boolean;
+  resolveLiveProtectionOrderContext: (
+    userId: string,
+    suggestedTradeId: string,
+    brokerKey: string,
+    accountId: string,
+    orderId: string
+  ) => Promise<LiveProtectionOrderContextLike>;
+  hasUsableProtectionContext: (context: LiveProtectionOrderContextLike) => boolean;
+  resolvePositionEntryPrice: (
+    payload: Record<string, unknown>,
+    execution: SuggestedTradeExecutionLink
+  ) => number | null;
+  resolvePositionCurrentPrice: (payload: Record<string, unknown>) => number | null;
+  deriveScaledProtectionPrice: (
+    actualEntryPrice: number,
+    requestedEntryPrice: number,
+    requestedTargetPrice: number
+  ) => string;
+  resolveLiveAutoAssetRoute: (
+    brokerKey: string,
+    symbol: string
+  ) => Promise<{ assetId: string; brokerSymbol: string; candidateSymbols: string[] }>;
+  resolveActiveProtectionOrdersForSymbol: (input: {
+    userId: string;
+    brokerKey: string;
+    accountId: string;
+    symbols: string[];
+    entrySide: 'buy' | 'sell';
+    includeLiveBroker?: boolean;
+  }) => Promise<DeltaActiveProtectionOrdersLike>;
+  unwrapOrderPlacementResponse: (response: unknown) => Record<string, unknown>;
+  markProtectionAttached: (
+    trade: SuggestedTradeProtectionTradeLike,
+    execution: SuggestedTradeExecutionLink,
+    nowIso: string,
+    note: string,
+    planUpdate: Record<string, unknown>,
+    attempted?: boolean
+  ) => SuggestedTradeExecutionLink;
+  markProtectionAttaching: (
+    trade: SuggestedTradeProtectionTradeLike,
+    execution: SuggestedTradeExecutionLink,
+    nowIso: string,
+    note: string,
+    planUpdate: Record<string, unknown>,
+    attempted?: boolean
+  ) => SuggestedTradeExecutionLink;
+  markProtectionManualUnlinked: (
+    execution: SuggestedTradeExecutionLink,
+    nowIso: string,
+    message: string
+  ) => SuggestedTradeExecutionLink;
+  markProtectionFailed: (
+    execution: SuggestedTradeExecutionLink,
+    nowIso: string,
+    message: string
+  ) => SuggestedTradeExecutionLink;
+}
 
 const readRecordValue = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -42,6 +144,11 @@ const readStringValue = (value: unknown): string | null => {
   }
   const normalized = String(value).trim();
   return normalized || null;
+};
+
+const readNumberValue = (value: unknown): number | null => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 };
 
 const formatNumericString = (value: number | null | undefined): string | null =>
@@ -211,4 +318,212 @@ export function resolveDeltaInactiveAttachedProtectionManualReason(input: {
   }
 
   return null;
+}
+
+export async function remediateDeltaLiveProtection(
+  input: DeltaLiveProtectionRepairInput
+): Promise<SuggestedTradeExecutionLink> {
+  const orderId = readStringValue(input.execution.orderId);
+  if (orderId) {
+    const existingProtection = await input.resolveLiveProtectionOrderContext(
+      input.userId,
+      input.trade.id,
+      input.brokerKey,
+      input.accountId,
+      orderId
+    );
+    if (input.hasUsableProtectionContext(existingProtection)) {
+      return input.markProtectionAttached(
+        input.trade,
+        input.execution,
+        input.nowIso,
+        'Delta Exchange native SL/TP protection is already linked to the execution.',
+        {
+          positionId: input.position.externalId,
+          stopLossOrderId: existingProtection.stopLossOrderId,
+          takeProfitOrderId: existingProtection.takeProfitOrderId,
+        }
+      );
+    }
+    if (
+      input.execution.protectionState === 'attaching' &&
+      (existingProtection.stopLossOrderId || existingProtection.takeProfitOrderId)
+    ) {
+      const hasTerminalSnapshot = [
+        existingProtection.stopLossStatus,
+        existingProtection.takeProfitStatus,
+      ]
+        .filter((status): status is string => Boolean(status))
+        .some((status) => ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(status));
+      if (hasTerminalSnapshot) {
+        return input.markProtectionFailed(
+          input.execution,
+          input.nowIso,
+          `Delta Exchange replacement protection is inactive after submission (${describeLiveProtectionOrderContext(
+            existingProtection
+          )}); replacement protection still needs operator review.`
+        );
+      }
+      return {
+        ...input.execution,
+        protectionCheckedAt: input.nowIso,
+        protectionLastError: `Delta Exchange replacement protection submitted; waiting for active SL/TP snapshots (${describeLiveProtectionOrderContext(
+          existingProtection
+        )}).`,
+      };
+    }
+  }
+
+  if (!input.ordersAdapter?.createLiveAutoProtectiveOrdersForPosition) {
+    return input.markProtectionFailed(
+      input.execution,
+      input.nowIso,
+      'Delta Exchange post-fill protection placement is unavailable in the orders adapter.'
+    );
+  }
+
+  const positionPayload = input.position.payload ?? {};
+  const actualEntryPrice = input.resolvePositionEntryPrice(positionPayload, input.execution);
+  const size =
+    readNumberValue(positionPayload.quantity_contracts) ??
+    readNumberValue(positionPayload.size) ??
+    readNumberValue(input.execution.filledQuantity) ??
+    readNumberValue(input.execution.quantity);
+  if (!(actualEntryPrice && actualEntryPrice > 0) || !(size && size > 0)) {
+    return {
+      ...input.execution,
+      protectionState: 'waiting_for_position',
+      protectionCheckedAt: input.nowIso,
+      protectionLastError:
+        'Delta Exchange position snapshot did not include a usable entry price and contract size yet.',
+    };
+  }
+
+  const requestedEntryPrice = input.prices.requestedEntryPrice ?? actualEntryPrice;
+  const stopLossPrice = Number(
+    input.deriveScaledProtectionPrice(
+      actualEntryPrice,
+      requestedEntryPrice,
+      input.prices.stopLossPrice
+    )
+  );
+  const takeProfitPrice = Number(
+    input.deriveScaledProtectionPrice(
+      actualEntryPrice,
+      requestedEntryPrice,
+      input.prices.takeProfitPrice
+    )
+  );
+  const entrySide = String(input.trade.side || '').toUpperCase() === 'SELL' ? 'sell' : 'buy';
+  const manualReason = resolveDeltaInactiveAttachedProtectionManualReason({
+    entrySide,
+    actualEntryPrice,
+    requestedEntryPrice: input.prices.requestedEntryPrice,
+    stopLossPrice: input.prices.stopLossPrice,
+    takeProfitPrice: input.prices.takeProfitPrice,
+    currentPrice: input.resolvePositionCurrentPrice(positionPayload),
+  });
+  if (manualReason) {
+    return input.markProtectionManualUnlinked(input.execution, input.nowIso, manualReason);
+  }
+  if (
+    !isDeltaProtectionDirectionValid(entrySide, actualEntryPrice, stopLossPrice, takeProfitPrice)
+  ) {
+    return input.markProtectionFailed(
+      input.execution,
+      input.nowIso,
+      `Delta Exchange protection prices are invalid for the filled ${entrySide} position.`
+    );
+  }
+
+  try {
+    const route = await input.resolveLiveAutoAssetRoute(input.brokerKey, input.trade.symbol);
+    const existingSymbolProtection = await input.resolveActiveProtectionOrdersForSymbol({
+      userId: input.userId,
+      brokerKey: input.brokerKey,
+      accountId: input.accountId,
+      symbols: [route.brokerSymbol, input.trade.symbol, ...route.candidateSymbols],
+      entrySide,
+      includeLiveBroker: true,
+    });
+    if (existingSymbolProtection.activeOrderIds.length > 0) {
+      if (hasExactlyOneDeltaProtectionPair(existingSymbolProtection)) {
+        return input.markProtectionAttached(
+          input.trade,
+          input.execution,
+          input.nowIso,
+          'Delta Exchange active reduce-only SL/TP protection already exists for this symbol; linked existing broker orders instead of creating replacements.',
+          {
+            positionId: input.position.externalId,
+            stopLossOrderId: existingSymbolProtection.stopLossOrderIds[0],
+            takeProfitOrderId: existingSymbolProtection.takeProfitOrderIds[0],
+          }
+        );
+      }
+
+      return input.markProtectionManualUnlinked(
+        input.execution,
+        input.nowIso,
+        `Delta Exchange active reduce-only protection orders already exist for ${route.brokerSymbol} (${describeDeltaActiveProtectionOrders(existingSymbolProtection)}); manual cleanup is required before auto repair can safely create replacements.`
+      );
+    }
+
+    if (!input.protectionRepairEnabled) {
+      return input.markProtectionManualUnlinked(
+        input.execution,
+        input.nowIso,
+        'Delta Exchange automatic SL/TP protection repair is disabled by broker-specific control.'
+      );
+    }
+
+    const response = await input.ordersAdapter.createLiveAutoProtectiveOrdersForPosition(
+      route.assetId,
+      {
+        size: Math.abs(size),
+        entrySide,
+        stopLossPrice,
+        takeProfitPrice,
+        idempotencyKey: orderId
+          ? `live-auto-protection:${input.trade.id}:${orderId}`
+          : `live-auto-protection:${input.trade.id}`,
+      },
+      {
+        userId: input.userId,
+        brokerKey: input.brokerKey,
+        accountId: input.accountId,
+      }
+    );
+    const payload = input.unwrapOrderPlacementResponse(response);
+    const stopLossOrderId = readStringValue(payload.stop_loss_order_id);
+    const takeProfitOrderId = readStringValue(payload.take_profit_order_id);
+    if (!stopLossOrderId || !takeProfitOrderId) {
+      return input.markProtectionFailed(
+        input.execution,
+        input.nowIso,
+        'Delta Exchange protection remediation did not return both replacement SL/TP order ids.'
+      );
+    }
+    return input.markProtectionAttaching(
+      input.trade,
+      input.execution,
+      input.nowIso,
+      `Delta Exchange replacement SL/TP submitted after fill (SL ${stopLossOrderId}, TP ${takeProfitOrderId}); waiting for active order snapshots before marking attached.`,
+      {
+        positionId: input.position.externalId,
+        attachedStopLossPrice: stopLossPrice,
+        attachedTakeProfitPrice: takeProfitPrice,
+        stopLossOrderId,
+        takeProfitOrderId,
+      },
+      true
+    );
+  } catch (error) {
+    return input.markProtectionFailed(
+      input.execution,
+      input.nowIso,
+      `Delta Exchange protection remediation failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
 }

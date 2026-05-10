@@ -70,11 +70,12 @@ import { BrokerReferenceDataService } from './BrokerReferenceDataService';
 import { RiskPreTradeService } from './RiskPreTradeService';
 import { RiskKillSwitchService } from './RiskKillSwitchService';
 import {
+  DeltaProtectionOrdersAdapter,
   describeDeltaActiveProtectionOrders,
   describeLiveProtectionOrderContext,
   hasExactlyOneDeltaProtectionPair,
   isDeltaExchangeSuggestedTradeBroker,
-  isDeltaProtectionDirectionValid,
+  remediateDeltaLiveProtection as remediateDeltaLiveProtectionForBroker,
   resolveDeltaExchangeSuggestedTradeLiveAutoEnabled,
   resolveDeltaExchangeSuggestedTradeProtectionRepairEnabled,
   resolveDeltaInactiveAttachedProtectionManualReason,
@@ -83,7 +84,7 @@ import {
 import {
   isMudrexSuggestedTradeBroker,
   mudrexPositionHasProtection,
-  resolveMudrexRiskOrderPositionId,
+  remediateMudrexLiveProtection as remediateMudrexLiveProtectionForBroker,
   resolveMudrexSuggestedTradeLiveAutoEnabled,
   resolveMudrexSuggestedTradeProtectionRepairEnabled,
   validateMudrexProtectionAttachability,
@@ -319,24 +320,6 @@ interface DeltaProtectionOrderCandidate {
 interface MudrexLiveAutoProtectionAttachmentResult {
   attached: boolean;
   note: string | null;
-}
-
-interface DeltaProtectionOrdersAdapter {
-  listOpenOrders?: (
-    query: { limit: number },
-    context?: { userId?: string; brokerKey?: string; accountId?: string }
-  ) => Promise<unknown>;
-  createLiveAutoProtectiveOrdersForPosition?: (
-    assetId: string,
-    body: {
-      size: number;
-      entrySide: 'buy' | 'sell';
-      stopLossPrice: number;
-      takeProfitPrice: number;
-      idempotencyKey?: string;
-    },
-    context?: { userId?: string; brokerKey?: string; accountId?: string }
-  ) => Promise<unknown>;
 }
 
 interface DeltaLiveAutoProductRulePreflightAdapter {
@@ -6548,105 +6531,33 @@ export class SuggestedTradesService {
     brokerKey: string;
     accountId: string;
   }): Promise<SuggestedTradeExecutionLink> {
-    const positionPayload = input.position.payload ?? {};
-    if (mudrexPositionHasProtection(positionPayload)) {
-      return this.markProtectionAttached(
-        input.trade,
-        input.execution,
-        input.nowIso,
-        'Mudrex position already reports active SL/TP protection.',
-        {
-          positionId: input.position.externalId,
-        }
-      );
-    }
-
-    if (!this.isProtectionRepairEnabledForBroker(input.brokerKey)) {
-      return this.markProtectionManualUnlinked(
-        input.execution,
-        input.nowIso,
-        'Mudrex automatic SL/TP protection repair is disabled by broker-specific control.'
-      );
-    }
-
-    const positionsAdapter = this.brokerRuntimeRegistry?.getPositionsAdapter?.('mudrex');
-    if (!positionsAdapter?.createRiskOrder) {
-      return this.markProtectionFailed(
-        input.execution,
-        input.nowIso,
-        'Mudrex positions adapter is unavailable for protection remediation.'
-      );
-    }
-
-    const positionId = resolveMudrexRiskOrderPositionId(input.position, positionPayload);
-    const actualEntryPrice = this.resolvePositionEntryPrice(positionPayload, input.execution);
-    if (!positionId || !(actualEntryPrice && actualEntryPrice > 0)) {
-      return {
-        ...input.execution,
-        protectionState: 'waiting_for_position',
-        protectionCheckedAt: input.nowIso,
-        protectionLastError:
-          'Mudrex position snapshot did not include a usable id and entry price yet.',
-      };
-    }
-
-    const requestedEntryPrice = input.prices.requestedEntryPrice ?? actualEntryPrice;
-    const stopLossPrice = this.deriveScaledProtectionPrice(
-      actualEntryPrice,
-      requestedEntryPrice,
-      input.prices.stopLossPrice
-    );
-    const takeProfitPrice = this.deriveScaledProtectionPrice(
-      actualEntryPrice,
-      requestedEntryPrice,
-      input.prices.takeProfitPrice
-    );
-    const attachabilityError = validateMudrexProtectionAttachability(
-      input.trade,
-      positionPayload,
-      stopLossPrice,
-      takeProfitPrice
-    );
-    if (attachabilityError) {
-      return this.markProtectionManualUnlinked(input.execution, input.nowIso, attachabilityError);
-    }
-
-    try {
-      await positionsAdapter.createRiskOrder(
-        positionId,
-        {
-          stoploss_price: stopLossPrice,
-          takeprofit_price: takeProfitPrice,
-          order_source: 'positions_desk',
-          is_stoploss: true,
-          is_takeprofit: true,
-        },
-        {
-          userId: input.userId,
-          brokerKey: input.brokerKey,
-          accountId: input.accountId,
-        }
-      );
-      return this.markProtectionAttached(
-        input.trade,
-        input.execution,
-        input.nowIso,
-        `Derived Mudrex SL/TP attached from actual fill price ${this.formatNumericString(actualEntryPrice) || actualEntryPrice} (SL ${stopLossPrice}, TP ${takeProfitPrice}).`,
-        {
-          positionId,
-          snapshotPositionId: input.position.externalId,
-          attachedStopLossPrice: stopLossPrice,
-          attachedTakeProfitPrice: takeProfitPrice,
-        },
-        true
-      );
-    } catch (error) {
-      return this.markProtectionFailed(
-        input.execution,
-        input.nowIso,
-        `Mudrex protection remediation failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
+    return remediateMudrexLiveProtectionForBroker({
+      ...input,
+      positionsAdapter: this.brokerRuntimeRegistry?.getPositionsAdapter?.('mudrex'),
+      protectionRepairEnabled: this.isProtectionRepairEnabledForBroker(input.brokerKey),
+      resolvePositionEntryPrice: (payload, execution) =>
+        this.resolvePositionEntryPrice(payload, execution),
+      deriveScaledProtectionPrice: (actualEntryPrice, requestedEntryPrice, requestedTargetPrice) =>
+        this.deriveScaledProtectionPrice(
+          actualEntryPrice,
+          requestedEntryPrice,
+          requestedTargetPrice
+        ),
+      formatNumericString: (value) => this.formatNumericString(value),
+      markProtectionAttached: (trade, execution, nowIso, note, planUpdate, attempted) =>
+        this.markProtectionAttached(
+          trade as SuggestedTrade,
+          execution,
+          nowIso,
+          note,
+          planUpdate,
+          attempted
+        ),
+      markProtectionManualUnlinked: (execution, nowIso, message) =>
+        this.markProtectionManualUnlinked(execution, nowIso, message),
+      markProtectionFailed: (execution, nowIso, message) =>
+        this.markProtectionFailed(execution, nowIso, message),
+    });
   }
 
   private async remediateDeltaLiveProtection(input: {
@@ -6659,210 +6570,66 @@ export class SuggestedTradesService {
     brokerKey: string;
     accountId: string;
   }): Promise<SuggestedTradeExecutionLink> {
-    const orderId = this.readStringValue(input.execution.orderId);
-    if (orderId) {
-      const existingProtection = await this.resolveLiveProtectionOrderContext(
-        input.userId,
-        input.trade.id,
-        input.brokerKey,
-        input.accountId,
-        orderId
-      );
-      if (this.hasUsableProtectionContext(existingProtection)) {
-        return this.markProtectionAttached(
-          input.trade,
-          input.execution,
-          input.nowIso,
-          'Delta Exchange native SL/TP protection is already linked to the execution.',
-          {
-            positionId: input.position.externalId,
-            stopLossOrderId: existingProtection.stopLossOrderId,
-            takeProfitOrderId: existingProtection.takeProfitOrderId,
-          }
-        );
-      }
-      if (
-        input.execution.protectionState === 'attaching' &&
-        (existingProtection.stopLossOrderId || existingProtection.takeProfitOrderId)
-      ) {
-        const hasTerminalSnapshot = [
-          existingProtection.stopLossStatus,
-          existingProtection.takeProfitStatus,
-        ]
-          .filter((status): status is string => Boolean(status))
-          .some((status) => ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(status));
-        if (hasTerminalSnapshot) {
-          return this.markProtectionFailed(
-            input.execution,
-            input.nowIso,
-            `Delta Exchange replacement protection is inactive after submission (${describeLiveProtectionOrderContext(
-              existingProtection
-            )}); replacement protection still needs operator review.`
-          );
-        }
-        return {
-          ...input.execution,
-          protectionCheckedAt: input.nowIso,
-          protectionLastError: `Delta Exchange replacement protection submitted; waiting for active SL/TP snapshots (${describeLiveProtectionOrderContext(
-            existingProtection
-          )}).`,
-        };
-      }
-    }
-
-    const adapter = this.brokerRuntimeRegistry?.getOrdersAdapter?.(
+    const ordersAdapter = this.brokerRuntimeRegistry?.getOrdersAdapter?.(
       'delta_exchange'
     ) as DeltaProtectionOrdersAdapter;
-    if (!adapter?.createLiveAutoProtectiveOrdersForPosition) {
-      return this.markProtectionFailed(
-        input.execution,
-        input.nowIso,
-        'Delta Exchange post-fill protection placement is unavailable in the orders adapter.'
-      );
-    }
 
-    const positionPayload = input.position.payload ?? {};
-    const actualEntryPrice = this.resolvePositionEntryPrice(positionPayload, input.execution);
-    const size =
-      this.readNumberValue(positionPayload.quantity_contracts) ??
-      this.readNumberValue(positionPayload.size) ??
-      this.readNumberValue(input.execution.filledQuantity) ??
-      this.readNumberValue(input.execution.quantity);
-    if (!(actualEntryPrice && actualEntryPrice > 0) || !(size && size > 0)) {
-      return {
-        ...input.execution,
-        protectionState: 'waiting_for_position',
-        protectionCheckedAt: input.nowIso,
-        protectionLastError:
-          'Delta Exchange position snapshot did not include a usable entry price and contract size yet.',
-      };
-    }
-
-    const requestedEntryPrice = input.prices.requestedEntryPrice ?? actualEntryPrice;
-    const stopLossPrice = Number(
-      this.deriveScaledProtectionPrice(
-        actualEntryPrice,
-        requestedEntryPrice,
-        input.prices.stopLossPrice
-      )
-    );
-    const takeProfitPrice = Number(
-      this.deriveScaledProtectionPrice(
-        actualEntryPrice,
-        requestedEntryPrice,
-        input.prices.takeProfitPrice
-      )
-    );
-    const entrySide = String(input.trade.side || '').toUpperCase() === 'SELL' ? 'sell' : 'buy';
-    const manualReason = resolveDeltaInactiveAttachedProtectionManualReason({
-      entrySide,
-      actualEntryPrice,
-      requestedEntryPrice: input.prices.requestedEntryPrice,
-      stopLossPrice: input.prices.stopLossPrice,
-      takeProfitPrice: input.prices.takeProfitPrice,
-      currentPrice: this.resolvePositionCurrentPrice(positionPayload),
+    return remediateDeltaLiveProtectionForBroker({
+      ...input,
+      ordersAdapter,
+      protectionRepairEnabled: this.isProtectionRepairEnabledForBroker(input.brokerKey),
+      resolveLiveProtectionOrderContext: (
+        userId,
+        suggestedTradeId,
+        brokerKey,
+        accountId,
+        orderId
+      ) =>
+        this.resolveLiveProtectionOrderContext(
+          userId,
+          suggestedTradeId,
+          brokerKey,
+          accountId,
+          orderId
+        ),
+      hasUsableProtectionContext: (context) => this.hasUsableProtectionContext(context),
+      resolvePositionEntryPrice: (payload, execution) =>
+        this.resolvePositionEntryPrice(payload, execution),
+      resolvePositionCurrentPrice: (payload) => this.resolvePositionCurrentPrice(payload),
+      deriveScaledProtectionPrice: (actualEntryPrice, requestedEntryPrice, requestedTargetPrice) =>
+        this.deriveScaledProtectionPrice(
+          actualEntryPrice,
+          requestedEntryPrice,
+          requestedTargetPrice
+        ),
+      resolveLiveAutoAssetRoute: (brokerKey, symbol) =>
+        this.resolveLiveAutoAssetRoute(brokerKey, symbol),
+      resolveActiveProtectionOrdersForSymbol: (args) =>
+        this.resolveActiveDeltaProtectionOrdersForSymbol(args),
+      unwrapOrderPlacementResponse: (response) => this.unwrapOrderPlacementResponse(response),
+      markProtectionAttached: (trade, execution, nowIso, note, planUpdate, attempted) =>
+        this.markProtectionAttached(
+          trade as SuggestedTrade,
+          execution,
+          nowIso,
+          note,
+          planUpdate,
+          attempted
+        ),
+      markProtectionAttaching: (trade, execution, nowIso, note, planUpdate, attempted) =>
+        this.markProtectionAttaching(
+          trade as SuggestedTrade,
+          execution,
+          nowIso,
+          note,
+          planUpdate,
+          attempted
+        ),
+      markProtectionManualUnlinked: (execution, nowIso, message) =>
+        this.markProtectionManualUnlinked(execution, nowIso, message),
+      markProtectionFailed: (execution, nowIso, message) =>
+        this.markProtectionFailed(execution, nowIso, message),
     });
-    if (manualReason) {
-      return this.markProtectionManualUnlinked(input.execution, input.nowIso, manualReason);
-    }
-    if (
-      !isDeltaProtectionDirectionValid(entrySide, actualEntryPrice, stopLossPrice, takeProfitPrice)
-    ) {
-      return this.markProtectionFailed(
-        input.execution,
-        input.nowIso,
-        `Delta Exchange protection prices are invalid for the filled ${entrySide} position.`
-      );
-    }
-
-    try {
-      const route = await this.resolveLiveAutoAssetRoute(input.brokerKey, input.trade.symbol);
-      const existingSymbolProtection = await this.resolveActiveDeltaProtectionOrdersForSymbol({
-        userId: input.userId,
-        brokerKey: input.brokerKey,
-        accountId: input.accountId,
-        symbols: [route.brokerSymbol, input.trade.symbol, ...route.candidateSymbols],
-        entrySide,
-        includeLiveBroker: true,
-      });
-      if (existingSymbolProtection.activeOrderIds.length > 0) {
-        if (hasExactlyOneDeltaProtectionPair(existingSymbolProtection)) {
-          return this.markProtectionAttached(
-            input.trade,
-            input.execution,
-            input.nowIso,
-            'Delta Exchange active reduce-only SL/TP protection already exists for this symbol; linked existing broker orders instead of creating replacements.',
-            {
-              positionId: input.position.externalId,
-              stopLossOrderId: existingSymbolProtection.stopLossOrderIds[0],
-              takeProfitOrderId: existingSymbolProtection.takeProfitOrderIds[0],
-            }
-          );
-        }
-
-        return this.markProtectionManualUnlinked(
-          input.execution,
-          input.nowIso,
-          `Delta Exchange active reduce-only protection orders already exist for ${route.brokerSymbol} (${describeDeltaActiveProtectionOrders(existingSymbolProtection)}); manual cleanup is required before auto repair can safely create replacements.`
-        );
-      }
-
-      if (!this.isProtectionRepairEnabledForBroker(input.brokerKey)) {
-        return this.markProtectionManualUnlinked(
-          input.execution,
-          input.nowIso,
-          'Delta Exchange automatic SL/TP protection repair is disabled by broker-specific control.'
-        );
-      }
-
-      const response = await adapter.createLiveAutoProtectiveOrdersForPosition(
-        route.assetId,
-        {
-          size: Math.abs(size),
-          entrySide,
-          stopLossPrice,
-          takeProfitPrice,
-          idempotencyKey: orderId
-            ? `live-auto-protection:${input.trade.id}:${orderId}`
-            : `live-auto-protection:${input.trade.id}`,
-        },
-        {
-          userId: input.userId,
-          brokerKey: input.brokerKey,
-          accountId: input.accountId,
-        }
-      );
-      const payload = this.unwrapOrderPlacementResponse(response);
-      const stopLossOrderId = this.readStringValue(payload.stop_loss_order_id);
-      const takeProfitOrderId = this.readStringValue(payload.take_profit_order_id);
-      if (!stopLossOrderId || !takeProfitOrderId) {
-        return this.markProtectionFailed(
-          input.execution,
-          input.nowIso,
-          'Delta Exchange protection remediation did not return both replacement SL/TP order ids.'
-        );
-      }
-      return this.markProtectionAttaching(
-        input.trade,
-        input.execution,
-        input.nowIso,
-        `Delta Exchange replacement SL/TP submitted after fill (SL ${stopLossOrderId}, TP ${takeProfitOrderId}); waiting for active order snapshots before marking attached.`,
-        {
-          positionId: input.position.externalId,
-          attachedStopLossPrice: stopLossPrice,
-          attachedTakeProfitPrice: takeProfitPrice,
-          stopLossOrderId,
-          takeProfitOrderId,
-        },
-        true
-      );
-    } catch (error) {
-      return this.markProtectionFailed(
-        input.execution,
-        input.nowIso,
-        `Delta Exchange protection remediation failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
   }
 
   private resolveExecutionProtectionPrices(
