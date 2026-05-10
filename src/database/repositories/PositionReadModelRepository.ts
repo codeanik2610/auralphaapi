@@ -59,6 +59,7 @@ type PositionSuggestedTradeContextRow = {
   protectionReplacementSubmittedAt?: Date | string | null;
   protectionStopLossOrderId?: string | null;
   protectionTakeProfitOrderId?: string | null;
+  routeAttempts?: unknown;
   sourceTemplateId?: string | null;
   sourceBacktestId?: string | null;
   traceMethod?: PositionAutomationTradeContext['traceMethod'];
@@ -1743,6 +1744,7 @@ export class PositionReadModelRepository {
                    NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.replacementSubmittedAt')), 'null'), '') AS protectionReplacementSubmittedAt,
                    NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.stopLossOrderId')), 'null'), '') AS protectionStopLossOrderId,
                    NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.takeProfitOrderId')), 'null'), '') AS protectionTakeProfitOrderId,
+                   execution_row.route_attempts_json AS routeAttempts,
                    '${traceMethod}' AS traceMethod
               FROM suggested_trade_executions execution_row
               INNER JOIN suggested_trades suggested_trade
@@ -1890,6 +1892,8 @@ export class PositionReadModelRepository {
       executionState: String(row.executionState || '').trim() || null,
       positionStatus: String(row.positionStatus || '').trim() || null,
       protection: this.mapPositionProtectionContext(row),
+      routeAttempts: this.mapPositionRouteAttempts(row.routeAttempts),
+      operatorTimeline: this.buildPositionOperatorTimeline(row),
       sourceTemplateId: String(row.sourceTemplateId || '').trim() || null,
       sourceBacktestId: String(row.sourceBacktestId || '').trim() || null,
       traceMethod: row.traceMethod || 'symbol_entry',
@@ -1948,6 +1952,234 @@ export class PositionReadModelRepository {
       stopLossOrderId,
       takeProfitOrderId,
     };
+  }
+
+  private mapPositionRouteAttempts(
+    value: unknown
+  ): PositionAutomationTradeContext['routeAttempts'] {
+    type PositionRouteAttempt = NonNullable<
+      PositionAutomationTradeContext['routeAttempts']
+    >[number];
+    const parsed = this.parseJsonValue(value);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+
+    const attempts = parsed
+      .map((item, index): PositionRouteAttempt | null => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          return null;
+        }
+        const record = item as Record<string, unknown>;
+        const brokerKey = String(record.brokerKey || '').trim();
+        const requestedSymbol = String(record.requestedSymbol || '').trim();
+        const brokerSymbol = String(record.brokerSymbol || requestedSymbol).trim();
+        if (!brokerKey || !brokerSymbol) {
+          return null;
+        }
+
+        const reconciliation =
+          record.reconciliation &&
+          typeof record.reconciliation === 'object' &&
+          !Array.isArray(record.reconciliation)
+            ? (record.reconciliation as Record<string, unknown>)
+            : null;
+
+        return {
+          attemptNumber: this.toNumberValue(record.attemptNumber) ?? index + 1,
+          candidateRank: this.toNumberValue(record.candidateRank) ?? index + 1,
+          brokerKey,
+          accountId: String(record.accountId || '').trim() || null,
+          accountName: String(record.accountName || '').trim() || null,
+          requestedSymbol: requestedSymbol || brokerSymbol,
+          brokerSymbol,
+          status: (String(record.status || 'unknown').trim() ||
+            'unknown') as PositionRouteAttempt['status'],
+          startedAt: this.toIsoString(record.startedAt),
+          finishedAt: this.toIsoString(record.finishedAt),
+          preTradeCheckId: String(record.preTradeCheckId || '').trim() || null,
+          preTradeState:
+            (String(record.preTradeState || '').trim() as PositionRouteAttempt['preTradeState']) ||
+            null,
+          submissionState:
+            (String(
+              record.submissionState || ''
+            ).trim() as PositionRouteAttempt['submissionState']) || null,
+          orderId: String(record.orderId || '').trim() || null,
+          orderStatus: String(record.orderStatus || '').trim() || null,
+          failureClassification:
+            (String(
+              record.failureClassification || ''
+            ).trim() as PositionRouteAttempt['failureClassification']) || null,
+          failureCode: String(record.failureCode || '').trim() || null,
+          failureMessage: String(record.failureMessage || '').trim() || null,
+          requestSummary:
+            record.requestSummary &&
+            typeof record.requestSummary === 'object' &&
+            !Array.isArray(record.requestSummary)
+              ? (record.requestSummary as Record<string, unknown>)
+              : null,
+          brokerResponseSummary:
+            record.brokerResponseSummary &&
+            typeof record.brokerResponseSummary === 'object' &&
+            !Array.isArray(record.brokerResponseSummary)
+              ? (record.brokerResponseSummary as Record<string, unknown>)
+              : null,
+          reconciliation: reconciliation
+            ? {
+                status: (String(reconciliation.status || 'unknown').trim() ||
+                  'unknown') as NonNullable<PositionRouteAttempt['reconciliation']>['status'],
+                checkedAt: this.toIsoString(reconciliation.checkedAt),
+                orderId: String(reconciliation.orderId || '').trim() || null,
+                positionId: String(reconciliation.positionId || '').trim() || null,
+                message: String(reconciliation.message || '').trim() || null,
+              }
+            : null,
+          note: String(record.note || '').trim() || null,
+        };
+      })
+      .filter((item): item is PositionRouteAttempt => Boolean(item));
+
+    return attempts.length ? attempts : null;
+  }
+
+  private buildPositionOperatorTimeline(
+    row: PositionSuggestedTradeContextRow
+  ): PositionAutomationTradeContext['operatorTimeline'] {
+    const routeAttempts = this.mapPositionRouteAttempts(row.routeAttempts) ?? [];
+    const protection = this.mapPositionProtectionContext(row);
+    const events: NonNullable<PositionAutomationTradeContext['operatorTimeline']> = [];
+    type DraftPositionLifecycleEvent = Omit<
+      NonNullable<PositionAutomationTradeContext['operatorTimeline']>[number],
+      'occurredAt'
+    > & {
+      occurredAt: unknown;
+    };
+
+    const pushEvent = (event: DraftPositionLifecycleEvent): void => {
+      const occurredAt = this.toIsoString(event.occurredAt);
+      if (!occurredAt) {
+        return;
+      }
+      events.push({ ...event, occurredAt });
+    };
+
+    for (const attempt of routeAttempts) {
+      const attemptNumber = Math.max(1, Math.floor(attempt.attemptNumber || 1));
+      if (attempt.startedAt) {
+        pushEvent({
+          id: `route_attempt_${attemptNumber}_started`,
+          kind: 'broker_route',
+          label: `Broker route ${attemptNumber} started`,
+          description: `Submitting ${attempt.brokerSymbol} to ${attempt.brokerKey}.`,
+          occurredAt: attempt.startedAt,
+          entity: 'broker_route',
+          entityId: attempt.accountId ?? null,
+          brokerKey: attempt.brokerKey,
+          accountId: attempt.accountId ?? null,
+          status: attempt.submissionState ?? attempt.status,
+          severity: 'info',
+        });
+      }
+      if (attempt.finishedAt || attempt.reconciliation?.checkedAt) {
+        const failed = attempt.status === 'failed' || attempt.status === 'pre_trade_blocked';
+        pushEvent({
+          id: `route_attempt_${attemptNumber}_finished`,
+          kind: 'broker_route',
+          label:
+            attempt.status === 'placed'
+              ? `Broker route ${attemptNumber} placed`
+              : failed
+                ? `Broker route ${attemptNumber} failed`
+                : `Broker route ${attemptNumber} updated`,
+          description:
+            attempt.failureMessage ||
+            attempt.failureCode ||
+            attempt.note ||
+            attempt.reconciliation?.message ||
+            `${attempt.brokerKey} route attempt ended with ${attempt.status}.`,
+          occurredAt: attempt.finishedAt ?? attempt.reconciliation?.checkedAt ?? '',
+          entity: attempt.orderId ? 'order' : 'broker_route',
+          entityId: attempt.orderId ?? attempt.accountId ?? null,
+          brokerKey: attempt.brokerKey,
+          accountId: attempt.accountId ?? null,
+          status: attempt.status,
+          severity: attempt.status === 'placed' ? 'success' : failed ? 'warning' : 'info',
+        });
+      }
+    }
+
+    pushEvent({
+      id: 'entry_submitted',
+      kind: 'order',
+      label: 'Entry submitted',
+      description: 'Entry order submission was recorded.',
+      occurredAt: row.submittedAt ?? '',
+      entity: 'order',
+      entityId: row.orderId ?? null,
+      brokerKey: row.brokerKey ?? null,
+      accountId: row.accountId ?? null,
+      status: row.executionState ?? null,
+      severity: 'info',
+    });
+    pushEvent({
+      id: 'entry_filled',
+      kind: 'order',
+      label: 'Entry filled',
+      description: 'The broker reported the entry fill.',
+      occurredAt: row.filledAt ?? '',
+      entity: 'order',
+      entityId: row.orderId ?? null,
+      brokerKey: row.brokerKey ?? null,
+      accountId: row.accountId ?? null,
+      status: row.executionState ?? null,
+      severity: 'success',
+    });
+    pushEvent({
+      id: 'protection_checked',
+      kind: 'protection',
+      label: 'Protection checked',
+      description:
+        protection?.lastError ||
+        'Stop loss and target protection were checked against broker state.',
+      occurredAt: protection?.checkedAt ?? '',
+      entity: 'position',
+      entityId: row.positionId ?? null,
+      brokerKey: row.brokerKey ?? null,
+      accountId: row.accountId ?? null,
+      status: protection?.state ?? null,
+      severity: protection?.state === 'failed' ? 'error' : 'info',
+    });
+    pushEvent({
+      id: 'protection_attached',
+      kind: 'protection',
+      label: 'Protection attached',
+      description: 'Broker stop loss and target protection were confirmed.',
+      occurredAt: protection?.attachedAt ?? '',
+      entity: 'position',
+      entityId: row.positionId ?? null,
+      brokerKey: row.brokerKey ?? null,
+      accountId: row.accountId ?? null,
+      status: protection?.state ?? 'attached',
+      severity: 'success',
+    });
+
+    return events.sort((left, right) => {
+      const leftTime = this.toTimestamp(left.occurredAt) ?? 0;
+      const rightTime = this.toTimestamp(right.occurredAt) ?? 0;
+      return leftTime - rightTime;
+    });
+  }
+
+  private parseJsonValue(value: unknown): unknown {
+    if (!value || typeof value !== 'string') {
+      return value;
+    }
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
   }
 
   private buildPositionContextKey(

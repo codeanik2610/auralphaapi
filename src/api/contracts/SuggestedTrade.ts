@@ -38,6 +38,43 @@ export type SuggestedTradeProtectionState =
   | 'manual_unlinked'
   | 'not_required'
   | 'unknown';
+export type SuggestedTradeExecutionPreTradeState =
+  | 'not_requested'
+  | 'queued'
+  | 'passed'
+  | 'blocked'
+  | 'stale'
+  | 'error';
+export type SuggestedTradeRouteAttemptStatus =
+  | 'pending'
+  | 'pre_trade_blocked'
+  | 'submitting'
+  | 'placed'
+  | 'failed'
+  | 'manual_review'
+  | 'unknown';
+export type SuggestedTradeRouteAttemptSubmissionState =
+  | 'not_started'
+  | 'pre_trade'
+  | 'submitting'
+  | 'submitted'
+  | 'accepted'
+  | 'rejected'
+  | 'failed'
+  | 'unknown';
+export type SuggestedTradeRouteAttemptFailureClassification =
+  | 'confirmed_no_order'
+  | 'ambiguous'
+  | 'order_created_protection_unresolved'
+  | 'unknown';
+export type SuggestedTradeRouteAttemptReconciliationStatus =
+  | 'not_required'
+  | 'pending'
+  | 'confirmed_no_order'
+  | 'found_order'
+  | 'found_position'
+  | 'inconclusive'
+  | 'failed';
 export type SuggestedTradePageAction =
   | 'review'
   | 'accept'
@@ -45,10 +82,43 @@ export type SuggestedTradePageAction =
   | 'link_order'
   | 'reconcile_execution';
 
+export interface SuggestedTradeRouteAttemptReconciliation {
+  status: SuggestedTradeRouteAttemptReconciliationStatus;
+  checkedAt?: string | null;
+  orderId?: string | null;
+  positionId?: string | null;
+  message?: string | null;
+}
+
+export interface SuggestedTradeRouteAttempt {
+  attemptNumber: number;
+  candidateRank: number;
+  brokerKey: string;
+  accountId?: string | null;
+  accountName?: string | null;
+  requestedSymbol: string;
+  brokerSymbol: string;
+  status: SuggestedTradeRouteAttemptStatus;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  preTradeCheckId?: string | null;
+  preTradeState?: SuggestedTradeExecutionPreTradeState | null;
+  submissionState?: SuggestedTradeRouteAttemptSubmissionState | null;
+  orderId?: string | null;
+  orderStatus?: string | null;
+  failureClassification?: SuggestedTradeRouteAttemptFailureClassification | null;
+  failureCode?: string | null;
+  failureMessage?: string | null;
+  requestSummary?: Record<string, unknown> | null;
+  brokerResponseSummary?: Record<string, unknown> | null;
+  reconciliation?: SuggestedTradeRouteAttemptReconciliation | null;
+  note?: string | null;
+}
+
 export interface SuggestedTradeExecutionLink {
   executionMode?: 'live' | 'paper' | null;
   preTradeCheckId?: string | null;
-  preTradeState?: 'not_requested' | 'queued' | 'passed' | 'blocked' | 'stale' | 'error' | null;
+  preTradeState?: SuggestedTradeExecutionPreTradeState | null;
   preTradeCheckedAt?: string | null;
   preTradeBlockedReason?: string | null;
   acceptedBy?: 'user' | 'system' | null;
@@ -76,6 +146,7 @@ export interface SuggestedTradeExecutionLink {
   triggerType?: string | null;
   leverage?: number | null;
   quantity?: number | null;
+  routeAttempts?: SuggestedTradeRouteAttempt[] | null;
   entryPrice?: string | null;
   stopLossPrice?: string | null;
   takeProfitPrice?: string | null;
@@ -195,7 +266,15 @@ export interface SuggestedTradeLifecycle {
 
 export interface SuggestedTradeTimelineEvent {
   id: string;
-  kind: 'signal' | 'suggested_trade' | 'review' | 'order' | 'position' | 'sync';
+  kind:
+    | 'signal'
+    | 'suggested_trade'
+    | 'review'
+    | 'broker_route'
+    | 'order'
+    | 'position'
+    | 'protection'
+    | 'sync';
   label: string;
   description: string;
   occurredAt: string;

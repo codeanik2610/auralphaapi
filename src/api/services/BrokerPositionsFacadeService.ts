@@ -18,6 +18,7 @@ import {
   PositionLifecycleAccountContext,
   PositionLifecycleActivityItem,
   PositionLifecycleAlertItem,
+  PositionLifecycleEventItem,
   PositionLifecycleOrderItem,
   PositionLifecycleResponse,
   PositionLifecycleSuggestedTradeItem,
@@ -34,6 +35,7 @@ import {
   PositionsSyncStatusItem,
   PositionsSyncStatusResponse,
 } from '../contracts/Positions';
+import type { SuggestedTradeRouteAttempt } from '../contracts/SuggestedTrade';
 import {
   AddMarginBody,
   ClosePartialPositionBody,
@@ -255,8 +257,9 @@ export class BrokerPositionsFacadeService {
     }
 
     if (actionKey === 'add-margin') {
-      return [this.readString(payload.margin) ? `Margin +${this.readString(payload.margin)}` : '']
-        .filter(Boolean);
+      return [
+        this.readString(payload.margin) ? `Margin +${this.readString(payload.margin)}` : '',
+      ].filter(Boolean);
     }
 
     if (actionKey === 'risk-order-create') {
@@ -292,15 +295,9 @@ export class BrokerPositionsFacadeService {
 
     if (actionKey === 'close-partial') {
       return [
-        this.readString(payload.quantity)
-          ? `Quantity ${this.readString(payload.quantity)}`
-          : '',
-        this.readString(payload.order_type)
-          ? `Order ${this.readString(payload.order_type)}`
-          : '',
-        this.readString(payload.limit_price)
-          ? `Limit ${this.readString(payload.limit_price)}`
-          : '',
+        this.readString(payload.quantity) ? `Quantity ${this.readString(payload.quantity)}` : '',
+        this.readString(payload.order_type) ? `Order ${this.readString(payload.order_type)}` : '',
+        this.readString(payload.limit_price) ? `Limit ${this.readString(payload.limit_price)}` : '',
       ].filter(Boolean);
     }
 
@@ -312,11 +309,7 @@ export class BrokerPositionsFacadeService {
     const resultRecord = this.toRecord(resolvedResult);
     if (!resultRecord) {
       if (typeof resolvedResult === 'boolean') {
-        return [
-          resolvedResult
-            ? 'Broker acknowledged the request'
-            : 'Broker returned false',
-        ];
+        return [resolvedResult ? 'Broker acknowledged the request' : 'Broker returned false'];
       }
       return this.readString(resolvedResult) ? [this.readString(resolvedResult)] : [];
     }
@@ -431,9 +424,7 @@ export class BrokerPositionsFacadeService {
     }
 
     const messages: string[] = [];
-    const ordersAdapter = this.brokerRuntimeRegistry.getOrdersAdapter(
-      resolvedBrokerKey
-    );
+    const ordersAdapter = this.brokerRuntimeRegistry.getOrdersAdapter(resolvedBrokerKey);
 
     for (const orderId of trackedOrderIds) {
       try {
@@ -445,9 +436,7 @@ export class BrokerPositionsFacadeService {
           continue;
         }
 
-        const message = this.readString(
-          error instanceof Error ? error.message : error
-        );
+        const message = this.readString(error instanceof Error ? error.message : error);
         if (message) {
           messages.push(`Protection cleanup pending ${orderId}: ${message}`);
         }
@@ -490,11 +479,7 @@ export class BrokerPositionsFacadeService {
       this.buildActivityRouteTarget(route.brokerKey, route.accountId) ||
       this.readString(route.brokerKey) ||
       'positions';
-    const snapshot = await this.getPositionActionSnapshot(
-      params.userId,
-      params.positionId,
-      route
-    );
+    const snapshot = await this.getPositionActionSnapshot(params.userId, params.positionId, route);
     const executionRoute = {
       ...route,
       userId: params.userId,
@@ -507,17 +492,10 @@ export class BrokerPositionsFacadeService {
     const symbol = this.readString(snapshot?.symbol);
 
     try {
-      const result = await params.execute(
-        executionRoute,
-        resolvedPositionId,
-        snapshot
-      );
+      const result = await params.execute(executionRoute, resolvedPositionId, snapshot);
       const protectionCleanupMessages =
         params.actionKey === 'close'
-          ? await this.cleanupProtectionOrdersAfterPositionClose(
-              executionRoute,
-              snapshot
-            )
+          ? await this.cleanupProtectionOrdersAfterPositionClose(executionRoute, snapshot)
           : [];
       const flags = [
         this.buildPositionActionFlag('route', 'Route', routeTarget, 'Success'),
@@ -529,29 +507,13 @@ export class BrokerPositionsFacadeService {
         ),
         ...this.buildPositionActionRequestMessages(params.actionKey, params.payload).map(
           (message, index) =>
-            this.buildPositionActionFlag(
-              `request-${index + 1}`,
-              'Request',
-              message,
-              'Success'
-            )
+            this.buildPositionActionFlag(`request-${index + 1}`, 'Request', message, 'Success')
         ),
-        ...[
-          ...this.buildPositionActionResultMessages(result),
-          ...protectionCleanupMessages,
-        ].map((message, index) =>
-          this.buildPositionActionFlag(
-            `result-${index + 1}`,
-            'Result',
-            message,
-            'Success'
-          )
+        ...[...this.buildPositionActionResultMessages(result), ...protectionCleanupMessages].map(
+          (message, index) =>
+            this.buildPositionActionFlag(`result-${index + 1}`, 'Result', message, 'Success')
         ),
-      ].filter(
-        (
-          flag
-        ): flag is NonNullable<ActivityLog['flags']>[number] => Boolean(flag)
-      );
+      ].filter((flag): flag is NonNullable<ActivityLog['flags']>[number] => Boolean(flag));
 
       await this.operationalEventService.logActivity(params.userId, {
         type: 'Position',
@@ -579,19 +541,10 @@ export class BrokerPositionsFacadeService {
         ),
         ...this.buildPositionActionRequestMessages(params.actionKey, params.payload).map(
           (flagMessage, index) =>
-            this.buildPositionActionFlag(
-              `request-${index + 1}`,
-              'Request',
-              flagMessage,
-              'Failed'
-            )
+            this.buildPositionActionFlag(`request-${index + 1}`, 'Request', flagMessage, 'Failed')
         ),
         this.buildPositionActionFlag('error', 'Result', message, 'Failed'),
-      ].filter(
-        (
-          flag
-        ): flag is NonNullable<ActivityLog['flags']>[number] => Boolean(flag)
-      );
+      ].filter((flag): flag is NonNullable<ActivityLog['flags']>[number] => Boolean(flag));
 
       await this.operationalEventService.logActivity(params.userId, {
         type: 'Position',
@@ -618,7 +571,9 @@ export class BrokerPositionsFacadeService {
   }
 
   private normalizeMarketSymbol(value: unknown): string | null {
-    const raw = String(value || '').trim().toUpperCase();
+    const raw = String(value || '')
+      .trim()
+      .toUpperCase();
     if (!raw) return null;
     if (raw.endsWith('USDT')) return raw;
     if (raw.endsWith('USD')) return `${raw.slice(0, -3)}USDT`;
@@ -628,9 +583,15 @@ export class BrokerPositionsFacadeService {
   }
 
   private resolvePositionDirection(position: Record<string, unknown>): number {
-    const side = String(position.side ?? '').trim().toLowerCase();
-    const positionType = String(position.position_type ?? '').trim().toLowerCase();
-    const orderType = String(position.order_type ?? '').trim().toLowerCase();
+    const side = String(position.side ?? '')
+      .trim()
+      .toLowerCase();
+    const positionType = String(position.position_type ?? '')
+      .trim()
+      .toLowerCase();
+    const orderType = String(position.order_type ?? '')
+      .trim()
+      .toLowerCase();
 
     if (side === 'short' || positionType === 'short' || orderType === 'sell') return -1;
     if (side === 'long' || positionType === 'long' || orderType === 'buy') return 1;
@@ -640,9 +601,20 @@ export class BrokerPositionsFacadeService {
     return 1;
   }
 
-  private resolvePositionSide(position: Record<string, unknown>): { label: string; raw: string | null; key: string } {
+  private resolvePositionSide(position: Record<string, unknown>): {
+    label: string;
+    raw: string | null;
+    key: string;
+  } {
     const raw = String(
-      this.pickFirst(position, ['side', 'position_type', 'order_type', 'orderType', 'positionSide', 'position_side']) || ''
+      this.pickFirst(position, [
+        'side',
+        'position_type',
+        'order_type',
+        'orderType',
+        'positionSide',
+        'position_side',
+      ]) || ''
     )
       .trim()
       .toLowerCase();
@@ -668,10 +640,7 @@ export class BrokerPositionsFacadeService {
 
   private normalizeStatus(value: unknown): { label: string; raw: string | null; key: string } {
     const rawText = String(value || '').trim();
-    const key = rawText
-      .toLowerCase()
-      .replace(/\s+/g, '_')
-      .replace(/-+/g, '_');
+    const key = rawText.toLowerCase().replace(/\s+/g, '_').replace(/-+/g, '_');
 
     if (['open', 'active', 'live', 'running'].includes(key)) {
       return { label: 'Open', raw: rawText || null, key: 'open' };
@@ -696,12 +665,21 @@ export class BrokerPositionsFacadeService {
     const externalId = String(
       this.pickFirst(record, ['external_id', 'externalId', 'position_id', 'positionId', 'id']) || ''
     ).trim();
-    const symbolValue = this.pickFirst(record, ['symbol', 'product_symbol', 'productSymbol', 'instrument', 'market']);
-    const symbol = symbolValue === undefined || symbolValue === null || String(symbolValue).trim() === ''
-      ? null
-      : String(symbolValue).trim();
+    const symbolValue = this.pickFirst(record, [
+      'symbol',
+      'product_symbol',
+      'productSymbol',
+      'instrument',
+      'market',
+    ]);
+    const symbol =
+      symbolValue === undefined || symbolValue === null || String(symbolValue).trim() === ''
+        ? null
+        : String(symbolValue).trim();
     const side = this.resolvePositionSide(record);
-    const status = this.normalizeStatus(this.pickFirst(record, ['status', 'state', 'position_status']));
+    const status = this.normalizeStatus(
+      this.pickFirst(record, ['status', 'state', 'position_status'])
+    );
     const signedQuantity = this.toNumber(
       this.pickFirst(record, ['quantity', 'size', 'qty', 'position_size', 'net_quantity'])
     );
@@ -720,16 +698,31 @@ export class BrokerPositionsFacadeService {
       this.pickFirst(record, ['current_price', 'mark_price', 'price', 'currentPrice', 'markPrice'])
     );
     const closedPrice = this.toNumber(
-      this.pickFirst(record, ['closed_price', 'close_price', 'exit_price', 'exitPrice', 'closedPrice'])
+      this.pickFirst(record, [
+        'closed_price',
+        'close_price',
+        'exit_price',
+        'exitPrice',
+        'closedPrice',
+      ])
     );
-    const leverage = this.toNumber(this.pickFirst(record, ['leverage', 'position_leverage', 'leverageValue']));
+    const leverage = this.toNumber(
+      this.pickFirst(record, ['leverage', 'position_leverage', 'leverageValue'])
+    );
     const liquidationPrice = this.toNumber(
       this.pickFirst(record, ['liquidation_price', 'liq_price', 'liquidationPrice'])
     );
     const createdAt = this.toIsoString(this.pickFirst(record, ['created_at', 'createdAt']));
     const closedAt = this.toIsoString(this.pickFirst(record, ['closed_at', 'closedAt']));
     const updatedAt = this.toIsoString(
-      this.pickFirst(record, ['updated_at', 'updatedAt', 'closed_at', 'closedAt', 'created_at', 'createdAt'])
+      this.pickFirst(record, [
+        'updated_at',
+        'updatedAt',
+        'closed_at',
+        'closedAt',
+        'created_at',
+        'createdAt',
+      ])
     );
     const unrealizedPnlExplicit = this.toNumber(
       this.pickFirst(record, ['unrealized_pnl', 'unrealized', 'unrealizedPnl', 'pnl_unrealized'])
@@ -737,9 +730,10 @@ export class BrokerPositionsFacadeService {
     const realizedPnlExplicit = this.toNumber(
       this.pickFirst(record, ['realized_pnl', 'realized', 'realizedPnl', 'pnl_realized'])
     );
-    const fallbackRealized = status.key === 'closed' || status.key === 'liquidated'
-      ? this.toNumber(this.pickFirst(record, ['pnl']))
-      : null;
+    const fallbackRealized =
+      status.key === 'closed' || status.key === 'liquidated'
+        ? this.toNumber(this.pickFirst(record, ['pnl']))
+        : null;
     const exposure =
       entryPrice !== null && quantity !== null ? Math.abs(entryPrice * quantity) : null;
     const unrealizedPnl = (() => {
@@ -778,7 +772,9 @@ export class BrokerPositionsFacadeService {
 
   private normalizePositionRecord(
     value: unknown,
-    metadata?: Partial<Pick<PositionRecord, 'accountId' | 'accountName' | 'accountKey' | 'brokerKey'>>
+    metadata?: Partial<
+      Pick<PositionRecord, 'accountId' | 'accountName' | 'accountKey' | 'brokerKey'>
+    >
   ): PositionRecord {
     const record = this.toRecord(value) || {};
     const summary = this.buildPositionSummary(record);
@@ -794,17 +790,27 @@ export class BrokerPositionsFacadeService {
       ...record,
       ...(metadata || {}),
       id: normalizedId,
-      external_id: summary.externalId || String(record.external_id || record.externalId || normalizedId),
-      externalId: summary.externalId || String(record.externalId || record.external_id || normalizedId),
+      external_id:
+        summary.externalId || String(record.external_id || record.externalId || normalizedId),
+      externalId:
+        summary.externalId || String(record.externalId || record.external_id || normalizedId),
       symbol: summary.symbol,
       side: summary.side,
       side_raw: this.resolvePositionSide(record).raw,
       sideKey: summary.sideKey,
       status: summary.status,
-      status_raw: this.normalizeStatus(this.pickFirst(record, ['status', 'state', 'position_status'])).raw,
+      status_raw: this.normalizeStatus(
+        this.pickFirst(record, ['status', 'state', 'position_status'])
+      ).raw,
       statusKey: summary.statusKey,
       quantity: summary.quantity,
-      quantity_raw: this.pickFirst(record, ['quantity', 'size', 'qty', 'position_size', 'net_quantity']),
+      quantity_raw: this.pickFirst(record, [
+        'quantity',
+        'size',
+        'qty',
+        'position_size',
+        'net_quantity',
+      ]),
       entry_price: summary.entryPrice,
       current_price: summary.currentPrice,
       closed_price: summary.closedPrice,
@@ -826,8 +832,7 @@ export class BrokerPositionsFacadeService {
       return null;
     }
 
-    const timestamp =
-      value instanceof Date ? value.getTime() : new Date(String(value)).getTime();
+    const timestamp = value instanceof Date ? value.getTime() : new Date(String(value)).getTime();
     return Number.isFinite(timestamp) ? timestamp : null;
   }
 
@@ -855,8 +860,7 @@ export class BrokerPositionsFacadeService {
   ): PositionsFreshnessIndicator {
     const observedIso = this.toIsoString(observedAt) || null;
     const observedMs = observedIso ? this.toTimestamp(observedIso) : null;
-    const freshnessMs =
-      observedMs !== null ? Math.max(0, Date.now() - observedMs) : null;
+    const freshnessMs = observedMs !== null ? Math.max(0, Date.now() - observedMs) : null;
     const state: PositionsFreshnessState =
       freshnessMs === null
         ? 'unknown'
@@ -881,10 +885,7 @@ export class BrokerPositionsFacadeService {
   private getPositionObservedAt(position: PositionRecord): string | null {
     return (
       this.toIsoString(
-        position.last_seen_at ??
-          position.updated_at ??
-          position.closed_at ??
-          position.created_at
+        position.last_seen_at ?? position.updated_at ?? position.closed_at ?? position.created_at
       ) || null
     );
   }
@@ -938,16 +939,14 @@ export class BrokerPositionsFacadeService {
     );
     const openPositions = Number(freshnessRow?.openPositions);
     const hasNoOpenPositions = Number.isFinite(openPositions) && openPositions <= 0;
-    const syncedNoOpenPositions =
-      hasNoOpenPositions && checkpointFreshness.state === 'fresh';
+    const syncedNoOpenPositions = hasNoOpenPositions && checkpointFreshness.state === 'fresh';
     if (syncedNoOpenPositions) {
       accountFreshness = {
         ...checkpointFreshness,
         source: 'sync_checkpoint_no_open_positions',
       };
     }
-    const accountLabel =
-      account.accountName || account.accountKey || 'this account';
+    const accountLabel = account.accountName || account.accountKey || 'this account';
     let warning: string | null = null;
 
     if (syncedNoOpenPositions) {
@@ -958,10 +957,7 @@ export class BrokerPositionsFacadeService {
     } else if (accountFreshness.state === 'stale') {
       const age = this.formatRelativeAge(accountFreshness.freshnessMs) || 'recently';
       warning = `Live snapshot for ${accountLabel} was last observed ${age}. Recent broker writes can still be catching up.`;
-    } else if (
-      accountFreshness.state === 'unknown' &&
-      checkpointFreshness.state !== 'unknown'
-    ) {
+    } else if (accountFreshness.state === 'unknown' && checkpointFreshness.state !== 'unknown') {
       const age = this.formatRelativeAge(checkpointFreshness.freshnessMs) || 'recently';
       warning = `No visible position snapshot timestamp is available for ${accountLabel} yet. The latest sync checkpoint was ${age}.`;
     }
@@ -1054,9 +1050,7 @@ export class BrokerPositionsFacadeService {
     return String((error as { code?: unknown }).code || '') === 'ER_NO_SUCH_TABLE';
   }
 
-  private async listPendingSyncStateByAccountId(
-    accountIds: string[]
-  ): Promise<
+  private async listPendingSyncStateByAccountId(accountIds: string[]): Promise<
     Map<
       string,
       {
@@ -1117,13 +1111,20 @@ export class BrokerPositionsFacadeService {
               },
             ] as const;
           })
-          .filter((entry): entry is readonly [string, {
-            pendingRecords: number;
-            failedRecords: number;
-            resolvedRecords: number;
-            nextRetryAt: string | null;
-            lastPendingUpdateAt: string | null;
-          }] => Boolean(entry))
+          .filter(
+            (
+              entry
+            ): entry is readonly [
+              string,
+              {
+                pendingRecords: number;
+                failedRecords: number;
+                resolvedRecords: number;
+                nextRetryAt: string | null;
+                lastPendingUpdateAt: string | null;
+              },
+            ] => Boolean(entry)
+          )
       );
     } catch (error) {
       if (!this.isMissingTableError(error)) {
@@ -1160,7 +1161,8 @@ export class BrokerPositionsFacadeService {
       return {
         state: 'idle',
         label: 'No routes',
-        summary: 'No connected or idle broker routes are available for positions sync on this desk.',
+        summary:
+          'No connected or idle broker routes are available for positions sync on this desk.',
       };
     }
 
@@ -1192,7 +1194,8 @@ export class BrokerPositionsFacadeService {
     return {
       state: 'healthy',
       label: 'Healthy',
-      summary: 'Connected broker routes are aligned with the latest visible position snapshots and checkpoints.',
+      summary:
+        'Connected broker routes are aligned with the latest visible position snapshots and checkpoints.',
     };
   }
 
@@ -1279,18 +1282,12 @@ export class BrokerPositionsFacadeService {
       orderType: this.readString(this.pickFirst(payload, ['order_type', 'orderType'])),
       triggerType: this.readString(this.pickFirst(payload, ['trigger_type', 'triggerType'])),
       quantity: this.toNumber(this.pickFirst(payload, ['quantity', 'qty', 'size'])),
-      orderPrice: this.toNumber(
-        this.pickFirst(payload, ['order_price', 'orderPrice', 'price'])
-      ),
-      stopLossPrice: this.toNumber(
-        this.pickFirst(payload, ['stoploss_price', 'stopLossPrice'])
-      ),
+      orderPrice: this.toNumber(this.pickFirst(payload, ['order_price', 'orderPrice', 'price'])),
+      stopLossPrice: this.toNumber(this.pickFirst(payload, ['stoploss_price', 'stopLossPrice'])),
       takeProfitPrice: this.toNumber(
         this.pickFirst(payload, ['takeprofit_price', 'takeProfitPrice'])
       ),
-      reduceOnly: this.readBoolean(
-        this.pickFirst(payload, ['reduce_only', 'reduceOnly'])
-      ),
+      reduceOnly: this.readBoolean(this.pickFirst(payload, ['reduce_only', 'reduceOnly'])),
       linkedPositionId,
       createdAt:
         this.toIsoString(this.pickFirst(payload, ['created_at', 'createdAt'])) ||
@@ -1427,9 +1424,7 @@ export class BrokerPositionsFacadeService {
       linkedPositionId,
       createdAt: this.toIsoString(item.createdAt) || null,
       updatedAt:
-        this.toIsoString(item.updatedAt) ||
-        this.toIsoString(simulation.lastPriceSeenAt) ||
-        null,
+        this.toIsoString(item.updatedAt) || this.toIsoString(simulation.lastPriceSeenAt) || null,
       detailUrl: `/orders?selected=${encodeURIComponent(item.id)}`,
     };
   }
@@ -1464,7 +1459,11 @@ export class BrokerPositionsFacadeService {
     const meta = item.meta && typeof item.meta === 'object' ? item.meta : {};
     const signalId = this.readString((meta as Record<string, unknown>).signalId);
 
-    const push = (entity: string, id: string | null, extras: Partial<LinkedEntityReference> = {}) => {
+    const push = (
+      entity: string,
+      id: string | null,
+      extras: Partial<LinkedEntityReference> = {}
+    ) => {
       const normalizedId = this.readString(id);
       if (!normalizedId) {
         return;
@@ -1519,7 +1518,9 @@ export class BrokerPositionsFacadeService {
     });
     push('live_order', this.readString(execution?.orderId), {
       label: 'Live order',
-      url: execution?.orderId ? `/orders?selected=${encodeURIComponent(execution.orderId)}` : undefined,
+      url: execution?.orderId
+        ? `/orders?selected=${encodeURIComponent(execution.orderId)}`
+        : undefined,
       relation: 'execution',
       status: execution?.orderStatus ?? null,
     });
@@ -1546,11 +1547,12 @@ export class BrokerPositionsFacadeService {
   private mapLifecycleSuggestedTrade(item: SuggestedTrade): PositionLifecycleSuggestedTradeItem {
     const execution = item.executionRecord || null;
     const fallbackTarget = Array.isArray(item.takeProfitTargets)
-      ? item.takeProfitTargets
+      ? (item.takeProfitTargets
           .map((value) => this.toNumber(value))
-          .find((value): value is number => value !== null) ?? null
+          .find((value): value is number => value !== null) ?? null)
       : null;
     const protection = this.mapLifecycleSuggestedTradeProtection(execution);
+    const routeAttempts = this.normalizeLifecycleRouteAttempts(execution?.routeAttempts);
     return {
       id: item.id,
       symbol: item.symbol,
@@ -1580,6 +1582,13 @@ export class BrokerPositionsFacadeService {
       exitPrice: this.toNumber(execution?.exitPrice),
       realizedPnl: this.toNumber(execution?.realizedPnl),
       protection,
+      routeAttempts,
+      operatorTimeline: this.buildLifecycleSuggestedTradeTimeline(
+        item,
+        execution,
+        protection,
+        routeAttempts
+      ),
       sourceTemplateId: item.sourceTemplateId ?? null,
       sourceBacktestId: item.sourceBacktestId ?? null,
       stopLossPrice: this.toNumber(execution?.stopLossPrice ?? item.stopLossPrice),
@@ -1587,6 +1596,300 @@ export class BrokerPositionsFacadeService {
       detailUrl: `/suggested-trades?selected=${encodeURIComponent(item.id)}`,
       linkedEntities: this.buildSuggestedTradeLinks(item),
     };
+  }
+
+  private normalizeLifecycleRouteAttempts(value: unknown): SuggestedTradeRouteAttempt[] | null {
+    const raw = typeof value === 'string' ? this.parsePayloadJson(value) : value;
+    if (!Array.isArray(raw)) {
+      return null;
+    }
+
+    const attempts = raw
+      .map((item, index): SuggestedTradeRouteAttempt | null => {
+        const record = this.toRecord(item);
+        if (!record) {
+          return null;
+        }
+
+        const brokerKey = this.readString(record.brokerKey);
+        const requestedSymbol = this.readString(record.requestedSymbol);
+        const brokerSymbol = this.readString(record.brokerSymbol) || requestedSymbol;
+        if (!brokerKey || !brokerSymbol) {
+          return null;
+        }
+
+        const reconciliation = this.toRecord(record.reconciliation);
+
+        return {
+          attemptNumber: this.toNumber(record.attemptNumber) ?? index + 1,
+          candidateRank: this.toNumber(record.candidateRank) ?? index + 1,
+          brokerKey,
+          accountId: this.readString(record.accountId) || null,
+          accountName: this.readString(record.accountName) || null,
+          requestedSymbol: requestedSymbol || brokerSymbol,
+          brokerSymbol,
+          status: (this.readString(record.status) ||
+            'unknown') as SuggestedTradeRouteAttempt['status'],
+          startedAt: this.toIsoString(record.startedAt) || null,
+          finishedAt: this.toIsoString(record.finishedAt) || null,
+          preTradeCheckId: this.readString(record.preTradeCheckId) || null,
+          preTradeState:
+            (this.readString(
+              record.preTradeState
+            ) as SuggestedTradeRouteAttempt['preTradeState']) || null,
+          submissionState:
+            (this.readString(
+              record.submissionState
+            ) as SuggestedTradeRouteAttempt['submissionState']) || null,
+          orderId: this.readString(record.orderId) || null,
+          orderStatus: this.readString(record.orderStatus) || null,
+          failureClassification:
+            (this.readString(
+              record.failureClassification
+            ) as SuggestedTradeRouteAttempt['failureClassification']) || null,
+          failureCode: this.readString(record.failureCode) || null,
+          failureMessage: this.readString(record.failureMessage) || null,
+          requestSummary: this.toRecord(record.requestSummary),
+          brokerResponseSummary: this.toRecord(record.brokerResponseSummary),
+          reconciliation: reconciliation
+            ? {
+                status:
+                  (this.readString(reconciliation.status) as NonNullable<
+                    SuggestedTradeRouteAttempt['reconciliation']
+                  >['status']) || 'unknown',
+                checkedAt: this.toIsoString(reconciliation.checkedAt) || null,
+                orderId: this.readString(reconciliation.orderId) || null,
+                positionId: this.readString(reconciliation.positionId) || null,
+                message: this.readString(reconciliation.message) || null,
+              }
+            : null,
+          note: this.readString(record.note) || null,
+        };
+      })
+      .filter((item): item is SuggestedTradeRouteAttempt => Boolean(item));
+
+    return attempts.length ? attempts : null;
+  }
+
+  private buildLifecycleSuggestedTradeTimeline(
+    item: SuggestedTrade,
+    execution: SuggestedTrade['executionRecord'] | null | undefined,
+    protection: PositionExecutionProtectionContext | null,
+    routeAttempts: SuggestedTradeRouteAttempt[] | null
+  ): PositionLifecycleEventItem[] {
+    const events: PositionLifecycleEventItem[] = [];
+    type DraftPositionLifecycleEvent = Omit<PositionLifecycleEventItem, 'occurredAt'> & {
+      occurredAt: unknown;
+    };
+
+    const pushEvent = (event: DraftPositionLifecycleEvent): void => {
+      const occurredAt = this.toIsoString(event.occurredAt);
+      if (!occurredAt) {
+        return;
+      }
+      events.push({ ...event, occurredAt });
+    };
+
+    pushEvent({
+      id: 'signal_detected',
+      kind: 'signal',
+      label: 'Signal detected',
+      description: 'Automation created the source signal for this position.',
+      occurredAt: item.signalTime,
+      entity: 'suggested_trade',
+      entityId: item.id,
+      status: item.status,
+      severity: 'info',
+    });
+
+    for (const attempt of routeAttempts ?? []) {
+      const attemptId = Math.max(1, Math.floor(attempt.attemptNumber || 1));
+      const brokerKey = attempt.brokerKey || 'unknown';
+      const accountLabel = attempt.accountName || attempt.accountId || 'unknown account';
+      const symbol = attempt.brokerSymbol || attempt.requestedSymbol || item.symbol;
+      if (attempt.startedAt) {
+        pushEvent({
+          id: `route_attempt_${attemptId}_started`,
+          kind: 'broker_route',
+          label: `Broker route ${attemptId} started`,
+          description: `Submitting ${symbol} to ${brokerKey} (${accountLabel}).`,
+          occurredAt: attempt.startedAt,
+          entity: 'broker_route',
+          entityId: attempt.accountId ?? null,
+          brokerKey,
+          accountId: attempt.accountId ?? null,
+          status: attempt.submissionState ?? attempt.status,
+          severity: 'info',
+        });
+      }
+      if (attempt.finishedAt || attempt.reconciliation?.checkedAt) {
+        const failed = attempt.status === 'failed' || attempt.status === 'pre_trade_blocked';
+        pushEvent({
+          id: `route_attempt_${attemptId}_finished`,
+          kind: 'broker_route',
+          label:
+            attempt.status === 'placed'
+              ? `Broker route ${attemptId} placed`
+              : failed
+                ? `Broker route ${attemptId} failed`
+                : `Broker route ${attemptId} updated`,
+          description: this.describeLifecycleRouteAttempt(attempt),
+          occurredAt: attempt.finishedAt || attempt.reconciliation?.checkedAt || '',
+          entity: attempt.orderId ? 'order' : 'broker_route',
+          entityId: attempt.orderId ?? attempt.accountId ?? null,
+          brokerKey,
+          accountId: attempt.accountId ?? null,
+          status: attempt.status,
+          severity: attempt.status === 'placed' ? 'success' : failed ? 'warning' : 'info',
+        });
+      }
+    }
+
+    pushEvent({
+      id: 'entry_submitted',
+      kind: 'order',
+      label: 'Entry submitted',
+      description: 'Entry order submission was recorded.',
+      occurredAt: execution?.submittedAt ?? '',
+      entity: 'order',
+      entityId: execution?.orderId ?? execution?.paperOrderId ?? null,
+      brokerKey: execution?.brokerKey ?? null,
+      accountId: execution?.accountId ?? null,
+      status: execution?.executionState ?? null,
+      severity: 'info',
+    });
+    pushEvent({
+      id: 'entry_linked',
+      kind: 'order',
+      label: 'Entry linked',
+      description: 'The broker order was linked to this suggested trade.',
+      occurredAt: execution?.linkedAt ?? '',
+      entity: execution?.paperOrderId ? 'paper_order' : 'order',
+      entityId: execution?.orderId ?? execution?.paperOrderId ?? null,
+      brokerKey: execution?.brokerKey ?? null,
+      accountId: execution?.accountId ?? null,
+      status: execution?.orderStatus ?? execution?.paperOrderStatus ?? null,
+      severity: 'success',
+    });
+    pushEvent({
+      id: 'entry_filled',
+      kind: 'order',
+      label: 'Entry filled',
+      description: 'The entry order filled at the broker.',
+      occurredAt: execution?.filledAt ?? '',
+      entity: execution?.paperOrderId ? 'paper_order' : 'order',
+      entityId: execution?.orderId ?? execution?.paperOrderId ?? null,
+      brokerKey: execution?.brokerKey ?? null,
+      accountId: execution?.accountId ?? null,
+      status: execution?.orderStatus ?? execution?.paperOrderStatus ?? 'FILLED',
+      severity: 'success',
+      meta: {
+        filledPrice: this.toNumber(execution?.filledPrice),
+        filledQuantity: this.toNumber(execution?.filledQuantity),
+      },
+    });
+    pushEvent({
+      id: 'position_opened',
+      kind: 'position',
+      label: 'Position visible',
+      description: 'The position became visible in broker position sync.',
+      occurredAt: execution?.positionOpenedAt ?? '',
+      entity: 'position',
+      entityId: execution?.positionId ?? null,
+      brokerKey: execution?.brokerKey ?? null,
+      accountId: execution?.accountId ?? null,
+      status: execution?.positionStatus ?? 'OPEN',
+      severity: 'success',
+    });
+    pushEvent({
+      id: 'protection_checked',
+      kind: 'protection',
+      label: 'Protection checked',
+      description:
+        protection?.lastError ||
+        'Stop loss and target protection were checked against the broker state.',
+      occurredAt: protection?.checkedAt ?? '',
+      entity: 'position',
+      entityId: execution?.positionId ?? null,
+      brokerKey: execution?.brokerKey ?? null,
+      accountId: execution?.accountId ?? null,
+      status: protection?.state ?? null,
+      severity: protection?.state === 'failed' ? 'error' : 'info',
+    });
+    pushEvent({
+      id: 'protection_repair_submitted',
+      kind: 'protection',
+      label: 'Protection repair submitted',
+      description: 'Replacement stop loss and target orders were submitted.',
+      occurredAt: protection?.replacementSubmittedAt ?? '',
+      entity: 'position',
+      entityId: execution?.positionId ?? null,
+      brokerKey: execution?.brokerKey ?? null,
+      accountId: execution?.accountId ?? null,
+      status: protection?.state ?? null,
+      severity: 'info',
+    });
+    pushEvent({
+      id: 'protection_attached',
+      kind: 'protection',
+      label: 'Protection attached',
+      description: 'Broker stop loss and target protection were confirmed.',
+      occurredAt: protection?.attachedAt ?? '',
+      entity: 'position',
+      entityId: execution?.positionId ?? null,
+      brokerKey: execution?.brokerKey ?? null,
+      accountId: execution?.accountId ?? null,
+      status: protection?.state ?? 'attached',
+      severity: 'success',
+      meta: {
+        stopLossOrderId: protection?.stopLossOrderId ?? null,
+        takeProfitOrderId: protection?.takeProfitOrderId ?? null,
+      },
+    });
+    pushEvent({
+      id: 'position_closed',
+      kind: 'exit',
+      label: 'Position closed',
+      description: 'The position close was observed from broker state.',
+      occurredAt: execution?.positionClosedAt ?? '',
+      entity: 'position',
+      entityId: execution?.positionId ?? null,
+      brokerKey: execution?.brokerKey ?? null,
+      accountId: execution?.accountId ?? null,
+      status: execution?.positionStatus ?? 'CLOSED',
+      severity: 'info',
+      meta: {
+        exitPrice: this.toNumber(execution?.exitPrice),
+        realizedPnl: this.toNumber(execution?.realizedPnl),
+      },
+    });
+
+    return events.sort((left, right) => {
+      const leftTime = Date.parse(left.occurredAt);
+      const rightTime = Date.parse(right.occurredAt);
+      return (
+        (Number.isFinite(leftTime) ? leftTime : 0) - (Number.isFinite(rightTime) ? rightTime : 0)
+      );
+    });
+  }
+
+  private describeLifecycleRouteAttempt(attempt: SuggestedTradeRouteAttempt): string {
+    const brokerKey = attempt.brokerKey || 'unknown broker';
+    const accountLabel = attempt.accountName || attempt.accountId || 'unknown account';
+    if (attempt.status === 'placed') {
+      return attempt.orderId
+        ? `${brokerKey} accepted the order as ${attempt.orderId}.`
+        : `${brokerKey} accepted the order.`;
+    }
+    const failure =
+      attempt.failureMessage ||
+      attempt.failureCode ||
+      attempt.note ||
+      attempt.reconciliation?.message;
+    if (failure) {
+      return `${brokerKey} (${accountLabel}) did not complete this route: ${failure}.`;
+    }
+    return `${brokerKey} (${accountLabel}) route attempt ended with ${attempt.status}.`;
   }
 
   private mapLifecycleSuggestedTradeProtection(
@@ -1603,8 +1906,7 @@ export class BrokerPositionsFacadeService {
     const lastError = this.readString(execution.protectionLastError) || null;
     const checkedAt = this.toIsoString(execution.protectionCheckedAt) || null;
     const attachedAt = this.toIsoString(execution.protectionAttachedAt) || null;
-    const replacementSubmittedAt =
-      this.toIsoString(protectionPlan.replacementSubmittedAt) || null;
+    const replacementSubmittedAt = this.toIsoString(protectionPlan.replacementSubmittedAt) || null;
     const plannedStopLossPrice = this.toNumber(execution.stopLossPrice);
     const plannedTakeProfitPrice = this.toNumber(execution.takeProfitPrice);
     const stopLossPrice =
@@ -1693,18 +1995,20 @@ export class BrokerPositionsFacadeService {
     return output;
   }
 
-  private mapLifecycleAccountContext(item: {
-    id: string;
-    accountName: string;
-    accountKey: string;
-    brokerKey: string;
-    status: string;
-    mode?: string | null;
-    purpose?: string | null;
-    capabilities?: string | null;
-    isDefault?: boolean;
-    lastSyncAt?: Date | null;
-  } | null): PositionLifecycleAccountContext | null {
+  private mapLifecycleAccountContext(
+    item: {
+      id: string;
+      accountName: string;
+      accountKey: string;
+      brokerKey: string;
+      status: string;
+      mode?: string | null;
+      purpose?: string | null;
+      capabilities?: string | null;
+      isDefault?: boolean;
+      lastSyncAt?: Date | null;
+    } | null
+  ): PositionLifecycleAccountContext | null {
     if (!item) {
       return null;
     }
@@ -1741,7 +2045,7 @@ export class BrokerPositionsFacadeService {
       params.push(...trackedOrderIds);
     }
     if (normalizedSymbol) {
-      clauses.push('LOWER(COALESCE(symbol, \'\')) = ?');
+      clauses.push("LOWER(COALESCE(symbol, '')) = ?");
       params.push(normalizedSymbol);
     }
 
@@ -1805,7 +2109,7 @@ export class BrokerPositionsFacadeService {
             trackedOrderIds.length
               ? `COALESCE(order_id, external_id) IN (${trackedOrderIds.map(() => '?').join(', ')})`
               : '',
-            normalizedSymbol ? 'LOWER(COALESCE(symbol, \'\')) = ?' : '',
+            normalizedSymbol ? "LOWER(COALESCE(symbol, '')) = ?" : '',
           ]
             .filter(Boolean)
             .join(' OR ')})${windowSql}
@@ -1842,7 +2146,11 @@ export class BrokerPositionsFacadeService {
           item.relation === 'position' ? 0 : item.relation === 'protection' ? 1 : 2;
         const leftUpdated = Date.parse(String(left.updatedAt || left.createdAt || ''));
         const rightUpdated = Date.parse(String(right.updatedAt || right.createdAt || ''));
-        return rank(left) - rank(right) || (Number.isFinite(rightUpdated) ? rightUpdated : 0) - (Number.isFinite(leftUpdated) ? leftUpdated : 0);
+        return (
+          rank(left) - rank(right) ||
+          (Number.isFinite(rightUpdated) ? rightUpdated : 0) -
+            (Number.isFinite(leftUpdated) ? leftUpdated : 0)
+        );
       })
       .slice(0, 8);
   }
@@ -1873,7 +2181,10 @@ export class BrokerPositionsFacadeService {
       .slice(0, 6);
   }
 
-  private computeUnrealizedPnl(position: Record<string, unknown>, markPrice: number): number | null {
+  private computeUnrealizedPnl(
+    position: Record<string, unknown>,
+    markPrice: number
+  ): number | null {
     const entry = Number(
       position.entry_price ?? position.avg_entry_price ?? position.average_entry_price ?? 0
     );
@@ -1908,18 +2219,30 @@ export class BrokerPositionsFacadeService {
       return;
     }
 
-    let rows: Array<{ symbol?: string; price?: unknown; retrievedAt?: Date | string; source?: string }> = [];
+    let rows: Array<{
+      symbol?: string;
+      price?: unknown;
+      retrievedAt?: Date | string;
+      source?: string;
+    }> = [];
     try {
       rows = (await this.assetPriceRepository.getBySymbols(Array.from(symbols), {
         sources: ['mudrex'],
-      })) as Array<{ symbol?: string; price?: unknown; retrievedAt?: Date | string; source?: string }>;
+      })) as Array<{
+        symbol?: string;
+        price?: unknown;
+        retrievedAt?: Date | string;
+        source?: string;
+      }>;
     } catch {
       // If reference pricing table is missing or temporarily unavailable, do not fail positions reads.
       return;
     }
     const priceMap = new Map<string, { price: number; retrievedAt?: string; source?: string }>();
     for (const row of rows) {
-      const symbol = String(row.symbol || '').trim().toUpperCase();
+      const symbol = String(row.symbol || '')
+        .trim()
+        .toUpperCase();
       const price = Number(row.price);
       if (!symbol || !Number.isFinite(price)) continue;
       priceMap.set(symbol, {
@@ -1927,9 +2250,7 @@ export class BrokerPositionsFacadeService {
         retrievedAt: (() => {
           if (!row.retrievedAt) return undefined;
           const date =
-            row.retrievedAt instanceof Date
-              ? row.retrievedAt
-              : new Date(String(row.retrievedAt));
+            row.retrievedAt instanceof Date ? row.retrievedAt : new Date(String(row.retrievedAt));
           if (Number.isNaN(date.getTime())) return undefined;
           return date.toISOString();
         })(),
@@ -1966,7 +2287,12 @@ export class BrokerPositionsFacadeService {
     query: PositionsQuery = {}
   ): Promise<PositionRecord[]> {
     const params = validatePositionsQuery(query);
-    const route = await this.brokerAccountRoutingService.resolve(userId, brokerKey, accountId, 'mudrex');
+    const route = await this.brokerAccountRoutingService.resolve(
+      userId,
+      brokerKey,
+      accountId,
+      'mudrex'
+    );
     const resolvedBrokerKey = String(route.brokerKey || '').trim() || 'mudrex';
     const resolvedAccountId = String(route.accountId || '').trim();
     const limit = params.limit ? Number(params.limit) : undefined;
@@ -2011,7 +2337,9 @@ export class BrokerPositionsFacadeService {
       : activeAccounts;
 
     if (filters.accountId && !scopedAccounts.length) {
-      throw new NotFoundAppError('Broker account not found for the requested positions refresh scope');
+      throw new NotFoundAppError(
+        'Broker account not found for the requested positions refresh scope'
+      );
     }
 
     if (!scopedAccounts.length) {
@@ -2022,7 +2350,8 @@ export class BrokerPositionsFacadeService {
         brokerKey: filters.brokerKey,
         accountId: filters.accountId,
         requestedAt: new Date().toISOString(),
-        summary: 'No connected or idle broker routes are available for positions refresh on this desk.',
+        summary:
+          'No connected or idle broker routes are available for positions refresh on this desk.',
         processedAccounts: 0,
         failedAccounts: 0,
         fetchedRecords: 0,
@@ -2119,14 +2448,13 @@ export class BrokerPositionsFacadeService {
         },
         freshnessByAccountId.get(account.id) || null
       );
-      const pendingState =
-        pendingStateByAccountId.get(account.id) || {
-          pendingRecords: 0,
-          failedRecords: 0,
-          resolvedRecords: 0,
-          nextRetryAt: null,
-          lastPendingUpdateAt: null,
-        };
+      const pendingState = pendingStateByAccountId.get(account.id) || {
+        pendingRecords: 0,
+        failedRecords: 0,
+        resolvedRecords: 0,
+        nextRetryAt: null,
+        lastPendingUpdateAt: null,
+      };
 
       pendingRecords += pendingState.pendingRecords;
       failedRecords += pendingState.failedRecords;
@@ -2134,7 +2462,11 @@ export class BrokerPositionsFacadeService {
 
       const checkpointAt = freshness?.checkpoint?.observedAt || null;
       const checkpointTimestamp = checkpointAt ? this.toTimestamp(checkpointAt) : null;
-      if (checkpointAt && checkpointTimestamp !== null && checkpointTimestamp > latestCheckpointTimestamp) {
+      if (
+        checkpointAt &&
+        checkpointTimestamp !== null &&
+        checkpointTimestamp > latestCheckpointTimestamp
+      ) {
         latestCheckpointTimestamp = checkpointTimestamp;
         latestCheckpointAt = checkpointAt;
       }
@@ -2217,7 +2549,10 @@ export class BrokerPositionsFacadeService {
     };
   }
 
-  async getFuturesPositionsForActiveAccounts(userId: string, brokerKey?: string): Promise<PositionsGroupedResponse> {
+  async getFuturesPositionsForActiveAccounts(
+    userId: string,
+    brokerKey?: string
+  ): Promise<PositionsGroupedResponse> {
     const activeAccounts = await this.brokerAccountRepository.getActiveBrokerAccounts(
       userId,
       brokerKey
@@ -2252,46 +2587,54 @@ export class BrokerPositionsFacadeService {
       throw new NotFoundAppError('Position not found');
     }
 
-    const [account, accountFreshnessById, liveOrders, paperOrders, alerts, activities, exactTrades, recentTrades] =
-      await Promise.all([
-        this.brokerAccountRepository.getBrokerAccountById(userId, resolvedAccountId),
-        this.positionReadModelRepository.getAccountFreshness(userId, [resolvedAccountId]),
-        this.listRelatedLiveOrderSnapshots(
-          userId,
-          resolvedBrokerKey,
-          resolvedAccountId,
-          position
-        ).catch(() => []),
-        this.listRelatedPaperOrders(userId, resolvedBrokerKey, resolvedAccountId, position).catch(
-          () => []
-        ),
-        position.symbol
-          ? this.alertRepository.listRelatedAlerts(userId, {
-              symbol: position.symbol,
-              limit: 6,
-            })
-          : Promise.resolve([]),
-        this.activityRepository.listActivityWindow(
-          userId,
-          { limit: 8, referenceId: validatedPositionId },
-          undefined
-        ),
-        this.suggestedTradeRepository.findLinkedTradesByPositionIds(
-          userId,
-          resolvedBrokerKey,
-          resolvedAccountId,
-          [validatedPositionId]
-        ),
-        position.symbol
-          ? this.suggestedTradeRepository.findRecentTradesBySymbol(
-              userId,
-              resolvedBrokerKey,
-              resolvedAccountId,
-              position.symbol,
-              6
-            )
-          : Promise.resolve([]),
-      ]);
+    const [
+      account,
+      accountFreshnessById,
+      liveOrders,
+      paperOrders,
+      alerts,
+      activities,
+      exactTrades,
+      recentTrades,
+    ] = await Promise.all([
+      this.brokerAccountRepository.getBrokerAccountById(userId, resolvedAccountId),
+      this.positionReadModelRepository.getAccountFreshness(userId, [resolvedAccountId]),
+      this.listRelatedLiveOrderSnapshots(
+        userId,
+        resolvedBrokerKey,
+        resolvedAccountId,
+        position
+      ).catch(() => []),
+      this.listRelatedPaperOrders(userId, resolvedBrokerKey, resolvedAccountId, position).catch(
+        () => []
+      ),
+      position.symbol
+        ? this.alertRepository.listRelatedAlerts(userId, {
+            symbol: position.symbol,
+            limit: 6,
+          })
+        : Promise.resolve([]),
+      this.activityRepository.listActivityWindow(
+        userId,
+        { limit: 8, referenceId: validatedPositionId },
+        undefined
+      ),
+      this.suggestedTradeRepository.findLinkedTradesByPositionIds(
+        userId,
+        resolvedBrokerKey,
+        resolvedAccountId,
+        [validatedPositionId]
+      ),
+      position.symbol
+        ? this.suggestedTradeRepository.findRecentTradesBySymbol(
+            userId,
+            resolvedBrokerKey,
+            resolvedAccountId,
+            position.symbol,
+            6
+          )
+        : Promise.resolve([]),
+    ]);
 
     const positionFreshness = this.buildFreshnessIndicator(
       this.getPositionObservedAt(position),
@@ -2331,7 +2674,9 @@ export class BrokerPositionsFacadeService {
       .sort((left, right) => {
         const leftTime = Date.parse(String(left.updatedAt || left.createdAt || ''));
         const rightTime = Date.parse(String(right.updatedAt || right.createdAt || ''));
-        return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+        return (
+          (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0)
+        );
       })
       .slice(0, 10);
 
@@ -2422,10 +2767,7 @@ export class BrokerPositionsFacadeService {
     const accountIds = activeAccounts.map((item) => item.id);
     await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, accountIds);
     const [grouped, freshnessByAccountId] = await Promise.all([
-      this.positionReadModelRepository.listLivePositionsForAccounts(
-        userId,
-        accountIds
-      ),
+      this.positionReadModelRepository.listLivePositionsForAccounts(userId, accountIds),
       this.positionReadModelRepository.getAccountFreshness(userId, accountIds),
     ]);
 
@@ -2488,12 +2830,31 @@ export class BrokerPositionsFacadeService {
 
   // parsePayloadJson moved above to support both single-account and active-account snapshot reads.
 
-  async getPositionLiquidationPrice(positionId: string, query: PositionLiqPriceQuery, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
-    const route = await this.brokerAccountRoutingService.resolve(userId, brokerKey, accountId, 'mudrex');
-    return this.brokerRuntimeRegistry.getPositionsAdapter(route.brokerKey).getLiquidationPrice(positionId, query, route);
+  async getPositionLiquidationPrice(
+    positionId: string,
+    query: PositionLiqPriceQuery,
+    userId: string,
+    brokerKey?: string,
+    accountId?: string
+  ): Promise<unknown> {
+    const route = await this.brokerAccountRoutingService.resolve(
+      userId,
+      brokerKey,
+      accountId,
+      'mudrex'
+    );
+    return this.brokerRuntimeRegistry
+      .getPositionsAdapter(route.brokerKey)
+      .getLiquidationPrice(positionId, query, route);
   }
 
-  async addPositionMargin(positionId: string, body: AddMarginBody, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+  async addPositionMargin(
+    positionId: string,
+    body: AddMarginBody,
+    userId: string,
+    brokerKey?: string,
+    accountId?: string
+  ): Promise<unknown> {
     return this.executePositionActionWithAudit({
       actionKey: 'add-margin',
       successTitle: `Margin added: ${positionId}`,
@@ -2512,7 +2873,13 @@ export class BrokerPositionsFacadeService {
     });
   }
 
-  async createPositionRiskOrder(positionId: string, body: CreateRiskOrderBody, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+  async createPositionRiskOrder(
+    positionId: string,
+    body: CreateRiskOrderBody,
+    userId: string,
+    brokerKey?: string,
+    accountId?: string
+  ): Promise<unknown> {
     return this.executePositionActionWithAudit({
       actionKey: 'risk-order-create',
       successTitle: `Risk order created: ${positionId}`,
@@ -2531,7 +2898,13 @@ export class BrokerPositionsFacadeService {
     });
   }
 
-  async updatePositionRiskOrder(positionId: string, body: UpdateRiskOrderBody, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+  async updatePositionRiskOrder(
+    positionId: string,
+    body: UpdateRiskOrderBody,
+    userId: string,
+    brokerKey?: string,
+    accountId?: string
+  ): Promise<unknown> {
     return this.executePositionActionWithAudit({
       actionKey: 'risk-order-update',
       successTitle: `Risk order updated: ${positionId}`,
@@ -2550,7 +2923,12 @@ export class BrokerPositionsFacadeService {
     });
   }
 
-  async reversePosition(positionId: string, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+  async reversePosition(
+    positionId: string,
+    userId: string,
+    brokerKey?: string,
+    accountId?: string
+  ): Promise<unknown> {
     return this.executePositionActionWithAudit({
       actionKey: 'reverse',
       successTitle: `Position reversed: ${positionId}`,
@@ -2569,7 +2947,13 @@ export class BrokerPositionsFacadeService {
     });
   }
 
-  async closePositionPartial(positionId: string, body: ClosePartialPositionBody, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+  async closePositionPartial(
+    positionId: string,
+    body: ClosePartialPositionBody,
+    userId: string,
+    brokerKey?: string,
+    accountId?: string
+  ): Promise<unknown> {
     return this.executePositionActionWithAudit({
       actionKey: 'close-partial',
       successTitle: `Position partially closed: ${positionId}`,
@@ -2588,7 +2972,12 @@ export class BrokerPositionsFacadeService {
     });
   }
 
-  async closePosition(positionId: string, userId: string, brokerKey?: string, accountId?: string): Promise<unknown> {
+  async closePosition(
+    positionId: string,
+    userId: string,
+    brokerKey?: string,
+    accountId?: string
+  ): Promise<unknown> {
     return this.executePositionActionWithAudit({
       actionKey: 'close',
       successTitle: `Position closed: ${positionId}`,
@@ -2607,7 +2996,12 @@ export class BrokerPositionsFacadeService {
     });
   }
 
-  async getPositionHistory(query: PositionsHistoryQuery, userId: string, brokerKey?: string, accountId?: string): Promise<PositionRecord[]> {
+  async getPositionHistory(
+    query: PositionsHistoryQuery,
+    userId: string,
+    brokerKey?: string,
+    accountId?: string
+  ): Promise<PositionRecord[]> {
     const params = validatePositionsHistoryQuery(query);
     const route = await this.brokerAccountRoutingService.resolve(
       userId,
@@ -2619,7 +3013,11 @@ export class BrokerPositionsFacadeService {
     const resolvedAccountId = String(route.accountId || '').trim();
     const limit = params.limit ? Math.max(1, Math.floor(Number(params.limit))) : 100;
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
-    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(params.startDate, params.endDate, timeZone);
+    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(
+      params.startDate,
+      params.endDate,
+      timeZone
+    );
     await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, [resolvedAccountId]);
     const records = await this.positionReadModelRepository.listHistoryForAccount(
       userId,
@@ -2668,7 +3066,11 @@ export class BrokerPositionsFacadeService {
 
     const accountIds = activeAccounts.map((item) => item.id);
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
-    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(params.startDate, params.endDate, timeZone);
+    const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(
+      params.startDate,
+      params.endDate,
+      timeZone
+    );
     await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, accountIds);
     const grouped = await this.positionReadModelRepository.listHistoryForAccounts(
       userId,
@@ -2720,5 +3122,4 @@ export class BrokerPositionsFacadeService {
       closedOrders: [],
     };
   }
-
 }

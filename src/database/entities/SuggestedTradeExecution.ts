@@ -123,6 +123,9 @@ export class SuggestedTradeExecution {
   @Column({ name: 'protection_plan_json', type: 'json', nullable: true })
   protectionPlan!: Record<string, unknown> | null;
 
+  @Column({ name: 'route_attempts_json', type: 'json', nullable: true })
+  routeAttempts!: Array<Record<string, unknown>> | null;
+
   @Column({ name: 'protection_attempts', type: 'int', unsigned: true, default: 0 })
   protectionAttempts!: number;
 

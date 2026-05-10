@@ -610,11 +610,9 @@ async function positionsGuard05(): Promise<void> {
     await import('../src/api/services/BrokerPositionsFacadeService');
   const { buildPositionRecordFromReadModelRow } =
     await import('../src/api/utils/positionsReadModel');
-  const { coreDataSource } = await import('../src/database/data-source');
 
   async function run(): Promise<void> {
     const service: any = new BrokerPositionsFacadeService();
-    const originalQuery = coreDataSource.query.bind(coreDataSource);
     const originalNow = Date.now;
 
     Date.now = () => new Date('2026-04-09T11:04:00.000Z').getTime();
@@ -757,6 +755,39 @@ async function positionsGuard05(): Promise<void> {
             triggerType: 'mark_price',
             leverage: 10,
             quantity: 0.25,
+            routeAttempts: [
+              {
+                attemptNumber: 1,
+                candidateRank: 1,
+                brokerKey: 'delta_exchange',
+                accountId: 'delta-acc-1',
+                accountName: 'Delta Prod',
+                requestedSymbol: 'BTCUSDT',
+                brokerSymbol: 'BTCUSDT',
+                status: 'failed',
+                startedAt: '2026-04-09T08:55:30.000Z',
+                finishedAt: '2026-04-09T08:55:45.000Z',
+                submissionState: 'rejected',
+                failureClassification: 'confirmed_no_order',
+                failureCode: 'ORDER_REJECTED_INSUFFICIENT_MARGIN',
+                failureMessage: 'Order rejected: insufficient margin',
+              },
+              {
+                attemptNumber: 2,
+                candidateRank: 2,
+                brokerKey: 'mudrex',
+                accountId: 'acc-1',
+                accountName: 'Mudrex Prod',
+                requestedSymbol: 'BTCUSDT',
+                brokerSymbol: 'BTCUSDT',
+                status: 'placed',
+                startedAt: '2026-04-09T08:55:46.000Z',
+                finishedAt: '2026-04-09T08:56:00.000Z',
+                submissionState: 'accepted',
+                orderId: 'ord-1',
+                orderStatus: 'FILLED',
+              },
+            ],
             entryPrice: '66800',
             stopLossPrice: '65500',
             takeProfitPrice: '69000',
@@ -886,59 +917,43 @@ async function positionsGuard05(): Promise<void> {
         },
       ],
     };
-
-    coreDataSource.query = (async (sql: string) => {
-      if (sql.includes('FROM scheduler_orders_snapshots')) {
-        return [
-          {
-            externalId: 'sl-1',
-            symbol: 'BTCUSDT',
-            orderStatus: 'OPEN',
-            statusRank: 1,
-            payload: JSON.stringify({
-              id: 'sl-1',
-              symbol: 'BTCUSDT',
-              side: 'SELL',
-              order_type: 'stop_market',
-              trigger_type: 'mark_price',
-              quantity: '0.25',
-              order_price: '65500',
-              reduce_only: true,
-              position_id: 'pos-1',
-              created_at: '2026-04-09T09:01:00.000Z',
-              updated_at: '2026-04-09T11:05:00.000Z',
-            }),
-            firstSeenAt: '2026-04-09T09:01:00.000Z',
-            lastSeenAt: '2026-04-09T11:05:00.000Z',
-          },
-        ];
-      }
-      if (sql.includes('FROM risk_order_snapshots')) {
-        return [
-          {
-            externalId: 'risk-tp-1',
-            orderId: 'risk-tp-1',
-            symbol: 'BTCUSDT',
-            side: 'SELL',
-            status: 'CREATED',
-            orderType: 'TAKEPROFIT',
-            triggerType: 'MARKET',
-            quantity: '0.25',
-            price: '69000',
-            orderPrice: '69000',
-            triggerPrice: null,
-            stoplossPrice: null,
-            takeprofitPrice: null,
-            reduceOnly: false,
-            orderCreatedAt: '2026-04-09T09:02:00.000Z',
-            orderUpdatedAt: '2026-04-09T11:06:00.000Z',
-            firstSeenAt: '2026-04-09T09:02:00.000Z',
-            lastSeenAt: '2026-04-09T11:06:00.000Z',
-          },
-        ];
-      }
-      return originalQuery(sql);
-    }) as typeof coreDataSource.query;
+    service.listRelatedLiveOrderSnapshots = async () => [
+      {
+        id: 'sl-1',
+        externalId: 'sl-1',
+        kind: 'live',
+        relation: 'position',
+        symbol: 'BTCUSDT',
+        status: 'OPEN',
+        side: 'SELL',
+        orderType: 'stop_market',
+        triggerType: 'mark_price',
+        quantity: 0.25,
+        orderPrice: 65500,
+        reduceOnly: true,
+        linkedPositionId: 'pos-1',
+        createdAt: '2026-04-09T09:01:00.000Z',
+        updatedAt: '2026-04-09T11:07:00.000Z',
+        detailUrl: '/orders?selected=sl-1',
+      },
+      {
+        id: 'risk-tp-1',
+        externalId: 'risk-tp-1',
+        kind: 'live',
+        relation: 'protection',
+        symbol: 'BTCUSDT',
+        status: 'CREATED',
+        side: 'SELL',
+        orderType: 'TAKEPROFIT',
+        triggerType: 'MARKET',
+        quantity: 0.25,
+        orderPrice: 69000,
+        reduceOnly: false,
+        createdAt: '2026-04-09T09:02:00.000Z',
+        updatedAt: '2026-04-09T11:06:00.000Z',
+        detailUrl: '/orders?selected=risk-tp-1',
+      },
+    ];
 
     try {
       const response = await service.getPositionLifecycle('user-1', 'pos-1', 'mudrex', 'acc-1');
@@ -986,8 +1001,14 @@ async function positionsGuard05(): Promise<void> {
       assert.equal(response.relatedSuggestedTrades[0].filledPrice, 66810);
       assert.equal(response.relatedSuggestedTrades[0].filledQuantity, 0.25);
       assert.equal(response.relatedSuggestedTrades[0].protection?.state, 'attached');
-      assert.equal(response.relatedSuggestedTrades[0].protection?.checkedAt, '2026-04-09T08:59:30.000Z');
-      assert.equal(response.relatedSuggestedTrades[0].protection?.attachedAt, '2026-04-09T09:00:05.000Z');
+      assert.equal(
+        response.relatedSuggestedTrades[0].protection?.checkedAt,
+        '2026-04-09T08:59:30.000Z'
+      );
+      assert.equal(
+        response.relatedSuggestedTrades[0].protection?.attachedAt,
+        '2026-04-09T09:00:05.000Z'
+      );
       assert.equal(
         response.relatedSuggestedTrades[0].protection?.replacementSubmittedAt,
         '2026-04-09T09:00:00.000Z'
@@ -997,6 +1018,28 @@ async function positionsGuard05(): Promise<void> {
       assert.equal(response.relatedSuggestedTrades[0].protection?.stopLossPrice, 65600);
       assert.equal(response.relatedSuggestedTrades[0].protection?.takeProfitPrice, 68950);
       assert.equal(response.relatedSuggestedTrades[0].protection?.stopLossOrderId, 'sl-1');
+      assert.equal(response.relatedSuggestedTrades[0].routeAttempts?.length, 2);
+      assert.equal(
+        response.relatedSuggestedTrades[0].routeAttempts?.[0]?.brokerKey,
+        'delta_exchange'
+      );
+      assert.equal(response.relatedSuggestedTrades[0].routeAttempts?.[1]?.brokerKey, 'mudrex');
+      assert.equal(
+        response.relatedSuggestedTrades[0].operatorTimeline?.some(
+          (event: { kind: string; label: string; status?: string | null }) =>
+            event.kind === 'broker_route' &&
+            event.label === 'Broker route 1 failed' &&
+            event.status === 'failed'
+        ),
+        true
+      );
+      assert.equal(
+        response.relatedSuggestedTrades[0].operatorTimeline?.some(
+          (event: { kind: string; label: string }) =>
+            event.kind === 'protection' && event.label === 'Protection attached'
+        ),
+        true
+      );
       assert.equal(
         response.relatedLinks.some(
           (item: { entity: string; id: string }) => item.entity === 'account' && item.id === 'acc-1'
@@ -1015,7 +1058,6 @@ async function positionsGuard05(): Promise<void> {
       console.log('Positions phase 5 assertions passed.');
     } finally {
       Date.now = originalNow;
-      coreDataSource.query = originalQuery;
     }
   }
 
@@ -1459,14 +1501,14 @@ async function positionsGuard08(): Promise<void> {
 async function positionsGuard09(): Promise<void> {
   const { PositionReadModelRepository } =
     await import('../src/database/repositories/PositionReadModelRepository');
-  const { coreDataSource } = await import('../src/database/data-source');
+  const { DataSource } = await import('typeorm');
 
   async function run(): Promise<void> {
     const repository = new PositionReadModelRepository();
-    const originalQuery = coreDataSource.query.bind(coreDataSource);
+    const originalQuery = DataSource.prototype.query;
     const capturedCalls: Array<{ sql: string; params: unknown[] }> = [];
 
-    (coreDataSource as any).query = async (sql: string, params: unknown[] = []) => {
+    (DataSource.prototype as any).query = async (sql: string, params: unknown[] = []) => {
       capturedCalls.push({ sql, params });
 
       if (sql.includes('COUNT(*) AS openPositions')) {
@@ -1636,6 +1678,23 @@ async function positionsGuard09(): Promise<void> {
               filledAt: '2026-04-09T10:00:00.000Z',
               executionState: 'filled',
               positionStatus: 'OPEN',
+              routeAttempts: JSON.stringify([
+                {
+                  attemptNumber: 1,
+                  candidateRank: 1,
+                  brokerKey: 'mudrex',
+                  accountId: 'acc-1',
+                  accountName: 'Mudrex Prod',
+                  requestedSymbol: 'ETHUSDT',
+                  brokerSymbol: 'ETHUSDT',
+                  status: 'placed',
+                  startedAt: '2026-04-09T09:57:30.000Z',
+                  finishedAt: '2026-04-09T09:58:00.000Z',
+                  submissionState: 'accepted',
+                  orderId: 'order-eth',
+                  orderStatus: 'FILLED',
+                },
+              ]),
               protectionState: 'attached',
               protectionSource: 'suggested_trade_execution',
               protectionAttempts: 1,
@@ -1692,7 +1751,7 @@ async function positionsGuard09(): Promise<void> {
         ];
       }
 
-      return originalQuery(sql, params);
+      throw new Error(`Unexpected positions read-model query: ${sql}`);
     };
 
     try {
@@ -1705,10 +1764,7 @@ async function positionsGuard09(): Promise<void> {
 
       (repository as any).applySuggestedTradeContext(unmatchedRecord, null);
       assert.equal(unmatchedRecord.entryFilledAt, '2026-04-09T12:34:00.000Z');
-      assert.equal(
-        unmatchedRecord.positionSummary.entryFilledAt,
-        '2026-04-09T12:34:00.000Z'
-      );
+      assert.equal(unmatchedRecord.positionSummary.entryFilledAt, '2026-04-09T12:34:00.000Z');
 
       const summary = await repository.getOpenPositionSummaryForAccounts('user-1', [
         'acc-1',
@@ -1756,6 +1812,23 @@ async function positionsGuard09(): Promise<void> {
       );
       assert.equal(overview.items[0].executionProtection?.stopLossOrderId, 'sl-eth');
       assert.equal(overview.items[0].positionSummary?.executionProtection?.takeProfitPrice, 3432.5);
+      assert.equal(overview.items[0].automationTrade?.routeAttempts?.[0]?.brokerKey, 'mudrex');
+      assert.equal(
+        overview.items[0].automationTrade?.operatorTimeline?.some(
+          (event: { kind: string; label: string; status?: string | null }) =>
+            event.kind === 'broker_route' &&
+            event.label === 'Broker route 1 placed' &&
+            event.status === 'placed'
+        ),
+        true
+      );
+      assert.equal(
+        overview.items[0].automationTrade?.operatorTimeline?.some(
+          (event: { kind: string; label: string }) =>
+            event.kind === 'protection' && event.label === 'Protection attached'
+        ),
+        true
+      );
       assert.equal(overview.items[1].id, 'pos-1');
       assert.equal(overview.items[1].positionSummary?.unrealizedPnl, 100);
       assert.equal(overview.items[1].timeframe, '5m');
@@ -1800,7 +1873,7 @@ async function positionsGuard09(): Promise<void> {
 
       console.log('Positions phase 9 assertions passed.');
     } finally {
-      (coreDataSource as any).query = originalQuery;
+      DataSource.prototype.query = originalQuery;
     }
   }
 
@@ -2285,14 +2358,14 @@ export async function runPositionsSuite(): Promise<void> {
     '11',
     '12',
   ]);
-  console.log('Positions module assertions passed.');
 }
 
-async function runRequestedStep(): Promise<void> {
-  const requestedStep = process.argv[3];
-  if (!requestedStep) {
-    return;
-  }
+function resolveRequestedStepArg(): string | null {
+  const directArg = process.argv[2];
+  return process.argv[3] ?? (/^\d+$/.test(String(directArg || '')) ? directArg : null);
+}
+
+async function runRequestedStep(requestedStep: string): Promise<void> {
   const step = suiteSteps[requestedStep as keyof typeof suiteSteps];
   if (!step) {
     throw new Error(`Unknown suite step: ${requestedStep}`);
@@ -2300,9 +2373,10 @@ async function runRequestedStep(): Promise<void> {
   await step();
 }
 
-if (process.argv[3]) {
-  runRequestedStep().catch((error) => {
-    console.error(error instanceof Error ? error.stack || error.message : error);
-    process.exit(1);
-  });
-}
+const requestedStep = resolveRequestedStepArg();
+const runPromise = requestedStep ? runRequestedStep(requestedStep) : runPositionsSuite();
+
+runPromise.catch((error) => {
+  console.error(error instanceof Error ? error.stack || error.message : error);
+  process.exit(1);
+});

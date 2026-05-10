@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import { RiskPreTradeCheckResult } from '../contracts/Risk';
@@ -9,7 +10,10 @@ import {
   SuggestedTradeExecutionLink,
   SuggestedTradeProtectionState,
   SuggestedTradeRouteDecision,
+  SuggestedTradeRouteAttempt,
+  SuggestedTradeRouteAttemptFailureClassification,
   SuggestedTradeStatus,
+  SuggestedTradeTimelineEvent,
   SuggestedTradesListResponse,
   SuggestedTradesExecutionSyncResult,
   SuggestedTradeStatusActionResult,
@@ -153,6 +157,7 @@ interface SuggestedTradePreTradeGate {
   result: RiskPreTradeCheckResult;
   execution: SuggestedTradeExecutionLink;
   ready: boolean;
+  routeCandidates?: EvaluatedRouteCandidate[];
 }
 
 interface SuggestedTradeAutoPaperExecutionResult {
@@ -226,6 +231,7 @@ interface AdaptivePreTradeRouteDecision {
   request: SuggestedTradePreTradeRequest;
   previewBlock?: RiskPreTradeCheckResult | null;
   routeDecision?: SuggestedTradeRouteDecision | null;
+  routeCandidates?: EvaluatedRouteCandidate[];
 }
 
 interface DefaultRouteCandidate {
@@ -261,6 +267,73 @@ interface NormalizedLiveAutoOrderSizing {
   stopLossPrice: number;
   takeProfitPrice: number;
   auditNote: string | null;
+}
+
+interface LiveAutoRouteGate {
+  result: RiskPreTradeCheckResult;
+  execution: SuggestedTradeExecutionLink;
+  ready: boolean;
+  candidate?: EvaluatedRouteCandidate | null;
+  candidateRank: number;
+}
+
+interface PreparedLiveAutoRoute {
+  gate: LiveAutoRouteGate;
+  brokerKey: string;
+  accountId: string;
+  requestOrder: Record<string, unknown>;
+  requestedNotional: number | null;
+  leverage: number;
+  orderType: 'market' | 'limit';
+  triggerType: 'immediate' | 'GTC';
+  side: 'long' | 'short';
+  resolvedAssetRoute: ResolvedLiveAutoAssetRoute;
+  normalizedQuantity: number;
+  normalizedEntryPrice: number;
+  normalizedStopLossPrice: number;
+  normalizedTakeProfitPrice: number;
+  normalizedSizingNote: string | null;
+  policyLeverageNote: string;
+  preTradeCheckId: string | null;
+}
+
+interface LiveAutoRoutePreparationFailure {
+  gate: LiveAutoRouteGate;
+  brokerKey: string | null;
+  accountId: string | null;
+  message: string;
+  outcome: 'blocked' | 'failed';
+  executionState: SuggestedTradeExecutionLink['executionState'];
+  preTradeState?: SuggestedTradeExecutionLink['preTradeState'];
+  preTradeBlockedReason?: string | null;
+  failureClassification: SuggestedTradeRouteAttemptFailureClassification;
+  preTradeCheckId: string | null;
+}
+
+type LiveAutoRoutePreparationResult =
+  | { ok: true; prepared: PreparedLiveAutoRoute }
+  | { ok: false; failure: LiveAutoRoutePreparationFailure };
+
+type LiveAutoRouteReconciliationStatus = NonNullable<
+  SuggestedTradeRouteAttempt['reconciliation']
+>['status'];
+
+interface LiveAutoRouteReconciliationResult {
+  status: LiveAutoRouteReconciliationStatus;
+  checkedAt: string;
+  message: string;
+  order?: Record<string, unknown> | null;
+  orderId?: string | null;
+  orderStatus?: string | null;
+  position?: Record<string, unknown> | null;
+  positionId?: string | null;
+  positionStatus?: string | null;
+}
+
+interface LiveAutoBrokerRecordLookup {
+  checked: boolean;
+  records: Record<string, unknown>[];
+  error?: string | null;
 }
 
 interface LiveAutoOrderPlacementHandler {
@@ -1455,6 +1528,7 @@ export class SuggestedTradesService {
       result,
       execution: nextExecution,
       ready,
+      routeCandidates: adaptiveRoute.routeCandidates,
     };
   }
 
@@ -1571,6 +1645,7 @@ export class SuggestedTradesService {
         adaptiveRoutingMode === 'shadow' ? 'adaptive_candidate_shadow' : 'adaptive_candidate_live';
       return {
         request: adaptiveRoutingMode === 'shadow' ? request : selectedCandidate.request,
+        routeCandidates: viableCandidates,
         routeDecision: this.buildAdaptiveRouteDecisionRecord(
           trade,
           evaluated,
@@ -1595,6 +1670,7 @@ export class SuggestedTradesService {
       adaptiveRoutingMode === 'shadow' ? 'adaptive_candidate_shadow' : 'adaptive_candidate_live';
     return {
       request: adaptiveRoutingMode === 'shadow' ? request : bestRejectedCandidate.request,
+      routeCandidates: [],
       previewBlock:
         adaptiveRoutingMode === 'shadow'
           ? null
@@ -2984,8 +3060,10 @@ export class SuggestedTradesService {
         sourceType: 'suggested_trade_automation_live_rollout',
       });
       const persistedPreTradeCheckId = this.resolvePersistedPreTradeCheckId(gatedExecution.result);
+      const liveAutoRuntimeConfig = this.resolveLiveAutoRuntimeConfig();
+      const hasFailoverCandidates = (gatedExecution.routeCandidates?.length ?? 0) > 1;
 
-      if (!gatedExecution.ready) {
+      if (!gatedExecution.ready && !hasFailoverCandidates) {
         await this.operationalEventService.logActivity(userId, {
           type: 'Suggested Trade',
           title: `Live auto pre-trade blocked: ${trade.symbol}`,
@@ -3016,7 +3094,6 @@ export class SuggestedTradesService {
         };
       }
 
-      const liveAutoRuntimeConfig = this.resolveLiveAutoRuntimeConfig();
       const routeDecision = this.readRecordValue(this.readRecordValue(trade.meta)?.routeDecision);
       if (liveAutoRuntimeConfig.adaptiveRoutingMode === 'shadow') {
         const shadowBrokerKey =
@@ -3056,487 +3133,14 @@ export class SuggestedTradesService {
         };
       }
 
-      const routeMetrics = this.resolvePreTradeRouteOrderMetrics(
+      return this.attemptLiveAutoBrokerRoutes({
+        userId,
         trade,
-        gatedExecution.result,
-        gatedExecution.execution
-      );
-      const brokerKey = routeMetrics.brokerKey ?? rolloutGuard.brokerKey;
-      const accountId = routeMetrics.accountId ?? rolloutGuard.accountId;
-      const requestOrder = routeMetrics.requestOrder;
-      const requestedNotional = routeMetrics.requestedNotional;
-      if (
-        executionPolicy.maxNotionalPerTrade &&
-        requestedNotional &&
-        requestedNotional > executionPolicy.maxNotionalPerTrade
-      ) {
-        const message = `Projected notional ${this.formatNumericString(requestedNotional) || requestedNotional} exceeds the per-trade automation cap of ${this.formatNumericString(executionPolicy.maxNotionalPerTrade) || executionPolicy.maxNotionalPerTrade}.`;
-        await this.persistExecutionState(trade, {
-          ...gatedExecution.execution,
-          note: message,
-        });
-        return {
-          outcome: 'blocked',
-          message,
-          suggestedTradeId: trade.id,
-          brokerKey,
-          accountId,
-          preTradeCheckId: persistedPreTradeCheckId,
-        };
-      }
-
-      const entryPrice = routeMetrics.entryPrice;
-      const quantity = routeMetrics.quantity;
-      const leverage = routeMetrics.leverage;
-      const stopLossPrice = routeMetrics.stopLossPrice;
-      const takeProfitPrice = routeMetrics.takeProfitPrice;
-      const orderType = this.resolveBrokerEntryOrderType(
-        brokerKey,
-        'live',
-        routeMetrics.orderType,
-        entryPrice
-      );
-      const triggerType = this.resolveLiveAutoTriggerType(orderType);
-      const side = routeMetrics.orderSide === 'sell' ? 'short' : 'long';
-
-      if (!brokerKey || !accountId) {
-        const message = 'Live auto execution requires a resolved broker route and account';
-        await this.persistExecutionState(trade, {
-          ...gatedExecution.execution,
-          executionState: 'failed',
-          note: message,
-        });
-        return {
-          outcome: 'failed',
-          message,
-          suggestedTradeId: trade.id,
-          brokerKey,
-          accountId,
-          preTradeCheckId: persistedPreTradeCheckId,
-        };
-      }
-
-      if (!this.isLiveAutoBrokerEnabled(liveAutoRuntimeConfig, brokerKey)) {
-        const message = `Broker ${brokerKey} live auto is disabled by broker-specific control`;
-        await this.persistExecutionState(trade, {
-          ...gatedExecution.execution,
-          brokerKey,
-          accountId,
-          executionState: 'rejected',
-          preTradeState: 'blocked',
-          preTradeBlockedReason: message,
-          note: message,
-        });
-        await this.operationalEventService.logActivity(userId, {
-          type: 'Suggested Trade',
-          title: `Live auto broker control blocked: ${trade.symbol}`,
-          status: 'Warning',
-          route: 'Suggested Trades',
-          stream: 'Execution',
-          related: `${brokerKey} · ${accountId}`,
-          referenceId: trade.id,
-          symbol: trade.symbol,
-          description: message,
-        });
-        return {
-          outcome: 'blocked',
-          message,
-          suggestedTradeId: trade.id,
-          brokerKey,
-          accountId,
-          preTradeCheckId: persistedPreTradeCheckId,
-        };
-      }
-
-      if (!leverage || leverage <= 0) {
-        const message =
-          'Live auto execution requires a positive min_leverage in the effective broker risk policy';
-        await this.persistExecutionState(trade, {
-          ...gatedExecution.execution,
-          executionState: 'failed',
-          note: message,
-        });
-        return {
-          outcome: 'failed',
-          message,
-          suggestedTradeId: trade.id,
-          brokerKey,
-          accountId,
-          preTradeCheckId: persistedPreTradeCheckId,
-        };
-      }
-
-      if (!(quantity && quantity > 0 && entryPrice && entryPrice > 0)) {
-        const message =
-          'Live auto execution requires a positive entry price and resolvable quantity from the automation policy';
-        await this.persistExecutionState(trade, {
-          ...gatedExecution.execution,
-          executionState: 'failed',
-          note: message,
-        });
-        return {
-          outcome: 'failed',
-          message,
-          suggestedTradeId: trade.id,
-          brokerKey,
-          accountId,
-          preTradeCheckId: persistedPreTradeCheckId,
-        };
-      }
-
-      if (!(stopLossPrice && stopLossPrice > 0 && takeProfitPrice && takeProfitPrice > 0)) {
-        const message =
-          'Live auto execution requires positive stop-loss and take-profit prices on the suggestion or automation template';
-        await this.persistExecutionState(trade, {
-          ...gatedExecution.execution,
-          executionState: 'failed',
-          note: message,
-        });
-        return {
-          outcome: 'failed',
-          message,
-          suggestedTradeId: trade.id,
-          brokerKey,
-          accountId,
-          preTradeCheckId: persistedPreTradeCheckId,
-        };
-      }
-
-      const killSwitchBlock =
-        (await this.riskKillSwitchService?.findActiveLiveTradingBlock(userId, {
-          brokerKey,
-          accountId,
-        })) ?? null;
-      if (killSwitchBlock) {
-        const message = `Risk kill switch is active for ${killSwitchBlock.scope}. Live auto placement is blocked until it is cleared.`;
-        await this.persistExecutionState(trade, {
-          ...gatedExecution.execution,
-          executionState: 'rejected',
-          preTradeState: 'blocked',
-          preTradeBlockedReason: message,
-          note: message,
-        });
-        await this.operationalEventService.logActivity(userId, {
-          type: 'Suggested Trade',
-          title: `Live auto kill switch blocked: ${trade.symbol}`,
-          status: 'Warning',
-          route: 'Suggested Trades',
-          stream: 'Execution',
-          related: `${brokerKey} · ${accountId}`,
-          referenceId: trade.id,
-          symbol: trade.symbol,
-          description: message,
-        });
-        return {
-          outcome: 'blocked',
-          message,
-          suggestedTradeId: trade.id,
-          brokerKey,
-          accountId,
-          preTradeCheckId: persistedPreTradeCheckId,
-        };
-      }
-
-      const resolvedAssetRoute = await this.resolveLiveAutoAssetRoute(
-        brokerKey,
-        this.readStringValue(gatedExecution.result.request.order.symbol) ?? trade.symbol
-      );
-      let normalizedSizing: NormalizedLiveAutoOrderSizing;
-      try {
-        normalizedSizing = await this.normalizeLiveAutoOrderSizing(
-          brokerKey,
-          resolvedAssetRoute.assetId,
-          resolvedAssetRoute.brokerSymbol,
-          quantity,
-          entryPrice,
-          stopLossPrice,
-          takeProfitPrice,
-          side,
-          orderType,
-          leverage
-        );
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : 'Live auto product preflight failed';
-        await this.persistExecutionState(trade, {
-          ...gatedExecution.execution,
-          brokerKey,
-          accountId,
-          executionState: 'rejected',
-          preTradeState: 'blocked',
-          preTradeBlockedReason: message,
-          note: message,
-        });
-        await this.operationalEventService.logActivity(userId, {
-          type: 'Suggested Trade',
-          title: `Live auto product preflight blocked: ${trade.symbol}`,
-          status: 'Warning',
-          route: 'Suggested Trades',
-          stream: 'Execution',
-          related: `${brokerKey} · ${accountId}`,
-          referenceId: trade.id,
-          symbol: trade.symbol,
-          description: message,
-        });
-        return {
-          outcome: 'blocked',
-          message,
-          suggestedTradeId: trade.id,
-          brokerKey,
-          accountId,
-          preTradeCheckId: persistedPreTradeCheckId,
-        };
-      }
-      const normalizedQuantity = normalizedSizing.quantity;
-      const normalizedEntryPrice = normalizedSizing.entryPrice;
-      const normalizedStopLossPrice = normalizedSizing.stopLossPrice;
-      const normalizedTakeProfitPrice = normalizedSizing.takeProfitPrice;
-      const normalizedSizingNote = normalizedSizing.auditNote;
-      const policyLeverageNote = `Using broker policy minimum leverage ${this.formatNumericString(leverage) || leverage}x.`;
-
-      if (!liveAutoRuntimeConfig.executionEnabled) {
-        const readyMessage = `Live auto rollout guard passed. Broker placement remains disabled until live auto execution is explicitly enabled. ${policyLeverageNote}${normalizedSizingNote ? ` ${normalizedSizingNote}` : ''}`;
-        await this.persistExecutionState(trade, {
-          ...gatedExecution.execution,
-          brokerKey,
-          accountId,
-          orderType,
-          triggerType,
-          quantity: normalizedQuantity,
-          entryPrice: this.formatNumericString(normalizedEntryPrice) ?? null,
-          stopLossPrice: this.formatNumericString(normalizedStopLossPrice) ?? null,
-          takeProfitPrice: this.formatNumericString(normalizedTakeProfitPrice) ?? null,
-          note: readyMessage,
-        });
-        await this.operationalEventService.logActivity(userId, {
-          type: 'Suggested Trade',
-          title: `Live auto rollout ready: ${trade.symbol}`,
-          status: 'Success',
-          route: 'Suggested Trades',
-          stream: 'Execution',
-          related: `${trade.symbol} · ${trade.timeframe}`,
-          referenceId: trade.id,
-          symbol: trade.symbol,
-          description: readyMessage,
-        });
-        return {
-          outcome: 'ready',
-          message: readyMessage,
-          suggestedTradeId: trade.id,
-          brokerKey,
-          accountId,
-          preTradeCheckId: persistedPreTradeCheckId,
-        };
-      }
-      const assetId = resolvedAssetRoute.assetId;
-      const idempotencyKey = this.buildAutoLiveIdempotencyKey(trade.id, persistedPreTradeCheckId);
-      const acceptedAt = new Date().toISOString();
-      const reviewMeta = trade.meta && typeof trade.meta === 'object' ? { ...trade.meta } : {};
-      trade.status = 'Accepted';
-      trade.meta = {
-        ...reviewMeta,
-        review: {
-          status: 'Accepted',
-          note: 'Accepted automatically by live automation execution policy',
-          updatedAt: acceptedAt,
-          actor: 'system',
-        },
-      };
-      let updatedTrade = await this.suggestedTradeRepository.saveSuggestedTrade(trade);
-
-      const acceptedExecution: SuggestedTradeExecutionLink = {
-        ...gatedExecution.execution,
-        executionMode: 'live',
-        executionState: 'queued',
-        acceptedBy: 'system',
-        acceptedAt,
-        brokerKey,
-        accountId,
-        orderType,
-        triggerType,
-        leverage,
-        quantity: normalizedQuantity,
-        entryPrice: this.formatNumericString(normalizedEntryPrice) ?? null,
-        stopLossPrice: this.formatNumericString(normalizedStopLossPrice) ?? null,
-        takeProfitPrice: this.formatNumericString(normalizedTakeProfitPrice) ?? null,
-        note: [
-          resolvedAssetRoute.brokerSymbol !== trade.symbol
-            ? `Live order queued automatically from automation suggestion using equivalent broker symbol ${resolvedAssetRoute.brokerSymbol} for requested signal ${trade.symbol}`
-            : 'Live order queued automatically from automation suggestion',
-          policyLeverageNote,
-          normalizedSizingNote,
-        ]
-          .filter((value): value is string => Boolean(value))
-          .join(' '),
-      };
-
-      await this.persistExecutionState(updatedTrade, acceptedExecution);
-      updatedTrade =
-        (await this.suggestedTradeRepository.getSuggestedTradeById(userId, updatedTrade.id)) ??
-        updatedTrade;
-
-      const createOrderBody: CreateOrderBody = {
-        brokerKey,
-        accountId,
-        idempotency_key: idempotencyKey,
-        symbol: resolvedAssetRoute.brokerSymbol,
-        side,
-        execution_mode: 'live',
-        leverage,
-        quantity: normalizedQuantity,
-        order_price: normalizedEntryPrice,
-        order_type: orderType,
-        trigger_type: triggerType,
-        is_takeprofit: false,
-        is_stoploss: false,
-        stoploss_price: normalizedStopLossPrice,
-        takeprofit_price: normalizedTakeProfitPrice,
-        reduce_only: requestOrder.reduceOnly === true,
-      };
-
-      const submittingExecution: SuggestedTradeExecutionLink = {
-        ...acceptedExecution,
-        executionState: 'submitting',
-        submittedAt: new Date().toISOString(),
-      };
-      await this.persistExecutionState(updatedTrade, submittingExecution);
-      updatedTrade =
-        (await this.suggestedTradeRepository.getSuggestedTradeById(userId, updatedTrade.id)) ??
-        updatedTrade;
-
-      const result = await handler.createOrder(assetId, createOrderBody, {
-        suggestedTradeId: updatedTrade.id,
+        gatedExecution,
+        handler,
+        executionPolicy,
+        liveAutoRuntimeConfig,
       });
-      const createdOrder = this.unwrapOrderPlacementResponse(result);
-      const createdOrderId =
-        this.readStringValue(createdOrder.order_id) ??
-        this.readStringValue(createdOrder.orderId) ??
-        null;
-      const createdOrderStatus =
-        this.readStringValue(createdOrder.status) ??
-        this.readStringValue(createdOrder.order_status) ??
-        null;
-      const protectionStatus = this.readStringValue(createdOrder.protection_status);
-      const stopLossOrderId = this.readStringValue(createdOrder.stop_loss_order_id);
-      const takeProfitOrderId = this.readStringValue(createdOrder.take_profit_order_id);
-      const deltaLimitProtectionProvisional = this.isDeltaLimitEntryProtectionProvisional(
-        brokerKey,
-        orderType
-      );
-      let protectionAttached = protectionStatus === 'attached' && !deltaLimitProtectionProvisional;
-      let protectionNote = protectionAttached
-        ? ` Native SL/TP protection attached${
-            stopLossOrderId || takeProfitOrderId
-              ? ` (SL ${stopLossOrderId ?? 'unknown'}, TP ${takeProfitOrderId ?? 'unknown'})`
-              : ''
-          }.`
-        : '';
-      if (deltaLimitProtectionProvisional && protectionStatus === 'attached') {
-        protectionNote = ` Delta native SL/TP protection created${
-          stopLossOrderId || takeProfitOrderId
-            ? ` (SL ${stopLossOrderId ?? 'unknown'}, TP ${takeProfitOrderId ?? 'unknown'})`
-            : ''
-        }, awaiting entry fill and active order snapshot verification.`;
-      }
-
-      if (!createdOrderId) {
-        throw new BadRequestAppError('Live auto execution did not return a broker order id');
-      }
-
-      if (!protectionAttached && brokerKey === 'mudrex') {
-        const attachedProtection = await this.attachMudrexLiveAutoProtectionIfNeeded({
-          userId,
-          brokerKey,
-          accountId,
-          brokerSymbol: resolvedAssetRoute.brokerSymbol,
-          side,
-          orderId: createdOrderId,
-          requestedEntryPrice: normalizedEntryPrice,
-          requestedStopLossPrice: normalizedStopLossPrice,
-          requestedTakeProfitPrice: normalizedTakeProfitPrice,
-        });
-        if (attachedProtection.attached) {
-          protectionAttached = true;
-        }
-        if (attachedProtection.note) {
-          protectionNote =
-            `${protectionNote}${protectionNote ? ' ' : ' '}${attachedProtection.note}`.trimEnd();
-        }
-      }
-
-      const linkedAt = new Date().toISOString();
-      const needsPostFillProtection = Boolean(
-        normalizedStopLossPrice > 0 && normalizedTakeProfitPrice > 0
-      );
-      const linkedProtectionState: SuggestedTradeProtectionState | undefined = protectionAttached
-        ? 'attached'
-        : deltaLimitProtectionProvisional
-          ? 'waiting_for_fill'
-          : needsPostFillProtection
-            ? 'waiting_for_fill'
-            : (submittingExecution.protectionState ?? undefined);
-      const linkedExecution: SuggestedTradeExecutionLink = {
-        ...submittingExecution,
-        orderId: createdOrderId,
-        orderStatus: createdOrderStatus,
-        executionState: 'linked',
-        linkedAt,
-        protectionState: linkedProtectionState,
-        protectionCheckedAt: linkedAt,
-        protectionAttachedAt: protectionAttached ? linkedAt : null,
-        protectionLastError: protectionAttached ? null : submittingExecution.protectionLastError,
-        protectionPlan: {
-          ...(this.readRecordValue(submittingExecution.protectionPlan) ?? {}),
-          source: 'suggested_trade_execution',
-          symbol: updatedTrade.symbol,
-          side: updatedTrade.side,
-          timeframe: updatedTrade.timeframe,
-          entryPrice: this.formatNumericString(normalizedEntryPrice) ?? null,
-          stopLossPrice: this.formatNumericString(normalizedStopLossPrice) ?? null,
-          takeProfitPrice: this.formatNumericString(normalizedTakeProfitPrice) ?? null,
-          brokerKey,
-          accountId,
-          orderId: createdOrderId,
-          ...(stopLossOrderId ? { stopLossOrderId } : {}),
-          ...(takeProfitOrderId ? { takeProfitOrderId } : {}),
-        },
-        note: `Live order created automatically from automation suggestion.${protectionNote}`,
-      };
-      await this.persistExecutionState(updatedTrade, linkedExecution);
-
-      await this.operationalEventService.logActivity(userId, {
-        type: 'Suggested Trade',
-        title: `Live auto order created: ${updatedTrade.symbol}`,
-        status: 'Success',
-        route: 'Suggested Trades',
-        stream: 'Execution',
-        related: `${brokerKey} · ${accountId}`,
-        referenceId: updatedTrade.id,
-        symbol: updatedTrade.symbol,
-        description: protectionAttached
-          ? `Live order ${createdOrderId} created automatically after pre-trade clearance with native SL/TP protection`
-          : `Live order ${createdOrderId} created automatically after pre-trade clearance`,
-      });
-      await this.operationalEventService.emitNotificationAlert(userId, {
-        channel: 'Trading',
-        source: `trade-suggestion.live-auto.placed:${updatedTrade.id}`,
-        symbol: updatedTrade.symbol,
-        route: 'Suggested Trades',
-        severity: 'Medium',
-        message: `Live order ${createdOrderId} created for ${updatedTrade.symbol} on ${brokerKey}${accountId ? ` (${accountId})` : ''}.`,
-      });
-
-      return {
-        outcome: 'placed',
-        message: protectionAttached
-          ? 'Live order created automatically after pre-trade clearance with native SL/TP protection'
-          : 'Live order created automatically after pre-trade clearance',
-        suggestedTradeId: updatedTrade.id,
-        brokerKey,
-        accountId,
-        preTradeCheckId: persistedPreTradeCheckId,
-        orderId: createdOrderId,
-      };
     } catch (error) {
       const failureMessage = error instanceof Error ? error.message : 'Live auto execution failed';
       await this.persistExecutionState(trade, {
@@ -3570,6 +3174,1930 @@ export class SuggestedTradesService {
         accountId: rolloutGuard.accountId,
       };
     }
+  }
+
+  private async attemptLiveAutoBrokerRoutes(input: {
+    userId: string;
+    trade: SuggestedTrade;
+    gatedExecution: SuggestedTradePreTradeGate;
+    handler: LiveAutoOrderPlacementHandler;
+    executionPolicy: ResolvedTradeSuggestionExecutionPolicy;
+    liveAutoRuntimeConfig: LiveAutoRuntimeConfig;
+  }): Promise<SuggestedTradeAutoLiveRolloutResult> {
+    let updatedTrade = input.trade;
+    const candidates =
+      input.gatedExecution.routeCandidates && input.gatedExecution.routeCandidates.length > 0
+        ? input.gatedExecution.routeCandidates
+        : [null];
+    const routeAttempts = [
+      ...(this.normalizeRouteAttempts(input.gatedExecution.execution.routeAttempts) ?? []),
+    ];
+    let lastFailure:
+      | (LiveAutoRoutePreparationFailure & {
+          routeAttempts: SuggestedTradeRouteAttempt[];
+        })
+      | null = null;
+
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index] ?? null;
+      const gate =
+        index === 0
+          ? {
+              result: input.gatedExecution.result,
+              execution: input.gatedExecution.execution,
+              ready: input.gatedExecution.ready,
+              candidate,
+              candidateRank: index + 1,
+            }
+          : await this.createLiveAutoRouteGate(input.userId, updatedTrade, candidate, index + 1);
+
+      const preparedResult = await this.prepareLiveAutoRoute({
+        userId: input.userId,
+        trade: updatedTrade,
+        gate,
+        executionPolicy: input.executionPolicy,
+        liveAutoRuntimeConfig: input.liveAutoRuntimeConfig,
+      });
+
+      if (!preparedResult.ok) {
+        const failure = preparedResult.failure;
+        const nextAttempts = this.upsertLiveAutoRouteAttempt(
+          routeAttempts,
+          this.buildLiveAutoRouteFailureAttempt({
+            gate,
+            brokerKey: failure.brokerKey,
+            accountId: failure.accountId,
+            message: failure.message,
+            failureClassification: failure.failureClassification,
+            failureCode: 'LIVE_AUTO_ROUTE_PRECHECK_FAILED',
+            status: failure.outcome === 'blocked' ? 'pre_trade_blocked' : 'failed',
+          })
+        );
+        routeAttempts.splice(0, routeAttempts.length, ...nextAttempts);
+        await this.persistExecutionState(updatedTrade, {
+          ...gate.execution,
+          brokerKey: failure.brokerKey,
+          accountId: failure.accountId,
+          executionMode: 'live',
+          executionState: failure.executionState,
+          preTradeState: failure.preTradeState ?? gate.execution.preTradeState ?? null,
+          preTradeBlockedReason:
+            failure.preTradeBlockedReason ?? gate.execution.preTradeBlockedReason ?? null,
+          routeAttempts,
+          note: failure.message,
+        });
+        lastFailure = { ...failure, routeAttempts: [...routeAttempts] };
+        continue;
+      }
+
+      const prepared = preparedResult.prepared;
+      if (!input.liveAutoRuntimeConfig.executionEnabled) {
+        return this.persistLiveAutoReadyRoute(input.userId, updatedTrade, prepared, routeAttempts);
+      }
+
+      const attemptStartedAt = new Date().toISOString();
+      const pendingAttempt = this.buildLiveAutoRoutePendingAttempt(prepared, attemptStartedAt);
+      routeAttempts.splice(
+        0,
+        routeAttempts.length,
+        ...this.upsertLiveAutoRouteAttempt(routeAttempts, pendingAttempt)
+      );
+
+      updatedTrade = await this.acceptLiveAutoTradeForRoute(updatedTrade, attemptStartedAt);
+      let acceptedExecution = this.buildAcceptedLiveAutoExecution(
+        updatedTrade,
+        prepared,
+        routeAttempts,
+        attemptStartedAt
+      );
+      await this.persistExecutionState(updatedTrade, acceptedExecution);
+      updatedTrade =
+        (await this.suggestedTradeRepository.getSuggestedTradeById(
+          input.userId,
+          updatedTrade.id
+        )) ?? updatedTrade;
+
+      const createOrderBody = this.buildLiveAutoCreateOrderBody(prepared, updatedTrade.id);
+      const submittingAt = new Date().toISOString();
+      routeAttempts.splice(
+        0,
+        routeAttempts.length,
+        ...this.upsertLiveAutoRouteAttempt(routeAttempts, {
+          ...pendingAttempt,
+          status: 'submitting',
+          submissionState: 'submitting',
+          startedAt: pendingAttempt.startedAt ?? submittingAt,
+        })
+      );
+      const submittingExecution: SuggestedTradeExecutionLink = {
+        ...acceptedExecution,
+        executionState: 'submitting',
+        submittedAt: submittingAt,
+        routeAttempts,
+      };
+      await this.persistExecutionState(updatedTrade, submittingExecution);
+      updatedTrade =
+        (await this.suggestedTradeRepository.getSuggestedTradeById(
+          input.userId,
+          updatedTrade.id
+        )) ?? updatedTrade;
+
+      try {
+        const result = await input.handler.createOrder(
+          prepared.resolvedAssetRoute.assetId,
+          createOrderBody,
+          {
+            suggestedTradeId: updatedTrade.id,
+          }
+        );
+        const placed = await this.persistSuccessfulLiveAutoRoute({
+          userId: input.userId,
+          trade: updatedTrade,
+          prepared,
+          submittingExecution,
+          routeAttempts,
+          createdOrder: this.unwrapOrderPlacementResponse(result),
+          pendingAttempt,
+        });
+        return placed;
+      } catch (error) {
+        const failureMessage =
+          error instanceof Error ? error.message : 'Live auto execution failed';
+        const failureClassification = this.classifyLiveAutoRouteFailure(error, true);
+        const failedAttempt = this.buildLiveAutoRouteFailureAttempt({
+          gate,
+          brokerKey: prepared.brokerKey,
+          accountId: prepared.accountId,
+          message: failureMessage,
+          failureClassification,
+          failureCode: this.resolveLiveAutoFailureCode(error),
+          status: failureClassification === 'ambiguous' ? 'manual_review' : 'failed',
+          orderId: this.readStringValue(submittingExecution.orderId),
+          requestSummary: this.buildLiveAutoRouteRequestSummary(prepared),
+          brokerResponseSummary: this.buildLiveAutoBrokerErrorSummary(error),
+        });
+        routeAttempts.splice(
+          0,
+          routeAttempts.length,
+          ...this.upsertLiveAutoRouteAttempt(routeAttempts, failedAttempt)
+        );
+        await this.persistExecutionState(updatedTrade, {
+          ...submittingExecution,
+          executionState: 'failed',
+          routeAttempts,
+          note: failureMessage,
+        });
+
+        if (failureClassification !== 'confirmed_no_order') {
+          const reconciliation = await this.reconcileLiveAutoAmbiguousRoute({
+            userId: input.userId,
+            prepared,
+            createOrderBody,
+            submittedAt: submittingAt,
+          });
+          const reconciledAttempt = this.applyLiveAutoRouteReconciliation(
+            failedAttempt,
+            reconciliation
+          );
+          routeAttempts.splice(
+            0,
+            routeAttempts.length,
+            ...this.upsertLiveAutoRouteAttempt(routeAttempts, reconciledAttempt)
+          );
+
+          if (reconciliation.status === 'confirmed_no_order') {
+            await this.persistExecutionState(updatedTrade, {
+              ...submittingExecution,
+              executionState: 'failed',
+              routeAttempts,
+              note: `${failureMessage} ${reconciliation.message}`.trim(),
+            });
+            lastFailure = {
+              gate,
+              brokerKey: prepared.brokerKey,
+              accountId: prepared.accountId,
+              message: failureMessage,
+              outcome: 'failed',
+              executionState: 'failed',
+              failureClassification: 'confirmed_no_order',
+              preTradeCheckId: prepared.preTradeCheckId,
+              routeAttempts: [...routeAttempts],
+            };
+            continue;
+          }
+
+          if (reconciliation.status === 'found_order') {
+            return this.persistReconciledLiveAutoOrderRoute({
+              userId: input.userId,
+              trade: updatedTrade,
+              prepared,
+              submittingExecution,
+              routeAttempts,
+              reconciliation,
+            });
+          }
+
+          if (reconciliation.status === 'found_position') {
+            return this.persistReconciledLiveAutoPositionRoute({
+              userId: input.userId,
+              trade: updatedTrade,
+              prepared,
+              submittingExecution,
+              routeAttempts,
+              reconciliation,
+            });
+          }
+
+          const manualReviewMessage = `Live auto route ${prepared.brokerKey} failed ambiguously for ${updatedTrade.symbol}; reconciliation was ${reconciliation.status}, so broker state must be reviewed before trying another broker. ${reconciliation.message} ${failureMessage}`;
+          await this.persistExecutionState(updatedTrade, {
+            ...submittingExecution,
+            executionState: 'failed',
+            routeAttempts,
+            note: manualReviewMessage,
+          });
+          await this.logLiveAutoAllRoutesFailed(input.userId, updatedTrade, manualReviewMessage);
+          return {
+            outcome: 'failed',
+            message: manualReviewMessage,
+            suggestedTradeId: updatedTrade.id,
+            brokerKey: prepared.brokerKey,
+            accountId: prepared.accountId,
+            preTradeCheckId: prepared.preTradeCheckId,
+          };
+        }
+
+        lastFailure = {
+          gate,
+          brokerKey: prepared.brokerKey,
+          accountId: prepared.accountId,
+          message: failureMessage,
+          outcome: 'failed',
+          executionState: 'failed',
+          failureClassification,
+          preTradeCheckId: prepared.preTradeCheckId,
+          routeAttempts: [...routeAttempts],
+        };
+      }
+    }
+
+    if (candidates.length === 1 && lastFailure?.outcome === 'blocked') {
+      return {
+        outcome: 'blocked',
+        message: lastFailure.message,
+        suggestedTradeId: updatedTrade.id,
+        brokerKey: lastFailure.brokerKey,
+        accountId: lastFailure.accountId,
+        preTradeCheckId: lastFailure.preTradeCheckId,
+      };
+    }
+
+    const allRoutesMessage = this.buildAllLiveAutoRoutesFailedMessage(
+      updatedTrade,
+      routeAttempts,
+      lastFailure?.message ?? 'No eligible live-auto broker route created an order'
+    );
+    await this.persistExecutionState(updatedTrade, {
+      ...(this.getExecutionLink(updatedTrade) ?? {}),
+      executionMode: 'live',
+      executionState: 'failed',
+      routeAttempts,
+      note: allRoutesMessage,
+    });
+    await this.logLiveAutoAllRoutesFailed(input.userId, updatedTrade, allRoutesMessage);
+
+    return {
+      outcome: 'failed',
+      message: allRoutesMessage,
+      suggestedTradeId: updatedTrade.id,
+      brokerKey: lastFailure?.brokerKey ?? null,
+      accountId: lastFailure?.accountId ?? null,
+      preTradeCheckId: lastFailure?.preTradeCheckId ?? null,
+    };
+  }
+
+  private async createLiveAutoRouteGate(
+    userId: string,
+    trade: SuggestedTrade,
+    candidate: EvaluatedRouteCandidate | null,
+    candidateRank: number
+  ): Promise<LiveAutoRouteGate> {
+    if (!candidate) {
+      throw new BadRequestAppError('Live auto failover requires a route candidate');
+    }
+
+    const result = (
+      await this.riskPreTradeService.createPreTradeCheck(userId, {
+        ...candidate.request,
+        sourceType: 'suggested_trade_automation_live_rollout',
+      })
+    ).data;
+    const preTradeState = this.resolvePreTradeState(result.status);
+    const ready = preTradeState === 'passed';
+    const existingExecution = this.getExecutionLink(trade) ?? {};
+    const execution = this.buildExecutionFromPreTradeResult(
+      trade,
+      candidate.request,
+      result,
+      existingExecution,
+      ready
+    );
+
+    await this.persistExecutionState(trade, execution);
+
+    return {
+      result,
+      execution,
+      ready,
+      candidate,
+      candidateRank,
+    };
+  }
+
+  private buildExecutionFromPreTradeResult(
+    trade: SuggestedTrade,
+    request: SuggestedTradePreTradeRequest,
+    result: RiskPreTradeCheckResult,
+    existingExecution: SuggestedTradeExecutionLink,
+    ready: boolean
+  ): SuggestedTradeExecutionLink {
+    return {
+      ...existingExecution,
+      executionMode: request.executionMode,
+      preTradeCheckId: result.checkId,
+      preTradeState: this.resolvePreTradeState(result.status),
+      preTradeCheckedAt: result.checkedAtIso ?? result.checkedAt,
+      preTradeBlockedReason: ready ? null : result.decision.summary,
+      brokerKey:
+        result.request.routing.brokerKey ??
+        request.routing.brokerKey ??
+        existingExecution.brokerKey ??
+        null,
+      accountId:
+        result.request.routing.accountId ??
+        request.routing.accountId ??
+        existingExecution.accountId ??
+        null,
+      orderType: request.order.orderType ?? existingExecution.orderType ?? null,
+      leverage: request.order.leverage ?? existingExecution.leverage ?? null,
+      quantity: request.order.quantity ?? existingExecution.quantity ?? null,
+      entryPrice:
+        this.formatNumericString(request.order.entryPrice) ?? existingExecution.entryPrice ?? null,
+      stopLossPrice:
+        this.formatNumericString(request.order.stopLossPrice) ??
+        existingExecution.stopLossPrice ??
+        null,
+      takeProfitPrice:
+        this.formatNumericString(request.order.takeProfitTargets?.[0] ?? null) ??
+        existingExecution.takeProfitPrice ??
+        null,
+    };
+  }
+
+  private async prepareLiveAutoRoute(input: {
+    userId: string;
+    trade: SuggestedTrade;
+    gate: LiveAutoRouteGate;
+    executionPolicy: ResolvedTradeSuggestionExecutionPolicy;
+    liveAutoRuntimeConfig: LiveAutoRuntimeConfig;
+  }): Promise<LiveAutoRoutePreparationResult> {
+    const preTradeCheckId = this.resolvePersistedPreTradeCheckId(input.gate.result);
+    const routeMetrics = this.resolvePreTradeRouteOrderMetrics(
+      input.trade,
+      input.gate.result,
+      input.gate.execution
+    );
+    const brokerKey = routeMetrics.brokerKey;
+    const accountId = routeMetrics.accountId;
+
+    if (!input.gate.ready) {
+      return {
+        ok: false,
+        failure: {
+          gate: input.gate,
+          brokerKey,
+          accountId,
+          message:
+            input.gate.result.decision.summary ||
+            'Pre-trade check blocked this suggestion from live auto rollout',
+          outcome: 'blocked',
+          executionState: 'rejected',
+          preTradeState: 'blocked',
+          preTradeBlockedReason:
+            input.gate.result.decision.summary ||
+            'Pre-trade check blocked this suggestion from live auto rollout',
+          failureClassification: 'confirmed_no_order',
+          preTradeCheckId,
+        },
+      };
+    }
+
+    if (
+      input.executionPolicy.maxNotionalPerTrade &&
+      routeMetrics.requestedNotional &&
+      routeMetrics.requestedNotional > input.executionPolicy.maxNotionalPerTrade
+    ) {
+      const message = `Projected notional ${
+        this.formatNumericString(routeMetrics.requestedNotional) || routeMetrics.requestedNotional
+      } exceeds the per-trade automation cap of ${
+        this.formatNumericString(input.executionPolicy.maxNotionalPerTrade) ||
+        input.executionPolicy.maxNotionalPerTrade
+      }.`;
+      return this.buildLiveAutoPreparationFailure(input.gate, brokerKey, accountId, message, {
+        outcome: 'blocked',
+        executionState: 'rejected',
+        preTradeState: 'blocked',
+        preTradeBlockedReason: message,
+        preTradeCheckId,
+      });
+    }
+
+    const entryPrice = routeMetrics.entryPrice;
+    const quantity = routeMetrics.quantity;
+    const leverage = routeMetrics.leverage;
+    const stopLossPrice = routeMetrics.stopLossPrice;
+    const takeProfitPrice = routeMetrics.takeProfitPrice;
+    const orderType = this.resolveBrokerEntryOrderType(
+      brokerKey,
+      'live',
+      routeMetrics.orderType,
+      entryPrice
+    );
+    const triggerType = this.resolveLiveAutoTriggerType(orderType);
+    const side = routeMetrics.orderSide === 'sell' ? 'short' : 'long';
+
+    if (!brokerKey || !accountId) {
+      return this.buildLiveAutoPreparationFailure(
+        input.gate,
+        brokerKey,
+        accountId,
+        'Live auto execution requires a resolved broker route and account',
+        {
+          outcome: 'failed',
+          executionState: 'failed',
+          preTradeCheckId,
+        }
+      );
+    }
+
+    if (!this.isLiveAutoBrokerEnabled(input.liveAutoRuntimeConfig, brokerKey)) {
+      const message = `Broker ${brokerKey} live auto is disabled by broker-specific control`;
+      return this.buildLiveAutoPreparationFailure(input.gate, brokerKey, accountId, message, {
+        outcome: 'blocked',
+        executionState: 'rejected',
+        preTradeState: 'blocked',
+        preTradeBlockedReason: message,
+        preTradeCheckId,
+      });
+    }
+
+    if (!leverage || leverage <= 0) {
+      return this.buildLiveAutoPreparationFailure(
+        input.gate,
+        brokerKey,
+        accountId,
+        'Live auto execution requires a positive min_leverage in the effective broker risk policy',
+        {
+          outcome: 'failed',
+          executionState: 'failed',
+          preTradeCheckId,
+        }
+      );
+    }
+
+    if (!(quantity && quantity > 0 && entryPrice && entryPrice > 0)) {
+      return this.buildLiveAutoPreparationFailure(
+        input.gate,
+        brokerKey,
+        accountId,
+        'Live auto execution requires a positive entry price and resolvable quantity from the automation policy',
+        {
+          outcome: 'failed',
+          executionState: 'failed',
+          preTradeCheckId,
+        }
+      );
+    }
+
+    if (!(stopLossPrice && stopLossPrice > 0 && takeProfitPrice && takeProfitPrice > 0)) {
+      return this.buildLiveAutoPreparationFailure(
+        input.gate,
+        brokerKey,
+        accountId,
+        'Live auto execution requires positive stop-loss and take-profit prices on the suggestion or automation template',
+        {
+          outcome: 'failed',
+          executionState: 'failed',
+          preTradeCheckId,
+        }
+      );
+    }
+
+    const killSwitchBlock =
+      (await this.riskKillSwitchService?.findActiveLiveTradingBlock(input.userId, {
+        brokerKey,
+        accountId,
+      })) ?? null;
+    if (killSwitchBlock) {
+      const message = `Risk kill switch is active for ${killSwitchBlock.scope}. Live auto placement is blocked until it is cleared.`;
+      return this.buildLiveAutoPreparationFailure(input.gate, brokerKey, accountId, message, {
+        outcome: 'blocked',
+        executionState: 'rejected',
+        preTradeState: 'blocked',
+        preTradeBlockedReason: message,
+        preTradeCheckId,
+      });
+    }
+
+    let resolvedAssetRoute: ResolvedLiveAutoAssetRoute;
+    let normalizedSizing: NormalizedLiveAutoOrderSizing;
+    try {
+      resolvedAssetRoute = await this.resolveLiveAutoAssetRoute(
+        brokerKey,
+        this.readStringValue(input.gate.result.request.order.symbol) ?? input.trade.symbol
+      );
+      normalizedSizing = await this.normalizeLiveAutoOrderSizing(
+        brokerKey,
+        resolvedAssetRoute.assetId,
+        resolvedAssetRoute.brokerSymbol,
+        quantity,
+        entryPrice,
+        stopLossPrice,
+        takeProfitPrice,
+        side,
+        orderType,
+        leverage
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Live auto product preflight failed';
+      return this.buildLiveAutoPreparationFailure(input.gate, brokerKey, accountId, message, {
+        outcome: 'blocked',
+        executionState: 'rejected',
+        preTradeState: 'blocked',
+        preTradeBlockedReason: message,
+        preTradeCheckId,
+      });
+    }
+
+    return {
+      ok: true,
+      prepared: {
+        gate: input.gate,
+        brokerKey,
+        accountId,
+        requestOrder: routeMetrics.requestOrder,
+        requestedNotional: routeMetrics.requestedNotional,
+        leverage,
+        orderType,
+        triggerType,
+        side,
+        resolvedAssetRoute,
+        normalizedQuantity: normalizedSizing.quantity,
+        normalizedEntryPrice: normalizedSizing.entryPrice,
+        normalizedStopLossPrice: normalizedSizing.stopLossPrice,
+        normalizedTakeProfitPrice: normalizedSizing.takeProfitPrice,
+        normalizedSizingNote: normalizedSizing.auditNote,
+        policyLeverageNote: `Using broker policy minimum leverage ${
+          this.formatNumericString(leverage) || leverage
+        }x.`,
+        preTradeCheckId,
+      },
+    };
+  }
+
+  private buildLiveAutoPreparationFailure(
+    gate: LiveAutoRouteGate,
+    brokerKey: string | null,
+    accountId: string | null,
+    message: string,
+    options: {
+      outcome: 'blocked' | 'failed';
+      executionState: SuggestedTradeExecutionLink['executionState'];
+      preTradeState?: SuggestedTradeExecutionLink['preTradeState'];
+      preTradeBlockedReason?: string | null;
+      preTradeCheckId: string | null;
+    }
+  ): LiveAutoRoutePreparationResult {
+    return {
+      ok: false,
+      failure: {
+        gate,
+        brokerKey,
+        accountId,
+        message,
+        outcome: options.outcome,
+        executionState: options.executionState,
+        preTradeState: options.preTradeState,
+        preTradeBlockedReason: options.preTradeBlockedReason,
+        failureClassification: 'confirmed_no_order',
+        preTradeCheckId: options.preTradeCheckId,
+      },
+    };
+  }
+
+  private async persistLiveAutoReadyRoute(
+    userId: string,
+    trade: SuggestedTrade,
+    prepared: PreparedLiveAutoRoute,
+    routeAttempts: SuggestedTradeRouteAttempt[]
+  ): Promise<SuggestedTradeAutoLiveRolloutResult> {
+    const readyMessage = `Live auto rollout guard passed. Broker placement remains disabled until live auto execution is explicitly enabled. ${prepared.policyLeverageNote}${
+      prepared.normalizedSizingNote ? ` ${prepared.normalizedSizingNote}` : ''
+    }`;
+    await this.persistExecutionState(trade, {
+      ...prepared.gate.execution,
+      brokerKey: prepared.brokerKey,
+      accountId: prepared.accountId,
+      orderType: prepared.orderType,
+      triggerType: prepared.triggerType,
+      quantity: prepared.normalizedQuantity,
+      entryPrice: this.formatNumericString(prepared.normalizedEntryPrice) ?? null,
+      stopLossPrice: this.formatNumericString(prepared.normalizedStopLossPrice) ?? null,
+      takeProfitPrice: this.formatNumericString(prepared.normalizedTakeProfitPrice) ?? null,
+      routeAttempts: routeAttempts.length ? routeAttempts : null,
+      note: readyMessage,
+    });
+    await this.operationalEventService.logActivity(userId, {
+      type: 'Suggested Trade',
+      title: `Live auto rollout ready: ${trade.symbol}`,
+      status: 'Success',
+      route: 'Suggested Trades',
+      stream: 'Execution',
+      related: `${trade.symbol} · ${trade.timeframe}`,
+      referenceId: trade.id,
+      symbol: trade.symbol,
+      description: readyMessage,
+    });
+    return {
+      outcome: 'ready',
+      message: readyMessage,
+      suggestedTradeId: trade.id,
+      brokerKey: prepared.brokerKey,
+      accountId: prepared.accountId,
+      preTradeCheckId: prepared.preTradeCheckId,
+    };
+  }
+
+  private async acceptLiveAutoTradeForRoute(
+    trade: SuggestedTrade,
+    acceptedAt: string
+  ): Promise<SuggestedTrade> {
+    if (String(trade.status || '').trim() === 'Accepted') {
+      return trade;
+    }
+
+    const reviewMeta = trade.meta && typeof trade.meta === 'object' ? { ...trade.meta } : {};
+    trade.status = 'Accepted';
+    trade.meta = {
+      ...reviewMeta,
+      review: {
+        status: 'Accepted',
+        note: 'Accepted automatically by live automation execution policy',
+        updatedAt: acceptedAt,
+        actor: 'system',
+      },
+    };
+    return this.suggestedTradeRepository.saveSuggestedTrade(trade);
+  }
+
+  private buildAcceptedLiveAutoExecution(
+    trade: SuggestedTrade,
+    prepared: PreparedLiveAutoRoute,
+    routeAttempts: SuggestedTradeRouteAttempt[],
+    acceptedAt: string
+  ): SuggestedTradeExecutionLink {
+    return {
+      ...prepared.gate.execution,
+      executionMode: 'live',
+      executionState: 'queued',
+      acceptedBy: 'system',
+      acceptedAt,
+      brokerKey: prepared.brokerKey,
+      accountId: prepared.accountId,
+      orderType: prepared.orderType,
+      triggerType: prepared.triggerType,
+      leverage: prepared.leverage,
+      quantity: prepared.normalizedQuantity,
+      entryPrice: this.formatNumericString(prepared.normalizedEntryPrice) ?? null,
+      stopLossPrice: this.formatNumericString(prepared.normalizedStopLossPrice) ?? null,
+      takeProfitPrice: this.formatNumericString(prepared.normalizedTakeProfitPrice) ?? null,
+      routeAttempts,
+      note: [
+        prepared.resolvedAssetRoute.brokerSymbol !== trade.symbol
+          ? `Live order queued automatically from automation suggestion using equivalent broker symbol ${prepared.resolvedAssetRoute.brokerSymbol} for requested signal ${trade.symbol}`
+          : 'Live order queued automatically from automation suggestion',
+        prepared.policyLeverageNote,
+        prepared.normalizedSizingNote,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(' '),
+    };
+  }
+
+  private buildLiveAutoCreateOrderBody(
+    prepared: PreparedLiveAutoRoute,
+    suggestedTradeId: string
+  ): CreateOrderBody {
+    return {
+      brokerKey: prepared.brokerKey,
+      accountId: prepared.accountId,
+      idempotency_key: this.buildAutoLiveIdempotencyKey(
+        suggestedTradeId,
+        prepared.preTradeCheckId,
+        prepared.brokerKey,
+        prepared.accountId
+      ),
+      symbol: prepared.resolvedAssetRoute.brokerSymbol,
+      side: prepared.side,
+      execution_mode: 'live',
+      leverage: prepared.leverage,
+      quantity: prepared.normalizedQuantity,
+      order_price: prepared.normalizedEntryPrice,
+      order_type: prepared.orderType,
+      trigger_type: prepared.triggerType,
+      is_takeprofit: false,
+      is_stoploss: false,
+      stoploss_price: prepared.normalizedStopLossPrice,
+      takeprofit_price: prepared.normalizedTakeProfitPrice,
+      reduce_only: prepared.requestOrder.reduceOnly === true,
+    };
+  }
+
+  private async persistSuccessfulLiveAutoRoute(input: {
+    userId: string;
+    trade: SuggestedTrade;
+    prepared: PreparedLiveAutoRoute;
+    submittingExecution: SuggestedTradeExecutionLink;
+    routeAttempts: SuggestedTradeRouteAttempt[];
+    createdOrder: Record<string, unknown>;
+    pendingAttempt: SuggestedTradeRouteAttempt;
+  }): Promise<SuggestedTradeAutoLiveRolloutResult> {
+    const createdOrderId =
+      this.readStringValue(input.createdOrder.order_id) ??
+      this.readStringValue(input.createdOrder.orderId) ??
+      null;
+    const createdOrderStatus =
+      this.readStringValue(input.createdOrder.status) ??
+      this.readStringValue(input.createdOrder.order_status) ??
+      null;
+    const protectionStatus = this.readStringValue(input.createdOrder.protection_status);
+    const stopLossOrderId = this.readStringValue(input.createdOrder.stop_loss_order_id);
+    const takeProfitOrderId = this.readStringValue(input.createdOrder.take_profit_order_id);
+    const deltaLimitProtectionProvisional = this.isDeltaLimitEntryProtectionProvisional(
+      input.prepared.brokerKey,
+      input.prepared.orderType
+    );
+    let protectionAttached = protectionStatus === 'attached' && !deltaLimitProtectionProvisional;
+    let protectionAttachmentNote: string | null = null;
+    let protectionNote = protectionAttached
+      ? ` Native SL/TP protection attached${
+          stopLossOrderId || takeProfitOrderId
+            ? ` (SL ${stopLossOrderId ?? 'unknown'}, TP ${takeProfitOrderId ?? 'unknown'})`
+            : ''
+        }.`
+      : '';
+    if (deltaLimitProtectionProvisional && protectionStatus === 'attached') {
+      protectionNote = ` Delta native SL/TP protection created${
+        stopLossOrderId || takeProfitOrderId
+          ? ` (SL ${stopLossOrderId ?? 'unknown'}, TP ${takeProfitOrderId ?? 'unknown'})`
+          : ''
+      }, awaiting entry fill and active order snapshot verification.`;
+    }
+
+    if (!createdOrderId) {
+      throw new BadRequestAppError('Live auto execution did not return a broker order id');
+    }
+
+    if (!protectionAttached && input.prepared.brokerKey === 'mudrex') {
+      const attachedProtection = await this.attachMudrexLiveAutoProtectionIfNeeded({
+        userId: input.userId,
+        brokerKey: input.prepared.brokerKey,
+        accountId: input.prepared.accountId,
+        brokerSymbol: input.prepared.resolvedAssetRoute.brokerSymbol,
+        side: input.prepared.side,
+        orderId: createdOrderId,
+        requestedEntryPrice: input.prepared.normalizedEntryPrice,
+        requestedStopLossPrice: input.prepared.normalizedStopLossPrice,
+        requestedTakeProfitPrice: input.prepared.normalizedTakeProfitPrice,
+      });
+      if (attachedProtection.attached) {
+        protectionAttached = true;
+      }
+      if (attachedProtection.note) {
+        protectionAttachmentNote = attachedProtection.note;
+        protectionNote =
+          `${protectionNote}${protectionNote ? ' ' : ' '}${attachedProtection.note}`.trimEnd();
+      }
+    }
+
+    const linkedAt = new Date().toISOString();
+    const needsPostFillProtection = Boolean(
+      input.prepared.normalizedStopLossPrice > 0 && input.prepared.normalizedTakeProfitPrice > 0
+    );
+    const protectionResolution = this.resolveCreatedLiveAutoOrderProtectionState({
+      brokerKey: input.prepared.brokerKey,
+      protectionAttached,
+      deltaLimitProtectionProvisional,
+      needsPostFillProtection,
+      protectionAttachmentNote,
+      fallbackProtectionState: input.submittingExecution.protectionState,
+      fallbackProtectionLastError: input.submittingExecution.protectionLastError,
+    });
+    const routeAttempts = this.upsertLiveAutoRouteAttempt(input.routeAttempts, {
+      ...input.pendingAttempt,
+      status: 'placed',
+      submissionState: 'accepted',
+      finishedAt: linkedAt,
+      orderId: createdOrderId,
+      orderStatus: createdOrderStatus,
+      failureClassification: protectionResolution.routeFailureClassification,
+      failureMessage: protectionResolution.routeFailureMessage,
+      note: protectionResolution.routeNote,
+      brokerResponseSummary: this.buildLiveAutoBrokerResponseSummary(input.createdOrder),
+    });
+    input.routeAttempts.splice(0, input.routeAttempts.length, ...routeAttempts);
+    const linkedExecution: SuggestedTradeExecutionLink = {
+      ...input.submittingExecution,
+      orderId: createdOrderId,
+      orderStatus: createdOrderStatus,
+      executionState: 'linked',
+      linkedAt,
+      protectionState: protectionResolution.protectionState,
+      protectionCheckedAt: linkedAt,
+      protectionAttachedAt: protectionAttached ? linkedAt : null,
+      protectionLastError: protectionResolution.protectionLastError,
+      routeAttempts,
+      protectionPlan: {
+        ...(this.readRecordValue(input.submittingExecution.protectionPlan) ?? {}),
+        source: 'suggested_trade_execution',
+        symbol: input.trade.symbol,
+        side: input.trade.side,
+        timeframe: input.trade.timeframe,
+        entryPrice: this.formatNumericString(input.prepared.normalizedEntryPrice) ?? null,
+        stopLossPrice: this.formatNumericString(input.prepared.normalizedStopLossPrice) ?? null,
+        takeProfitPrice: this.formatNumericString(input.prepared.normalizedTakeProfitPrice) ?? null,
+        brokerKey: input.prepared.brokerKey,
+        accountId: input.prepared.accountId,
+        orderId: createdOrderId,
+        ...(stopLossOrderId ? { stopLossOrderId } : {}),
+        ...(takeProfitOrderId ? { takeProfitOrderId } : {}),
+      },
+      note: `Live order created automatically from automation suggestion.${protectionNote}`,
+    };
+    await this.persistExecutionState(input.trade, linkedExecution);
+
+    await this.operationalEventService.logActivity(input.userId, {
+      type: 'Suggested Trade',
+      title: `Live auto order created: ${input.trade.symbol}`,
+      status: 'Success',
+      route: 'Suggested Trades',
+      stream: 'Execution',
+      related: `${input.prepared.brokerKey} · ${input.prepared.accountId}`,
+      referenceId: input.trade.id,
+      symbol: input.trade.symbol,
+      description: protectionAttached
+        ? `Live order ${createdOrderId} created automatically after pre-trade clearance with native SL/TP protection`
+        : `Live order ${createdOrderId} created automatically after pre-trade clearance`,
+    });
+    await this.operationalEventService.emitNotificationAlert(input.userId, {
+      channel: 'Trading',
+      source: `trade-suggestion.live-auto.placed:${input.trade.id}`,
+      symbol: input.trade.symbol,
+      route: 'Suggested Trades',
+      severity: 'Medium',
+      message: `Live order ${createdOrderId} created for ${input.trade.symbol} on ${
+        input.prepared.brokerKey
+      }${input.prepared.accountId ? ` (${input.prepared.accountId})` : ''}.`,
+    });
+
+    return {
+      outcome: 'placed',
+      message: protectionAttached
+        ? 'Live order created automatically after pre-trade clearance with native SL/TP protection'
+        : 'Live order created automatically after pre-trade clearance',
+      suggestedTradeId: input.trade.id,
+      brokerKey: input.prepared.brokerKey,
+      accountId: input.prepared.accountId,
+      preTradeCheckId: input.prepared.preTradeCheckId,
+      orderId: createdOrderId,
+    };
+  }
+
+  private resolveCreatedLiveAutoOrderProtectionState(input: {
+    brokerKey: string;
+    protectionAttached: boolean;
+    deltaLimitProtectionProvisional: boolean;
+    needsPostFillProtection: boolean;
+    protectionAttachmentNote: string | null;
+    fallbackProtectionState: SuggestedTradeProtectionState | null | undefined;
+    fallbackProtectionLastError: string | null | undefined;
+  }): {
+    protectionState: SuggestedTradeProtectionState | undefined;
+    protectionLastError: string | null | undefined;
+    routeFailureClassification?: SuggestedTradeRouteAttemptFailureClassification | null;
+    routeFailureMessage?: string | null;
+    routeNote?: string | null;
+  } {
+    if (input.protectionAttached) {
+      return {
+        protectionState: 'attached',
+        protectionLastError: null,
+      };
+    }
+
+    if (!input.needsPostFillProtection) {
+      return {
+        protectionState: input.fallbackProtectionState ?? undefined,
+        protectionLastError: input.fallbackProtectionLastError,
+      };
+    }
+
+    if (input.deltaLimitProtectionProvisional) {
+      return {
+        protectionState: 'waiting_for_fill',
+        protectionLastError:
+          input.protectionAttachmentNote ??
+          'Broker created provisional SL/TP orders; waiting for entry fill and active protection snapshots.',
+        routeFailureClassification: 'order_created_protection_unresolved',
+        routeFailureMessage:
+          input.protectionAttachmentNote ??
+          'Broker order was created, but protection remains provisional until fill confirmation.',
+        routeNote: 'Order created; protection remains provisional and must be reconciled.',
+      };
+    }
+
+    const note = this.readStringValue(input.protectionAttachmentNote);
+    if (!note) {
+      return {
+        protectionState: 'waiting_for_fill',
+        protectionLastError: input.fallbackProtectionLastError,
+        routeFailureClassification: 'order_created_protection_unresolved',
+        routeFailureMessage:
+          'Broker order was created, but native SL/TP protection was not confirmed yet.',
+        routeNote: 'Order created; waiting for fill/position before protection repair.',
+      };
+    }
+
+    const normalizedNote = note.toLowerCase();
+    if (
+      normalizedNote.includes('manual action') ||
+      normalizedNote.includes('already breached') ||
+      normalizedNote.includes('already crossed') ||
+      normalizedNote.includes('unsafe') ||
+      normalizedNote.includes('stale')
+    ) {
+      return {
+        protectionState: 'manual_unlinked',
+        protectionLastError: note,
+        routeFailureClassification: 'order_created_protection_unresolved',
+        routeFailureMessage: note,
+        routeNote: 'Order created; protection needs manual action.',
+      };
+    }
+
+    if (normalizedNote.includes('no matching open position')) {
+      return {
+        protectionState: 'waiting_for_position',
+        protectionLastError: note,
+        routeFailureClassification: 'order_created_protection_unresolved',
+        routeFailureMessage: note,
+        routeNote: 'Order created; waiting for matching position before protection repair.',
+      };
+    }
+
+    return {
+      protectionState: 'failed',
+      protectionLastError: note,
+      routeFailureClassification: 'order_created_protection_unresolved',
+      routeFailureMessage: note,
+      routeNote: 'Order created; automatic protection attachment failed.',
+    };
+  }
+
+  private async reconcileLiveAutoAmbiguousRoute(input: {
+    userId: string;
+    prepared: PreparedLiveAutoRoute;
+    createOrderBody: CreateOrderBody;
+    submittedAt: string;
+  }): Promise<LiveAutoRouteReconciliationResult> {
+    const checkedAt = new Date().toISOString();
+    const [ordersLookup, positionsLookup] = await Promise.all([
+      this.listLiveAutoBrokerOrdersForReconciliation(input),
+      this.listLiveAutoBrokerPositionsForReconciliation(input),
+    ]);
+    const matchingOrder = this.findLiveAutoReconciledOrder(
+      ordersLookup.records,
+      input.prepared,
+      input.createOrderBody
+    );
+    if (matchingOrder) {
+      const orderId = this.extractBrokerRecordId(matchingOrder);
+      return {
+        status: 'found_order',
+        checkedAt,
+        message: orderId
+          ? `Broker order ${orderId} was found during ambiguous-submit reconciliation.`
+          : 'Broker order was found during ambiguous-submit reconciliation.',
+        order: matchingOrder,
+        orderId,
+        orderStatus: this.extractBrokerRecordStatus(matchingOrder),
+      };
+    }
+
+    const matchingPosition = this.findLiveAutoReconciledPosition(
+      positionsLookup.records,
+      input.prepared,
+      input.submittedAt
+    );
+    if (matchingPosition) {
+      const positionId = this.extractBrokerRecordId(matchingPosition);
+      return {
+        status: 'found_position',
+        checkedAt,
+        message: positionId
+          ? `Broker position ${positionId} was found during ambiguous-submit reconciliation.`
+          : 'Broker position was found during ambiguous-submit reconciliation.',
+        position: matchingPosition,
+        positionId,
+        positionStatus: this.extractBrokerRecordStatus(matchingPosition),
+      };
+    }
+
+    if (ordersLookup.checked && positionsLookup.checked) {
+      return {
+        status: 'confirmed_no_order',
+        checkedAt,
+        message:
+          'Broker orders and positions were checked after the ambiguous submit failure; no matching order or position was found.',
+      };
+    }
+
+    const lookupIssues = [ordersLookup.error, positionsLookup.error].filter(
+      (value): value is string => Boolean(value)
+    );
+    return {
+      status: lookupIssues.length ? 'failed' : 'inconclusive',
+      checkedAt,
+      message: lookupIssues.length
+        ? `Broker reconciliation could not complete: ${lookupIssues.join('; ')}`
+        : 'Broker reconciliation was inconclusive; do not try another broker route until the account is reviewed.',
+    };
+  }
+
+  private async listLiveAutoBrokerOrdersForReconciliation(input: {
+    userId: string;
+    prepared: PreparedLiveAutoRoute;
+    submittedAt: string;
+  }): Promise<LiveAutoBrokerRecordLookup> {
+    let adapter: {
+      listOpenOrders?: (...args: unknown[]) => Promise<unknown>;
+      getOrderHistory?: (...args: unknown[]) => Promise<unknown>;
+    };
+    try {
+      adapter = this.brokerRuntimeRegistry.getOrdersAdapter(
+        input.prepared.brokerKey
+      ) as typeof adapter;
+    } catch (error) {
+      return {
+        checked: false,
+        records: [],
+        error: `Orders adapter unavailable for ${input.prepared.brokerKey}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+
+    const query = {
+      limit: 100,
+      brokerKey: input.prepared.brokerKey,
+      accountId: input.prepared.accountId,
+      startDate: this.buildLiveAutoReconciliationStartDate(input.submittedAt),
+      endDate: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+    };
+    const context = {
+      userId: input.userId,
+      brokerKey: input.prepared.brokerKey,
+      accountId: input.prepared.accountId,
+    };
+    const records: Record<string, unknown>[] = [];
+    const errors: string[] = [];
+    let checked = false;
+
+    if (typeof adapter.listOpenOrders === 'function') {
+      try {
+        records.push(...this.extractBrokerRecordList(await adapter.listOpenOrders(query, context)));
+        checked = true;
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    if (typeof adapter.getOrderHistory === 'function') {
+      try {
+        records.push(
+          ...this.extractBrokerRecordList(await adapter.getOrderHistory(query, context))
+        );
+        checked = true;
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    return {
+      checked,
+      records,
+      error: checked
+        ? null
+        : errors.join('; ') || 'Orders adapter does not expose reconciliation reads',
+    };
+  }
+
+  private async listLiveAutoBrokerPositionsForReconciliation(input: {
+    userId: string;
+    prepared: PreparedLiveAutoRoute;
+  }): Promise<LiveAutoBrokerRecordLookup> {
+    let adapter: {
+      getPositions?: (...args: unknown[]) => Promise<unknown>;
+    };
+    try {
+      adapter = this.brokerRuntimeRegistry.getPositionsAdapter(
+        input.prepared.brokerKey
+      ) as typeof adapter;
+    } catch (error) {
+      return {
+        checked: false,
+        records: [],
+        error: `Positions adapter unavailable for ${input.prepared.brokerKey}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+
+    if (typeof adapter.getPositions !== 'function') {
+      return {
+        checked: false,
+        records: [],
+        error: 'Positions adapter does not expose getPositions for reconciliation',
+      };
+    }
+
+    try {
+      const response = await adapter.getPositions(
+        { limit: 100 },
+        {
+          userId: input.userId,
+          brokerKey: input.prepared.brokerKey,
+          accountId: input.prepared.accountId,
+        }
+      );
+      return {
+        checked: true,
+        records: this.extractBrokerRecordList(response),
+      };
+    } catch (error) {
+      return {
+        checked: false,
+        records: [],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private applyLiveAutoRouteReconciliation(
+    attempt: SuggestedTradeRouteAttempt,
+    reconciliation: LiveAutoRouteReconciliationResult
+  ): SuggestedTradeRouteAttempt {
+    const foundBrokerState =
+      reconciliation.status === 'found_order' || reconciliation.status === 'found_position';
+    const confirmedNoOrder = reconciliation.status === 'confirmed_no_order';
+    return {
+      ...attempt,
+      status: foundBrokerState ? 'placed' : confirmedNoOrder ? 'failed' : 'manual_review',
+      submissionState: foundBrokerState ? 'accepted' : confirmedNoOrder ? 'failed' : 'unknown',
+      orderId: reconciliation.orderId ?? attempt.orderId ?? null,
+      orderStatus: reconciliation.orderStatus ?? attempt.orderStatus ?? null,
+      failureClassification: confirmedNoOrder
+        ? 'confirmed_no_order'
+        : foundBrokerState
+          ? null
+          : (attempt.failureClassification ?? 'ambiguous'),
+      reconciliation: {
+        status: reconciliation.status,
+        checkedAt: reconciliation.checkedAt,
+        orderId: reconciliation.orderId ?? null,
+        positionId: reconciliation.positionId ?? null,
+        message: reconciliation.message,
+      },
+    };
+  }
+
+  private async persistReconciledLiveAutoOrderRoute(input: {
+    userId: string;
+    trade: SuggestedTrade;
+    prepared: PreparedLiveAutoRoute;
+    submittingExecution: SuggestedTradeExecutionLink;
+    routeAttempts: SuggestedTradeRouteAttempt[];
+    reconciliation: LiveAutoRouteReconciliationResult;
+  }): Promise<SuggestedTradeAutoLiveRolloutResult> {
+    const order = input.reconciliation.order ?? {};
+    const orderId = input.reconciliation.orderId ?? this.extractBrokerRecordId(order);
+    const orderStatus =
+      this.normalizeOrderStatus(input.reconciliation.orderStatus) ??
+      this.normalizeOrderStatus(this.extractBrokerRecordStatus(order));
+    const linkedAt = input.reconciliation.checkedAt;
+    const filledAt =
+      this.toIsoString(order.filled_at) ??
+      this.toIsoString(order.filledAt) ??
+      (orderStatus === 'FILLED' ? (this.extractBrokerRecordIsoTimestamp(order) ?? linkedAt) : null);
+    const filledPrice =
+      this.readStringValue(order.filled_price) ??
+      this.readStringValue(order.filledPrice) ??
+      this.readStringValue(order.average_fill_price) ??
+      this.readStringValue(order.averageFillPrice) ??
+      null;
+    const filledQuantity =
+      this.readNumberValue(order.filled_quantity) ??
+      this.readNumberValue(order.filledQuantity) ??
+      null;
+    const remainingQuantity =
+      this.readNumberValue(order.remaining_quantity) ??
+      this.readNumberValue(order.remainingQuantity) ??
+      null;
+    const expectedProtection = Boolean(
+      input.prepared.normalizedStopLossPrice > 0 && input.prepared.normalizedTakeProfitPrice > 0
+    );
+    const linkedExecution: SuggestedTradeExecutionLink = {
+      ...input.submittingExecution,
+      orderId: orderId ?? input.submittingExecution.orderId ?? null,
+      orderStatus: orderStatus ?? input.submittingExecution.orderStatus ?? null,
+      executionState: orderStatus === 'FILLED' ? 'filled' : 'linked',
+      linkedAt,
+      filledAt: filledAt ?? input.submittingExecution.filledAt ?? null,
+      filledPrice: filledPrice ?? input.submittingExecution.filledPrice ?? null,
+      filledQuantity: filledQuantity ?? input.submittingExecution.filledQuantity ?? null,
+      remainingQuantity: remainingQuantity ?? input.submittingExecution.remainingQuantity ?? null,
+      protectionState: expectedProtection
+        ? 'waiting_for_fill'
+        : (input.submittingExecution.protectionState ?? undefined),
+      protectionCheckedAt: linkedAt,
+      protectionAttachedAt: null,
+      protectionLastError: expectedProtection
+        ? 'Broker order was found during ambiguous-submit reconciliation; SL/TP protection will be repaired after fill/position confirmation.'
+        : input.submittingExecution.protectionLastError,
+      routeAttempts: input.routeAttempts,
+      protectionPlan: this.buildLiveAutoReconciledProtectionPlan(input, {
+        orderId: orderId ?? null,
+      }),
+      note: this.appendExecutionNote(input.submittingExecution.note, input.reconciliation.message),
+    };
+
+    await this.persistExecutionState(input.trade, linkedExecution);
+    await this.logLiveAutoReconciledRoute(input.userId, input.trade, input.prepared, {
+      referenceId: orderId ?? input.trade.id,
+      description: input.reconciliation.message,
+    });
+
+    return {
+      outcome: 'placed',
+      message: input.reconciliation.message,
+      suggestedTradeId: input.trade.id,
+      brokerKey: input.prepared.brokerKey,
+      accountId: input.prepared.accountId,
+      preTradeCheckId: input.prepared.preTradeCheckId,
+      orderId,
+    };
+  }
+
+  private async persistReconciledLiveAutoPositionRoute(input: {
+    userId: string;
+    trade: SuggestedTrade;
+    prepared: PreparedLiveAutoRoute;
+    submittingExecution: SuggestedTradeExecutionLink;
+    routeAttempts: SuggestedTradeRouteAttempt[];
+    reconciliation: LiveAutoRouteReconciliationResult;
+  }): Promise<SuggestedTradeAutoLiveRolloutResult> {
+    const position = input.reconciliation.position ?? {};
+    const positionId = input.reconciliation.positionId ?? this.extractBrokerRecordId(position);
+    const positionStatus =
+      this.normalizePositionStatus(input.reconciliation.positionStatus) ??
+      this.normalizePositionStatus(this.extractBrokerRecordStatus(position)) ??
+      'OPEN';
+    const filledAt =
+      this.extractBrokerRecordIsoTimestamp(position) ?? input.reconciliation.checkedAt;
+    const filledPrice =
+      this.readStringValue(position.entry_price) ??
+      this.readStringValue(position.entryPrice) ??
+      this.readStringValue(position.avg_entry_price) ??
+      this.readStringValue(position.average_entry_price) ??
+      input.submittingExecution.filledPrice ??
+      null;
+    const filledQuantity =
+      this.extractBrokerRecordQuantity(position) ??
+      input.submittingExecution.filledQuantity ??
+      null;
+    const expectedProtection = Boolean(
+      input.prepared.normalizedStopLossPrice > 0 && input.prepared.normalizedTakeProfitPrice > 0
+    );
+    const linkedExecution: SuggestedTradeExecutionLink = {
+      ...input.submittingExecution,
+      orderStatus: input.submittingExecution.orderStatus ?? 'FILLED',
+      executionState:
+        positionStatus === 'CLOSED' || positionStatus === 'LIQUIDATED' ? 'closed' : 'filled',
+      linkedAt: input.reconciliation.checkedAt,
+      filledAt,
+      filledPrice,
+      filledQuantity,
+      remainingQuantity: 0,
+      positionId: positionId ?? input.submittingExecution.positionId ?? null,
+      positionStatus,
+      positionOpenedAt: filledAt,
+      protectionState: expectedProtection
+        ? 'waiting_for_fill'
+        : (input.submittingExecution.protectionState ?? undefined),
+      protectionCheckedAt: input.reconciliation.checkedAt,
+      protectionAttachedAt: null,
+      protectionLastError: expectedProtection
+        ? 'Broker position was found during ambiguous-submit reconciliation; SL/TP protection repair is required.'
+        : input.submittingExecution.protectionLastError,
+      routeAttempts: input.routeAttempts,
+      protectionPlan: this.buildLiveAutoReconciledProtectionPlan(input, {
+        positionId: positionId ?? null,
+      }),
+      note: this.appendExecutionNote(input.submittingExecution.note, input.reconciliation.message),
+    };
+
+    await this.persistExecutionState(input.trade, linkedExecution);
+    await this.logLiveAutoReconciledRoute(input.userId, input.trade, input.prepared, {
+      referenceId: positionId ?? input.trade.id,
+      description: input.reconciliation.message,
+    });
+
+    return {
+      outcome: 'placed',
+      message: input.reconciliation.message,
+      suggestedTradeId: input.trade.id,
+      brokerKey: input.prepared.brokerKey,
+      accountId: input.prepared.accountId,
+      preTradeCheckId: input.prepared.preTradeCheckId,
+      orderId: null,
+    };
+  }
+
+  private buildLiveAutoReconciledProtectionPlan(
+    input: {
+      trade: SuggestedTrade;
+      prepared: PreparedLiveAutoRoute;
+      submittingExecution: SuggestedTradeExecutionLink;
+    },
+    identifiers: {
+      orderId?: string | null;
+      positionId?: string | null;
+    }
+  ): Record<string, unknown> {
+    return {
+      ...(this.readRecordValue(input.submittingExecution.protectionPlan) ?? {}),
+      source: 'suggested_trade_execution',
+      symbol: input.trade.symbol,
+      side: input.trade.side,
+      timeframe: input.trade.timeframe,
+      entryPrice: this.formatNumericString(input.prepared.normalizedEntryPrice) ?? null,
+      stopLossPrice: this.formatNumericString(input.prepared.normalizedStopLossPrice) ?? null,
+      takeProfitPrice: this.formatNumericString(input.prepared.normalizedTakeProfitPrice) ?? null,
+      brokerKey: input.prepared.brokerKey,
+      accountId: input.prepared.accountId,
+      ...(identifiers.orderId ? { orderId: identifiers.orderId } : {}),
+      ...(identifiers.positionId ? { positionId: identifiers.positionId } : {}),
+    };
+  }
+
+  private async logLiveAutoReconciledRoute(
+    userId: string,
+    trade: SuggestedTrade,
+    prepared: PreparedLiveAutoRoute,
+    options: {
+      referenceId: string;
+      description: string;
+    }
+  ): Promise<void> {
+    await this.operationalEventService.logActivity(userId, {
+      type: 'Suggested Trade',
+      title: `Live auto route reconciled: ${trade.symbol}`,
+      status: 'Success',
+      route: 'Suggested Trades',
+      stream: 'Execution',
+      related: `${prepared.brokerKey} · ${prepared.accountId}`,
+      referenceId: options.referenceId,
+      symbol: trade.symbol,
+      description: options.description,
+    });
+  }
+
+  private buildLiveAutoRoutePendingAttempt(
+    prepared: PreparedLiveAutoRoute,
+    startedAt: string
+  ): SuggestedTradeRouteAttempt {
+    return {
+      attemptNumber: prepared.gate.candidateRank,
+      candidateRank: prepared.gate.candidateRank,
+      brokerKey: prepared.brokerKey,
+      accountId: prepared.accountId,
+      accountName: prepared.gate.candidate?.route.accountName ?? null,
+      requestedSymbol: prepared.resolvedAssetRoute.requestedSymbol,
+      brokerSymbol: prepared.resolvedAssetRoute.brokerSymbol,
+      status: 'pending',
+      startedAt,
+      preTradeCheckId: prepared.preTradeCheckId,
+      preTradeState: prepared.gate.execution.preTradeState ?? null,
+      submissionState: 'not_started',
+      requestSummary: this.buildLiveAutoRouteRequestSummary(prepared),
+    };
+  }
+
+  private buildLiveAutoRouteFailureAttempt(input: {
+    gate: LiveAutoRouteGate;
+    brokerKey: string | null;
+    accountId: string | null;
+    message: string;
+    failureClassification: SuggestedTradeRouteAttemptFailureClassification;
+    failureCode: string | null;
+    status: SuggestedTradeRouteAttempt['status'];
+    orderId?: string | null;
+    requestSummary?: Record<string, unknown> | null;
+    brokerResponseSummary?: Record<string, unknown> | null;
+  }): SuggestedTradeRouteAttempt {
+    const now = new Date().toISOString();
+    const requestSymbol =
+      this.readStringValue(input.gate.result.request.order.symbol) ??
+      this.readStringValue(input.gate.candidate?.request.order.symbol) ??
+      'unknown';
+    return {
+      attemptNumber: input.gate.candidateRank,
+      candidateRank: input.gate.candidateRank,
+      brokerKey:
+        input.brokerKey ?? this.readStringValue(input.gate.candidate?.route.brokerKey) ?? 'unknown',
+      accountId: input.accountId ?? this.readStringValue(input.gate.candidate?.route.accountId),
+      accountName: input.gate.candidate?.route.accountName ?? null,
+      requestedSymbol: requestSymbol,
+      brokerSymbol:
+        this.readStringValue(input.gate.candidate?.request.order.symbol) ?? requestSymbol,
+      status: input.status,
+      startedAt: this.toIsoString(input.gate.execution.submittedAt) ?? now,
+      finishedAt: now,
+      preTradeCheckId: this.resolvePersistedPreTradeCheckId(input.gate.result),
+      preTradeState: input.gate.execution.preTradeState ?? null,
+      submissionState: input.status === 'pre_trade_blocked' ? 'pre_trade' : 'failed',
+      orderId: input.orderId ?? null,
+      failureClassification: input.failureClassification,
+      failureCode: input.failureCode,
+      failureMessage: input.message,
+      requestSummary: input.requestSummary ?? null,
+      brokerResponseSummary: input.brokerResponseSummary ?? null,
+      reconciliation:
+        input.failureClassification === 'ambiguous'
+          ? {
+              status: 'pending',
+              checkedAt: now,
+              message: 'Reconciliation is required before trying another broker route.',
+            }
+          : {
+              status: 'not_required',
+              checkedAt: now,
+            },
+    };
+  }
+
+  private upsertLiveAutoRouteAttempt(
+    existingAttempts: SuggestedTradeRouteAttempt[],
+    attempt: SuggestedTradeRouteAttempt
+  ): SuggestedTradeRouteAttempt[] {
+    const nextAttempts = [...existingAttempts];
+    const existingIndex = nextAttempts.findIndex(
+      (item) =>
+        item.attemptNumber === attempt.attemptNumber ||
+        (item.brokerKey === attempt.brokerKey && item.accountId === attempt.accountId)
+    );
+    if (existingIndex >= 0) {
+      nextAttempts[existingIndex] = {
+        ...nextAttempts[existingIndex],
+        ...attempt,
+      };
+    } else {
+      nextAttempts.push(attempt);
+    }
+    return nextAttempts.sort((left, right) => left.attemptNumber - right.attemptNumber);
+  }
+
+  private buildLiveAutoRouteRequestSummary(
+    prepared: PreparedLiveAutoRoute
+  ): Record<string, unknown> {
+    return {
+      orderType: prepared.orderType,
+      triggerType: prepared.triggerType,
+      leverage: prepared.leverage,
+      quantity: prepared.normalizedQuantity,
+      entryPrice: this.formatNumericString(prepared.normalizedEntryPrice),
+      stopLossPrice: this.formatNumericString(prepared.normalizedStopLossPrice),
+      takeProfitPrice: this.formatNumericString(prepared.normalizedTakeProfitPrice),
+      reduceOnly: prepared.requestOrder.reduceOnly === true,
+    };
+  }
+
+  private buildLiveAutoBrokerResponseSummary(
+    response: Record<string, unknown>
+  ): Record<string, unknown> {
+    return {
+      orderId: this.readStringValue(response.order_id) ?? this.readStringValue(response.orderId),
+      status: this.readStringValue(response.status) ?? this.readStringValue(response.order_status),
+      protectionStatus: this.readStringValue(response.protection_status),
+      stopLossOrderId: this.readStringValue(response.stop_loss_order_id),
+      takeProfitOrderId: this.readStringValue(response.take_profit_order_id),
+    };
+  }
+
+  private buildLiveAutoBrokerErrorSummary(error: unknown): Record<string, unknown> | null {
+    if (!error || typeof error !== 'object') {
+      return null;
+    }
+    const record = error as Record<string, unknown>;
+    const summary: Record<string, unknown> = {};
+    for (const key of [
+      'broker',
+      'brokerStatusCode',
+      'brokerRoutePath',
+      'brokerErrorCode',
+      'brokerErrorMessage',
+    ]) {
+      const value = this.readStringValue(record[key]) ?? this.readNumberValue(record[key]);
+      if (value !== null) {
+        summary[key] = value;
+      }
+    }
+    const payload = this.readRecordValue(record.brokerErrorPayload);
+    if (payload) {
+      summary.brokerErrorPayload = payload;
+    }
+    return Object.keys(summary).length ? summary : null;
+  }
+
+  private buildLiveAutoReconciliationStartDate(submittedAt: string): string {
+    const parsed = Date.parse(submittedAt);
+    const startMs = Number.isFinite(parsed) ? parsed - 10 * 60 * 1000 : Date.now() - 10 * 60 * 1000;
+    return new Date(startMs).toISOString();
+  }
+
+  private extractBrokerRecordList(value: unknown): Record<string, unknown>[] {
+    if (Array.isArray(value)) {
+      return value.filter((item): item is Record<string, unknown> =>
+        Boolean(this.readRecordValue(item))
+      );
+    }
+
+    const record = this.readRecordValue(value);
+    if (!record) {
+      return [];
+    }
+
+    const directList = [
+      record.items,
+      record.orders,
+      record.positions,
+      record.results,
+      record.data,
+    ].find((candidate) => Array.isArray(candidate));
+    if (Array.isArray(directList)) {
+      return directList.filter((item): item is Record<string, unknown> =>
+        Boolean(this.readRecordValue(item))
+      );
+    }
+
+    const dataRecord = this.readRecordValue(record.data);
+    if (!dataRecord) {
+      return [];
+    }
+
+    const nestedList = [
+      dataRecord.items,
+      dataRecord.orders,
+      dataRecord.positions,
+      dataRecord.results,
+    ].find((candidate) => Array.isArray(candidate));
+    return Array.isArray(nestedList)
+      ? nestedList.filter((item): item is Record<string, unknown> =>
+          Boolean(this.readRecordValue(item))
+        )
+      : [];
+  }
+
+  private findLiveAutoReconciledOrder(
+    records: Record<string, unknown>[],
+    prepared: PreparedLiveAutoRoute,
+    createOrderBody: CreateOrderBody
+  ): Record<string, unknown> | null {
+    const idempotencyKey = this.readStringValue(createOrderBody.idempotency_key);
+    if (!idempotencyKey) {
+      return null;
+    }
+    const candidateKeys = new Set<string>([idempotencyKey]);
+    const deltaClientOrderId = this.buildDeltaClientOrderId(idempotencyKey);
+    if (deltaClientOrderId) {
+      candidateKeys.add(deltaClientOrderId);
+    }
+
+    const expectedSymbols = this.buildLiveAutoReconciliationSymbols(prepared);
+    return (
+      records.find((record) => {
+        const recordIdempotencyKey =
+          this.readStringValue(record.idempotency_key) ??
+          this.readStringValue(record.idempotencyKey) ??
+          this.readStringValue(record.client_order_id) ??
+          this.readStringValue(record.clientOrderId) ??
+          this.readStringValue(record.clientOrderID) ??
+          this.readStringValue(record.client_oid);
+        if (recordIdempotencyKey && candidateKeys.has(recordIdempotencyKey)) {
+          return true;
+        }
+
+        const symbol = this.extractBrokerRecordSymbol(record);
+        if (!symbol || !expectedSymbols.has(symbol)) {
+          return false;
+        }
+        const note =
+          this.readStringValue(record.note) ??
+          this.readStringValue(record.description) ??
+          this.readStringValue(record.source);
+        return Boolean(note && Array.from(candidateKeys).some((key) => note.includes(key)));
+      }) ?? null
+    );
+  }
+
+  private findLiveAutoReconciledPosition(
+    records: Record<string, unknown>[],
+    prepared: PreparedLiveAutoRoute,
+    submittedAt: string
+  ): Record<string, unknown> | null {
+    const expectedSymbols = this.buildLiveAutoReconciliationSymbols(prepared);
+    const expectedDirection = prepared.side;
+    const submittedMs = Date.parse(submittedAt);
+    const earliestMs = Number.isFinite(submittedMs) ? submittedMs - 10 * 60 * 1000 : null;
+
+    return (
+      records.find((record) => {
+        const symbol = this.extractBrokerRecordSymbol(record);
+        if (!symbol || !expectedSymbols.has(symbol)) {
+          return false;
+        }
+        const status = this.normalizePositionStatus(this.extractBrokerRecordStatus(record));
+        if (status === 'CLOSED' || status === 'LIQUIDATED') {
+          return false;
+        }
+        const direction = this.extractBrokerRecordDirection(record);
+        if (!direction || direction !== expectedDirection) {
+          return false;
+        }
+
+        const observedMs = this.extractBrokerRecordTimestamp(record);
+        if (earliestMs !== null && observedMs !== null && observedMs >= earliestMs) {
+          return true;
+        }
+
+        const quantity = this.extractBrokerRecordQuantity(record);
+        return (
+          quantity !== null && this.isLiveAutoQuantityClose(quantity, prepared.normalizedQuantity)
+        );
+      }) ?? null
+    );
+  }
+
+  private buildLiveAutoReconciliationSymbols(prepared: PreparedLiveAutoRoute): Set<string> {
+    return new Set(
+      [
+        prepared.resolvedAssetRoute.requestedSymbol,
+        prepared.resolvedAssetRoute.brokerSymbol,
+        ...prepared.resolvedAssetRoute.candidateSymbols,
+        ...this.buildEquivalentLiveAutoSymbols(
+          prepared.resolvedAssetRoute.brokerSymbol,
+          prepared.brokerKey
+        ),
+      ]
+        .map((value) =>
+          String(value || '')
+            .trim()
+            .toUpperCase()
+        )
+        .filter(Boolean)
+    );
+  }
+
+  private buildDeltaClientOrderId(idempotencyKey: string | null | undefined): string | null {
+    const normalized = String(idempotencyKey || '').trim();
+    if (!normalized) {
+      return null;
+    }
+    const prefix = 'aur_';
+    const digestLength = 32 - prefix.length;
+    return `${prefix}${createHash('sha256').update(normalized).digest('hex').slice(0, digestLength)}`;
+  }
+
+  private extractBrokerRecordId(record: Record<string, unknown> | null | undefined): string | null {
+    return (
+      this.readStringValue(record?.order_id) ??
+      this.readStringValue(record?.orderId) ??
+      this.readStringValue(record?.position_id) ??
+      this.readStringValue(record?.positionId) ??
+      this.readStringValue(record?.external_id) ??
+      this.readStringValue(record?.externalId) ??
+      this.readStringValue(record?.id) ??
+      null
+    );
+  }
+
+  private extractBrokerRecordSymbol(
+    record: Record<string, unknown> | null | undefined
+  ): string | null {
+    const symbol =
+      this.readStringValue(record?.symbol) ??
+      this.readStringValue(record?.asset_symbol) ??
+      this.readStringValue(record?.assetSymbol) ??
+      this.readStringValue(record?.product_symbol) ??
+      this.readStringValue(record?.productSymbol) ??
+      this.readStringValue(record?.instrument_name) ??
+      this.readStringValue(record?.instrumentName);
+    return symbol ? symbol.trim().toUpperCase() : null;
+  }
+
+  private extractBrokerRecordStatus(
+    record: Record<string, unknown> | null | undefined
+  ): string | null {
+    return (
+      this.readStringValue(record?.status) ??
+      this.readStringValue(record?.state) ??
+      this.readStringValue(record?.order_status) ??
+      this.readStringValue(record?.orderStatus) ??
+      this.readStringValue(record?.position_status) ??
+      this.readStringValue(record?.positionStatus) ??
+      null
+    );
+  }
+
+  private extractBrokerRecordDirection(
+    record: Record<string, unknown> | null | undefined
+  ): 'long' | 'short' | null {
+    const raw =
+      this.readStringValue(record?.side) ??
+      this.readStringValue(record?.position_type) ??
+      this.readStringValue(record?.positionType) ??
+      this.readStringValue(record?.position_side) ??
+      this.readStringValue(record?.positionSide) ??
+      this.readStringValue(record?.direction);
+    const normalized = String(raw || '')
+      .trim()
+      .toLowerCase();
+    if (['long', 'buy', 'bought'].includes(normalized)) {
+      return 'long';
+    }
+    if (['short', 'sell', 'sold'].includes(normalized)) {
+      return 'short';
+    }
+
+    const signedSize =
+      this.readNumberValue(record?.signed_size) ??
+      this.readNumberValue(record?.signedSize) ??
+      this.readNumberValue(record?.size);
+    if (signedSize !== null && signedSize !== 0) {
+      return signedSize > 0 ? 'long' : 'short';
+    }
+    return null;
+  }
+
+  private extractBrokerRecordQuantity(
+    record: Record<string, unknown> | null | undefined
+  ): number | null {
+    const raw =
+      this.readNumberValue(record?.quantity) ??
+      this.readNumberValue(record?.filled_quantity) ??
+      this.readNumberValue(record?.filledQuantity) ??
+      this.readNumberValue(record?.position_size) ??
+      this.readNumberValue(record?.positionSize) ??
+      this.readNumberValue(record?.contracts) ??
+      this.readNumberValue(record?.amount) ??
+      this.readNumberValue(record?.size);
+    return raw === null ? null : Math.abs(raw);
+  }
+
+  private extractBrokerRecordTimestamp(
+    record: Record<string, unknown> | null | undefined
+  ): number | null {
+    const iso = this.extractBrokerRecordIsoTimestamp(record);
+    if (!iso) {
+      return null;
+    }
+    const parsed = Date.parse(iso);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private extractBrokerRecordIsoTimestamp(
+    record: Record<string, unknown> | null | undefined
+  ): string | null {
+    return (
+      this.toIsoString(record?.created_at) ??
+      this.toIsoString(record?.createdAt) ??
+      this.toIsoString(record?.opened_at) ??
+      this.toIsoString(record?.openedAt) ??
+      this.toIsoString(record?.open_time) ??
+      this.toIsoString(record?.openTime) ??
+      this.toIsoString(record?.updated_at) ??
+      this.toIsoString(record?.updatedAt) ??
+      null
+    );
+  }
+
+  private isLiveAutoQuantityClose(observed: number, expected: number): boolean {
+    if (!(observed > 0 && expected > 0)) {
+      return false;
+    }
+    const tolerance = Math.max(expected * 0.05, 1e-8);
+    return Math.abs(observed - expected) <= tolerance;
+  }
+
+  private classifyLiveAutoRouteFailure(
+    error: unknown,
+    submissionStarted: boolean
+  ): SuggestedTradeRouteAttemptFailureClassification {
+    if (!submissionStarted) {
+      return 'confirmed_no_order';
+    }
+
+    const code = this.resolveLiveAutoFailureCode(error);
+    const normalizedCode = String(code || '')
+      .trim()
+      .toUpperCase();
+    const message =
+      error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    if (message.includes('did not return a broker order id')) {
+      return 'ambiguous';
+    }
+    if (
+      [
+        'ORDER_BROKER_AUTHORIZATION_FAILED',
+        'ORDER_REJECTED_BROKER_MAPPING',
+        'ORDER_REJECTED_INSUFFICIENT_MARGIN',
+        'ORDER_REJECTED_INVALID_PRICE',
+        'ORDER_REJECTED_INVALID_QUANTITY',
+        'ORDER_REJECTED_INVALID_LEVERAGE',
+        'ORDER_REJECTED_BROKER_RULE',
+      ].includes(normalizedCode)
+    ) {
+      return 'confirmed_no_order';
+    }
+    return 'ambiguous';
+  }
+
+  private resolveLiveAutoFailureCode(error: unknown): string | null {
+    if (!error || typeof error !== 'object') {
+      return null;
+    }
+    const record = error as { code?: unknown; name?: unknown };
+    return this.readStringValue(record.code) ?? this.readStringValue(record.name);
+  }
+
+  private buildAllLiveAutoRoutesFailedMessage(
+    trade: SuggestedTrade,
+    routeAttempts: SuggestedTradeRouteAttempt[],
+    fallbackMessage: string
+  ): string {
+    if (!routeAttempts.length) {
+      return fallbackMessage;
+    }
+    const reasons = routeAttempts
+      .map((attempt) => {
+        const route = `${attempt.brokerKey}${attempt.accountId ? `/${attempt.accountId}` : ''}`;
+        return `${route}: ${attempt.failureMessage ?? attempt.status}`;
+      })
+      .join('; ');
+    return `All live auto broker routes failed for ${trade.symbol}. ${reasons}`;
+  }
+
+  private async logLiveAutoAllRoutesFailed(
+    userId: string,
+    trade: SuggestedTrade,
+    message: string
+  ): Promise<void> {
+    await this.operationalEventService.logActivity(userId, {
+      type: 'Suggested Trade',
+      title: `Live auto execution failed: ${trade.symbol}`,
+      status: 'Failed',
+      route: 'Suggested Trades',
+      stream: 'Execution',
+      related: `${trade.symbol} · ${trade.timeframe}`,
+      referenceId: trade.id,
+      symbol: trade.symbol,
+      description: message,
+    });
+    await this.operationalEventService.emitFailureAlert(userId, {
+      channel: 'Suggested Trades',
+      source: 'suggested-trades',
+      message: `Live auto execution failed for ${trade.symbol}: ${message}`,
+      route: 'Suggested Trades',
+    });
   }
 
   private evaluateLiveAutoRolloutGuard(
@@ -3835,11 +5363,19 @@ export class SuggestedTradesService {
 
   private buildAutoLiveIdempotencyKey(
     suggestedTradeId: string,
-    preTradeCheckId: string | null | undefined
+    preTradeCheckId: string | null | undefined,
+    brokerKey?: string | null,
+    accountId?: string | null
   ): string {
     const tradeId = String(suggestedTradeId || '').trim();
     const checkId = String(preTradeCheckId || '').trim() || 'pretrade';
-    return `live-auto:${tradeId}:${checkId}`.slice(0, 191);
+    const routeKey = [brokerKey, accountId]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(':');
+    return (
+      routeKey ? `live-auto:${tradeId}:${routeKey}:${checkId}` : `live-auto:${tradeId}:${checkId}`
+    ).slice(0, 191);
   }
 
   private async attachMudrexLiveAutoProtectionIfNeeded(input: {
@@ -4989,6 +6525,8 @@ export class SuggestedTradesService {
       });
     }
 
+    events.push(...this.buildRouteAttemptTimelineEvents(execution));
+
     if (execution?.linkedAt) {
       events.push({
         id: 'order_linked',
@@ -5048,6 +6586,8 @@ export class SuggestedTradesService {
       });
     }
 
+    events.push(...this.buildProtectionTimelineEvents(execution));
+
     if (execution?.positionClosedAt) {
       events.push({
         id: 'position_closed',
@@ -5100,6 +6640,198 @@ export class SuggestedTradesService {
       .sort(
         (left, right) => this.toTimestamp(left.occurredAt) - this.toTimestamp(right.occurredAt)
       );
+  }
+
+  private buildRouteAttemptTimelineEvents(
+    execution: SuggestedTradeExecutionLink | null
+  ): SuggestedTradeTimelineEvent[] {
+    const attempts = execution?.routeAttempts ?? [];
+    if (!attempts.length) {
+      return [];
+    }
+
+    return attempts.flatMap((attempt): SuggestedTradeTimelineEvent[] => {
+      const attemptId = Math.max(1, Math.floor(attempt.attemptNumber || 0));
+      const brokerKey = String(attempt.brokerKey || 'unknown').trim() || 'unknown';
+      const accountLabel =
+        String(attempt.accountName || '').trim() ||
+        String(attempt.accountId || '').trim() ||
+        'unknown account';
+      const brokerSymbol = String(attempt.brokerSymbol || attempt.requestedSymbol || '').trim();
+      const status = String(attempt.status || 'unknown').trim() || 'unknown';
+      const baseId = `route_attempt_${attemptId}_${brokerKey}`;
+      const events: SuggestedTradeTimelineEvent[] = [];
+
+      if (attempt.startedAt) {
+        events.push({
+          id: `${baseId}_started`,
+          kind: 'broker_route',
+          label: `Broker route ${attemptId} started`,
+          description: `Submitting ${brokerSymbol || 'the order'} to ${brokerKey} (${accountLabel}).`,
+          occurredAt: attempt.startedAt,
+          entity: 'broker_route',
+          entityId: attempt.accountId ?? null,
+          status: attempt.submissionState ?? status,
+        });
+      }
+
+      const finishedAt = attempt.finishedAt ?? attempt.reconciliation?.checkedAt ?? null;
+      if (finishedAt) {
+        events.push({
+          id: `${baseId}_finished`,
+          kind: 'broker_route',
+          label: this.buildRouteAttemptLabel(attemptId, status),
+          description: this.buildRouteAttemptDescription(attempt),
+          occurredAt: finishedAt,
+          entity: attempt.orderId ? 'order' : 'broker_route',
+          entityId: attempt.orderId ?? attempt.accountId ?? null,
+          status,
+        });
+      }
+
+      const reconciliation = attempt.reconciliation;
+      if (reconciliation?.checkedAt && reconciliation.checkedAt !== finishedAt) {
+        events.push({
+          id: `${baseId}_reconciled`,
+          kind: 'broker_route',
+          label: 'Route reconciliation checked',
+          description:
+            reconciliation.message ??
+            `Broker reconciliation completed with ${reconciliation.status}.`,
+          occurredAt: reconciliation.checkedAt,
+          entity: reconciliation.positionId
+            ? 'position'
+            : reconciliation.orderId
+              ? 'order'
+              : 'broker_route',
+          entityId:
+            reconciliation.positionId ?? reconciliation.orderId ?? attempt.accountId ?? null,
+          status: reconciliation.status,
+        });
+      }
+
+      return events;
+    });
+  }
+
+  private buildRouteAttemptLabel(attemptNumber: number, status: string): string {
+    const normalizedStatus = status.toLowerCase();
+    if (normalizedStatus === 'placed') {
+      return `Broker route ${attemptNumber} placed`;
+    }
+    if (normalizedStatus === 'failed') {
+      return `Broker route ${attemptNumber} failed`;
+    }
+    if (normalizedStatus === 'pre_trade_blocked') {
+      return `Broker route ${attemptNumber} blocked`;
+    }
+    if (normalizedStatus === 'manual_review') {
+      return `Broker route ${attemptNumber} needs review`;
+    }
+    return `Broker route ${attemptNumber} updated`;
+  }
+
+  private buildRouteAttemptDescription(attempt: SuggestedTradeRouteAttempt): string {
+    const brokerKey = String(attempt.brokerKey || 'unknown').trim() || 'unknown';
+    const accountLabel =
+      String(attempt.accountName || '').trim() ||
+      String(attempt.accountId || '').trim() ||
+      'unknown account';
+    const status = String(attempt.status || 'unknown')
+      .trim()
+      .toLowerCase();
+    const failureMessage =
+      String(attempt.failureMessage || '').trim() ||
+      String(attempt.failureCode || '').trim() ||
+      String(attempt.note || '').trim();
+
+    if (status === 'placed') {
+      return attempt.orderId
+        ? `${brokerKey} accepted the route and returned order ${attempt.orderId}.`
+        : `${brokerKey} accepted the route.`;
+    }
+    if (status === 'failed') {
+      return failureMessage
+        ? `${brokerKey} (${accountLabel}) failed: ${failureMessage}.`
+        : `${brokerKey} (${accountLabel}) failed before a confirmed fill.`;
+    }
+    if (status === 'pre_trade_blocked') {
+      return failureMessage
+        ? `${brokerKey} (${accountLabel}) was blocked before submission: ${failureMessage}.`
+        : `${brokerKey} (${accountLabel}) was blocked before submission.`;
+    }
+    if (status === 'manual_review') {
+      return failureMessage
+        ? `${brokerKey} (${accountLabel}) needs manual review: ${failureMessage}.`
+        : `${brokerKey} (${accountLabel}) needs manual review before fallback.`;
+    }
+
+    return attempt.note ?? `${brokerKey} (${accountLabel}) route attempt recorded.`;
+  }
+
+  private buildProtectionTimelineEvents(
+    execution: SuggestedTradeExecutionLink | null
+  ): SuggestedTradeTimelineEvent[] {
+    if (!execution) {
+      return [];
+    }
+
+    const events: SuggestedTradeTimelineEvent[] = [];
+    const protectionPlan = this.readRecordValue(execution.protectionPlan);
+    const replacementSubmittedAt = this.toIsoString(protectionPlan?.replacementSubmittedAt);
+    const stopLossOrderId = this.readStringValue(protectionPlan?.stopLossOrderId);
+    const takeProfitOrderId = this.readStringValue(protectionPlan?.takeProfitOrderId);
+    const protectionState = execution.protectionState ?? null;
+
+    if (execution.protectionCheckedAt) {
+      events.push({
+        id: 'protection_checked',
+        kind: 'protection',
+        label: 'Protection checked',
+        description:
+          protectionState === 'failed'
+            ? (execution.protectionLastError ??
+              'Protection check failed and requires operator review.')
+            : 'Stop loss and target protection state was checked against broker state.',
+        occurredAt: execution.protectionCheckedAt,
+        entity: 'position',
+        entityId: execution.positionId ?? null,
+        status: protectionState,
+      });
+    }
+
+    if (replacementSubmittedAt) {
+      events.push({
+        id: 'protection_replacement_submitted',
+        kind: 'protection',
+        label: 'Protection repair submitted',
+        description: 'Replacement stop loss and target orders were submitted for the position.',
+        occurredAt: replacementSubmittedAt,
+        entity: 'position',
+        entityId: execution.positionId ?? null,
+        status: protectionState,
+      });
+    }
+
+    if (execution.protectionAttachedAt) {
+      events.push({
+        id: 'protection_attached',
+        kind: 'protection',
+        label: 'Protection attached',
+        description:
+          stopLossOrderId || takeProfitOrderId
+            ? `Broker protection confirmed. SL ${stopLossOrderId || 'unlinked'}, TP ${
+                takeProfitOrderId || 'unlinked'
+              }.`
+            : 'Broker protection confirmed for the position.',
+        occurredAt: execution.protectionAttachedAt,
+        entity: 'position',
+        entityId: execution.positionId ?? null,
+        status: protectionState ?? 'attached',
+      });
+    }
+
+    return events;
   }
 
   private buildFreshness(
@@ -7568,6 +9300,7 @@ export class SuggestedTradesService {
       triggerType: this.readStringValue(execution.triggerType),
       leverage: this.readNumberValue(execution.leverage),
       quantity: this.readNumberValue(execution.quantity),
+      routeAttempts: this.normalizeRouteAttempts(execution.routeAttempts),
       entryPrice: this.readStringValue(execution.entryPrice),
       stopLossPrice: this.readStringValue(execution.stopLossPrice),
       takeProfitPrice: this.readStringValue(execution.takeProfitPrice),
@@ -7651,6 +9384,7 @@ export class SuggestedTradesService {
       protectionState: protection.protectionState,
       protectionSource: protection.protectionSource,
       protectionPlan: protection.protectionPlan,
+      routeAttempts: this.normalizeRouteAttempts(execution.routeAttempts),
       protectionAttempts: protection.protectionAttempts,
       protectionLastError: protection.protectionLastError,
       protectionCheckedAt: protection.protectionCheckedAt,
@@ -7839,6 +9573,7 @@ export class SuggestedTradesService {
       triggerType: readString(execution.triggerType),
       leverage: readNumber(execution.leverage),
       quantity: readNumber(execution.quantity),
+      routeAttempts: this.normalizeRouteAttempts(execution.routeAttempts),
       entryPrice: readString(execution.entryPrice),
       stopLossPrice: readString(execution.stopLossPrice),
       takeProfitPrice: readString(execution.takeProfitPrice),
@@ -8037,6 +9772,189 @@ export class SuggestedTradesService {
       return null;
     }
     return value as Record<string, unknown>;
+  }
+
+  private normalizeRouteAttempts(value: unknown): SuggestedTradeRouteAttempt[] | null {
+    const rawAttempts = this.readArrayValue(value);
+    if (!rawAttempts?.length) {
+      return null;
+    }
+
+    const attempts = rawAttempts
+      .map((item, index): SuggestedTradeRouteAttempt | null => {
+        const record = this.readRecordValue(item);
+        if (!record) {
+          return null;
+        }
+
+        const brokerKey = this.readStringValue(record.brokerKey);
+        const requestedSymbol = this.readStringValue(record.requestedSymbol);
+        const brokerSymbol = this.readStringValue(record.brokerSymbol) ?? requestedSymbol;
+        if (!brokerKey || !requestedSymbol || !brokerSymbol) {
+          return null;
+        }
+
+        return {
+          attemptNumber: Math.max(
+            1,
+            Math.floor(this.readNumberValue(record.attemptNumber) ?? index + 1)
+          ),
+          candidateRank: Math.max(
+            1,
+            Math.floor(this.readNumberValue(record.candidateRank) ?? index + 1)
+          ),
+          brokerKey,
+          accountId: this.readStringValue(record.accountId),
+          accountName: this.readStringValue(record.accountName),
+          requestedSymbol,
+          brokerSymbol,
+          status: this.normalizeRouteAttemptStatus(record.status),
+          startedAt: this.toIsoString(record.startedAt),
+          finishedAt: this.toIsoString(record.finishedAt),
+          preTradeCheckId: this.readStringValue(record.preTradeCheckId),
+          preTradeState: this.normalizeRouteAttemptPreTradeState(record.preTradeState),
+          submissionState: this.normalizeRouteAttemptSubmissionState(record.submissionState),
+          orderId: this.readStringValue(record.orderId),
+          orderStatus: this.readStringValue(record.orderStatus),
+          failureClassification: this.normalizeRouteAttemptFailureClassification(
+            record.failureClassification
+          ),
+          failureCode: this.readStringValue(record.failureCode),
+          failureMessage: this.readStringValue(record.failureMessage),
+          requestSummary:
+            this.readRecordValue(record.requestSummary) ??
+            this.parseJsonRecord(record.requestSummary),
+          brokerResponseSummary:
+            this.readRecordValue(record.brokerResponseSummary) ??
+            this.parseJsonRecord(record.brokerResponseSummary),
+          reconciliation: this.normalizeRouteAttemptReconciliation(record.reconciliation),
+          note: this.readStringValue(record.note),
+        };
+      })
+      .filter((attempt): attempt is SuggestedTradeRouteAttempt => attempt !== null);
+
+    return attempts.length ? attempts : null;
+  }
+
+  private readArrayValue(value: unknown): unknown[] | null {
+    if (Array.isArray(value)) {
+      return value;
+    }
+    if (typeof value !== 'string' || !value.trim()) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeRouteAttemptStatus(value: unknown): SuggestedTradeRouteAttempt['status'] {
+    const normalized = this.readStringValue(value)?.toLowerCase();
+    if (
+      normalized === 'pending' ||
+      normalized === 'pre_trade_blocked' ||
+      normalized === 'submitting' ||
+      normalized === 'placed' ||
+      normalized === 'failed' ||
+      normalized === 'manual_review'
+    ) {
+      return normalized;
+    }
+    return 'unknown';
+  }
+
+  private normalizeRouteAttemptPreTradeState(
+    value: unknown
+  ): SuggestedTradeRouteAttempt['preTradeState'] {
+    const normalized = this.readStringValue(value)?.toLowerCase();
+    if (
+      normalized === 'not_requested' ||
+      normalized === 'queued' ||
+      normalized === 'passed' ||
+      normalized === 'blocked' ||
+      normalized === 'stale' ||
+      normalized === 'error'
+    ) {
+      return normalized;
+    }
+    return null;
+  }
+
+  private normalizeRouteAttemptSubmissionState(
+    value: unknown
+  ): SuggestedTradeRouteAttempt['submissionState'] {
+    const normalized = this.readStringValue(value)?.toLowerCase();
+    if (
+      normalized === 'not_started' ||
+      normalized === 'pre_trade' ||
+      normalized === 'submitting' ||
+      normalized === 'submitted' ||
+      normalized === 'accepted' ||
+      normalized === 'rejected' ||
+      normalized === 'failed' ||
+      normalized === 'unknown'
+    ) {
+      return normalized;
+    }
+    return null;
+  }
+
+  private normalizeRouteAttemptFailureClassification(
+    value: unknown
+  ): SuggestedTradeRouteAttempt['failureClassification'] {
+    const normalized = this.readStringValue(value)?.toLowerCase();
+    if (
+      normalized === 'confirmed_no_order' ||
+      normalized === 'ambiguous' ||
+      normalized === 'order_created_protection_unresolved' ||
+      normalized === 'unknown'
+    ) {
+      return normalized;
+    }
+    return null;
+  }
+
+  private normalizeRouteAttemptReconciliation(
+    value: unknown
+  ): SuggestedTradeRouteAttempt['reconciliation'] {
+    const record = this.readRecordValue(value) ?? this.parseJsonRecord(value);
+    if (!record) {
+      return null;
+    }
+
+    const status = this.normalizeRouteAttemptReconciliationStatus(record.status);
+    if (!status) {
+      return null;
+    }
+
+    return {
+      status,
+      checkedAt: this.toIsoString(record.checkedAt),
+      orderId: this.readStringValue(record.orderId),
+      positionId: this.readStringValue(record.positionId),
+      message: this.readStringValue(record.message),
+    };
+  }
+
+  private normalizeRouteAttemptReconciliationStatus(
+    value: unknown
+  ): NonNullable<SuggestedTradeRouteAttempt['reconciliation']>['status'] | null {
+    const normalized = this.readStringValue(value)?.toLowerCase();
+    if (
+      normalized === 'not_required' ||
+      normalized === 'pending' ||
+      normalized === 'confirmed_no_order' ||
+      normalized === 'found_order' ||
+      normalized === 'found_position' ||
+      normalized === 'inconclusive' ||
+      normalized === 'failed'
+    ) {
+      return normalized;
+    }
+    return null;
   }
 
   private parseJsonRecord(value: unknown): Record<string, unknown> | null {

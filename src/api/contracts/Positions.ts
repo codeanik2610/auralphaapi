@@ -1,3 +1,5 @@
+import type { SuggestedTradeRouteAttempt } from './SuggestedTrade';
+
 export type PositionsFreshnessState = 'fresh' | 'stale' | 'critical' | 'unknown';
 
 export interface PositionsFreshnessIndicator {
@@ -65,6 +67,30 @@ export interface PositionExecutionProtectionContext {
   takeProfitOrderId: string | null;
 }
 
+export type PositionLifecycleEventKind =
+  | 'signal'
+  | 'broker_route'
+  | 'order'
+  | 'position'
+  | 'protection'
+  | 'exit'
+  | 'sync';
+
+export interface PositionLifecycleEventItem {
+  id: string;
+  kind: PositionLifecycleEventKind;
+  label: string;
+  description: string;
+  occurredAt: string;
+  entity?: string | null;
+  entityId?: string | null;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  status?: string | null;
+  severity?: 'info' | 'success' | 'warning' | 'error';
+  meta?: Record<string, unknown> | null;
+}
+
 export interface PositionAutomationTradeContext {
   suggestedTradeId: string;
   automationId: string | null;
@@ -82,6 +108,8 @@ export interface PositionAutomationTradeContext {
   executionState: string | null;
   positionStatus: string | null;
   protection: PositionExecutionProtectionContext | null;
+  routeAttempts?: SuggestedTradeRouteAttempt[] | null;
+  operatorTimeline?: PositionLifecycleEventItem[];
   sourceTemplateId: string | null;
   sourceBacktestId: string | null;
   traceMethod: 'position_id' | 'symbol_entry' | 'unmatched';
@@ -223,6 +251,8 @@ export interface PositionLifecycleSuggestedTradeItem {
   exitPrice?: number | null;
   realizedPnl?: number | null;
   protection?: PositionExecutionProtectionContext | null;
+  routeAttempts?: SuggestedTradeRouteAttempt[] | null;
+  operatorTimeline?: PositionLifecycleEventItem[];
   sourceTemplateId?: string | null;
   sourceBacktestId?: string | null;
   stopLossPrice?: number | null;

@@ -162,6 +162,7 @@ export interface SuggestedTradeExecutionUpsertPayload {
   protectionState?: string | null;
   protectionSource?: string | null;
   protectionPlan?: Record<string, unknown> | null;
+  routeAttempts?: unknown[] | null;
   protectionAttempts?: number | null;
   protectionLastError?: string | null;
   protectionCheckedAt?: Date | string | null;
@@ -241,6 +242,19 @@ const normalizeOptionalRecord = (
     return null;
   }
   return value;
+};
+
+const normalizeOptionalRecordArray = (
+  value: unknown[] | null | undefined
+): Array<Record<string, unknown>> | null => {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const normalized = value.filter(
+    (item): item is Record<string, unknown> =>
+      Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+  );
+  return normalized.length ? normalized : null;
 };
 
 const normalizeOptionalDate = (value: Date | string | null | undefined): Date | null => {
@@ -354,6 +368,7 @@ export class SuggestedTradeRepository {
       protectionState: normalizeOptionalString(payload.protectionState)?.toLowerCase() ?? null,
       protectionSource: normalizeOptionalString(payload.protectionSource)?.toLowerCase() ?? null,
       protectionPlan: normalizeOptionalRecord(payload.protectionPlan),
+      routeAttempts: normalizeOptionalRecordArray(payload.routeAttempts),
       protectionAttempts: normalizeOptionalUnsignedInteger(payload.protectionAttempts),
       protectionLastError: normalizeOptionalString(payload.protectionLastError),
       protectionCheckedAt: normalizeOptionalDate(payload.protectionCheckedAt),

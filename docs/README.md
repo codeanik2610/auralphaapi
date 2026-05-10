@@ -1,12 +1,16 @@
 # Docs Index
 
 Canonical docs:
+
 - production deployment:
   - `docs/production-deployment-runbook.md`
 - production environment checklist:
   - `docs/production-env-checklist.md`
 
 Supporting docs:
+
+- suggested trades live-auto broker failover:
+  - `docs/suggested-trades-live-auto-broker-failover.md`
 - backend container and compose artifacts:
   - `docs/backend-deploy-artifacts.md`
 - full multi-service docker stack:

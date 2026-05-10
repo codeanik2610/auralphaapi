@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { SuggestedTradesController } from '../src/api/controllers/SuggestedTradesController';
 import { SuggestedTradesOverviewController } from '../src/api/controllers/SuggestedTradesOverviewController';
+import { BadRequestAppError } from '../src/api/errors/AppError';
 import { SuggestedTradeExecutionSyncService } from '../src/api/services/SuggestedTradeExecutionSyncService';
 import { SuggestedTradesHealthService } from '../src/api/services/SuggestedTradesHealthService';
 import { SuggestedTradesOverviewService } from '../src/api/services/SuggestedTradesOverviewService';
@@ -37,6 +38,8 @@ import {
   resolveLiveAutoAdaptiveRoutingModeValue,
   resolveSuggestedTradeLiveAutoRuntimeConfig,
 } from '../src/api/services/suggested-trades/SuggestedTradeBrokerControls';
+import type { SuggestedTradeExecutionLink } from '../src/api/contracts/SuggestedTrade';
+import { AddSuggestedTradeExecutionRouteAttempts1800001800000 } from '../src/database/migrations_baseline/1800001800000-AddSuggestedTradeExecutionRouteAttempts';
 
 function createSuccess<T>(data: T) {
   return { success: true as const, data };
@@ -320,6 +323,7 @@ function runSuggestedTradeExecutionEntitySchemaAssertions(): void {
     ['protectionState', 'protection_state'],
     ['protectionSource', 'protection_source'],
     ['protectionPlan', 'protection_plan_json'],
+    ['routeAttempts', 'route_attempts_json'],
     ['protectionAttempts', 'protection_attempts'],
     ['protectionLastError', 'protection_last_error'],
     ['protectionCheckedAt', 'protection_checked_at'],
@@ -506,6 +510,48 @@ async function runSuggestedTradeExecutionProtectionMigrationAssertions(): Promis
   );
 }
 
+async function runSuggestedTradeExecutionRouteAttemptsMigrationAssertions(): Promise<void> {
+  const migration = new AddSuggestedTradeExecutionRouteAttempts1800001800000();
+  const addedColumns: string[] = [];
+  const droppedColumns: string[] = [];
+  const tableState = {
+    columns: new Set<string>(),
+  };
+
+  await migration.up({
+    async hasTable(tableName: string) {
+      return tableName === 'suggested_trade_executions';
+    },
+    async hasColumn(tableName: string, columnName: string) {
+      return tableName === 'suggested_trade_executions' && tableState.columns.has(columnName);
+    },
+    async addColumn(tableName: string, column: { name?: string }) {
+      assert.equal(tableName, 'suggested_trade_executions');
+      const name = String(column.name || '');
+      addedColumns.push(name);
+      tableState.columns.add(name);
+    },
+  } as any);
+
+  assert.deepEqual(addedColumns, ['route_attempts_json']);
+
+  await migration.down({
+    async hasTable(tableName: string) {
+      return tableName === 'suggested_trade_executions';
+    },
+    async hasColumn(tableName: string, columnName: string) {
+      return tableName === 'suggested_trade_executions' && tableState.columns.has(columnName);
+    },
+    async dropColumn(tableName: string, columnName: string) {
+      assert.equal(tableName, 'suggested_trade_executions');
+      droppedColumns.push(columnName);
+      tableState.columns.delete(columnName);
+    },
+  } as any);
+
+  assert.deepEqual(droppedColumns, ['route_attempts_json']);
+}
+
 async function runSuggestedTradesReadPathAssertions(): Promise<void> {
   const service = new SuggestedTradesService() as any;
   const now = Date.now();
@@ -569,6 +615,46 @@ async function runSuggestedTradesReadPathAssertions(): Promise<void> {
         paperOrderId: 'paper-1',
         executionState: 'linked',
         linkedAt: new Date(now - 30_000).toISOString(),
+        routeAttempts: [
+          {
+            attemptNumber: 1,
+            candidateRank: 1,
+            brokerKey: 'delta_exchange',
+            accountId: 'delta-acc-1',
+            accountName: 'Delta Prod',
+            requestedSymbol: 'BTCUSDT',
+            brokerSymbol: 'BTCUSDT',
+            status: 'failed',
+            startedAt: new Date(now - 38_000).toISOString(),
+            finishedAt: new Date(now - 37_000).toISOString(),
+            submissionState: 'rejected',
+            failureClassification: 'confirmed_no_order',
+            failureCode: 'ORDER_REJECTED_INSUFFICIENT_MARGIN',
+            failureMessage: 'Order rejected: insufficient margin',
+          },
+          {
+            attemptNumber: 2,
+            candidateRank: 2,
+            brokerKey: 'mudrex',
+            accountId: 'acc-1',
+            accountName: 'Mudrex Prod',
+            requestedSymbol: 'BTCUSDT',
+            brokerSymbol: 'BTCUSDT',
+            status: 'placed',
+            startedAt: new Date(now - 36_000).toISOString(),
+            finishedAt: new Date(now - 35_000).toISOString(),
+            submissionState: 'accepted',
+            orderId: 'paper-1',
+            orderStatus: 'OPEN',
+          },
+        ],
+        protectionState: 'attached',
+        protectionCheckedAt: new Date(now - 25_000).toISOString(),
+        protectionAttachedAt: new Date(now - 24_000).toISOString(),
+        protectionPlan: {
+          stopLossOrderId: 'sl-1',
+          takeProfitOrderId: 'tp-1',
+        },
       },
     },
     createdAt: new Date(now - 50_000),
@@ -622,6 +708,20 @@ async function runSuggestedTradesReadPathAssertions(): Promise<void> {
   );
   assert.equal(detailResponse.data.syncStatus?.state, 'fresh');
   assert.ok((detailResponse.data.timeline?.length ?? 0) >= 3);
+  assert.ok(
+    detailResponse.data.timeline?.some(
+      (event: { kind: string; label: string; status?: string | null }) =>
+        event.kind === 'broker_route' &&
+        event.label === 'Broker route 1 failed' &&
+        event.status === 'failed'
+    )
+  );
+  assert.ok(
+    detailResponse.data.timeline?.some(
+      (event: { kind: string; label: string }) =>
+        event.kind === 'protection' && event.label === 'Protection attached'
+    )
+  );
 }
 
 async function runSuggestedTradesSummaryFilterAssertions(): Promise<void> {
@@ -1084,6 +1184,61 @@ async function runSuggestedTradeExecutionPersistenceAssertions(): Promise<void> 
   assert.equal(liveProtectionPayload.protectionState, 'waiting_for_fill');
   assert.equal(liveProtectionPayload.protectionSource, 'suggested_trade_execution');
   assert.equal(liveProtectionPayload.protectionPlan?.['stopLossPrice'], '95');
+
+  const routeAttemptExecution: SuggestedTradeExecutionLink = {
+    executionMode: 'live',
+    executionState: 'failed',
+    routeAttempts: [
+      {
+        attemptNumber: 1,
+        candidateRank: 1,
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-prod',
+        accountName: 'Delta Production',
+        requestedSymbol: 'RSRUSDT',
+        brokerSymbol: 'RSRUSD',
+        status: 'failed',
+        startedAt: '2026-05-10T15:21:25.000Z',
+        finishedAt: '2026-05-10T15:21:27.000Z',
+        preTradeCheckId: 'pre-1',
+        preTradeState: 'passed',
+        submissionState: 'rejected',
+        failureClassification: 'confirmed_no_order',
+        failureCode: 'ORDER_REJECTED_INSUFFICIENT_MARGIN',
+        failureMessage: 'Order rejected: insufficient margin for this route.',
+        requestSummary: {
+          orderType: 'limit',
+          leverage: 15,
+        },
+        brokerResponseSummary: {
+          availableBalance: '0.0000974975',
+        },
+        reconciliation: {
+          status: 'not_required',
+          checkedAt: '2026-05-10T15:21:27.000Z',
+        },
+      },
+    ],
+  };
+  const routeAttemptPayload = service.toExecutionPersistencePayload(
+    { ...trade, meta: null },
+    routeAttemptExecution
+  );
+  assert.equal(
+    (routeAttemptPayload.routeAttempts?.[0] as Record<string, unknown> | undefined)?.failureCode,
+    'ORDER_REJECTED_INSUFFICIENT_MARGIN'
+  );
+  assert.equal(
+    (routeAttemptPayload.routeAttempts?.[0] as Record<string, unknown> | undefined)?.brokerSymbol,
+    'RSRUSD'
+  );
+
+  const mappedExecution = service.mapExecutionRecord({
+    ...routeAttemptPayload,
+    routeAttempts: JSON.stringify(routeAttemptPayload.routeAttempts),
+  });
+  assert.equal(mappedExecution?.routeAttempts?.[0]?.failureClassification, 'confirmed_no_order');
+  assert.equal(mappedExecution?.routeAttempts?.[0]?.reconciliation?.status, 'not_required');
 }
 
 async function runSuggestedTradeBrokerControlHelperAssertions(): Promise<void> {
@@ -1192,16 +1347,12 @@ async function runSuggestedTradeBrokerControlHelperAssertions(): Promise<void> {
     env.suggestedTrades.liveAuto.shadowBrokerAllowlist = [
       ...originalLiveAuto.shadowBrokerAllowlist,
     ];
-    env.suggestedTrades.protectionRepair.mudrexEnabled =
-      originalProtectionRepair.mudrexEnabled;
+    env.suggestedTrades.protectionRepair.mudrexEnabled = originalProtectionRepair.mudrexEnabled;
     env.suggestedTrades.protectionRepair.deltaExchangeEnabled =
       originalProtectionRepair.deltaExchangeEnabled;
     restoreEnv('SUGGESTED_TRADES_ROLLOUT_ENABLED', originalEnvFlags.rolloutEnabled);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_ENABLED', originalEnvFlags.enabled);
-    restoreEnv(
-      'SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED',
-      originalEnvFlags.executionEnabled
-    );
+    restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED', originalEnvFlags.executionEnabled);
     restoreEnv('SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED', originalEnvFlags.mudrexEnabled);
     restoreEnv(
       'SUGGESTED_TRADES_LIVE_AUTO_DELTA_EXCHANGE_ENABLED',
@@ -1849,6 +2000,10 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
   const createCheckNotionals: Array<number | null> = [];
   const placedRoutes: string[] = [];
   const savedRouteDecisions: Array<Record<string, unknown> | null> = [];
+  const persistedExecutions: Array<Record<string, unknown>> = [];
+  let deltaReconciliationMode: 'empty' | 'found_order' | 'found_position' = 'empty';
+  let latestDeltaIdempotencyKey: string | null = null;
+  let mudrexRiskOrderFailureMessage: string | null = null;
   const mudrexRiskOrders: Array<{
     positionId: string;
     body: Record<string, unknown>;
@@ -2067,7 +2222,9 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       };
     },
   };
-  service.persistExecutionState = async () => undefined;
+  service.persistExecutionState = async (_trade: unknown, execution: Record<string, unknown>) => {
+    persistedExecutions.push({ ...execution });
+  };
   service.operationalEventService = {
     async logActivity() {
       return undefined;
@@ -2176,6 +2333,24 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
         return {};
       }
       return {
+        async listOpenOrders() {
+          if (deltaReconciliationMode !== 'found_order' || !latestDeltaIdempotencyKey) {
+            return [];
+          }
+          return [
+            {
+              id: 'delta-reconciled-order-1',
+              symbol: 'BTCUSDT',
+              status: 'open',
+              side: 'buy',
+              client_order_id: latestDeltaIdempotencyKey,
+              created_at: '2026-04-18T05:03:30.000Z',
+            },
+          ];
+        },
+        async getOrderHistory() {
+          return [];
+        },
         async preflightLiveAutoOrder(assetId: string, body: Record<string, unknown>) {
           assert.match(assetId, /^delta-/);
           const symbol = String(body.symbol || '')
@@ -2237,6 +2412,24 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
         return {};
       }
       return {
+        async listOpenOrders() {
+          if (deltaReconciliationMode !== 'found_order' || !latestDeltaIdempotencyKey) {
+            return [];
+          }
+          return [
+            {
+              id: 'delta-reconciled-order-1',
+              symbol: 'BTCUSDT',
+              status: 'open',
+              side: 'buy',
+              client_order_id: latestDeltaIdempotencyKey,
+              created_at: new Date().toISOString(),
+            },
+          ];
+        },
+        async getOrderHistory() {
+          return [];
+        },
         async preflightLiveAutoOrder(assetId: string, body: Record<string, unknown>) {
           assert.match(assetId, /^delta-/);
           const symbol = String(body.symbol || '')
@@ -2262,6 +2455,27 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       };
     },
     getPositionsAdapter(brokerKey: string) {
+      if (brokerKey === 'delta_exchange') {
+        return {
+          async getPositions() {
+            if (deltaReconciliationMode !== 'found_position') {
+              return [];
+            }
+            return [
+              {
+                id: 'delta-reconciled-position-1',
+                symbol: 'BTCUSDT',
+                status: 'OPEN',
+                side: 'long',
+                size: 1000,
+                entry_price: '100',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              },
+            ];
+          },
+        };
+      }
       assert.equal(brokerKey, 'mudrex');
       return {
         async getPositions() {
@@ -2291,6 +2505,9 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
           body: Record<string, unknown>,
           context?: Record<string, unknown>
         ) {
+          if (mudrexRiskOrderFailureMessage) {
+            throw new Error(mudrexRiskOrderFailureMessage);
+          }
           mudrexRiskOrders.push({
             positionId,
             body: { ...body },
@@ -2726,6 +2943,311 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
         ),
       true
     );
+
+    env.suggestedTrades.liveAuto.executionEnabled = true;
+    env.suggestedTrades.liveAuto.adaptiveRoutingMode = 'live';
+    env.suggestedTrades.liveAuto.brokerAllowlist = ['mudrex', 'delta_exchange'];
+    env.suggestedTrades.liveAuto.shadowBrokerAllowlist = [];
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_EXECUTION_ENABLED = 'true';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_ADAPTIVE_ROUTING_MODE = 'live';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_BROKER_ALLOWLIST = 'mudrex,delta_exchange';
+    process.env.SUGGESTED_TRADES_LIVE_AUTO_SHADOW_BROKER_ALLOWLIST = '';
+    currentTrade = {
+      ...currentTrade,
+      id: 'st-live-auto-risk-6',
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitTargets: ['108'],
+      status: 'Open',
+    };
+    const persistedCountBeforeFailover = persistedExecutions.length;
+    const failoverPlacedRoutes: string[] = [];
+
+    const brokerFailoverPlaced = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto-risk-6',
+      {
+        async createOrder(assetId: string, body: Record<string, unknown>) {
+          const route = `${String(body.brokerKey)}:${String(body.accountId)}`;
+          failoverPlacedRoutes.push(route);
+          assert.equal(
+            String(body.idempotency_key || '').includes(`st-live-auto-risk-6:${route}`),
+            true
+          );
+          if (body.brokerKey === 'delta_exchange') {
+            assert.equal(assetId, 'delta-asset-1');
+            throw new BadRequestAppError(
+              'Order rejected: insufficient margin',
+              'ORDER_REJECTED_INSUFFICIENT_MARGIN'
+            );
+          }
+
+          assert.equal(assetId, 'mudrex-asset-1');
+          assert.equal(body.brokerKey, 'mudrex');
+          assert.equal(body.accountId, 'acc-1');
+          return {
+            success: true,
+            data: {
+              order_id: 'mudrex-live-order-risk-6',
+              status: 'OPEN',
+            },
+          };
+        },
+      }
+    );
+
+    assert.equal(brokerFailoverPlaced.outcome, 'placed', brokerFailoverPlaced.message);
+    assert.equal(brokerFailoverPlaced.brokerKey, 'mudrex');
+    assert.equal(brokerFailoverPlaced.accountId, 'acc-1');
+    assert.equal(brokerFailoverPlaced.orderId, 'mudrex-live-order-risk-6');
+    assert.deepEqual(failoverPlacedRoutes, ['delta_exchange:delta-acc-1', 'mudrex:acc-1']);
+    const failoverExecutions = persistedExecutions.slice(persistedCountBeforeFailover);
+    const finalFailoverExecution = [...failoverExecutions]
+      .reverse()
+      .find((execution) => Array.isArray(execution.routeAttempts));
+    const routeAttempts =
+      (finalFailoverExecution?.routeAttempts as Array<Record<string, unknown>> | undefined) ?? [];
+    assert.equal(routeAttempts.length, 2);
+    assert.equal(routeAttempts[0]?.brokerKey, 'delta_exchange');
+    assert.equal(routeAttempts[0]?.accountId, 'delta-acc-1');
+    assert.equal(routeAttempts[0]?.status, 'failed');
+    assert.equal(routeAttempts[0]?.failureClassification, 'confirmed_no_order');
+    assert.equal(routeAttempts[0]?.failureCode, 'ORDER_REJECTED_INSUFFICIENT_MARGIN');
+    assert.match(String(routeAttempts[0]?.failureMessage || ''), /insufficient margin/i);
+    assert.equal(routeAttempts[1]?.brokerKey, 'mudrex');
+    assert.equal(routeAttempts[1]?.accountId, 'acc-1');
+    assert.equal(routeAttempts[1]?.status, 'placed');
+    assert.equal(routeAttempts[1]?.orderId, 'mudrex-live-order-risk-6');
+
+    deltaReconciliationMode = 'empty';
+    latestDeltaIdempotencyKey = null;
+    currentTrade = {
+      ...currentTrade,
+      id: 'st-live-auto-risk-7',
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitTargets: ['108'],
+      status: 'Open',
+    };
+    const persistedCountBeforeAmbiguousNoOrder = persistedExecutions.length;
+    const ambiguousNoOrderRoutes: string[] = [];
+
+    const ambiguousNoOrderFailover = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto-risk-7',
+      {
+        async createOrder(assetId: string, body: Record<string, unknown>) {
+          const route = `${String(body.brokerKey)}:${String(body.accountId)}`;
+          ambiguousNoOrderRoutes.push(route);
+          if (body.brokerKey === 'delta_exchange') {
+            assert.equal(assetId, 'delta-asset-1');
+            latestDeltaIdempotencyKey = String(body.idempotency_key || '');
+            throw new Error('Broker gateway timeout after submit');
+          }
+
+          assert.equal(assetId, 'mudrex-asset-1');
+          assert.equal(body.brokerKey, 'mudrex');
+          assert.equal(body.accountId, 'acc-1');
+          return {
+            success: true,
+            data: {
+              order_id: 'mudrex-live-order-risk-7',
+              status: 'OPEN',
+            },
+          };
+        },
+      }
+    );
+
+    assert.equal(ambiguousNoOrderFailover.outcome, 'placed', ambiguousNoOrderFailover.message);
+    assert.equal(ambiguousNoOrderFailover.brokerKey, 'mudrex');
+    assert.deepEqual(ambiguousNoOrderRoutes, ['delta_exchange:delta-acc-1', 'mudrex:acc-1']);
+    const ambiguousNoOrderExecution = [...persistedExecutions]
+      .slice(persistedCountBeforeAmbiguousNoOrder)
+      .reverse()
+      .find((execution) => Array.isArray(execution.routeAttempts));
+    const ambiguousNoOrderAttempts =
+      (ambiguousNoOrderExecution?.routeAttempts as Array<Record<string, unknown>> | undefined) ??
+      [];
+    assert.equal(ambiguousNoOrderAttempts[0]?.brokerKey, 'delta_exchange');
+    assert.equal(
+      (ambiguousNoOrderAttempts[0]?.reconciliation as Record<string, unknown> | undefined)?.status,
+      'confirmed_no_order'
+    );
+    assert.equal(ambiguousNoOrderAttempts[1]?.brokerKey, 'mudrex');
+    assert.equal(ambiguousNoOrderAttempts[1]?.status, 'placed');
+
+    deltaReconciliationMode = 'found_order';
+    latestDeltaIdempotencyKey = null;
+    currentTrade = {
+      ...currentTrade,
+      id: 'st-live-auto-risk-8',
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitTargets: ['108'],
+      status: 'Open',
+    };
+    const persistedCountBeforeFoundOrder = persistedExecutions.length;
+    const foundOrderRoutes: string[] = [];
+
+    const foundOrderResult = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto-risk-8',
+      {
+        async createOrder(assetId: string, body: Record<string, unknown>) {
+          foundOrderRoutes.push(`${String(body.brokerKey)}:${String(body.accountId)}`);
+          assert.equal(assetId, 'delta-asset-1');
+          assert.equal(body.brokerKey, 'delta_exchange');
+          latestDeltaIdempotencyKey = String(body.idempotency_key || '');
+          throw new Error('Broker gateway timeout after submit');
+        },
+      }
+    );
+
+    assert.equal(foundOrderResult.outcome, 'placed', foundOrderResult.message);
+    assert.equal(foundOrderResult.brokerKey, 'delta_exchange');
+    assert.equal(foundOrderResult.orderId, 'delta-reconciled-order-1');
+    assert.deepEqual(foundOrderRoutes, ['delta_exchange:delta-acc-1']);
+    const foundOrderExecution = [...persistedExecutions]
+      .slice(persistedCountBeforeFoundOrder)
+      .reverse()
+      .find((execution) => Array.isArray(execution.routeAttempts));
+    assert.equal(foundOrderExecution?.orderId, 'delta-reconciled-order-1');
+    const foundOrderAttempts =
+      (foundOrderExecution?.routeAttempts as Array<Record<string, unknown>> | undefined) ?? [];
+    assert.equal(foundOrderAttempts.length, 1);
+    assert.equal(foundOrderAttempts[0]?.status, 'placed');
+    assert.equal(
+      (foundOrderAttempts[0]?.reconciliation as Record<string, unknown> | undefined)?.status,
+      'found_order'
+    );
+
+    deltaReconciliationMode = 'found_position';
+    latestDeltaIdempotencyKey = null;
+    currentTrade = {
+      ...currentTrade,
+      id: 'st-live-auto-risk-9',
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitTargets: ['108'],
+      status: 'Open',
+    };
+    const persistedCountBeforeFoundPosition = persistedExecutions.length;
+    const foundPositionRoutes: string[] = [];
+
+    const foundPositionResult = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto-risk-9',
+      {
+        async createOrder(assetId: string, body: Record<string, unknown>) {
+          foundPositionRoutes.push(`${String(body.brokerKey)}:${String(body.accountId)}`);
+          assert.equal(assetId, 'delta-asset-1');
+          assert.equal(body.brokerKey, 'delta_exchange');
+          latestDeltaIdempotencyKey = String(body.idempotency_key || '');
+          throw new Error('Broker gateway timeout after submit');
+        },
+      }
+    );
+
+    assert.equal(foundPositionResult.outcome, 'placed', foundPositionResult.message);
+    assert.equal(foundPositionResult.brokerKey, 'delta_exchange');
+    assert.equal(foundPositionResult.orderId, null);
+    assert.deepEqual(foundPositionRoutes, ['delta_exchange:delta-acc-1']);
+    const foundPositionExecution = [...persistedExecutions]
+      .slice(persistedCountBeforeFoundPosition)
+      .reverse()
+      .find((execution) => Array.isArray(execution.routeAttempts));
+    assert.equal(foundPositionExecution?.positionId, 'delta-reconciled-position-1');
+    assert.equal(foundPositionExecution?.executionState, 'filled');
+    const foundPositionAttempts =
+      (foundPositionExecution?.routeAttempts as Array<Record<string, unknown>> | undefined) ?? [];
+    assert.equal(foundPositionAttempts.length, 1);
+    assert.equal(foundPositionAttempts[0]?.status, 'placed');
+    assert.equal(
+      (foundPositionAttempts[0]?.reconciliation as Record<string, unknown> | undefined)?.status,
+      'found_position'
+    );
+
+    deltaReconciliationMode = 'empty';
+    latestDeltaIdempotencyKey = null;
+    mudrexRiskOrderFailureMessage = 'protection levels already crossed';
+    service.detectLiveAutoDeltaNativeProtectionConflict = async (
+      _userId: string,
+      brokerKey: string,
+      _accountId: string,
+      symbol: string
+    ) =>
+      brokerKey === 'delta_exchange' && String(symbol).trim().toUpperCase() === 'BTCUSDT'
+        ? 'Delta Exchange live-auto native SL/TP is not safe when the account already has an open net position on this symbol. Close or reconcile the existing Delta exposure before placing another protected live-auto order.'
+        : null;
+    currentTrade = {
+      ...currentTrade,
+      id: 'st-live-auto-risk-10',
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitTargets: ['108'],
+      status: 'Open',
+    };
+    const persistedCountBeforeProtectionFailure = persistedExecutions.length;
+    const protectionFailureRoutes: string[] = [];
+
+    const protectionFailureResult = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto-risk-10',
+      {
+        async createOrder(assetId: string, body: Record<string, unknown>) {
+          protectionFailureRoutes.push(`${String(body.brokerKey)}:${String(body.accountId)}`);
+          assert.equal(assetId, 'mudrex-asset-1');
+          assert.equal(body.brokerKey, 'mudrex');
+          assert.equal(body.accountId, 'acc-1');
+          return {
+            success: true,
+            data: {
+              order_id: 'mudrex-live-order-risk-10',
+              status: 'OPEN',
+            },
+          };
+        },
+      }
+    );
+
+    assert.equal(protectionFailureResult.outcome, 'placed', protectionFailureResult.message);
+    assert.equal(protectionFailureResult.brokerKey, 'mudrex');
+    assert.equal(protectionFailureResult.orderId, 'mudrex-live-order-risk-10');
+    assert.deepEqual(protectionFailureRoutes, ['mudrex:acc-1']);
+    const protectionFailureExecution = [...persistedExecutions]
+      .slice(persistedCountBeforeProtectionFailure)
+      .reverse()
+      .find((execution) => Array.isArray(execution.routeAttempts));
+    assert.equal(protectionFailureExecution?.orderId, 'mudrex-live-order-risk-10');
+    assert.equal(protectionFailureExecution?.executionState, 'linked');
+    assert.equal(protectionFailureExecution?.protectionState, 'manual_unlinked');
+    assert.match(
+      String(protectionFailureExecution?.protectionLastError || ''),
+      /automatic SL\/TP attachment failed/
+    );
+    assert.match(String(protectionFailureExecution?.protectionLastError || ''), /already crossed/);
+    const protectionFailureAttempts =
+      (protectionFailureExecution?.routeAttempts as Array<Record<string, unknown>> | undefined) ??
+      [];
+    assert.equal(protectionFailureAttempts.length, 1);
+    assert.equal(protectionFailureAttempts[0]?.status, 'placed');
+    assert.equal(
+      protectionFailureAttempts[0]?.failureClassification,
+      'order_created_protection_unresolved'
+    );
+    assert.match(String(protectionFailureAttempts[0]?.failureMessage || ''), /already crossed/);
+    mudrexRiskOrderFailureMessage = null;
   } finally {
     env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
     env.suggestedTrades.liveAuto.enabled = originalLiveAuto.enabled;
@@ -7824,6 +8346,7 @@ async function main(): Promise<void> {
   runSuggestedTradeValidationAssertions();
   await runSuggestedTradeExecutionStorageMigrationAssertions();
   await runSuggestedTradeExecutionProtectionMigrationAssertions();
+  await runSuggestedTradeExecutionRouteAttemptsMigrationAssertions();
   await runSuggestedTradesReadPathAssertions();
   await runSuggestedTradesSummaryFilterAssertions();
   await runSuggestedTradeTransitionAssertions();
