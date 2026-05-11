@@ -7249,15 +7249,30 @@ export class SuggestedTradesService {
       .trim()
       .toLowerCase();
     const orderStatus = this.normalizeOrderStatus(execution.orderStatus);
+    const activeOrderStatus = this.isActiveLimitEntryOrderStatus(orderStatus);
+    const partialFillEvidence =
+      orderStatus === 'PARTIALLY_FILLED' || this.hasPositiveFilledQuantity(execution);
+    const terminalOrderStatus = Boolean(
+      orderStatus &&
+        ['FILLED', 'CLOSED', 'CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus)
+    );
     if (
-      ['filled', 'closed', 'cancelled', 'rejected', 'expired', 'failed'].includes(executionState) ||
-      (orderStatus &&
-        ['FILLED', 'CLOSED', 'CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus))
+      terminalOrderStatus ||
+      (!activeOrderStatus &&
+        ['filled', 'closed', 'cancelled', 'rejected', 'expired', 'failed'].includes(
+          executionState
+        ))
     ) {
       return execution;
     }
 
-    if (execution.positionOpenedAt || this.hasOpenPositionSnapshot(positionSnapshots)) {
+    const linkedPositionStatus = this.normalizePositionStatus(execution.positionStatus);
+    if (
+      !partialFillEvidence &&
+      (linkedPositionStatus === 'OPEN' ||
+        linkedPositionStatus === 'PARTIAL' ||
+        this.hasOpenPositionSnapshot(positionSnapshots))
+    ) {
       return execution;
     }
 
@@ -7294,18 +7309,39 @@ export class SuggestedTradesService {
       return execution;
     }
 
-    const expiryMessage = `Limit entry order expired after ${this.formatDurationFromSeconds(expirySeconds)} for ${trade.timeframe}; cancel requested at ${new Date().toISOString()}.`;
+    const nowIso = new Date().toISOString();
+    const expiryMessage = partialFillEvidence
+      ? `Partially filled limit entry order exceeded ${this.formatDurationFromSeconds(expirySeconds)} for ${trade.timeframe}; remaining quantity cancel requested at ${nowIso}.`
+      : `Limit entry order expired after ${this.formatDurationFromSeconds(expirySeconds)} for ${trade.timeframe}; cancel requested at ${nowIso}.`;
     try {
       await adapter.cancelOrder(orderId, {
         userId,
         brokerKey,
         accountId,
       });
+      if (partialFillEvidence) {
+        return {
+          ...execution,
+          orderStatus: 'PARTIALLY_FILLED',
+          executionState: 'filled',
+          canceledAt: nowIso,
+          remainingQuantity: 0,
+          note: this.appendExecutionNote(execution.note, expiryMessage),
+        };
+      }
+
       return {
         ...execution,
         orderStatus: 'EXPIRED',
         executionState: 'expired',
-        canceledAt: new Date().toISOString(),
+        canceledAt: nowIso,
+        positionId: null,
+        positionStatus: null,
+        positionOpenedAt: null,
+        positionClosedAt: null,
+        exitPrice: null,
+        realizedPnl: null,
+        outcome: null,
         note: this.appendExecutionNote(execution.note, expiryMessage),
       };
     } catch (error) {
@@ -7318,6 +7354,45 @@ export class SuggestedTradesService {
         ),
       };
     }
+  }
+
+  private isActiveLimitEntryOrderStatus(status: string | null): boolean {
+    return Boolean(status && ['OPEN', 'PENDING', 'PARTIALLY_FILLED'].includes(status));
+  }
+
+  private isActiveUnfilledLiveEntryOrder(execution: SuggestedTradeExecutionLink): boolean {
+    if (execution.executionMode !== 'live') {
+      return false;
+    }
+
+    const orderStatus = this.normalizeOrderStatus(execution.orderStatus);
+    return Boolean(
+      orderStatus &&
+        ['OPEN', 'PENDING'].includes(orderStatus) &&
+        !this.hasExecutionFillEvidence(execution)
+    );
+  }
+
+  private clearStalePositionOutcomeForActiveUnfilledOrder(
+    execution: SuggestedTradeExecutionLink
+  ): SuggestedTradeExecutionLink {
+    if (!this.isActiveUnfilledLiveEntryOrder(execution)) {
+      return execution;
+    }
+
+    return {
+      ...execution,
+      executionState: 'working',
+      filledAt: null,
+      filledPrice: null,
+      positionId: null,
+      positionStatus: null,
+      positionOpenedAt: null,
+      positionClosedAt: null,
+      exitPrice: null,
+      realizedPnl: null,
+      outcome: null,
+    };
   }
 
   private hasOpenPositionSnapshot(
@@ -7931,28 +8006,13 @@ export class SuggestedTradesService {
   }
 
   private isExecutionOrderFilled(execution: SuggestedTradeExecutionLink): boolean {
-    const orderStatus = this.normalizeOrderStatus(execution.orderStatus);
-    const executionState = this.readStringValue(execution.executionState)?.toLowerCase();
-    return Boolean(
-      execution.filledAt ||
-      executionState === 'filled' ||
-      orderStatus === 'FILLED' ||
-      orderStatus === 'CLOSED'
-    );
+    return this.hasExecutionFillEvidence(execution);
   }
 
   private isUnfilledTerminalEntryExecution(execution: SuggestedTradeExecutionLink): boolean {
     const orderStatus = this.normalizeOrderStatus(execution.orderStatus);
     const executionState = this.readStringValue(execution.executionState)?.toLowerCase();
-    const filledQuantity = this.readNumberValue(execution.filledQuantity);
-    const hasFillEvidence = Boolean(
-      execution.filledAt ||
-      executionState === 'filled' ||
-      orderStatus === 'FILLED' ||
-      orderStatus === 'CLOSED' ||
-      (filledQuantity && filledQuantity > 0)
-    );
-    if (hasFillEvidence) {
+    if (this.hasExecutionFillEvidence(execution)) {
       return false;
     }
 
@@ -7960,6 +8020,24 @@ export class SuggestedTradesService {
       ['cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '') ||
       ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus ?? '')
     );
+  }
+
+  private hasExecutionFillEvidence(execution: SuggestedTradeExecutionLink): boolean {
+    const orderStatus = this.normalizeOrderStatus(execution.orderStatus);
+    const executionState = this.readStringValue(execution.executionState)?.toLowerCase();
+    return Boolean(
+      execution.filledAt ||
+      executionState === 'filled' ||
+      orderStatus === 'FILLED' ||
+      orderStatus === 'CLOSED' ||
+      orderStatus === 'PARTIALLY_FILLED' ||
+      this.hasPositiveFilledQuantity(execution)
+    );
+  }
+
+  private hasPositiveFilledQuantity(execution: SuggestedTradeExecutionLink): boolean {
+    const filledQuantity = this.readNumberValue(execution.filledQuantity);
+    return Boolean(filledQuantity && filledQuantity > 0);
   }
 
   private isDeltaClosedFilledOrder(
@@ -7995,18 +8073,23 @@ export class SuggestedTradesService {
     const orderStatus = this.normalizeOrderStatus(execution.orderStatus);
     const positionStatus = this.normalizePositionStatus(execution.positionStatus);
     const outcome = this.readStringValue(execution.outcome)?.toLowerCase();
+    const hasFillEvidence = this.hasExecutionFillEvidence(execution);
     if (positionStatus === 'OPEN' || positionStatus === 'PARTIAL') {
       return Boolean(
-        ['cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '') ||
-        ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus ?? '')
+        !hasFillEvidence &&
+          (['cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '') ||
+            ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus ?? ''))
       );
     }
     return Boolean(
       execution.positionClosedAt ||
       positionStatus === 'CLOSED' ||
       positionStatus === 'LIQUIDATED' ||
-      ['closed', 'cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '') ||
-      ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus ?? '') ||
+      executionState === 'closed' ||
+      (!hasFillEvidence &&
+        ['cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '')) ||
+      (!hasFillEvidence &&
+        ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus ?? '')) ||
       ['profit', 'loss', 'breakeven'].includes(outcome ?? '')
     );
   }
@@ -8388,6 +8471,13 @@ export class SuggestedTradesService {
       return execution;
     }
 
+    if (this.isUnfilledTerminalEntryExecution(execution)) {
+      return execution;
+    }
+    if (this.isActiveUnfilledLiveEntryOrder(execution)) {
+      return execution;
+    }
+
     const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
     const accountId = this.readStringValue(execution.accountId);
     const orderId = this.readStringValue(execution.orderId);
@@ -8704,7 +8794,13 @@ export class SuggestedTradesService {
       normalizedStatus,
       filledQuantity
     );
-    const executionState = deltaClosedFilledOrder
+    const positiveFilledQuantity = typeof filledQuantity === 'number' && filledQuantity > 0;
+    const terminalOrderWithPartialFill = Boolean(
+      positiveFilledQuantity &&
+        normalizedStatus &&
+        ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(normalizedStatus)
+    );
+    const executionState = deltaClosedFilledOrder || terminalOrderWithPartialFill
       ? 'filled'
       : this.mapExecutionState(normalizedStatus, snapshot.statusRank);
 
@@ -8722,7 +8818,11 @@ export class SuggestedTradesService {
       filledAt:
         this.toIsoString(payload.filled_at) ??
         this.toIsoString(payload.filledAt) ??
-        (normalizedStatus === 'FILLED' || deltaClosedFilledOrder
+        (normalizedStatus === 'FILLED' ||
+        normalizedStatus === 'PARTIALLY_FILLED' ||
+        deltaClosedFilledOrder ||
+        terminalOrderWithPartialFill ||
+        positiveFilledQuantity
           ? (updatedAt ?? existing?.filledAt ?? null)
           : (existing?.filledAt ?? null)),
       canceledAt:
@@ -8752,6 +8852,12 @@ export class SuggestedTradesService {
     }>,
     options: { allowPositionEvidenceFill?: boolean } = {}
   ): SuggestedTradeExecutionLink {
+    const canUseActivePositionEvidence =
+      options.allowPositionEvidenceFill === true && this.hasOpenPositionSnapshot(snapshots);
+    if (this.isActiveUnfilledLiveEntryOrder(execution) && !canUseActivePositionEvidence) {
+      return this.clearStalePositionOutcomeForActiveUnfilledOrder(execution);
+    }
+
     const candidate = this.selectBestPositionCandidate(trade, execution, snapshots, {
       allowPositionEvidenceFill: options.allowPositionEvidenceFill === true,
     });
@@ -8894,6 +9000,10 @@ export class SuggestedTradesService {
       payload: Record<string, unknown> | null;
     }>
   ): boolean {
+    if (this.isActiveUnfilledLiveEntryOrder(execution)) {
+      return false;
+    }
+
     const normalizedExecutionStatus = this.normalizePositionStatus(execution.positionStatus);
     if (normalizedExecutionStatus === 'CLOSED' || normalizedExecutionStatus === 'LIQUIDATED') {
       return true;
@@ -9077,6 +9187,11 @@ export class SuggestedTradesService {
     if (this.isUnfilledTerminalEntryExecution(execution)) {
       return null;
     }
+    const canUseActivePositionEvidence =
+      options.allowPositionEvidenceFill === true && this.hasOpenPositionSnapshot(snapshots);
+    if (this.isActiveUnfilledLiveEntryOrder(execution) && !canUseActivePositionEvidence) {
+      return null;
+    }
 
     const expectedDirection = String(trade.side || '').toUpperCase() === 'SELL' ? 'short' : 'long';
     const linkedPositionId = this.readStringValue(execution.positionId);
@@ -9142,6 +9257,20 @@ export class SuggestedTradesService {
       const status = this.normalizePositionStatus(
         this.readStringValue(snapshot.status) ?? this.readStringValue(payload.status) ?? null
       );
+      if (
+        this.isActiveUnfilledLiveEntryOrder(execution) &&
+        (status === 'CLOSED' || status === 'LIQUIDATED')
+      ) {
+        continue;
+      }
+      if (
+        !linkedPositionId &&
+        options.allowPositionEvidenceFill === true &&
+        !this.isExecutionOrderFilled(execution) &&
+        (status === 'CLOSED' || status === 'LIQUIDATED')
+      ) {
+        continue;
+      }
       if (exactPositionMatch) {
         score += preferOpenPosition && (status === 'CLOSED' || status === 'LIQUIDATED') ? 15 : 80;
       }

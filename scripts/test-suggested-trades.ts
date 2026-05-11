@@ -4356,6 +4356,245 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     String(savedExecutionPayload?.['note'] || ''),
     /Limit entry order expired after 15m for 5m/
   );
+
+  savedExecutionPayload = null;
+  cancelledOrders.length = 0;
+
+  const activeLinkedAt = new Date().toISOString();
+  const activeOpenOrderTrade = {
+    id: 'st-limit-active-stale-position',
+    automationId: 'auto-1',
+    automationRunId: 'run-1',
+    userId: 'user-1',
+    sourceBacktestId: null,
+    sourceTemplateId: null,
+    sourceSetupKey: null,
+    symbol: 'BTCUSDT',
+    timeframe: '5m',
+    side: 'BUY',
+    signalTime: new Date(activeLinkedAt),
+    status: 'Accepted',
+    confidence: 0.88,
+    score: 90,
+    entryPrice: '100',
+    stopLossPrice: '95',
+    takeProfitTargets: ['108'],
+    entryRule: 'breakout',
+    exitRule: 'trail',
+    rationale: 'Momentum continuation',
+    dedupeKey: 'dedupe-limit-active-stale-position',
+    meta: {
+      execution: {
+        executionMode: 'live',
+        orderId: 'ord-limit-active-stale-position',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        executionState: 'closed',
+        orderStatus: 'OPEN',
+        orderType: 'limit',
+        linkedAt: activeLinkedAt,
+        submittedAt: activeLinkedAt,
+        entryPrice: '100',
+        quantity: 1,
+        filledQuantity: 0,
+        positionId: 'older-active-closed-position',
+        positionStatus: 'CLOSED',
+        positionOpenedAt: '2026-04-04T08:00:00.000Z',
+        positionClosedAt: '2026-04-04T08:15:00.000Z',
+        exitPrice: '99',
+        realizedPnl: '-1',
+        outcome: 'loss',
+        note: 'Open limit order carried stale closed position metadata.',
+      },
+    },
+    createdAt: new Date(activeLinkedAt),
+    updatedAt: new Date(activeLinkedAt),
+  };
+
+  service.suggestedTradeRepository = {
+    async getLinkedOrderSnapshot() {
+      return {
+        orderStatus: 'OPEN',
+        statusRank: 1,
+        lastSeenAt: activeLinkedAt,
+        payload: {
+          created_at: activeLinkedAt,
+          updated_at: activeLinkedAt,
+          filled_quantity: 0,
+        },
+      };
+    },
+    async getLinkedPositionSnapshots() {
+      return [
+        {
+          externalId: 'older-active-closed-position',
+          status: 'CLOSED',
+          statusRank: 3,
+          firstSeenAt: '2026-04-04T08:00:00.000Z',
+          lastSeenAt: '2026-04-04T08:15:00.000Z',
+          payload: {
+            status: 'closed',
+            side: 'long',
+            created_at: '2026-04-04T08:00:00.000Z',
+            closed_at: '2026-04-04T08:15:00.000Z',
+            entry_price: 100,
+            quantity: 1,
+          },
+        },
+      ];
+    },
+    async saveSuggestedTrade(item: Record<string, unknown>) {
+      return {
+        ...item,
+        updatedAt: new Date(activeLinkedAt),
+      };
+    },
+    async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+      savedExecutionPayload = { ...payload };
+      return {
+        ...payload,
+        createdAt: new Date(activeLinkedAt),
+        updatedAt: new Date(activeLinkedAt),
+      };
+    },
+  };
+
+  const refreshedActiveOpenOrderTrade = await service.refreshExecutionOutcomes('user-1', [
+    activeOpenOrderTrade,
+  ]);
+
+  assert.equal(refreshedActiveOpenOrderTrade, 1);
+  assert.deepEqual(cancelledOrders, []);
+  assert.equal(savedExecutionPayload?.['executionState'], 'working');
+  assert.equal(savedExecutionPayload?.['orderStatus'], 'OPEN');
+  assert.equal(savedExecutionPayload?.['positionId'], null);
+  assert.equal(savedExecutionPayload?.['positionStatus'], null);
+  assert.equal(savedExecutionPayload?.['positionOpenedAt'], null);
+  assert.equal(savedExecutionPayload?.['positionClosedAt'], null);
+  assert.equal(savedExecutionPayload?.['outcome'], null);
+
+  savedExecutionPayload = null;
+  cancelledOrders.length = 0;
+
+  const staleClosedPositionTrade = {
+    id: 'st-limit-expiry-stale-position',
+    automationId: 'auto-1',
+    automationRunId: 'run-1',
+    userId: 'user-1',
+    sourceBacktestId: null,
+    sourceTemplateId: null,
+    sourceSetupKey: null,
+    symbol: 'BTCUSDT',
+    timeframe: '5m',
+    side: 'BUY',
+    signalTime: new Date('2026-04-04T10:00:00.000Z'),
+    status: 'Accepted',
+    confidence: 0.88,
+    score: 90,
+    entryPrice: '100',
+    stopLossPrice: '95',
+    takeProfitTargets: ['108'],
+    entryRule: 'breakout',
+    exitRule: 'trail',
+    rationale: 'Momentum continuation',
+    dedupeKey: 'dedupe-limit-expiry-stale-position',
+    meta: {
+      execution: {
+        executionMode: 'live',
+        orderId: 'ord-limit-stale-position',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        executionState: 'closed',
+        orderStatus: 'OPEN',
+        orderType: 'limit',
+        linkedAt: '2026-04-04T10:01:00.000Z',
+        submittedAt: '2026-04-04T10:01:00.000Z',
+        entryPrice: '100',
+        quantity: 1,
+        filledQuantity: 0,
+        positionId: 'older-closed-position',
+        positionStatus: 'CLOSED',
+        positionOpenedAt: '2026-04-04T08:00:00.000Z',
+        positionClosedAt: '2026-04-04T08:15:00.000Z',
+        exitPrice: '99',
+        realizedPnl: '-1',
+        outcome: 'loss',
+        note: 'Open limit order was incorrectly linked to an older closed position.',
+      },
+    },
+    createdAt: new Date('2026-04-04T10:00:30.000Z'),
+    updatedAt: new Date('2026-04-04T10:02:00.000Z'),
+  };
+
+  service.suggestedTradeRepository = {
+    async getLinkedOrderSnapshot() {
+      return {
+        orderStatus: 'OPEN',
+        statusRank: 1,
+        lastSeenAt: '2026-04-04T10:20:00.000Z',
+        payload: {
+          created_at: '2026-04-04T10:01:00.000Z',
+          updated_at: '2026-04-04T10:20:00.000Z',
+          filled_quantity: 0,
+        },
+      };
+    },
+    async getLinkedPositionSnapshots() {
+      return [
+        {
+          externalId: 'older-closed-position',
+          status: 'CLOSED',
+          statusRank: 3,
+          firstSeenAt: '2026-04-04T08:00:00.000Z',
+          lastSeenAt: '2026-04-04T08:15:00.000Z',
+          payload: {
+            status: 'closed',
+            side: 'long',
+            created_at: '2026-04-04T08:00:00.000Z',
+            closed_at: '2026-04-04T08:15:00.000Z',
+            entry_price: 100,
+            quantity: 1,
+          },
+        },
+      ];
+    },
+    async saveSuggestedTrade(item: Record<string, unknown>) {
+      return {
+        ...item,
+        updatedAt: new Date('2026-04-04T10:20:00.000Z'),
+      };
+    },
+    async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+      savedExecutionPayload = { ...payload };
+      return {
+        ...payload,
+        createdAt: new Date('2026-04-04T10:20:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:20:00.000Z'),
+      };
+    },
+  };
+
+  const refreshedStalePositionTrade = await service.refreshExecutionOutcomes('user-1', [
+    staleClosedPositionTrade,
+  ]);
+
+  assert.equal(refreshedStalePositionTrade, 1);
+  assert.deepEqual(cancelledOrders, [
+    {
+      orderId: 'ord-limit-stale-position',
+      context: {
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+      },
+    },
+  ]);
+  assert.equal(savedExecutionPayload?.['executionState'], 'expired');
+  assert.equal(savedExecutionPayload?.['orderStatus'], 'EXPIRED');
+  assert.equal(savedExecutionPayload?.['positionId'], null);
+  assert.equal(savedExecutionPayload?.['positionStatus'], null);
+  assert.equal(savedExecutionPayload?.['positionOpenedAt'], null);
+  assert.equal(savedExecutionPayload?.['positionClosedAt'], null);
 }
 
 async function runSuggestedTradeBrokerLiveAutoSizingHandlerAssertions(): Promise<void> {
