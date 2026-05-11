@@ -1714,6 +1714,25 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal((persistedExecution?.['triggerType'] as string | undefined) ?? null, 'GTC');
     service.runPreTradeGate = originalRunPreTradeGate;
 
+    baseTrade.timeframe = '5m';
+    baseTrade.signalTime = new Date('2026-05-11T08:20:00.000Z');
+    const currentRunLatencyAllowed = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto',
+      {
+        async createOrder() {
+          throw new Error('current-run latency path should not create orders when execution is disabled');
+        },
+      },
+      {
+        currentRunFreshnessFloorSeconds: 480,
+        freshnessEvaluatedAt: new Date('2026-05-11T08:30:05.000Z'),
+      }
+    );
+    assert.equal(currentRunLatencyAllowed.outcome, 'ready');
+    assert.equal(preTradeGateCalls, 3);
+    baseTrade.timeframe = '1h';
+
     baseTrade.signalTime = new Date(Date.now() - 3 * 60 * 60 * 1000);
     const stale = await service.attemptAutoLiveExecutionForAutomation('user-1', 'st-live-auto', {
       async createOrder() {
@@ -1723,7 +1742,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal(stale.outcome, 'skipped');
     assert.match(stale.message, /Skipped live execution/);
     assert.match(stale.message, /freshness window/);
-    assert.equal(preTradeGateCalls, 2);
+    assert.equal(preTradeGateCalls, 3);
     assert.ok(loggedActivities.includes('Live auto stale signal skipped: BTCUSDT'));
     baseTrade.signalTime = freshOneHourSignalTime;
 

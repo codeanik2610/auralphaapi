@@ -118,6 +118,19 @@ const deriveDefaultGraceSeconds = (timeframeSeconds: number): number =>
     Math.max(120, Math.round(timeframeSeconds * 0.15))
   );
 
+export const resolveDefaultFreshnessGraceSeconds = (timeframe: string): number | null => {
+  const normalizedTimeframe = normalizeTimeframe(timeframe);
+  const timeframeSeconds = parseTimeframeSeconds(normalizedTimeframe);
+  if (!timeframeSeconds) {
+    return null;
+  }
+
+  return (
+    DEFAULT_TRADE_SUGGESTION_FRESHNESS_GRACE_SECONDS[normalizedTimeframe] ??
+    deriveDefaultGraceSeconds(timeframeSeconds)
+  );
+};
+
 export const normalizeTradeSuggestionFreshnessPolicy = (
   value: unknown
 ): TradeSuggestionFreshnessPolicy => {
@@ -181,11 +194,13 @@ export const evaluateSignalFreshness = ({
   timeframe,
   policy,
   evaluatedAt = new Date(),
+  minimumMaxAgeAfterCloseSeconds = null,
 }: {
   signalTime: Date | string | null | undefined;
   timeframe: string;
   policy: TradeSuggestionFreshnessPolicy;
   evaluatedAt?: Date;
+  minimumMaxAgeAfterCloseSeconds?: number | null;
 }): SignalFreshnessEvaluation => {
   const evaluatedAtDate = Number.isFinite(evaluatedAt.getTime()) ? evaluatedAt : new Date();
   const evaluatedAtIso = evaluatedAtDate.toISOString();
@@ -242,7 +257,17 @@ export const evaluateSignalFreshness = ({
     };
   }
 
-  const maxAgeAfterCloseSeconds = resolveFreshnessGraceSeconds(timeframe, policy);
+  const configuredMaxAgeAfterCloseSeconds = resolveFreshnessGraceSeconds(timeframe, policy);
+  const normalizedMinimumMaxAgeAfterCloseSeconds = normalizeFreshnessSeconds(
+    minimumMaxAgeAfterCloseSeconds
+  );
+  const maxAgeAfterCloseSeconds =
+    configuredMaxAgeAfterCloseSeconds === null
+      ? normalizedMinimumMaxAgeAfterCloseSeconds
+      : Math.max(
+          configuredMaxAgeAfterCloseSeconds,
+          normalizedMinimumMaxAgeAfterCloseSeconds ?? configuredMaxAgeAfterCloseSeconds
+        );
   if (maxAgeAfterCloseSeconds === null) {
     return {
       allowed: true,

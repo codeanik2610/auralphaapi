@@ -23,6 +23,7 @@ import {
 import {
   evaluateSignalFreshness,
   normalizeTradeSuggestionFreshnessPolicy,
+  resolveDefaultFreshnessGraceSeconds,
   resolveFreshnessGraceSeconds,
 } from '../src/api/utils/signalFreshness';
 import { AutomationRepository } from '../src/database/repositories/AutomationRepository';
@@ -1071,6 +1072,28 @@ function runTradeSuggestionFreshnessPolicyAssertions(): void {
     false,
     '1h signal should still block genuinely stale late arrivals'
   );
+
+  const strictFiveMinutePolicy = normalizeTradeSuggestionFreshnessPolicy({
+    timeframeGraceSeconds: {
+      '5m': 180,
+    },
+  });
+  const strictFiveMinuteEvaluation = evaluateSignalFreshness({
+    signalTime: '2026-05-11T08:20:00.000Z',
+    timeframe: '5m',
+    policy: strictFiveMinutePolicy,
+    evaluatedAt: new Date('2026-05-11T08:30:05.000Z'),
+  });
+  assert.equal(strictFiveMinuteEvaluation.allowed, false);
+  const currentRunFiveMinuteEvaluation = evaluateSignalFreshness({
+    signalTime: '2026-05-11T08:20:00.000Z',
+    timeframe: '5m',
+    policy: strictFiveMinutePolicy,
+    evaluatedAt: new Date('2026-05-11T08:30:05.000Z'),
+    minimumMaxAgeAfterCloseSeconds: resolveDefaultFreshnessGraceSeconds('5m'),
+  });
+  assert.equal(currentRunFiveMinuteEvaluation.allowed, true);
+  assert.equal(currentRunFiveMinuteEvaluation.maxAgeAfterCloseSeconds, 480);
 }
 
 function runAutomationScheduleAuditAssertions(): void {
@@ -1871,6 +1894,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       const whatsappCalls: Array<Record<string, unknown>> = [];
       const notificationCalls: Array<Record<string, unknown>> = [];
       const evaluatorCalls: Array<Record<string, unknown>> = [];
+      const liveAutoOptions: Array<Record<string, unknown>> = [];
       const automationTradeSuggestion = {
         ...automation,
         automationType: 'trade-suggestion',
@@ -1940,13 +1964,21 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         }),
       };
       service.suggestedTradesService = {
-        attemptAutoLiveExecutionForAutomation: async () => ({
-          outcome: 'ready',
-          message: 'Ready for live handling',
-          brokerKey: 'mudrex',
-          accountId: 'account-1',
-          preTradeCheckId: 'check-1',
-        }),
+        attemptAutoLiveExecutionForAutomation: async (
+          _userId: string,
+          _suggestedTradeId: string,
+          _handler: unknown,
+          options: Record<string, unknown>
+        ) => {
+          liveAutoOptions.push(options);
+          return {
+            outcome: 'ready',
+            message: 'Ready for live handling',
+            brokerKey: 'mudrex',
+            accountId: 'account-1',
+            preTradeCheckId: 'check-1',
+          };
+        },
       };
       service.automationRunOutputRepository = {
         createOutput: async (payload: Record<string, unknown>) => {
@@ -1991,6 +2023,8 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       assert.equal(result.inserted, 1);
       assert.equal(evaluatorCalls[0]?.signalSelectionMode, 'latest_closed_only');
       assert.equal(result.autoLiveReady, 1);
+      assert.equal(liveAutoOptions[0]?.currentRunFreshnessFloorSeconds, 900);
+      assert.ok(liveAutoOptions[0]?.freshnessEvaluatedAt instanceof Date);
       assert.equal(outputs.length, 2);
       assert.equal(outputs[1]?.outputType, 'trade-suggestion.live-auto');
       assert.equal(whatsappCalls.length, 1);

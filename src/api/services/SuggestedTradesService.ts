@@ -2894,6 +2894,8 @@ export class SuggestedTradesService {
     handler: LiveAutoOrderPlacementHandler,
     options: {
       placedInRun?: number;
+      freshnessEvaluatedAt?: Date;
+      currentRunFreshnessFloorSeconds?: number | null;
     } = {}
   ): Promise<SuggestedTradeAutoLiveRolloutResult> {
     const validatedTradeId = validateSuggestedTradeId(suggestedTradeId);
@@ -2961,7 +2963,10 @@ export class SuggestedTradesService {
       };
     }
 
-    const signalFreshness = this.evaluateSuggestedTradeFreshness(trade, executionPolicy);
+    const signalFreshness = this.evaluateSuggestedTradeFreshness(trade, executionPolicy, {
+      evaluatedAt: options.freshnessEvaluatedAt,
+      minimumMaxAgeAfterCloseSeconds: options.currentRunFreshnessFloorSeconds ?? null,
+    });
     if (!signalFreshness.allowed) {
       const message = this.buildLiveExecutionFreshnessBlockedMessage(signalFreshness);
       await this.operationalEventService.logActivity(userId, {
@@ -5714,12 +5719,18 @@ export class SuggestedTradesService {
 
   private evaluateSuggestedTradeFreshness(
     trade: SuggestedTrade,
-    executionPolicy: ResolvedTradeSuggestionExecutionPolicy
+    executionPolicy: ResolvedTradeSuggestionExecutionPolicy,
+    options: {
+      evaluatedAt?: Date;
+      minimumMaxAgeAfterCloseSeconds?: number | null;
+    } = {}
   ): SignalFreshnessEvaluation {
     return evaluateSignalFreshness({
       signalTime: trade.signalTime,
       timeframe: trade.timeframe,
       policy: executionPolicy.freshness,
+      evaluatedAt: options.evaluatedAt,
+      minimumMaxAgeAfterCloseSeconds: options.minimumMaxAgeAfterCloseSeconds ?? null,
     });
   }
 
@@ -5728,7 +5739,7 @@ export class SuggestedTradesService {
       return 'Signal freshness guard is disabled for this automation.';
     }
     if (freshness.ageAfterCloseSeconds !== null && freshness.maxAgeAfterCloseSeconds !== null) {
-      return `Skipped live execution: ${freshness.timeframe} signal closed ${this.formatDurationFromSeconds(freshness.ageAfterCloseSeconds)} ago, exceeding the configured ${this.formatDurationFromSeconds(freshness.maxAgeAfterCloseSeconds)} freshness window.`;
+      return `Skipped live execution: ${freshness.timeframe} signal closed ${this.formatDurationFromSeconds(freshness.ageAfterCloseSeconds)} ago, exceeding the effective ${this.formatDurationFromSeconds(freshness.maxAgeAfterCloseSeconds)} freshness window.`;
     }
     return `Skipped live execution: ${freshness.reason}`;
   }

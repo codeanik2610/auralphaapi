@@ -24,6 +24,7 @@ import {
   TRADE_SUGGESTION_EXECUTION_LIMIT_RULES,
   normalizeTradeSuggestionExecutionPolicy,
 } from '../utils/automationType';
+import { resolveDefaultFreshnessGraceSeconds } from '../utils/signalFreshness';
 import {
   buildStrategyTemplateAutomationProfile,
   StrategyTemplateAutomationProfile,
@@ -1211,6 +1212,9 @@ export class AutomationExecutionService {
               },
               {
                 placedInRun: autoLivePlaced,
+                freshnessEvaluatedAt: new Date(),
+                currentRunFreshnessFloorSeconds:
+                  resolveDefaultFreshnessGraceSeconds(timeframe),
               }
             );
 
