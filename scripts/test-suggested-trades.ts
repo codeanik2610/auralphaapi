@@ -4595,6 +4595,67 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
   assert.equal(savedExecutionPayload?.['positionStatus'], null);
   assert.equal(savedExecutionPayload?.['positionOpenedAt'], null);
   assert.equal(savedExecutionPayload?.['positionClosedAt'], null);
+
+  savedExecutionPayload = null;
+  cancelledOrders.length = 0;
+
+  const terminalCancelTrade = {
+    ...staleClosedPositionTrade,
+    id: 'st-limit-expiry-terminal-cancel',
+    dedupeKey: 'dedupe-limit-expiry-terminal-cancel',
+    executionRecord: null,
+    meta: {
+      execution: {
+        executionMode: 'live',
+        orderId: 'ord-limit-terminal-cancel',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        executionState: 'closed',
+        orderStatus: 'OPEN',
+        orderType: 'limit',
+        linkedAt: '2026-04-04T10:01:00.000Z',
+        submittedAt: '2026-04-04T10:01:00.000Z',
+        entryPrice: '100',
+        quantity: 1,
+        filledQuantity: 0,
+        positionId: 'older-closed-position',
+        positionStatus: 'CLOSED',
+        positionOpenedAt: '2026-04-04T08:00:00.000Z',
+        positionClosedAt: '2026-04-04T08:15:00.000Z',
+        exitPrice: '99',
+        realizedPnl: '-1',
+        outcome: 'loss',
+        note: 'Broker cancel should be idempotent when the broker already considers it terminal.',
+      },
+    },
+  };
+
+  service.brokerRuntimeRegistry = {
+    supportsOrdersAdapter() {
+      return true;
+    },
+    getOrdersAdapter() {
+      return {
+        async cancelOrder() {
+          throw new Error('order is in terminal state');
+        },
+      };
+    },
+  };
+
+  const refreshedTerminalCancelTrade = await service.refreshExecutionOutcomes('user-1', [
+    terminalCancelTrade,
+  ]);
+
+  assert.equal(refreshedTerminalCancelTrade, 1);
+  assert.deepEqual(cancelledOrders, []);
+  assert.equal(savedExecutionPayload?.['executionState'], 'expired');
+  assert.equal(savedExecutionPayload?.['orderStatus'], 'EXPIRED');
+  assert.equal(savedExecutionPayload?.['positionId'], null);
+  assert.match(
+    String(savedExecutionPayload?.['note'] || ''),
+    /Broker reported order already terminal during expiry cancel/
+  );
 }
 
 async function runSuggestedTradeBrokerLiveAutoSizingHandlerAssertions(): Promise<void> {

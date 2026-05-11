@@ -7346,6 +7346,40 @@ export class SuggestedTradesService {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (this.isAlreadyTerminalCancelError(message)) {
+        const terminalMessage = 'Broker reported order already terminal during expiry cancel.';
+        if (partialFillEvidence) {
+          return {
+            ...execution,
+            orderStatus: 'PARTIALLY_FILLED',
+            executionState: 'filled',
+            canceledAt: nowIso,
+            remainingQuantity: 0,
+            note: this.appendExecutionNote(
+              this.appendExecutionNote(execution.note, expiryMessage),
+              terminalMessage
+            ),
+          };
+        }
+
+        return {
+          ...execution,
+          orderStatus: 'EXPIRED',
+          executionState: 'expired',
+          canceledAt: nowIso,
+          positionId: null,
+          positionStatus: null,
+          positionOpenedAt: null,
+          positionClosedAt: null,
+          exitPrice: null,
+          realizedPnl: null,
+          outcome: null,
+          note: this.appendExecutionNote(
+            this.appendExecutionNote(execution.note, expiryMessage),
+            terminalMessage
+          ),
+        };
+      }
       return {
         ...execution,
         note: this.appendExecutionNote(
@@ -7354,6 +7388,12 @@ export class SuggestedTradesService {
         ),
       };
     }
+  }
+
+  private isAlreadyTerminalCancelError(message: string): boolean {
+    return String(message || '')
+      .toLowerCase()
+      .includes('terminal state');
   }
 
   private isActiveLimitEntryOrderStatus(status: string | null): boolean {
@@ -8795,6 +8835,22 @@ export class SuggestedTradesService {
       filledQuantity
     );
     const positiveFilledQuantity = typeof filledQuantity === 'number' && filledQuantity > 0;
+    if (
+      existing &&
+      !positiveFilledQuantity &&
+      this.isUnfilledTerminalEntryExecution(existing) &&
+      this.isActiveLimitEntryOrderStatus(normalizedStatus)
+    ) {
+      const snapshotSeenMs = this.toTimestamp(snapshot.lastSeenAt);
+      const localTerminalMs =
+        this.toTimestamp(existing.canceledAt) ?? this.toTimestamp(existing.lastSeenAt);
+      if (localTerminalMs && (!snapshotSeenMs || snapshotSeenMs <= localTerminalMs)) {
+        return {
+          ...existing,
+          lastSeenAt: existing.lastSeenAt ?? this.toIsoString(snapshot.lastSeenAt) ?? null,
+        };
+      }
+    }
     const terminalOrderWithPartialFill = Boolean(
       positiveFilledQuantity &&
         normalizedStatus &&
