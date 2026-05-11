@@ -60,9 +60,14 @@ export class MarketsOverviewController {
     @Req() request: Request,
     @Param('symbol') symbol: string,
     @QueryParam('interval') interval?: string,
-    @QueryParam('limit') limit?: string
+    @QueryParam('limit') limit?: string,
+    @QueryParam('endTime') endTime?: string
   ): Promise<ApiSuccessResponse<MarketChartResponse>> {
     void requireAuthUserId(request);
-    return this.marketsOverviewService.getSymbolChart(symbol, { interval, limit });
+    return this.marketsOverviewService.getSymbolChart(symbol, {
+      interval,
+      limit,
+      ...(endTime ? { endTime } : {}),
+    });
   }
 }

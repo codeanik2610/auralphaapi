@@ -1796,6 +1796,79 @@ function testOrdersSyncStaleCutoffFloorsToSqlSecond(): void {
   assert.equal(cutoff.toISOString(), '2026-05-05T16:43:33.000Z');
 }
 
+async function testOrdersSyncActiveOpenSnapshotReopensTerminalSnapshot(): Promise<void> {
+  const service = new InternalOrdersSyncService() as any;
+  const originalQuery = (coreDataSource as any).query;
+  const insertStatements: string[] = [];
+
+  (coreDataSource as any).query = async (sql: string) => {
+    const statement = String(sql).replace(/\s+/g, ' ').trim();
+    if (statement.includes('SELECT external_id, order_status, payload_hash, status_rank')) {
+      return [
+        {
+          external_id: 'ord-live-open',
+          order_status: 'CLOSED',
+          payload_hash: 'closed-hash',
+          status_rank: 4,
+        },
+      ];
+    }
+    if (statement.includes('INSERT INTO scheduler_orders_snapshots')) {
+      insertStatements.push(statement);
+      return [{ affectedRows: 1 }];
+    }
+    throw new Error(`Unexpected SQL in active-open snapshot test: ${statement}`);
+  };
+
+  try {
+    const activeResult = await service.upsertOrderSnapshotsFromItems(
+      'user-1',
+      'acct-1',
+      'mudrex',
+      [
+        {
+          id: 'ord-live-open',
+          order_id: 'ord-live-open',
+          symbol: 'BTCUSDT',
+          status: 'OPEN',
+          updated_at: '2026-05-11T03:30:00.000Z',
+        },
+      ],
+      undefined,
+      { authoritativeActive: true }
+    );
+
+    assert.equal(activeResult.updated, 1);
+    assert.equal(activeResult.skipped, 0);
+    assert.deepEqual(activeResult.orderIds, ['ord-live-open']);
+    assert.match(insertStatements[0], /order_status = VALUES\(order_status\)/);
+    assert.match(insertStatements[0], /status_rank = VALUES\(status_rank\)/);
+    assert.doesNotMatch(insertStatements[0], /GREATEST\(status_rank/);
+
+    insertStatements.length = 0;
+    const historyResult = await service.upsertOrderSnapshotsFromItems(
+      'user-1',
+      'acct-1',
+      'mudrex',
+      [
+        {
+          id: 'ord-live-open',
+          order_id: 'ord-live-open',
+          symbol: 'BTCUSDT',
+          status: 'OPEN',
+          updated_at: '2026-05-11T03:30:00.000Z',
+        },
+      ]
+    );
+
+    assert.equal(historyResult.updated, 0);
+    assert.equal(historyResult.skipped, 1);
+    assert.match(insertStatements[0], /GREATEST\(status_rank/);
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
 async function testOrdersHistoryReconciliationPrunesDriftedTerminalRows(): Promise<void> {
   const service = new InternalOrdersSyncService() as any;
   const deletedChunks: string[][] = [];
@@ -1930,6 +2003,7 @@ async function run(): Promise<void> {
   await testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById();
   testOrdersSyncStaleCutoffFloorsToSqlSecond();
+  await testOrdersSyncActiveOpenSnapshotReopensTerminalSnapshot();
   await testOrdersHistoryReconciliationPrunesDriftedTerminalRows();
   await testOrdersHistoryReconciliationKeepsProtectedTrackedRows();
   console.log('Positions/orders sync Phase 4 assertions passed.');

@@ -611,8 +611,15 @@ export class SuggestedTradeRepository {
           WHERE execution_row.user_id = ?
             AND LOWER(COALESCE(execution_row.broker_key, '')) = ?
             AND COALESCE(execution_row.account_id, '') = ?
-            AND COALESCE(execution_row.order_id, '') <> ''
-            AND LOWER(COALESCE(execution_row.execution_state, '')) <> 'closed'
+            AND (
+              COALESCE(execution_row.order_id, '') <> ''
+              OR COALESCE(execution_row.position_id, '') <> ''
+            )
+            AND (
+              LOWER(COALESCE(execution_row.execution_state, '')) NOT IN ('closed', 'cancelled', 'rejected', 'expired', 'failed')
+              OR LOWER(COALESCE(execution_row.position_status, '')) IN ('open', 'partial', 'partially_closed', 'partially_closed_position')
+              OR LOWER(COALESCE(execution_row.protection_state, '')) IN ('pending', 'waiting_for_fill', 'waiting_for_position', 'attaching', 'failed', 'manual_unlinked')
+            )
             AND LOWER(suggested_trade.symbol) IN (${chunk.map(() => '?').join(',')})`,
         [userId, normalizedBrokerKey, accountId, ...chunk]
       )) as Array<{ id?: string }>;

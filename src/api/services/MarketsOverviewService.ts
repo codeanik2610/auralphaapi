@@ -50,6 +50,7 @@ interface MarketSymbolQuery {
 interface MarketChartQuery {
   interval?: string;
   limit?: string;
+  endTime?: string;
 }
 
 interface MarketAssetBase {
@@ -402,9 +403,15 @@ export class MarketsOverviewService {
       symbol,
       interval: query.interval,
       limit: query.limit ?? String(DEFAULT_CHART_LIMIT),
+      endTime: query.endTime,
     });
 
-    const candles = await this.fetchChartCandles(params.symbol, params.interval, params.limit);
+    const candles = await this.fetchChartCandles(
+      params.symbol,
+      params.interval,
+      params.limit,
+      params.endTime
+    );
     const startTime = candles[0]?.openTime ? new Date(candles[0].openTime).toISOString() : null;
     const endTime = candles[candles.length - 1]?.openTime
       ? new Date(candles[candles.length - 1].openTime).toISOString()
@@ -1148,7 +1155,8 @@ export class MarketsOverviewService {
   private async fetchChartCandles(
     symbol: string,
     interval: string,
-    limit: number
+    limit: number,
+    endTime?: Date
   ): Promise<BinanceMarketCandle[]> {
     if (!env.pg.enabled) {
       throw new ServiceUnavailableAppError(
@@ -1166,7 +1174,10 @@ export class MarketsOverviewService {
 
     const rows = await strategyDataSource.query(
       `WITH bounds AS (
-         SELECT MAX(open_time) AS end_time
+         SELECT CASE
+                  WHEN $4::timestamptz IS NULL THEN MAX(open_time)
+                  ELSE LEAST($4::timestamptz, MAX(open_time))
+                END AS end_time
          FROM market_candles_1m
          WHERE symbol = $1
        ),
@@ -1202,8 +1213,8 @@ export class MarketsOverviewService {
        FROM base
        GROUP BY bucket_ts
        ORDER BY bucket_ts DESC
-       LIMIT $4`,
-      [resolvedSymbol, intervalSeconds, lookbackSeconds, limit]
+       LIMIT $5`,
+      [resolvedSymbol, intervalSeconds, lookbackSeconds, endTime ?? null, limit]
     );
 
     return (rows || [])

@@ -3881,6 +3881,12 @@ async function runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions(): Pr
     );
     assert.deepEqual(calls[0]?.params.slice(0, 3), ['user-1', 'delta_exchange', 'acc-1']);
     assert.deepEqual(new Set(calls[0]?.params.slice(3)), new Set(['btcusd', 'btcusdt', 'btcusdc']));
+    assert.match(calls[0]?.sql || '', /COALESCE\(execution_row\.position_id, ''\) <> ''/);
+    assert.match(calls[0]?.sql || '', /execution_row\.protection_state/);
+    assert.doesNotMatch(
+      calls[0]?.sql || '',
+      /LOWER\(COALESCE\(execution_row\.execution_state, ''\)\) <> 'closed'/
+    );
 
     calls.length = 0;
     const snapshots = await repository.getLinkedPositionSnapshots(

@@ -2151,6 +2151,23 @@ export class PositionReadModelRepository {
       severity: protection?.state === 'failed' ? 'error' : 'info',
     });
     pushEvent({
+      id: 'protection_repair_submitted',
+      kind: 'protection',
+      label: 'Protection repair submitted',
+      description: 'Replacement stop loss and target orders were submitted.',
+      occurredAt: protection?.replacementSubmittedAt ?? '',
+      entity: 'position',
+      entityId: row.positionId ?? null,
+      brokerKey: row.brokerKey ?? null,
+      accountId: row.accountId ?? null,
+      status: protection?.state ?? null,
+      severity: 'info',
+      meta: {
+        stopLossOrderId: protection?.stopLossOrderId ?? null,
+        takeProfitOrderId: protection?.takeProfitOrderId ?? null,
+      },
+    });
+    pushEvent({
       id: 'protection_attached',
       kind: 'protection',
       label: 'Protection attached',

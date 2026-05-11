@@ -4,6 +4,7 @@ export interface MarketCandlesQuery {
   symbol?: string;
   interval?: string;
   limit?: string;
+  endTime?: string;
   brokerKey?: string;
   accountId?: string;
 }
@@ -12,6 +13,7 @@ export interface ValidatedMarketCandlesQuery {
   symbol: string;
   interval: string;
   limit: number;
+  endTime?: Date;
   brokerKey?: string;
   accountId?: string;
 }
@@ -42,6 +44,8 @@ export const validateMarketCandlesQuery = (
   const symbol = query.symbol?.trim().toUpperCase();
   const interval = query.interval?.trim();
   const limit = query.limit !== undefined ? Number(query.limit) : 100;
+  const rawEndTime = normalizeOptional(query.endTime);
+  const endTime = rawEndTime ? new Date(rawEndTime) : undefined;
 
   if (!symbol) {
     throw new BadRequestAppError('symbol is required');
@@ -65,10 +69,15 @@ export const validateMarketCandlesQuery = (
     throw new BadRequestAppError('limit must be an integer between 1 and 1000');
   }
 
+  if (rawEndTime && (!endTime || Number.isNaN(endTime.getTime()))) {
+    throw new BadRequestAppError('endTime must be a valid date');
+  }
+
   return {
     symbol,
     interval,
     limit,
+    ...(endTime ? { endTime } : {}),
     brokerKey: normalizeOptional(query.brokerKey),
     accountId: normalizeOptional(query.accountId),
   };

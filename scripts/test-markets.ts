@@ -138,17 +138,25 @@ async function runInternalMarketsSnapshotControllerAssertions(): Promise<void> {
 
 function runMarketValidationAssertions(): void {
   assert.deepEqual(
-    validateMarketCandlesQuery({
-      symbol: ' btcusdt ',
-      interval: '1h',
-      limit: '24',
-      brokerKey: ' mudrex ',
-      accountId: ' acct-1 ',
-    }),
+    (() => {
+      const result = validateMarketCandlesQuery({
+        symbol: ' btcusdt ',
+        interval: '1h',
+        limit: '24',
+        endTime: '2026-04-13T03:00:00.000Z',
+        brokerKey: ' mudrex ',
+        accountId: ' acct-1 ',
+      });
+      return {
+        ...result,
+        endTime: result.endTime?.toISOString(),
+      };
+    })(),
     {
       symbol: 'BTCUSDT',
       interval: '1h',
       limit: 24,
+      endTime: '2026-04-13T03:00:00.000Z',
       brokerKey: 'mudrex',
       accountId: 'acct-1',
     }
@@ -166,6 +174,15 @@ function runMarketValidationAssertions(): void {
   assert.throws(
     () => validateMarketCandlesQuery({ symbol: 'BTCUSDT', interval: '1h', limit: '1001' }),
     /limit must be an integer between 1 and 1000/
+  );
+  assert.throws(
+    () =>
+      validateMarketCandlesQuery({
+        symbol: 'BTCUSDT',
+        interval: '1h',
+        endTime: 'not-a-date',
+      }),
+    /endTime must be a valid date/
   );
 }
 
@@ -342,6 +359,18 @@ async function runMarketsChartWarehouseSymbolResolutionAssertions(): Promise<voi
   (strategyDataSource as any).isInitialized = true;
   (strategyDataSource as any).query = async (sql: string, params: unknown[]) => {
     capturedQueries.push({ sql, params });
+    if (sql.includes('WITH bounds AS')) {
+      return [
+        {
+          bucket_ts: Date.parse('2026-04-13T03:00:00.000Z') / 1000,
+          open: '100',
+          high: '105',
+          low: '98',
+          close: '102',
+          volume: '1000',
+        },
+      ];
+    }
     return [{ symbol: 'AVAXUSDT' }];
   };
 
@@ -353,20 +382,19 @@ async function runMarketsChartWarehouseSymbolResolutionAssertions(): Promise<voi
     assert.match(capturedQueries[0].sql, /symbol = ANY/);
     assert.deepEqual(capturedQueries[0].params, [['AVAXUSD', 'AVAXUSDT'], 'AVAXUSD']);
 
-    service.fetchChartCandles = async () => [
-      {
-        openTime: Date.parse('2026-04-13T03:00:00.000Z'),
-        open: '100',
-        high: '105',
-        low: '98',
-        close: '102',
-        volume: '1000',
-      },
-    ];
+    const chart = await service.getSymbolChart('AVAXUSD', {
+      interval: '5m',
+      limit: '1',
+      endTime: '2026-04-13T03:05:00.000Z',
+    });
+    const chartQuery = capturedQueries.find((call) => call.sql.includes('WITH bounds AS'));
 
-    const chart = await service.getSymbolChart('AVAXUSD', { interval: '5m', limit: '1' });
     assert.equal(chart.data.source, 'pg.market_candles_1m');
     assert.equal(chart.data.provenance.sourceLabel, 'Binance futures candles');
+    assert.equal(chart.data.range.startTime, '2026-04-13T03:00:00.000Z');
+    assert.match(String(chartQuery?.sql || ''), /\$4::timestamptz/);
+    assert.equal((chartQuery?.params[3] as Date).toISOString(), '2026-04-13T03:05:00.000Z');
+    assert.equal(chartQuery?.params[4], 1);
   } finally {
     (strategyDataSource as any).query = originalQuery;
     (strategyDataSource as any).isInitialized = originalInitialized;

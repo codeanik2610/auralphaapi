@@ -28,6 +28,10 @@ const SYNC_LIMIT = 50000;
 const CHUNK_SIZE = 250;
 const CHECKPOINT_SCHEDULER_KEY = 'orders-sync';
 
+interface OrderSnapshotUpsertOptions {
+  authoritativeActive?: boolean;
+}
+
 @Service()
 export class InternalOrdersSyncService {
   @Inject(() => BrokerRuntimeRegistry)
@@ -725,13 +729,37 @@ export class InternalOrdersSyncService {
       payloadJson: string;
       payloadHash: string;
     }>,
-    runLogId?: string
+    runLogId?: string,
+    options: OrderSnapshotUpsertOptions = {}
   ): Promise<{ inserted: number; updated: number; skipped: number; orderIds: string[] }> {
     if (rows.length === 0) return { inserted: 0, updated: 0, skipped: 0, orderIds: [] };
 
     let inserted = 0;
     let updated = 0;
     let skipped = 0;
+    const authoritativeActive = options.authoritativeActive === true;
+    const statusUpdateSql = authoritativeActive
+      ? `updated_at = IF(
+             NOT (VALUES(payload_hash) <=> payload_hash)
+             OR NOT (VALUES(order_status) <=> order_status)
+             OR VALUES(status_rank) <> status_rank,
+             NOW(),
+             updated_at
+           ),
+           order_status = VALUES(order_status),
+           status_rank = VALUES(status_rank),
+           payload_json = VALUES(payload_json),
+           payload_hash = VALUES(payload_hash)`
+      : `updated_at = IF(
+             VALUES(status_rank) >= status_rank
+             AND NOT (VALUES(payload_hash) <=> payload_hash),
+             NOW(),
+             updated_at
+           ),
+           order_status = IF(VALUES(status_rank) >= status_rank, VALUES(order_status), order_status),
+           status_rank = GREATEST(status_rank, VALUES(status_rank)),
+           payload_json = IF(VALUES(status_rank) >= status_rank, VALUES(payload_json), payload_json),
+           payload_hash = IF(VALUES(status_rank) >= status_rank, VALUES(payload_hash), payload_hash)`;
 
     for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
       const chunk = rows.slice(i, i + CHUNK_SIZE);
@@ -790,11 +818,7 @@ export class InternalOrdersSyncService {
            last_seen_at = NOW(),
            broker_key = VALUES(broker_key),
            symbol = COALESCE(VALUES(symbol), symbol),
-           order_status = IF(VALUES(status_rank) >= status_rank, VALUES(order_status), order_status),
-           status_rank = GREATEST(status_rank, VALUES(status_rank)),
-           payload_json = IF(VALUES(status_rank) >= status_rank, VALUES(payload_json), payload_json),
-           payload_hash = IF(VALUES(status_rank) >= status_rank, VALUES(payload_hash), payload_hash),
-           updated_at = NOW()`,
+           ${statusUpdateSql}`,
         params
       );
 
@@ -803,6 +827,16 @@ export class InternalOrdersSyncService {
         const existing = existingMap.get(row.externalId);
         if (!existing) {
           inserted += 1;
+        } else if (authoritativeActive) {
+          const unchanged =
+            row.payloadHash === existing.payloadHash &&
+            row.statusRank === existing.statusRank &&
+            (row.orderStatus ?? null) === (existing.orderStatus ?? null);
+          if (unchanged) {
+            skipped += 1;
+          } else {
+            updated += 1;
+          }
         } else if (row.payloadHash === existing.payloadHash) {
           skipped += 1;
         } else if (row.statusRank < existing.statusRank) {
@@ -822,9 +856,24 @@ export class InternalOrdersSyncService {
           let actionType: string;
           let message: string;
 
+          const unchanged =
+            existing &&
+            row.payloadHash === existing.payloadHash &&
+            row.statusRank === existing.statusRank &&
+            (row.orderStatus ?? null) === (existing.orderStatus ?? null);
+
           if (isInsert) {
             actionType = 'inserted';
             message = row.orderStatus || 'UNKNOWN';
+          } else if (authoritativeActive && unchanged) {
+            actionType = 'skipped';
+            message = 'payload unchanged';
+          } else if (authoritativeActive) {
+            actionType = 'updated';
+            message =
+              existing.orderStatus !== row.orderStatus
+                ? `active snapshot: ${existing.orderStatus || 'UNKNOWN'} → ${row.orderStatus || 'UNKNOWN'}`
+                : `active snapshot: ${row.orderStatus || 'UNKNOWN'} (refreshed)`;
           } else if (row.payloadHash === existing.payloadHash) {
             actionType = 'skipped';
             message = 'payload unchanged';
@@ -870,7 +919,8 @@ export class InternalOrdersSyncService {
     accountId: string,
     brokerKey: string,
     items: unknown[],
-    runLogId?: string
+    runLogId?: string,
+    options: OrderSnapshotUpsertOptions = {}
   ): Promise<{ inserted: number; updated: number; skipped: number; orderIds: string[] }> {
     if (items.length === 0) return { inserted: 0, updated: 0, skipped: 0, orderIds: [] };
 
@@ -892,7 +942,7 @@ export class InternalOrdersSyncService {
       if (row) prepared.push(row);
     }
 
-    return this.upsertOrderSnapshotBatch(prepared, runLogId);
+    return this.upsertOrderSnapshotBatch(prepared, runLogId, options);
   }
 
   // ── Target resolution ────────────────────────────────────────
@@ -1186,24 +1236,48 @@ export class InternalOrdersSyncService {
               }
             }
 
-            // Step 4: Deduplicate open + history in memory, keeping highest status rank
-            const combined = [...openOrders, ...historyOrders];
-            const deduped = this.deduplicateByExternalId(combined);
+            // Step 4: Deduplicate open + history in memory. The live open-order feed is
+            // authoritative for currently active orders, even when an older terminal
+            // history/snapshot row exists for the same broker order id.
+            const activeOrderIds = new Set(this.extractOrderExternalIds(openOrders));
+            const historyOrdersForUpsert = historyOrders.filter((item) => {
+              if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                return true;
+              }
+              const orderId = this.readOrderExternalId(item as Record<string, unknown>);
+              return !activeOrderIds.has(orderId);
+            });
+            const openDeduped = this.deduplicateByExternalId(openOrders);
+            const historyDeduped = this.deduplicateByExternalId(historyOrdersForUpsert);
             const affectedOrderIds = new Set<string>();
 
-            // Step 5: Single forward-only upsert
-            const delta = await this.upsertOrderSnapshotsFromItems(
+            // Step 5: Upsert history first, then let live active observations reopen stale rows.
+            const historyDelta = await this.upsertOrderSnapshotsFromItems(
               userId,
               resolvedAccountId,
               resolvedBrokerKey.toLowerCase(),
-              deduped,
+              historyDeduped,
               request.runLogId
             );
+            const activeDelta = await this.upsertOrderSnapshotsFromItems(
+              userId,
+              resolvedAccountId,
+              resolvedBrokerKey.toLowerCase(),
+              openDeduped,
+              request.runLogId,
+              { authoritativeActive: true }
+            );
+            const delta = {
+              inserted: historyDelta.inserted + activeDelta.inserted,
+              updated: historyDelta.updated + activeDelta.updated,
+              skipped: historyDelta.skipped + activeDelta.skipped,
+              orderIds: Array.from(new Set([...historyDelta.orderIds, ...activeDelta.orderIds])),
+            };
 
             insertedRecords += delta.inserted;
             updatedRecords += delta.updated;
             skippedRecords += delta.skipped;
-            fetchedRecords += combined.length;
+            fetchedRecords += openOrders.length + historyOrders.length;
             for (const orderId of delta.orderIds) {
               affectedOrderIds.add(orderId);
             }

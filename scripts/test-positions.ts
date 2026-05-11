@@ -1041,6 +1041,15 @@ async function positionsGuard05(): Promise<void> {
         true
       );
       assert.equal(
+        response.relatedSuggestedTrades[0].operatorTimeline?.some(
+          (event: { kind: string; label: string; occurredAt: string }) =>
+            event.kind === 'protection' &&
+            event.label === 'Protection repair submitted' &&
+            event.occurredAt === '2026-04-09T09:00:00.000Z'
+        ),
+        true
+      );
+      assert.equal(
         response.relatedLinks.some(
           (item: { entity: string; id: string }) => item.entity === 'account' && item.id === 'acc-1'
         ),
@@ -1826,6 +1835,15 @@ async function positionsGuard09(): Promise<void> {
         overview.items[0].automationTrade?.operatorTimeline?.some(
           (event: { kind: string; label: string }) =>
             event.kind === 'protection' && event.label === 'Protection attached'
+        ),
+        true
+      );
+      assert.equal(
+        overview.items[0].automationTrade?.operatorTimeline?.some(
+          (event: { kind: string; label: string; occurredAt: string }) =>
+            event.kind === 'protection' &&
+            event.label === 'Protection repair submitted' &&
+            event.occurredAt === '2026-04-09T10:01:30.000Z'
         ),
         true
       );
