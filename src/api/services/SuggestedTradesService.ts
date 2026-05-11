@@ -186,6 +186,21 @@ interface SuggestedTradeAutoLiveRolloutResult {
   accountId?: string | null;
   preTradeCheckId?: string | null;
   orderId?: string | null;
+  freshness?: SuggestedTradeAutoLiveFreshnessSnapshot | null;
+}
+
+interface SuggestedTradeAutoLiveFreshnessSnapshot {
+  allowed: boolean;
+  enabled: boolean;
+  reason: string;
+  timeframe: string;
+  timeframeSeconds: number | null;
+  signalTime: string | null;
+  candleCloseAt: string | null;
+  evaluatedAt: string;
+  ageAfterCloseSeconds: number | null;
+  maxAgeAfterCloseSeconds: number | null;
+  currentRunFreshnessFloorSeconds: number | null;
 }
 
 interface LiveAutoRolloutGuardDecision {
@@ -2967,6 +2982,10 @@ export class SuggestedTradesService {
       evaluatedAt: options.freshnessEvaluatedAt,
       minimumMaxAgeAfterCloseSeconds: options.currentRunFreshnessFloorSeconds ?? null,
     });
+    const signalFreshnessSnapshot = this.buildLiveAutoFreshnessSnapshot(
+      signalFreshness,
+      options.currentRunFreshnessFloorSeconds ?? null
+    );
     if (!signalFreshness.allowed) {
       const message = this.buildLiveExecutionFreshnessBlockedMessage(signalFreshness);
       await this.operationalEventService.logActivity(userId, {
@@ -2987,6 +3006,7 @@ export class SuggestedTradesService {
         suggestedTradeId: trade.id,
         brokerKey: rolloutGuard.brokerKey,
         accountId: rolloutGuard.accountId,
+        freshness: signalFreshnessSnapshot,
       };
     }
 
@@ -3014,6 +3034,7 @@ export class SuggestedTradesService {
         suggestedTradeId: trade.id,
         brokerKey: rolloutGuard.brokerKey,
         accountId: rolloutGuard.accountId,
+        freshness: signalFreshnessSnapshot,
       };
     }
 
@@ -3025,6 +3046,7 @@ export class SuggestedTradesService {
         suggestedTradeId: trade.id,
         brokerKey: rolloutGuard.brokerKey,
         accountId: rolloutGuard.accountId,
+        freshness: signalFreshnessSnapshot,
       };
     }
 
@@ -3043,6 +3065,7 @@ export class SuggestedTradesService {
         suggestedTradeId: trade.id,
         brokerKey: rolloutGuard.brokerKey,
         accountId: rolloutGuard.accountId,
+        freshness: signalFreshnessSnapshot,
       };
     }
 
@@ -3057,6 +3080,7 @@ export class SuggestedTradesService {
         suggestedTradeId: trade.id,
         brokerKey: rolloutGuard.brokerKey,
         accountId: rolloutGuard.accountId,
+        freshness: signalFreshnessSnapshot,
       };
     }
 
@@ -3096,6 +3120,7 @@ export class SuggestedTradesService {
             this.readStringValue(gatedExecution.result.request.routing.accountId) ??
             rolloutGuard.accountId,
           preTradeCheckId: persistedPreTradeCheckId,
+          freshness: signalFreshnessSnapshot,
         };
       }
 
@@ -3135,10 +3160,11 @@ export class SuggestedTradesService {
           brokerKey: shadowBrokerKey,
           accountId: shadowAccountId,
           preTradeCheckId: persistedPreTradeCheckId,
+          freshness: signalFreshnessSnapshot,
         };
       }
 
-      return this.attemptLiveAutoBrokerRoutes({
+      const routeResult = await this.attemptLiveAutoBrokerRoutes({
         userId,
         trade,
         gatedExecution,
@@ -3146,6 +3172,10 @@ export class SuggestedTradesService {
         executionPolicy,
         liveAutoRuntimeConfig,
       });
+      return {
+        ...routeResult,
+        freshness: signalFreshnessSnapshot,
+      };
     } catch (error) {
       const failureMessage = error instanceof Error ? error.message : 'Live auto execution failed';
       await this.persistExecutionState(trade, {
@@ -3177,6 +3207,7 @@ export class SuggestedTradesService {
         suggestedTradeId: trade.id,
         brokerKey: rolloutGuard.brokerKey,
         accountId: rolloutGuard.accountId,
+        freshness: signalFreshnessSnapshot,
       };
     }
   }
@@ -5732,6 +5763,34 @@ export class SuggestedTradesService {
       evaluatedAt: options.evaluatedAt,
       minimumMaxAgeAfterCloseSeconds: options.minimumMaxAgeAfterCloseSeconds ?? null,
     });
+  }
+
+  private buildLiveAutoFreshnessSnapshot(
+    freshness: SignalFreshnessEvaluation,
+    currentRunFreshnessFloorSeconds: number | null
+  ): SuggestedTradeAutoLiveFreshnessSnapshot {
+    return {
+      allowed: freshness.allowed,
+      enabled: freshness.enabled,
+      reason: freshness.reason,
+      timeframe: freshness.timeframe,
+      timeframeSeconds: freshness.timeframeSeconds,
+      signalTime: freshness.signalTime,
+      candleCloseAt: freshness.candleCloseAt,
+      evaluatedAt: freshness.evaluatedAt,
+      ageAfterCloseSeconds: freshness.ageAfterCloseSeconds,
+      maxAgeAfterCloseSeconds: freshness.maxAgeAfterCloseSeconds,
+      currentRunFreshnessFloorSeconds: this.normalizeLiveAutoFreshnessFloorSeconds(
+        currentRunFreshnessFloorSeconds
+      ),
+    };
+  }
+
+  private normalizeLiveAutoFreshnessFloorSeconds(value: number | null): number | null {
+    if (value === null || !Number.isFinite(value)) {
+      return null;
+    }
+    return Math.max(0, Math.trunc(value));
   }
 
   private buildLiveExecutionFreshnessBlockedMessage(freshness: SignalFreshnessEvaluation): string {

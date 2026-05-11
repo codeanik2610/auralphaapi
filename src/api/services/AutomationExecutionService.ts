@@ -1261,6 +1261,7 @@ export class AutomationExecutionService {
               accountId: liveRollout.accountId ?? null,
               preTradeCheckId: liveRollout.preTradeCheckId ?? null,
               runLimit: maxAutoLiveChecksPerRun,
+              freshness: liveRollout.freshness ?? null,
             },
           });
 

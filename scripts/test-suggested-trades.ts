@@ -1730,6 +1730,10 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
       }
     );
     assert.equal(currentRunLatencyAllowed.outcome, 'ready');
+    assert.equal(currentRunLatencyAllowed.freshness?.allowed, true);
+    assert.equal(currentRunLatencyAllowed.freshness?.ageAfterCloseSeconds, 305);
+    assert.equal(currentRunLatencyAllowed.freshness?.maxAgeAfterCloseSeconds, 480);
+    assert.equal(currentRunLatencyAllowed.freshness?.currentRunFreshnessFloorSeconds, 480);
     assert.equal(preTradeGateCalls, 3);
     baseTrade.timeframe = '1h';
 
@@ -1740,6 +1744,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
       },
     });
     assert.equal(stale.outcome, 'skipped');
+    assert.equal(stale.freshness?.allowed, false);
     assert.match(stale.message, /Skipped live execution/);
     assert.match(stale.message, /freshness window/);
     assert.equal(preTradeGateCalls, 3);

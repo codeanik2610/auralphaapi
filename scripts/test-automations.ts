@@ -1977,6 +1977,19 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
             brokerKey: 'mudrex',
             accountId: 'account-1',
             preTradeCheckId: 'check-1',
+            freshness: {
+              allowed: true,
+              enabled: true,
+              reason: 'Signal is fresh for 1h.',
+              timeframe: '1h',
+              timeframeSeconds: 3600,
+              signalTime: '2026-04-04T10:00:00.000Z',
+              candleCloseAt: '2026-04-04T11:00:00.000Z',
+              evaluatedAt: '2026-04-04T11:05:00.000Z',
+              ageAfterCloseSeconds: 300,
+              maxAgeAfterCloseSeconds: 900,
+              currentRunFreshnessFloorSeconds: 900,
+            },
           };
         },
       };
@@ -2027,6 +2040,11 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       assert.ok(liveAutoOptions[0]?.freshnessEvaluatedAt instanceof Date);
       assert.equal(outputs.length, 2);
       assert.equal(outputs[1]?.outputType, 'trade-suggestion.live-auto');
+      assert.equal(
+        ((outputs[1]?.payload as Record<string, unknown>)?.freshness as Record<string, unknown>)
+          ?.ageAfterCloseSeconds,
+        300
+      );
       assert.equal(whatsappCalls.length, 1);
       assert.equal(notificationCalls.length, 2);
       assert.equal(notificationCalls[0]?.source, 'trade-suggestion.created:st-1');
