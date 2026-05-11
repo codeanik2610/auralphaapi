@@ -4833,6 +4833,61 @@ async function runSuggestedTradeBrokerLiveAutoProtectionAttachHandlerAssertions(
   assert.equal(riskOrders[0]?.body.stoploss_price, '96.900000');
   assert.equal(riskOrders[0]?.body.takeprofit_price, '112.200000');
   assert.equal(riskOrders[0]?.context?.accountId, 'acc-1');
+
+  class ClassBackedMudrexPositionsAdapter {
+    public readonly positionCalls: Array<Record<string, unknown>> = [];
+    public readonly riskOrderCalls: Array<Record<string, unknown>> = [];
+
+    async getPositions(query: Record<string, unknown>, context?: Record<string, unknown>) {
+      this.positionCalls.push({ query, context });
+      return {
+        data: {
+          positions: [
+            {
+              id: 'class-backed-position-1',
+              symbol: 'ETHUSDT',
+              side: 'Long',
+              status: 'open',
+              entry_price: '202',
+              updated_at: '2026-05-10T00:02:00.000Z',
+            },
+          ],
+        },
+      };
+    }
+
+    async createRiskOrder(
+      positionId: string,
+      body: Record<string, unknown>,
+      context?: Record<string, unknown>
+    ) {
+      this.riskOrderCalls.push({ positionId, body, context });
+      return { success: true };
+    }
+  }
+
+  const classBackedAdapter = new ClassBackedMudrexPositionsAdapter();
+  const classBackedResult = await attachMudrexLiveAutoProtectionIfNeeded({
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    brokerSymbol: 'ETHUSDT',
+    side: 'buy',
+    orderId: 'mudrex-live-order-2',
+    requestedEntryPrice: 200,
+    requestedStopLossPrice: 190,
+    requestedTakeProfitPrice: 220,
+    waitForPoll: async () => undefined,
+    positionsAdapter: classBackedAdapter,
+  });
+
+  assert.equal(classBackedResult.attached, true);
+  assert.equal(classBackedAdapter.positionCalls.length, 1);
+  assert.equal(classBackedAdapter.riskOrderCalls.length, 1);
+  assert.equal(
+    classBackedAdapter.riskOrderCalls[0]?.positionId,
+    'class-backed-position-1'
+  );
 }
 
 async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promise<void> {

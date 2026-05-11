@@ -478,10 +478,12 @@ export async function attachMudrexLiveAutoProtectionIfNeeded(
     };
   }
 
+  const getPositions = positionsAdapter.getPositions.bind(positionsAdapter);
+
   try {
     const position = await pollMudrexLiveAutoPosition({
       adapter: {
-        getPositions: positionsAdapter.getPositions,
+        getPositions,
       },
       userId: input.userId,
       accountId: input.accountId,
