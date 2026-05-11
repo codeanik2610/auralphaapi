@@ -8,6 +8,7 @@ import { BadRequestAppError } from '../src/api/errors/AppError';
 import { SuggestedTradeExecutionSyncService } from '../src/api/services/SuggestedTradeExecutionSyncService';
 import { SuggestedTradesHealthService } from '../src/api/services/SuggestedTradesHealthService';
 import { SuggestedTradesOverviewService } from '../src/api/services/SuggestedTradesOverviewService';
+import { SuggestedTradesProtectionGuardrailService } from '../src/api/services/SuggestedTradesProtectionGuardrailService';
 import { SuggestedTradesService } from '../src/api/services/SuggestedTradesService';
 import {
   validateSuggestedTradeOrderLinkBody,
@@ -1385,6 +1386,7 @@ async function runSuggestedTradeBrokerControlHelperAssertions(): Promise<void> {
 
 async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
   const service = new SuggestedTradesService() as any;
+  service.liveAutoLifecycleMonitorEnabled = false;
   const originalRolloutEnabled = env.suggestedTrades.rolloutEnabled;
   const originalEnvFlags = {
     rolloutEnabled: process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED,
@@ -1721,7 +1723,9 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
       'st-live-auto',
       {
         async createOrder() {
-          throw new Error('current-run latency path should not create orders when execution is disabled');
+          throw new Error(
+            'current-run latency path should not create orders when execution is disabled'
+          );
         },
       },
       {
@@ -1777,16 +1781,16 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
         };
       },
     });
-    assert.equal(placed.outcome, 'placed');
+    assert.equal(placed.outcome, 'working');
     assert.equal(placed.preTradeCheckId, 'check-live-1');
     assert.equal(placed.orderId, 'live-order-1');
     assert.equal(placed.brokerKey, 'mudrex');
     assert.equal(placed.accountId, 'acc-1');
     assert.equal((persistedExecution?.['orderId'] as string | undefined) ?? null, 'live-order-1');
-    assert.equal((persistedExecution?.['executionState'] as string | undefined) ?? null, 'linked');
+    assert.equal((persistedExecution?.['executionState'] as string | undefined) ?? null, 'working');
     assert.ok(loggedActivities.includes('Live auto rollout blocked: BTCUSDT'));
     assert.ok(loggedActivities.includes('Live auto rollout ready: BTCUSDT'));
-    assert.ok(loggedActivities.includes('Live auto order created: BTCUSDT'));
+    assert.ok(loggedActivities.includes('Live auto order awaiting protection: BTCUSDT'));
 
     currentBrokerKey = 'delta_exchange';
     currentAccountId = 'delta-acc-1';
@@ -1825,10 +1829,11 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
         },
       }
     );
-    assert.equal(deltaPlaced.outcome, 'placed');
+    assert.equal(deltaPlaced.outcome, 'working');
     assert.equal(deltaPlaced.orderId, 'delta-live-order-1');
     assert.equal(deltaPlaced.brokerKey, 'delta_exchange');
     assert.equal(deltaPlaced.accountId, 'delta-acc-1');
+    assert.equal((persistedExecution?.['executionState'] as string | undefined) ?? null, 'working');
     assert.equal(persistedExecution?.['protectionState'], 'waiting_for_fill');
     assert.equal(persistedExecution?.['protectionAttachedAt'] ?? null, null);
     assert.equal(
@@ -1972,6 +1977,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
 
 async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void> {
   const service = new SuggestedTradesService() as any;
+  service.liveAutoLifecycleMonitorEnabled = false;
   const originalRolloutEnabled = env.suggestedTrades.rolloutEnabled;
   const originalEnvFlags = {
     rolloutEnabled: process.env.SUGGESTED_TRADES_ROLLOUT_ENABLED,
@@ -2614,7 +2620,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       }
     );
 
-    assert.equal(deltaPreferred.outcome, 'placed', deltaPreferred.message);
+    assert.equal(deltaPreferred.outcome, 'working', deltaPreferred.message);
     assert.equal(deltaPreferred.brokerKey, 'delta_exchange');
     assert.equal(deltaPreferred.accountId, 'delta-acc-1');
     assert.equal(createCheckRoutes[0], 'delta_exchange:delta-acc-1');
@@ -3134,7 +3140,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       }
     );
 
-    assert.equal(foundOrderResult.outcome, 'placed', foundOrderResult.message);
+    assert.equal(foundOrderResult.outcome, 'working', foundOrderResult.message);
     assert.equal(foundOrderResult.brokerKey, 'delta_exchange');
     assert.equal(foundOrderResult.orderId, 'delta-reconciled-order-1');
     assert.deepEqual(foundOrderRoutes, ['delta_exchange:delta-acc-1']);
@@ -3146,7 +3152,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     const foundOrderAttempts =
       (foundOrderExecution?.routeAttempts as Array<Record<string, unknown>> | undefined) ?? [];
     assert.equal(foundOrderAttempts.length, 1);
-    assert.equal(foundOrderAttempts[0]?.status, 'placed');
+    assert.equal(foundOrderAttempts[0]?.status, 'working');
     assert.equal(
       (foundOrderAttempts[0]?.reconciliation as Record<string, unknown> | undefined)?.status,
       'found_order'
@@ -3181,7 +3187,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       }
     );
 
-    assert.equal(foundPositionResult.outcome, 'placed', foundPositionResult.message);
+    assert.equal(foundPositionResult.outcome, 'working', foundPositionResult.message);
     assert.equal(foundPositionResult.brokerKey, 'delta_exchange');
     assert.equal(foundPositionResult.orderId, null);
     assert.deepEqual(foundPositionRoutes, ['delta_exchange:delta-acc-1']);
@@ -3190,11 +3196,11 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       .reverse()
       .find((execution) => Array.isArray(execution.routeAttempts));
     assert.equal(foundPositionExecution?.positionId, 'delta-reconciled-position-1');
-    assert.equal(foundPositionExecution?.executionState, 'filled');
+    assert.equal(foundPositionExecution?.executionState, 'working');
     const foundPositionAttempts =
       (foundPositionExecution?.routeAttempts as Array<Record<string, unknown>> | undefined) ?? [];
     assert.equal(foundPositionAttempts.length, 1);
-    assert.equal(foundPositionAttempts[0]?.status, 'placed');
+    assert.equal(foundPositionAttempts[0]?.status, 'working');
     assert.equal(
       (foundPositionAttempts[0]?.reconciliation as Record<string, unknown> | undefined)?.status,
       'found_position'
@@ -3245,7 +3251,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       }
     );
 
-    assert.equal(protectionFailureResult.outcome, 'placed', protectionFailureResult.message);
+    assert.equal(protectionFailureResult.outcome, 'working', protectionFailureResult.message);
     assert.equal(protectionFailureResult.brokerKey, 'mudrex');
     assert.equal(protectionFailureResult.orderId, 'mudrex-live-order-risk-10');
     assert.deepEqual(protectionFailureRoutes, ['mudrex:acc-1']);
@@ -3254,7 +3260,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       .reverse()
       .find((execution) => Array.isArray(execution.routeAttempts));
     assert.equal(protectionFailureExecution?.orderId, 'mudrex-live-order-risk-10');
-    assert.equal(protectionFailureExecution?.executionState, 'linked');
+    assert.equal(protectionFailureExecution?.executionState, 'working');
     assert.equal(protectionFailureExecution?.protectionState, 'manual_unlinked');
     assert.match(
       String(protectionFailureExecution?.protectionLastError || ''),
@@ -3265,7 +3271,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       (protectionFailureExecution?.routeAttempts as Array<Record<string, unknown>> | undefined) ??
       [];
     assert.equal(protectionFailureAttempts.length, 1);
-    assert.equal(protectionFailureAttempts[0]?.status, 'placed');
+    assert.equal(protectionFailureAttempts[0]?.status, 'manual_review');
     assert.equal(
       protectionFailureAttempts[0]?.failureClassification,
       'order_created_protection_unresolved'
@@ -3301,6 +3307,324 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       originalEnvFlags.shadowBrokerAllowlist
     );
   }
+}
+
+async function runSuggestedTradeLiveAutoLifecycleMonitorAssertions(): Promise<void> {
+  const service = new SuggestedTradesService() as any;
+  const riskOrders: Array<{
+    positionId: string;
+    body: Record<string, unknown>;
+    context?: Record<string, unknown>;
+  }> = [];
+  const persistedProtectionStates: Array<string | null> = [];
+  let execution: SuggestedTradeExecutionLink = {
+    executionMode: 'live',
+    executionState: 'working',
+    orderId: 'mudrex-entry-monitor-1',
+    orderStatus: 'OPEN',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    orderType: 'limit',
+    quantity: 180,
+    entryPrice: '0.7928',
+    stopLossPrice: '0.7942',
+    takeProfitPrice: '0.7854',
+    submittedAt: '2026-05-11T14:37:50.000Z',
+    linkedAt: '2026-05-11T14:37:53.000Z',
+    protectionState: 'waiting_for_position',
+    protectionPlan: {
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+      orderId: 'mudrex-entry-monitor-1',
+      entryPrice: '0.7928',
+      stopLossPrice: '0.7942',
+      takeProfitPrice: '0.7854',
+    },
+    routeAttempts: [
+      {
+        attemptNumber: 1,
+        candidateRank: 1,
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        requestedSymbol: 'PIEVERSEUSDT',
+        brokerSymbol: 'PIEVERSEUSDT',
+        status: 'working',
+        submissionState: 'accepted',
+        orderId: 'mudrex-entry-monitor-1',
+      },
+    ],
+  };
+  const trade = {
+    id: 'st-live-auto-monitor',
+    userId: 'user-1',
+    symbol: 'PIEVERSEUSDT',
+    side: 'SELL',
+    timeframe: '5m',
+    automationId: 'auto-1',
+    signalTime: new Date('2026-05-11T14:30:00.000Z'),
+    createdAt: new Date('2026-05-11T14:37:00.000Z'),
+    meta: null,
+    executionRecord: execution,
+  } as unknown as SuggestedTrade;
+
+  service.suggestedTradeRepository = {
+    async getSuggestedTradeById() {
+      return trade;
+    },
+    async saveSuggestedTradeExecution() {
+      throw new Error('live-auto monitor assertions stub persistExecutionState directly');
+    },
+  };
+  service.persistExecutionState = async (
+    _trade: SuggestedTrade,
+    nextExecution: SuggestedTradeExecutionLink
+  ) => {
+    persistedProtectionStates.push(nextExecution.protectionState ?? null);
+    execution = nextExecution;
+    (trade as any).executionRecord = nextExecution;
+  };
+  service.loadTradeSuggestionExecutionPolicy = async () => ({
+    executionMode: 'live_trade_auto',
+    approvalMode: 'auto_if_safe',
+    routeMode: 'fixed',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    liveConsentEnabled: true,
+    orderType: 'limit',
+    timeInForce: 'GTC',
+    quantityMode: 'quantity',
+    quantity: 180,
+    notional: null,
+    riskPercent: null,
+    leverage: 5,
+    reduceOnly: false,
+    maxOrdersPerRun: 1,
+    maxOrdersPerDay: 1,
+    maxConcurrentOpenTrades: 1,
+    maxNotionalPerTrade: null,
+    maxNotionalPerDay: null,
+    dedupeWindowSeconds: 3600,
+    freshness: { enabled: true, graceSeconds: 300, timeframeGraceSeconds: {} },
+    limitOrderExpiry: { enabled: true, expirySeconds: 300, timeframeExpirySeconds: {} },
+  });
+  service.brokerRuntimeRegistry = {
+    supportsOrdersAdapter: () => true,
+    supportsPositionsAdapter: () => true,
+    getOrdersAdapter: () => ({
+      async getOrder() {
+        return {
+          data: {
+            order_id: 'mudrex-entry-monitor-1',
+            status: 'FILLED',
+            filled_price: '0.7928',
+            filled_quantity: 180,
+            remaining_quantity: 0,
+            updated_at: '2026-05-11T14:37:54.000Z',
+          },
+        };
+      },
+      async cancelOrder() {
+        throw new Error('filled monitor must not cancel entry order');
+      },
+    }),
+    getPositionsAdapter: () => ({
+      async getPositions() {
+        return {
+          data: [
+            {
+              id: 'mudrex-position-monitor-1',
+              symbol: 'PIEVERSEUSDT',
+              status: 'OPEN',
+              position_type: 'SHORT',
+              quantity: 180,
+              entry_price: '0.7928',
+              current_price: '0.7930',
+              created_at: '2026-05-11T14:37:54.000Z',
+              stoploss_price: 0,
+              takeprofit_price: 0,
+            },
+          ],
+        };
+      },
+      async createRiskOrder(
+        positionId: string,
+        body: Record<string, unknown>,
+        context?: Record<string, unknown>
+      ) {
+        riskOrders.push({ positionId, body, context });
+        return { status: 'CREATED' };
+      },
+    }),
+  };
+
+  const settled = await service.runLiveAutoOrderLifecycleMonitorOnce({
+    userId: 'user-1',
+    suggestedTradeId: 'st-live-auto-monitor',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    orderId: 'mudrex-entry-monitor-1',
+  });
+  assert.equal(settled, true);
+  assert.equal(execution.executionState, 'filled');
+  assert.equal(execution.orderStatus, 'FILLED');
+  assert.equal(execution.positionId, 'mudrex-position-monitor-1');
+  assert.equal(execution.protectionState, 'attached');
+  assert.equal(riskOrders.length, 1);
+  assert.equal(riskOrders[0]?.positionId, 'mudrex-position-monitor-1');
+  assert.equal(riskOrders[0]?.body.stoploss_price, '0.794200');
+  assert.equal(riskOrders[0]?.body.takeprofit_price, '0.785400');
+  assert.deepEqual(persistedProtectionStates, ['attaching', 'attached']);
+  assert.equal(
+    service.isLiveAutoLifecycleMonitorSettled({
+      executionMode: 'live',
+      executionState: 'working',
+      protectionState: 'failed',
+      protectionAttempts: 1,
+      protectionLastError: 'position not found',
+    }),
+    false
+  );
+  assert.equal(
+    service.isLiveAutoLifecycleMonitorSettled({
+      executionMode: 'live',
+      executionState: 'working',
+      protectionState: 'failed',
+      protectionAttempts: 3,
+      protectionLastError: 'position not found',
+    }),
+    true
+  );
+
+  let cancelledOrderId: string | null = null;
+  execution = {
+    executionMode: 'live',
+    executionState: 'working',
+    orderId: 'mudrex-entry-monitor-expired',
+    orderStatus: 'OPEN',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    orderType: 'limit',
+    quantity: 180,
+    entryPrice: '0.7928',
+    stopLossPrice: '0.7942',
+    takeProfitPrice: '0.7854',
+    submittedAt: '2026-05-11T14:00:00.000Z',
+    linkedAt: '2026-05-11T14:00:00.000Z',
+    protectionState: 'waiting_for_fill',
+  };
+  (trade as any).executionRecord = execution;
+  service.loadTradeSuggestionExecutionPolicy = async () => ({
+    executionMode: 'live_trade_auto',
+    approvalMode: 'auto_if_safe',
+    routeMode: 'fixed',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    liveConsentEnabled: true,
+    orderType: 'limit',
+    timeInForce: 'GTC',
+    quantityMode: 'quantity',
+    quantity: 180,
+    notional: null,
+    riskPercent: null,
+    leverage: 5,
+    reduceOnly: false,
+    maxOrdersPerRun: 1,
+    maxOrdersPerDay: 1,
+    maxConcurrentOpenTrades: 1,
+    maxNotionalPerTrade: null,
+    maxNotionalPerDay: null,
+    dedupeWindowSeconds: 3600,
+    freshness: { enabled: true, graceSeconds: 300, timeframeGraceSeconds: {} },
+    limitOrderExpiry: { enabled: true, expirySeconds: 1, timeframeExpirySeconds: {} },
+  });
+  service.brokerRuntimeRegistry = {
+    supportsOrdersAdapter: () => true,
+    supportsPositionsAdapter: () => true,
+    getOrdersAdapter: () => ({
+      async getOrder() {
+        return {
+          data: {
+            order_id: 'mudrex-entry-monitor-expired',
+            status: 'OPEN',
+            created_at: '2026-05-11T14:00:00.000Z',
+            updated_at: '2026-05-11T14:00:01.000Z',
+          },
+        };
+      },
+      async cancelOrder(orderId: string) {
+        cancelledOrderId = orderId;
+        return { status: 'CANCELLED' };
+      },
+    }),
+    getPositionsAdapter: () => ({
+      async getPositions() {
+        return [];
+      },
+    }),
+  };
+
+  const expiredSettled = await service.runLiveAutoOrderLifecycleMonitorOnce({
+    userId: 'user-1',
+    suggestedTradeId: 'st-live-auto-monitor',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    orderId: 'mudrex-entry-monitor-expired',
+  });
+  assert.equal(expiredSettled, true);
+  assert.equal(cancelledOrderId, 'mudrex-entry-monitor-expired');
+  assert.equal(execution.executionState, 'expired');
+  assert.equal(execution.orderStatus, 'EXPIRED');
+  assert.equal(execution.protectionState, 'not_required');
+
+  const resumedMonitors: Array<Record<string, unknown>> = [];
+  service.startLiveAutoOrderLifecycleMonitor = (input: Record<string, unknown>) => {
+    resumedMonitors.push({ ...input });
+  };
+  execution = {
+    executionMode: 'live',
+    executionState: 'working',
+    orderId: 'mudrex-entry-monitor-retry',
+    orderStatus: 'FILLED',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    orderType: 'limit',
+    quantity: 180,
+    entryPrice: '0.7928',
+    stopLossPrice: '0.7942',
+    takeProfitPrice: '0.7854',
+    submittedAt: '2026-05-11T14:37:50.000Z',
+    linkedAt: '2026-05-11T14:37:53.000Z',
+    protectionState: 'failed',
+    protectionAttempts: 1,
+    protectionLastError: 'Mudrex protection remediation failed: position not found',
+  };
+  (trade as any).executionRecord = execution;
+  service.suggestedTradeRepository = {
+    async getLinkedOrderSnapshot() {
+      return null;
+    },
+    async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+      return {
+        ...payload,
+        createdAt: new Date('2026-05-11T14:39:00.000Z'),
+        updatedAt: new Date('2026-05-11T14:39:00.000Z'),
+      };
+    },
+  };
+
+  const recoveryRefreshCount = await service.refreshExecutionOutcomes('user-1', [trade], {
+    resolveStaleGaps: true,
+  });
+  assert.equal(recoveryRefreshCount, 1);
+  assert.deepEqual(resumedMonitors, [
+    {
+      userId: 'user-1',
+      suggestedTradeId: 'st-live-auto-monitor',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+      orderId: 'mudrex-entry-monitor-retry',
+    },
+  ]);
 }
 
 async function runSuggestedTradeDeltaProductPreflightAssertions(): Promise<void> {
@@ -4908,10 +5232,7 @@ async function runSuggestedTradeBrokerLiveAutoProtectionAttachHandlerAssertions(
   assert.equal(classBackedResult.attached, true);
   assert.equal(classBackedAdapter.positionCalls.length, 1);
   assert.equal(classBackedAdapter.riskOrderCalls.length, 1);
-  assert.equal(
-    classBackedAdapter.riskOrderCalls[0]?.positionId,
-    'class-backed-position-1'
-  );
+  assert.equal(classBackedAdapter.riskOrderCalls[0]?.positionId, 'class-backed-position-1');
 }
 
 async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promise<void> {
@@ -7972,6 +8293,196 @@ async function runSuggestedTradesBulkReconcileAssertions(): Promise<void> {
   assert.deepEqual(response.data.suggestedTradeIds, ['st-stale']);
 }
 
+async function runSuggestedTradeProtectionRecoverySyncAssertions(): Promise<void> {
+  const service = new SuggestedTradesService() as any;
+  const staleBefore = new Date('2026-05-11T14:00:00.000Z');
+  const staleTrade = {
+    id: 'st-stale-sync',
+    userId: 'user-1',
+    symbol: 'BTCUSDT',
+    timeframe: '5m',
+    side: 'BUY',
+    signalTime: new Date('2026-05-11T13:55:00.000Z'),
+    executionRecord: {
+      executionMode: 'live',
+      executionState: 'working',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+      orderId: 'mudrex-stale-order',
+      protectionState: 'waiting_for_fill',
+    },
+  } as unknown as SuggestedTrade;
+  const protectionTrade = {
+    id: 'st-protection-sync',
+    userId: 'user-1',
+    symbol: 'ETHUSDT',
+    timeframe: '5m',
+    side: 'SELL',
+    signalTime: new Date('2026-05-11T13:56:00.000Z'),
+    executionRecord: {
+      executionMode: 'live',
+      executionState: 'working',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+      orderId: 'mudrex-protection-order',
+      protectionState: 'attaching',
+      protectionCheckedAt: '2026-05-11T14:01:30.000Z',
+    },
+  } as unknown as SuggestedTrade;
+  let automaticStaleBefore: Date | null = null;
+  let manualStaleBefore: Date | null = null;
+  let refreshedIds: string[] = [];
+
+  service.suggestedTradeRepository = {
+    async listStaleTrackedTradesGlobal(limit: number, receivedStaleBefore: Date) {
+      assert.equal(limit, 5);
+      assert.equal(receivedStaleBefore, staleBefore);
+      return [staleTrade];
+    },
+    async listProtectionRemediationCandidates(
+      limit: number,
+      receivedStaleBefore: Date,
+      options?: { automaticStaleBefore?: Date }
+    ) {
+      assert.equal(limit, 5);
+      manualStaleBefore = receivedStaleBefore;
+      automaticStaleBefore = options?.automaticStaleBefore ?? null;
+      return [protectionTrade, staleTrade];
+    },
+  };
+  service.refreshExecutionOutcomes = async (
+    userId: string,
+    trades: SuggestedTrade[],
+    options: Record<string, unknown>
+  ) => {
+    assert.equal(userId, 'user-1');
+    assert.equal(options.resolveStaleGaps, true);
+    refreshedIds = trades.map((trade) => trade.id);
+    return trades.length;
+  };
+
+  const result = await service.syncStaleTrackedExecutionTrades({
+    limit: 5,
+    staleBefore,
+  });
+
+  assert.equal(manualStaleBefore, staleBefore);
+  const capturedAutomaticStaleBefore = automaticStaleBefore as Date | null;
+  assert.ok(capturedAutomaticStaleBefore instanceof Date);
+  assert.equal(capturedAutomaticStaleBefore.getTime() >= staleBefore.getTime(), true);
+  assert.deepEqual(refreshedIds, ['st-protection-sync', 'st-stale-sync']);
+  assert.equal(result.processed, 2);
+  assert.equal(result.refreshed, 2);
+  assert.deepEqual(result.suggestedTradeIds, ['st-protection-sync', 'st-stale-sync']);
+}
+
+async function runSuggestedTradesProtectionGuardrailAssertions(): Promise<void> {
+  const service = new SuggestedTradesProtectionGuardrailService() as any;
+  const originalEnabled = env.suggestedTradesProtectionGuardrails.enabled;
+  env.suggestedTradesProtectionGuardrails.enabled = true;
+
+  const createdAlerts: Array<Record<string, unknown>> = [];
+  const recoveryCalls: Array<{
+    userId: string;
+    brokerKey: string;
+    accountId: string;
+    symbols: string[];
+  }> = [];
+
+  service.listExecutionCandidates = async () => [
+    {
+      suggestedTradeId: 'st-open-unprotected',
+      userId: 'user-1',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+      symbol: 'ETHUSDT',
+      side: 'BUY',
+      timeframe: '5m',
+      orderId: 'mudrex-entry-open-unprotected',
+      orderStatus: 'FILLED',
+      executionState: 'working',
+      positionId: 'mudrex-position-open-unprotected',
+      positionStatus: 'OPEN',
+      filledAt: '2026-05-11T14:00:10.000Z',
+      protectionState: 'waiting_for_position',
+      protectionCheckedAt: '2026-05-11T14:00:15.000Z',
+      updatedAt: '2026-05-11T14:00:15.000Z',
+    },
+  ];
+  service.listOrderSnapshots = async () => new Map();
+  service.listOpenPositionSnapshots = async () => [
+    {
+      externalId: 'mudrex-position-open-unprotected',
+      symbol: 'ETHUSDT',
+      status: 'OPEN',
+      statusRank: 1,
+      stopLossOrderId: null,
+      stopLossPrice: null,
+      takeProfitOrderId: null,
+      takeProfitPrice: null,
+      lastSeenAt: '2026-05-11T14:01:45.000Z',
+    },
+  ];
+  service.alertRepository = {
+    async findOpenAlertBySource() {
+      return null;
+    },
+    async findOpenAlertBySignature() {
+      return null;
+    },
+    async updateOpenAlertDetails() {
+      throw new Error('new guardrail alert should not update an existing alert');
+    },
+    async createAlert(payload: Record<string, unknown>) {
+      createdAlerts.push({ ...payload });
+      return payload;
+    },
+  };
+  service.suggestedTradesService = {
+    async syncExecutionForPositionUpdates(
+      userId: string,
+      brokerKey: string,
+      accountId: string,
+      symbols: string[]
+    ) {
+      recoveryCalls.push({ userId, brokerKey, accountId, symbols: [...symbols] });
+      return 1;
+    },
+  };
+
+  try {
+    const response = await service.runAudit({
+      emitAlerts: true,
+      now: new Date('2026-05-11T14:02:30.000Z'),
+      staleAfterMs: 60_000,
+    });
+
+    assert.equal(response.status, 'degraded');
+    assert.equal(response.issueTrades, 1);
+    assert.equal(response.criticalIssues, 1);
+    assert.equal(response.alertsEmitted, 1);
+    assert.equal(response.recoveriesTriggered, 1);
+    assert.equal(response.recoveryFailures, 0);
+    assert.equal(response.items[0]?.issues[0]?.code, 'open_position_unprotected');
+    assert.equal(response.items[0]?.recoveryTriggered, true);
+    assert.equal(response.items[0]?.recoveryRefreshed, 1);
+    assert.match(
+      String(createdAlerts[0]?.message || ''),
+      /mudrex ETHUSDT protection guardrail open_position_unprotected/
+    );
+    assert.deepEqual(recoveryCalls, [
+      {
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        symbols: ['ETHUSDT'],
+      },
+    ]);
+  } finally {
+    env.suggestedTradesProtectionGuardrails.enabled = originalEnabled;
+  }
+}
+
 async function runSuggestedTradeExecutionSyncServiceAssertions(): Promise<void> {
   const service = new SuggestedTradeExecutionSyncService() as any;
   const createdRuns: Array<Record<string, unknown>> = [];
@@ -8440,6 +8951,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const protectionRecoverySource = read(
     'scripts/checks/check-suggested-trades-protection-recovery.ts'
   );
+  const protectionGuardrailsSource = read(
+    'scripts/checks/check-suggested-trades-protection-guardrails.ts'
+  );
   const terminalProtectionRepairSource = read(
     'scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
@@ -8473,6 +8987,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   assert.equal(
     packageScripts['check:suggested-trades-protection-recovery'],
     'node --import tsx scripts/checks/check-suggested-trades-protection-recovery.ts'
+  );
+  assert.equal(
+    packageScripts['check:suggested-trades-protection-guardrails'],
+    'node --import tsx scripts/checks/check-suggested-trades-protection-guardrails.ts'
   );
   assert.equal(
     packageScripts['repair:suggested-trades-terminal-protection'],
@@ -8528,6 +9046,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     proofSource.includes('scripts/checks/check-suggested-trades-protection-recovery.ts'),
     true,
     'suggested trades live proof must run protection recovery freshness check'
+  );
+  assert.equal(
+    proofSource.includes('scripts/checks/check-suggested-trades-protection-guardrails.ts'),
+    true,
+    'suggested trades live proof must run protection guardrail gate'
   );
   assert.equal(
     smokeSource.includes('/suggested-trades/overview') &&
@@ -8599,6 +9122,20 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     );
   }
   for (const marker of [
+    'suggested-trades-protection-guardrails',
+    'SUGGESTED_TRADES_MAX_PROTECTION_GUARDRAIL_ISSUE_TRADES',
+    'SUGGESTED_TRADES_MAX_PROTECTION_GUARDRAIL_RECOVERY_FAILURES',
+    'issueTrades',
+    'recoveryFailures',
+    'protection guardrail recovery failures',
+  ]) {
+    assert.equal(
+      protectionGuardrailsSource.includes(marker),
+      true,
+      `suggested trades protection guardrail check must retain ${marker}`
+    );
+  }
+  for (const marker of [
     'suggested-trades-terminal-protection-repair',
     'SUGGESTED_TRADES_TERMINAL_PROTECTION_REPAIR_APPLY',
     'dry_run',
@@ -8616,6 +9153,25 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     true,
     'suggested trades release gate must execute lifecycle smoke'
   );
+  assert.equal(
+    releaseGateSource.includes('/health/suggested-trades-protection-guardrails?emitAlerts=false'),
+    true,
+    'suggested trades release gate must query protection guardrails without side effects'
+  );
+  for (const marker of [
+    'SUGGESTED_TRADES_MAX_PROTECTION_GUARDRAIL_ISSUE_TRADES',
+    'SUGGESTED_TRADES_MAX_PROTECTION_GUARDRAIL_RECOVERY_FAILURES',
+    'SUGGESTED_TRADES_REQUIRE_PROTECTION_GUARDRAILS_ENABLED',
+    'finalProtectionGuardrails',
+    'protectionGuardrailIssueTrades',
+    'protectionGuardrailRecoveryFailures',
+  ]) {
+    assert.equal(
+      releaseGateSource.includes(marker),
+      true,
+      `suggested trades release gate must retain ${marker}`
+    );
+  }
   assert.equal(
     releaseGateSource.includes('APP_API_KEY') && releaseGateSource.includes('API_KEY'),
     true,
@@ -8739,6 +9295,7 @@ async function main(): Promise<void> {
   await runSuggestedTradeBrokerControlHelperAssertions();
   await runSuggestedTradeLiveAutoRolloutAssertions();
   await runSuggestedTradeAdaptiveRouteSelectionAssertions();
+  await runSuggestedTradeLiveAutoLifecycleMonitorAssertions();
   await runSuggestedTradeDeltaProductPreflightAssertions();
   await runSuggestedTradeReconcileAssertions();
   await runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions();
@@ -8751,6 +9308,8 @@ async function main(): Promise<void> {
   await runSuggestedTradeSiblingProtectionAutoCancelAssertions();
   await runSuggestedTradeMudrexLeverageReconciliationAssertions();
   await runSuggestedTradesBulkReconcileAssertions();
+  await runSuggestedTradeProtectionRecoverySyncAssertions();
+  await runSuggestedTradesProtectionGuardrailAssertions();
   await runSuggestedTradeExecutionSyncServiceAssertions();
   await runSuggestedTradesOverviewServiceAssertions();
   await runSuggestedTradesHealthServiceAssertions();

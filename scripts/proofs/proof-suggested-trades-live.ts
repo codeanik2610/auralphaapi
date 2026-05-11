@@ -41,6 +41,10 @@ async function run(): Promise<void> {
     'protection action report',
     'scripts/checks/check-suggested-trades-protection-actions.ts'
   );
+  await runStep(
+    'protection guardrail gate',
+    'scripts/checks/check-suggested-trades-protection-guardrails.ts'
+  );
 }
 
 run().catch((error) => {

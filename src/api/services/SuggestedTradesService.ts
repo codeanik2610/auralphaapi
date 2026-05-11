@@ -110,6 +110,9 @@ type TradeSuggestionQuantityMode = 'quantity' | 'notional' | 'risk_percent';
 type SuggestedTradePreTradeState = NonNullable<SuggestedTradeExecutionLink['preTradeState']>;
 const SUGGESTED_TRADES_FRESHNESS_AUDIT_LOOKBACK_DAYS = 7;
 const SUGGESTED_TRADES_FRESHNESS_AUDIT_LIMIT = 5000;
+const LIVE_AUTO_LIFECYCLE_MONITOR_INTERVAL_MS = 1500;
+const LIVE_AUTO_LIFECYCLE_MONITOR_DEFAULT_DURATION_MS = 5 * 60 * 1000;
+const LIVE_AUTO_LIFECYCLE_MONITOR_MAX_DURATION_MS = 15 * 60 * 1000;
 const SUGGESTED_TRADE_PROTECTION_STATES = new Set<SuggestedTradeProtectionState>([
   'pending',
   'waiting_for_fill',
@@ -178,14 +181,24 @@ interface SuggestedTradeProtectionPersistence {
   protectionAttachedAt: string | null;
 }
 
+type SuggestedTradeAutoLiveRolloutOutcome =
+  | 'disabled'
+  | 'skipped'
+  | 'blocked'
+  | 'ready'
+  | 'working'
+  | 'placed'
+  | 'failed';
+
 interface SuggestedTradeAutoLiveRolloutResult {
-  outcome: 'disabled' | 'skipped' | 'blocked' | 'ready' | 'placed' | 'failed';
+  outcome: SuggestedTradeAutoLiveRolloutOutcome;
   message: string;
   suggestedTradeId: string;
   brokerKey?: string | null;
   accountId?: string | null;
   preTradeCheckId?: string | null;
   orderId?: string | null;
+  protectionState?: SuggestedTradeProtectionState | null;
   freshness?: SuggestedTradeAutoLiveFreshnessSnapshot | null;
 }
 
@@ -351,6 +364,14 @@ interface LiveAutoBrokerRecordLookup {
   error?: string | null;
 }
 
+interface LiveAutoLifecycleMonitorInput {
+  userId: string;
+  suggestedTradeId: string;
+  brokerKey: string;
+  accountId: string;
+  orderId: string | null;
+}
+
 interface LiveAutoOrderPlacementHandler {
   createOrder: (
     assetId: string,
@@ -447,6 +468,9 @@ export class SuggestedTradesService {
 
   @Inject(() => RiskKillSwitchService)
   private riskKillSwitchService!: RiskKillSwitchService;
+
+  private liveAutoLifecycleMonitorKeys = new Set<string>();
+  private liveAutoLifecycleMonitorEnabled = true;
 
   async getSuggestedTrades(
     userId: string,
@@ -851,7 +875,9 @@ export class SuggestedTradesService {
       staleBefore
     );
     const protectionTrades =
-      await this.suggestedTradeRepository.listProtectionRemediationCandidates(limit, staleBefore);
+      await this.suggestedTradeRepository.listProtectionRemediationCandidates(limit, staleBefore, {
+        automaticStaleBefore: new Date(),
+      });
     const trades = this.mergeUniqueSuggestedTrades([...protectionTrades, ...staleTrades]).slice(
       0,
       limit
@@ -4038,9 +4064,22 @@ export class SuggestedTradesService {
       fallbackProtectionState: input.submittingExecution.protectionState,
       fallbackProtectionLastError: input.submittingExecution.protectionLastError,
     });
+    const unresolvedProtection = this.isLiveAutoProtectionUnresolved(
+      protectionResolution.protectionState
+    );
+    const routeAttemptStatus = this.resolveLiveAutoRouteAttemptStatus(
+      protectionResolution.protectionState
+    );
+    const liveAutoOutcome = this.resolveCreatedLiveAutoRolloutOutcome(
+      protectionResolution.protectionState
+    );
+    const liveAutoMessage = this.buildCreatedLiveAutoRolloutMessage({
+      protectionAttached,
+      protectionState: protectionResolution.protectionState,
+    });
     const routeAttempts = this.upsertLiveAutoRouteAttempt(input.routeAttempts, {
       ...input.pendingAttempt,
-      status: 'placed',
+      status: routeAttemptStatus,
       submissionState: 'accepted',
       finishedAt: linkedAt,
       orderId: createdOrderId,
@@ -4055,7 +4094,7 @@ export class SuggestedTradesService {
       ...input.submittingExecution,
       orderId: createdOrderId,
       orderStatus: createdOrderStatus,
-      executionState: 'linked',
+      executionState: unresolvedProtection ? 'working' : 'linked',
       linkedAt,
       protectionState: protectionResolution.protectionState,
       protectionCheckedAt: linkedAt,
@@ -4083,8 +4122,10 @@ export class SuggestedTradesService {
 
     await this.operationalEventService.logActivity(input.userId, {
       type: 'Suggested Trade',
-      title: `Live auto order created: ${input.trade.symbol}`,
-      status: 'Success',
+      title: unresolvedProtection
+        ? `Live auto order awaiting protection: ${input.trade.symbol}`
+        : `Live auto order created: ${input.trade.symbol}`,
+      status: unresolvedProtection ? 'Warning' : 'Success',
       route: 'Suggested Trades',
       stream: 'Execution',
       related: `${input.prepared.brokerKey} · ${input.prepared.accountId}`,
@@ -4092,29 +4133,41 @@ export class SuggestedTradesService {
       symbol: input.trade.symbol,
       description: protectionAttached
         ? `Live order ${createdOrderId} created automatically after pre-trade clearance with native SL/TP protection`
-        : `Live order ${createdOrderId} created automatically after pre-trade clearance`,
+        : `Live order ${createdOrderId} accepted after pre-trade clearance; protection lifecycle is ${protectionResolution.protectionState ?? 'pending'}.`,
     });
     await this.operationalEventService.emitNotificationAlert(input.userId, {
       channel: 'Trading',
-      source: `trade-suggestion.live-auto.placed:${input.trade.id}`,
+      source: `trade-suggestion.live-auto.${unresolvedProtection ? 'working' : 'placed'}:${input.trade.id}`,
       symbol: input.trade.symbol,
       route: 'Suggested Trades',
       severity: 'Medium',
-      message: `Live order ${createdOrderId} created for ${input.trade.symbol} on ${
-        input.prepared.brokerKey
-      }${input.prepared.accountId ? ` (${input.prepared.accountId})` : ''}.`,
+      message: unresolvedProtection
+        ? `Live order ${createdOrderId} accepted for ${input.trade.symbol} on ${
+            input.prepared.brokerKey
+          }${input.prepared.accountId ? ` (${input.prepared.accountId})` : ''}; protection is ${protectionResolution.protectionState ?? 'pending'}.`
+        : `Live order ${createdOrderId} created for ${input.trade.symbol} on ${
+            input.prepared.brokerKey
+          }${input.prepared.accountId ? ` (${input.prepared.accountId})` : ''}.`,
     });
+    if (this.shouldStartLiveAutoLifecycleMonitor(protectionResolution.protectionState)) {
+      this.startLiveAutoOrderLifecycleMonitor({
+        userId: input.userId,
+        suggestedTradeId: input.trade.id,
+        brokerKey: input.prepared.brokerKey,
+        accountId: input.prepared.accountId,
+        orderId: createdOrderId,
+      });
+    }
 
     return {
-      outcome: 'placed',
-      message: protectionAttached
-        ? 'Live order created automatically after pre-trade clearance with native SL/TP protection'
-        : 'Live order created automatically after pre-trade clearance',
+      outcome: liveAutoOutcome,
+      message: liveAutoMessage,
       suggestedTradeId: input.trade.id,
       brokerKey: input.prepared.brokerKey,
       accountId: input.prepared.accountId,
       preTradeCheckId: input.prepared.preTradeCheckId,
       orderId: createdOrderId,
+      protectionState: protectionResolution.protectionState ?? null,
     };
   }
 
@@ -4207,6 +4260,542 @@ export class SuggestedTradesService {
       routeFailureMessage: note,
       routeNote: 'Order created; automatic protection attachment failed.',
     };
+  }
+
+  private isLiveAutoProtectionUnresolved(
+    protectionState: SuggestedTradeProtectionState | null | undefined
+  ): boolean {
+    return (
+      protectionState === 'pending' ||
+      protectionState === 'waiting_for_fill' ||
+      protectionState === 'waiting_for_position' ||
+      protectionState === 'attaching' ||
+      protectionState === 'failed' ||
+      protectionState === 'manual_unlinked'
+    );
+  }
+
+  private resolveLiveAutoRouteAttemptStatus(
+    protectionState: SuggestedTradeProtectionState | null | undefined
+  ): SuggestedTradeRouteAttempt['status'] {
+    if (protectionState === 'failed' || protectionState === 'manual_unlinked') {
+      return 'manual_review';
+    }
+    if (this.isLiveAutoProtectionUnresolved(protectionState)) {
+      return 'working';
+    }
+    return 'placed';
+  }
+
+  private resolveCreatedLiveAutoRolloutOutcome(
+    protectionState: SuggestedTradeProtectionState | null | undefined
+  ): SuggestedTradeAutoLiveRolloutOutcome {
+    return this.isLiveAutoProtectionUnresolved(protectionState) ? 'working' : 'placed';
+  }
+
+  private buildCreatedLiveAutoRolloutMessage(input: {
+    protectionAttached: boolean;
+    protectionState: SuggestedTradeProtectionState | undefined;
+  }): string {
+    if (input.protectionAttached || input.protectionState === 'attached') {
+      return 'Live order created automatically after pre-trade clearance with native SL/TP protection';
+    }
+    if (input.protectionState === 'waiting_for_fill') {
+      return 'Live order accepted after pre-trade clearance; waiting for entry fill before SL/TP protection can be attached.';
+    }
+    if (input.protectionState === 'waiting_for_position') {
+      return 'Live order accepted after pre-trade clearance; waiting for matching position before SL/TP protection repair.';
+    }
+    if (input.protectionState === 'manual_unlinked') {
+      return 'Live order accepted after pre-trade clearance, but SL/TP protection needs manual action.';
+    }
+    if (input.protectionState === 'failed') {
+      return 'Live order accepted after pre-trade clearance, but automatic SL/TP protection is unresolved.';
+    }
+    if (input.protectionState === 'pending' || input.protectionState === 'attaching') {
+      return 'Live order accepted after pre-trade clearance; SL/TP protection is still being resolved.';
+    }
+    return 'Live order created automatically after pre-trade clearance';
+  }
+
+  private markLiveAutoRouteAttemptsForProtectionLifecycle(
+    attempts: SuggestedTradeRouteAttempt[],
+    protectionState: SuggestedTradeProtectionState | undefined,
+    message: string
+  ): SuggestedTradeRouteAttempt[] {
+    if (!this.isLiveAutoProtectionUnresolved(protectionState)) {
+      return attempts;
+    }
+    const status = this.resolveLiveAutoRouteAttemptStatus(protectionState);
+    return attempts.map((attempt) => {
+      if (
+        attempt.status !== 'placed' &&
+        attempt.status !== 'working' &&
+        attempt.status !== 'manual_review'
+      ) {
+        return attempt;
+      }
+      return {
+        ...attempt,
+        status,
+        failureClassification:
+          attempt.failureClassification ?? 'order_created_protection_unresolved',
+        failureMessage: attempt.failureMessage ?? message,
+        note:
+          attempt.note ??
+          (status === 'manual_review'
+            ? 'Order accepted; protection needs manual review.'
+            : 'Order accepted; fill/protection lifecycle is still being tracked.'),
+      };
+    });
+  }
+
+  private shouldStartLiveAutoLifecycleMonitor(
+    protectionState: SuggestedTradeProtectionState | null | undefined
+  ): boolean {
+    return (
+      protectionState === 'pending' ||
+      protectionState === 'waiting_for_fill' ||
+      protectionState === 'waiting_for_position' ||
+      protectionState === 'attaching'
+    );
+  }
+
+  private shouldResumeLiveAutoLifecycleMonitor(
+    execution: SuggestedTradeExecutionLink | null | undefined
+  ): boolean {
+    if (!execution || execution.executionMode !== 'live') {
+      return false;
+    }
+    const executionState = this.readStringValue(execution.executionState)?.toLowerCase();
+    if (['closed', 'cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '')) {
+      return false;
+    }
+    const protectionState = this.normalizeProtectionState(execution.protectionState);
+    if (this.shouldStartLiveAutoLifecycleMonitor(protectionState)) {
+      return true;
+    }
+    return (
+      protectionState === 'failed' &&
+      (this.isRetriableProtectionFailure(execution) ||
+        this.isDeltaReplacementProtectionFailure(execution))
+    );
+  }
+
+  private maybeStartLiveAutoLifecycleMonitorForExecution(
+    userId: string,
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink | null | undefined
+  ): void {
+    if (!this.shouldResumeLiveAutoLifecycleMonitor(execution)) {
+      return;
+    }
+    const brokerKey = this.readStringValue(execution?.brokerKey)?.toLowerCase();
+    const accountId = this.readStringValue(execution?.accountId);
+    if (!brokerKey || !accountId) {
+      return;
+    }
+    this.startLiveAutoOrderLifecycleMonitor({
+      userId,
+      suggestedTradeId: trade.id,
+      brokerKey,
+      accountId,
+      orderId: this.readStringValue(execution?.orderId),
+    });
+  }
+
+  private startLiveAutoOrderLifecycleMonitor(input: LiveAutoLifecycleMonitorInput): void {
+    if (!this.liveAutoLifecycleMonitorEnabled) {
+      return;
+    }
+    const key = this.buildLiveAutoLifecycleMonitorKey(input);
+    if (!key || this.liveAutoLifecycleMonitorKeys.has(key)) {
+      return;
+    }
+    this.liveAutoLifecycleMonitorKeys.add(key);
+    void this.runLiveAutoOrderLifecycleMonitor(input)
+      .catch(() => undefined)
+      .finally(() => {
+        this.liveAutoLifecycleMonitorKeys.delete(key);
+      });
+  }
+
+  private buildLiveAutoLifecycleMonitorKey(input: LiveAutoLifecycleMonitorInput): string | null {
+    const userId = this.readStringValue(input.userId);
+    const tradeId = this.readStringValue(input.suggestedTradeId);
+    const brokerKey = this.readStringValue(input.brokerKey)?.toLowerCase();
+    const accountId = this.readStringValue(input.accountId);
+    const orderId = this.readStringValue(input.orderId) ?? 'position';
+    if (!userId || !tradeId || !brokerKey || !accountId) {
+      return null;
+    }
+    return [userId, tradeId, brokerKey, accountId, orderId].join(':');
+  }
+
+  private async runLiveAutoOrderLifecycleMonitor(
+    input: LiveAutoLifecycleMonitorInput
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const maxDurationMs = await this.resolveLiveAutoLifecycleMonitorDurationMs(input);
+
+    while (Date.now() - startedAt <= maxDurationMs) {
+      const settled = await this.runLiveAutoOrderLifecycleMonitorOnce(input);
+      if (settled) {
+        return;
+      }
+
+      const remainingMs = maxDurationMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) {
+        break;
+      }
+      await this.waitForLiveAutoLifecycleMonitorPoll(
+        Math.min(LIVE_AUTO_LIFECYCLE_MONITOR_INTERVAL_MS, remainingMs)
+      );
+    }
+
+    await this.runLiveAutoOrderLifecycleMonitorOnce(input);
+  }
+
+  private async resolveLiveAutoLifecycleMonitorDurationMs(
+    input: LiveAutoLifecycleMonitorInput
+  ): Promise<number> {
+    try {
+      const trade = await this.suggestedTradeRepository.getSuggestedTradeById(
+        input.userId,
+        input.suggestedTradeId
+      );
+      if (!trade) {
+        return LIVE_AUTO_LIFECYCLE_MONITOR_DEFAULT_DURATION_MS;
+      }
+      const executionPolicy = await this.loadTradeSuggestionExecutionPolicy(
+        input.userId,
+        trade.automationId
+      );
+      const expirySeconds = resolveLimitOrderExpirySeconds(
+        trade.timeframe,
+        executionPolicy.limitOrderExpiry
+      );
+      if (expirySeconds === null) {
+        return LIVE_AUTO_LIFECYCLE_MONITOR_DEFAULT_DURATION_MS;
+      }
+      return Math.min(
+        LIVE_AUTO_LIFECYCLE_MONITOR_MAX_DURATION_MS,
+        Math.max(LIVE_AUTO_LIFECYCLE_MONITOR_INTERVAL_MS, expirySeconds * 1000)
+      );
+    } catch {
+      return LIVE_AUTO_LIFECYCLE_MONITOR_DEFAULT_DURATION_MS;
+    }
+  }
+
+  private async runLiveAutoOrderLifecycleMonitorOnce(
+    input: LiveAutoLifecycleMonitorInput
+  ): Promise<boolean> {
+    const trade = await this.suggestedTradeRepository.getSuggestedTradeById(
+      input.userId,
+      input.suggestedTradeId
+    );
+    if (!trade) {
+      return true;
+    }
+
+    const execution = this.getExecutionLink(trade);
+    if (!execution || execution.executionMode !== 'live') {
+      return true;
+    }
+
+    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase();
+    const accountId = this.readStringValue(execution.accountId);
+    const orderId = this.readStringValue(execution.orderId);
+    if (
+      !brokerKey ||
+      !accountId ||
+      brokerKey !== input.brokerKey.toLowerCase() ||
+      accountId !== input.accountId ||
+      (input.orderId && orderId && orderId !== input.orderId)
+    ) {
+      return true;
+    }
+
+    if (this.isLiveAutoLifecycleMonitorSettled(execution)) {
+      return true;
+    }
+
+    let nextExecution = execution;
+    const orderSnapshot = await this.fetchLiveAutoBrokerOrderSnapshot(input, nextExecution);
+    if (orderSnapshot) {
+      nextExecution = this.mergeExecutionOutcome(nextExecution, orderSnapshot);
+    }
+
+    const positionSnapshots = await this.fetchLiveAutoBrokerPositionSnapshots(
+      input,
+      trade,
+      nextExecution
+    );
+    nextExecution = this.mergePositionOutcome(trade, nextExecution, positionSnapshots, {
+      allowPositionEvidenceFill: true,
+    });
+    nextExecution = await this.maybeExpireLiveLimitEntryOrder(
+      input.userId,
+      trade,
+      nextExecution,
+      positionSnapshots
+    );
+    nextExecution = await this.maybeRemediateLiveProtection(
+      input.userId,
+      trade,
+      nextExecution,
+      positionSnapshots
+    );
+    nextExecution = await this.maybeAutoCancelSiblingProtectionOrders(
+      input.userId,
+      trade,
+      nextExecution,
+      positionSnapshots
+    );
+    nextExecution = this.alignLiveAutoExecutionStateWithProtectionLifecycle(nextExecution);
+
+    if (JSON.stringify(execution ?? null) !== JSON.stringify(nextExecution ?? null)) {
+      await this.persistExecutionState(trade, nextExecution);
+    }
+
+    return this.isLiveAutoLifecycleMonitorSettled(nextExecution);
+  }
+
+  private async fetchLiveAutoBrokerOrderSnapshot(
+    input: LiveAutoLifecycleMonitorInput,
+    execution: SuggestedTradeExecutionLink
+  ): Promise<{
+    orderStatus: string | null;
+    statusRank: number | null;
+    lastSeenAt: Date | string | null;
+    payload: Record<string, unknown> | null;
+  } | null> {
+    const orderId = this.readStringValue(execution.orderId) ?? this.readStringValue(input.orderId);
+    if (!orderId || !this.brokerRuntimeRegistry?.supportsOrdersAdapter?.(input.brokerKey)) {
+      return null;
+    }
+
+    const adapter = this.brokerRuntimeRegistry.getOrdersAdapter(input.brokerKey) as {
+      getOrder?: (...args: unknown[]) => Promise<unknown>;
+    };
+    if (typeof adapter.getOrder !== 'function') {
+      return null;
+    }
+
+    try {
+      const raw = await adapter.getOrder(orderId, {
+        userId: input.userId,
+        brokerKey: input.brokerKey,
+        accountId: input.accountId,
+      });
+      const records = this.extractBrokerRecordCandidates(raw);
+      const record =
+        records.find((candidate) => this.extractBrokerRecordId(candidate) === orderId) ??
+        records[0] ??
+        null;
+      if (!record) {
+        return null;
+      }
+      const payload = {
+        ...record,
+        order_id: this.extractBrokerRecordId(record) ?? orderId,
+      };
+      return {
+        orderStatus: this.extractBrokerRecordStatus(record),
+        statusRank: null,
+        lastSeenAt: this.extractBrokerRecordIsoTimestamp(record) ?? new Date().toISOString(),
+        payload,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async fetchLiveAutoBrokerPositionSnapshots(
+    input: LiveAutoLifecycleMonitorInput,
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink
+  ): Promise<LivePositionSnapshot[]> {
+    if (!this.brokerRuntimeRegistry?.supportsPositionsAdapter?.(input.brokerKey)) {
+      return [];
+    }
+
+    const adapter = this.brokerRuntimeRegistry.getPositionsAdapter(input.brokerKey) as {
+      getPositions?: (...args: unknown[]) => Promise<unknown>;
+    };
+    if (typeof adapter.getPositions !== 'function') {
+      return [];
+    }
+
+    try {
+      const raw = await adapter.getPositions(
+        { limit: 100 },
+        {
+          userId: input.userId,
+          brokerKey: input.brokerKey,
+          accountId: input.accountId,
+        }
+      );
+      const expectedSymbols = this.buildLiveAutoExecutionSymbols(trade, execution);
+      const expectedDirection =
+        String(trade.side || '')
+          .trim()
+          .toUpperCase() === 'SELL'
+          ? 'short'
+          : 'long';
+      const anchorMs =
+        this.toTimestamp(
+          execution.submittedAt ?? execution.linkedAt ?? execution.acceptedAt ?? trade.signalTime
+        ) ?? Date.now();
+      return this.extractBrokerRecordCandidates(raw)
+        .filter((record) =>
+          this.isLiveAutoBrokerPositionMatch(
+            record,
+            expectedSymbols,
+            expectedDirection,
+            execution,
+            anchorMs
+          )
+        )
+        .map((record) => this.toLiveAutoPositionSnapshot(record))
+        .filter((snapshot): snapshot is LivePositionSnapshot => snapshot !== null);
+    } catch {
+      return [];
+    }
+  }
+
+  private buildLiveAutoExecutionSymbols(
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink
+  ): Set<string> {
+    const brokerKey = this.readStringValue(execution.brokerKey);
+    const symbols = new Set<string>();
+    const addSymbol = (value: unknown): void => {
+      const symbol = this.readStringValue(value);
+      if (!symbol) {
+        return;
+      }
+      symbols.add(symbol.toUpperCase());
+      for (const equivalent of this.buildEquivalentLiveAutoSymbols(
+        symbol,
+        brokerKey ?? undefined
+      )) {
+        symbols.add(equivalent);
+      }
+    };
+
+    addSymbol(trade.symbol);
+    for (const attempt of execution.routeAttempts ?? []) {
+      addSymbol(attempt.requestedSymbol);
+      addSymbol(attempt.brokerSymbol);
+    }
+    const protectionPlan = this.readRecordValue(execution.protectionPlan);
+    addSymbol(protectionPlan?.symbol);
+    addSymbol(protectionPlan?.brokerSymbol);
+    return symbols;
+  }
+
+  private isLiveAutoBrokerPositionMatch(
+    record: Record<string, unknown>,
+    expectedSymbols: Set<string>,
+    expectedDirection: 'long' | 'short',
+    execution: SuggestedTradeExecutionLink,
+    anchorMs: number
+  ): boolean {
+    const symbol = this.extractBrokerRecordSymbol(record);
+    if (!symbol || !expectedSymbols.has(symbol)) {
+      return false;
+    }
+
+    const status = this.normalizePositionStatus(this.extractBrokerRecordStatus(record));
+    if (status === 'CLOSED' || status === 'LIQUIDATED') {
+      return false;
+    }
+
+    const direction = this.extractBrokerRecordDirection(record);
+    if (direction && direction !== expectedDirection) {
+      return false;
+    }
+
+    const observedMs = this.extractBrokerRecordTimestamp(record);
+    if (observedMs !== null && observedMs >= anchorMs - 10 * 60 * 1000) {
+      return true;
+    }
+
+    const quantity = this.extractBrokerRecordQuantity(record);
+    return Boolean(
+      quantity !== null &&
+      execution.quantity !== null &&
+      execution.quantity !== undefined &&
+      this.isLiveAutoQuantityClose(quantity, execution.quantity)
+    );
+  }
+
+  private toLiveAutoPositionSnapshot(record: Record<string, unknown>): LivePositionSnapshot | null {
+    const externalId = this.extractBrokerRecordId(record);
+    if (!externalId) {
+      return null;
+    }
+    const status = this.extractBrokerRecordStatus(record);
+    const observedAt = this.extractBrokerRecordIsoTimestamp(record) ?? new Date().toISOString();
+    return {
+      externalId,
+      status,
+      statusRank: null,
+      firstSeenAt: observedAt,
+      lastSeenAt: observedAt,
+      payload: record,
+    };
+  }
+
+  private isLiveAutoLifecycleMonitorSettled(execution: SuggestedTradeExecutionLink): boolean {
+    const executionState = this.readStringValue(execution.executionState)?.toLowerCase();
+    if (['closed', 'cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '')) {
+      return true;
+    }
+    const protectionState = this.normalizeProtectionState(execution.protectionState);
+    if (protectionState === 'failed') {
+      return (
+        !this.isRetriableProtectionFailure(execution) &&
+        !this.isDeltaReplacementProtectionFailure(execution)
+      );
+    }
+    return (
+      protectionState === 'attached' ||
+      protectionState === 'not_required' ||
+      protectionState === 'manual_unlinked'
+    );
+  }
+
+  private alignLiveAutoExecutionStateWithProtectionLifecycle(
+    execution: SuggestedTradeExecutionLink
+  ): SuggestedTradeExecutionLink {
+    if (execution.executionMode !== 'live') {
+      return execution;
+    }
+    const executionState = this.readStringValue(execution.executionState)?.toLowerCase();
+    if (['closed', 'cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '')) {
+      return execution;
+    }
+    if (
+      this.isLiveAutoProtectionUnresolved(this.normalizeProtectionState(execution.protectionState))
+    ) {
+      return {
+        ...execution,
+        executionState: 'working',
+      };
+    }
+    return execution;
+  }
+
+  private waitForLiveAutoLifecycleMonitorPoll(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      const unref = (timer as { unref?: () => void }).unref;
+      if (typeof unref === 'function') {
+        unref.call(timer);
+      }
+    });
   }
 
   private async reconcileLiveAutoAmbiguousRoute(input: {
@@ -4461,25 +5050,40 @@ export class SuggestedTradesService {
     const expectedProtection = Boolean(
       input.prepared.normalizedStopLossPrice > 0 && input.prepared.normalizedTakeProfitPrice > 0
     );
+    const protectionState: SuggestedTradeProtectionState | undefined = expectedProtection
+      ? orderStatus === 'FILLED'
+        ? 'waiting_for_position'
+        : 'waiting_for_fill'
+      : (input.submittingExecution.protectionState ?? undefined);
+    const protectionLastError = expectedProtection
+      ? orderStatus === 'FILLED'
+        ? 'Broker order was found filled during ambiguous-submit reconciliation; waiting for matching position before SL/TP protection repair.'
+        : 'Broker order was found during ambiguous-submit reconciliation; waiting for fill/position before SL/TP protection repair.'
+      : input.submittingExecution.protectionLastError;
+    const routeAttempts = this.markLiveAutoRouteAttemptsForProtectionLifecycle(
+      input.routeAttempts,
+      protectionState,
+      protectionLastError ?? 'Broker order was found during ambiguous-submit reconciliation.'
+    );
     const linkedExecution: SuggestedTradeExecutionLink = {
       ...input.submittingExecution,
       orderId: orderId ?? input.submittingExecution.orderId ?? null,
       orderStatus: orderStatus ?? input.submittingExecution.orderStatus ?? null,
-      executionState: orderStatus === 'FILLED' ? 'filled' : 'linked',
+      executionState: this.isLiveAutoProtectionUnresolved(protectionState)
+        ? 'working'
+        : orderStatus === 'FILLED'
+          ? 'filled'
+          : 'linked',
       linkedAt,
       filledAt: filledAt ?? input.submittingExecution.filledAt ?? null,
       filledPrice: filledPrice ?? input.submittingExecution.filledPrice ?? null,
       filledQuantity: filledQuantity ?? input.submittingExecution.filledQuantity ?? null,
       remainingQuantity: remainingQuantity ?? input.submittingExecution.remainingQuantity ?? null,
-      protectionState: expectedProtection
-        ? 'waiting_for_fill'
-        : (input.submittingExecution.protectionState ?? undefined),
+      protectionState,
       protectionCheckedAt: linkedAt,
       protectionAttachedAt: null,
-      protectionLastError: expectedProtection
-        ? 'Broker order was found during ambiguous-submit reconciliation; SL/TP protection will be repaired after fill/position confirmation.'
-        : input.submittingExecution.protectionLastError,
-      routeAttempts: input.routeAttempts,
+      protectionLastError,
+      routeAttempts,
       protectionPlan: this.buildLiveAutoReconciledProtectionPlan(input, {
         orderId: orderId ?? null,
       }),
@@ -4491,15 +5095,25 @@ export class SuggestedTradesService {
       referenceId: orderId ?? input.trade.id,
       description: input.reconciliation.message,
     });
+    if (this.shouldStartLiveAutoLifecycleMonitor(protectionState)) {
+      this.startLiveAutoOrderLifecycleMonitor({
+        userId: input.userId,
+        suggestedTradeId: input.trade.id,
+        brokerKey: input.prepared.brokerKey,
+        accountId: input.prepared.accountId,
+        orderId: orderId ?? null,
+      });
+    }
 
     return {
-      outcome: 'placed',
+      outcome: this.resolveCreatedLiveAutoRolloutOutcome(protectionState),
       message: input.reconciliation.message,
       suggestedTradeId: input.trade.id,
       brokerKey: input.prepared.brokerKey,
       accountId: input.prepared.accountId,
       preTradeCheckId: input.prepared.preTradeCheckId,
       orderId,
+      protectionState: protectionState ?? null,
     };
   }
 
@@ -4533,11 +5147,29 @@ export class SuggestedTradesService {
     const expectedProtection = Boolean(
       input.prepared.normalizedStopLossPrice > 0 && input.prepared.normalizedTakeProfitPrice > 0
     );
+    const openPosition = positionStatus !== 'CLOSED' && positionStatus !== 'LIQUIDATED';
+    const protectionState: SuggestedTradeProtectionState | undefined =
+      expectedProtection && openPosition
+        ? 'pending'
+        : (input.submittingExecution.protectionState ?? undefined);
+    const protectionLastError =
+      expectedProtection && openPosition
+        ? 'Broker position was found during ambiguous-submit reconciliation; SL/TP protection repair is required.'
+        : input.submittingExecution.protectionLastError;
+    const routeAttempts = this.markLiveAutoRouteAttemptsForProtectionLifecycle(
+      input.routeAttempts,
+      protectionState,
+      protectionLastError ?? 'Broker position was found during ambiguous-submit reconciliation.'
+    );
     const linkedExecution: SuggestedTradeExecutionLink = {
       ...input.submittingExecution,
       orderStatus: input.submittingExecution.orderStatus ?? 'FILLED',
       executionState:
-        positionStatus === 'CLOSED' || positionStatus === 'LIQUIDATED' ? 'closed' : 'filled',
+        positionStatus === 'CLOSED' || positionStatus === 'LIQUIDATED'
+          ? 'closed'
+          : this.isLiveAutoProtectionUnresolved(protectionState)
+            ? 'working'
+            : 'filled',
       linkedAt: input.reconciliation.checkedAt,
       filledAt,
       filledPrice,
@@ -4546,15 +5178,11 @@ export class SuggestedTradesService {
       positionId: positionId ?? input.submittingExecution.positionId ?? null,
       positionStatus,
       positionOpenedAt: filledAt,
-      protectionState: expectedProtection
-        ? 'waiting_for_fill'
-        : (input.submittingExecution.protectionState ?? undefined),
+      protectionState,
       protectionCheckedAt: input.reconciliation.checkedAt,
       protectionAttachedAt: null,
-      protectionLastError: expectedProtection
-        ? 'Broker position was found during ambiguous-submit reconciliation; SL/TP protection repair is required.'
-        : input.submittingExecution.protectionLastError,
-      routeAttempts: input.routeAttempts,
+      protectionLastError,
+      routeAttempts,
       protectionPlan: this.buildLiveAutoReconciledProtectionPlan(input, {
         positionId: positionId ?? null,
       }),
@@ -4566,15 +5194,25 @@ export class SuggestedTradesService {
       referenceId: positionId ?? input.trade.id,
       description: input.reconciliation.message,
     });
+    if (this.shouldStartLiveAutoLifecycleMonitor(protectionState)) {
+      this.startLiveAutoOrderLifecycleMonitor({
+        userId: input.userId,
+        suggestedTradeId: input.trade.id,
+        brokerKey: input.prepared.brokerKey,
+        accountId: input.prepared.accountId,
+        orderId: this.readStringValue(input.submittingExecution.orderId),
+      });
+    }
 
     return {
-      outcome: 'placed',
+      outcome: this.resolveCreatedLiveAutoRolloutOutcome(protectionState),
       message: input.reconciliation.message,
       suggestedTradeId: input.trade.id,
       brokerKey: input.prepared.brokerKey,
       accountId: input.prepared.accountId,
       preTradeCheckId: input.prepared.preTradeCheckId,
       orderId: null,
+      protectionState: protectionState ?? null,
     };
   }
 
@@ -4821,6 +5459,24 @@ export class SuggestedTradesService {
           Boolean(this.readRecordValue(item))
         )
       : [];
+  }
+
+  private extractBrokerRecordCandidates(value: unknown): Record<string, unknown>[] {
+    const list = this.extractBrokerRecordList(value);
+    if (list.length) {
+      return list;
+    }
+
+    const record = this.readRecordValue(value);
+    if (!record) {
+      return [];
+    }
+
+    const dataRecord = this.readRecordValue(record.data);
+    if (dataRecord) {
+      return [dataRecord];
+    }
+    return [record];
   }
 
   private findLiveAutoReconciledOrder(
@@ -6789,6 +7445,9 @@ export class SuggestedTradesService {
     if (normalizedStatus === 'placed') {
       return `Broker route ${attemptNumber} placed`;
     }
+    if (normalizedStatus === 'working') {
+      return `Broker route ${attemptNumber} working`;
+    }
     if (normalizedStatus === 'failed') {
       return `Broker route ${attemptNumber} failed`;
     }
@@ -6819,6 +7478,11 @@ export class SuggestedTradesService {
       return attempt.orderId
         ? `${brokerKey} accepted the route and returned order ${attempt.orderId}.`
         : `${brokerKey} accepted the route.`;
+    }
+    if (status === 'working') {
+      return attempt.orderId
+        ? `${brokerKey} accepted order ${attempt.orderId}; fill/protection lifecycle is still being tracked.`
+        : `${brokerKey} accepted the route; fill/protection lifecycle is still being tracked.`;
     }
     if (status === 'failed') {
       return failureMessage
@@ -7118,6 +7782,13 @@ export class SuggestedTradesService {
       const brokerKey = this.readStringValue(execution?.brokerKey);
       const accountId = this.readStringValue(execution?.accountId);
 
+      if (
+        execution?.executionMode === 'live' &&
+        (options.resolveStaleGaps || options.allowPositionEvidenceFill)
+      ) {
+        this.maybeStartLiveAutoLifecycleMonitorForExecution(userId, trade, execution);
+      }
+
       if (paperOrderId && execution?.executionMode === 'paper') {
         await this.paperOrderExecutionService.simulateUserPaperOrders(userId, {
           paperOrderIds: [paperOrderId],
@@ -7209,6 +7880,8 @@ export class SuggestedTradesService {
             nextExecution,
             positionSnapshots
           );
+          nextExecution = this.alignLiveAutoExecutionStateWithProtectionLifecycle(nextExecution);
+          this.maybeStartLiveAutoLifecycleMonitorForExecution(userId, trade, nextExecution);
           const currentExecutionJson = JSON.stringify(execution ?? null);
           const nextExecutionJson = JSON.stringify(nextExecution ?? null);
           if (currentExecutionJson === nextExecutionJson) {
@@ -7271,6 +7944,10 @@ export class SuggestedTradesService {
         nextExecution,
         positionSnapshots
       );
+      nextExecution = this.alignLiveAutoExecutionStateWithProtectionLifecycle(nextExecution);
+      if (options.resolveStaleGaps || options.allowPositionEvidenceFill) {
+        this.maybeStartLiveAutoLifecycleMonitorForExecution(userId, trade, nextExecution);
+      }
       const currentExecutionJson = JSON.stringify(execution ?? null);
       const nextExecutionJson = JSON.stringify(nextExecution ?? null);
       if (currentExecutionJson === nextExecutionJson) {
@@ -7324,14 +8001,12 @@ export class SuggestedTradesService {
       orderStatus === 'PARTIALLY_FILLED' || this.hasPositiveFilledQuantity(execution);
     const terminalOrderStatus = Boolean(
       orderStatus &&
-        ['FILLED', 'CLOSED', 'CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus)
+      ['FILLED', 'CLOSED', 'CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus)
     );
     if (
       terminalOrderStatus ||
       (!activeOrderStatus &&
-        ['filled', 'closed', 'cancelled', 'rejected', 'expired', 'failed'].includes(
-          executionState
-        ))
+        ['filled', 'closed', 'cancelled', 'rejected', 'expired', 'failed'].includes(executionState))
     ) {
       return execution;
     }
@@ -7478,8 +8153,8 @@ export class SuggestedTradesService {
     const orderStatus = this.normalizeOrderStatus(execution.orderStatus);
     return Boolean(
       orderStatus &&
-        ['OPEN', 'PENDING'].includes(orderStatus) &&
-        !this.hasExecutionFillEvidence(execution)
+      ['OPEN', 'PENDING'].includes(orderStatus) &&
+      !this.hasExecutionFillEvidence(execution)
     );
   }
 
@@ -7712,11 +8387,21 @@ export class SuggestedTradesService {
       );
     }
 
+    const attachingExecution = await this.persistLiveProtectionAttachmentStarted(
+      userId,
+      trade,
+      execution,
+      position,
+      nowIso,
+      brokerKey,
+      accountId
+    );
+
     if (brokerKey === 'mudrex') {
       return this.remediateMudrexLiveProtection({
         userId,
         trade,
-        execution,
+        execution: attachingExecution,
         position,
         prices,
         nowIso,
@@ -7729,7 +8414,7 @@ export class SuggestedTradesService {
       return this.remediateDeltaLiveProtection({
         userId,
         trade,
-        execution,
+        execution: attachingExecution,
         position,
         prices,
         nowIso,
@@ -7739,10 +8424,54 @@ export class SuggestedTradesService {
     }
 
     return this.markProtectionFailed(
-      execution,
+      attachingExecution,
       nowIso,
       `Protection remediation is not supported for broker ${brokerKey}.`
     );
+  }
+
+  private async persistLiveProtectionAttachmentStarted(
+    userId: string,
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink,
+    position: LivePositionSnapshot,
+    nowIso: string,
+    brokerKey: string,
+    accountId: string
+  ): Promise<SuggestedTradeExecutionLink> {
+    if (this.normalizeProtectionState(execution.protectionState) === 'attaching') {
+      return execution;
+    }
+
+    const nextExecution = this.markProtectionAttachmentStarted(
+      trade,
+      execution,
+      nowIso,
+      'Live position detected; automatic SL/TP protection attachment started.',
+      {
+        brokerKey,
+        accountId,
+        positionId: position.externalId,
+        positionStatus: position.status ?? null,
+        attachmentStartedAt: nowIso,
+        attachmentTrigger: 'position_detected',
+      }
+    );
+    if (typeof this.suggestedTradeRepository?.saveSuggestedTradeExecution === 'function') {
+      await this.persistExecutionState(trade, nextExecution);
+    }
+    await this.operationalEventService?.logActivity?.(userId, {
+      type: 'Suggested Trade',
+      title: `Live protection attachment started: ${trade.symbol}`,
+      status: 'Warning',
+      route: 'Suggested Trades',
+      stream: 'Execution',
+      related: `${brokerKey} · ${accountId}`,
+      referenceId: trade.id,
+      symbol: trade.symbol,
+      description: `Live position ${position.externalId} was detected; automatic SL/TP protection attachment is starting now.`,
+    });
+    return nextExecution;
   }
 
   private async maybeRecoverManualUnlinkedProtection(
@@ -8187,8 +8916,8 @@ export class SuggestedTradesService {
     if (positionStatus === 'OPEN' || positionStatus === 'PARTIAL') {
       return Boolean(
         !hasFillEvidence &&
-          (['cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '') ||
-            ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus ?? ''))
+        (['cancelled', 'rejected', 'expired', 'failed'].includes(executionState ?? '') ||
+          ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus ?? ''))
       );
     }
     return Boolean(
@@ -8543,6 +9272,34 @@ export class SuggestedTradesService {
         accountId: execution.accountId ?? null,
         orderId: execution.orderId ?? null,
         replacementSubmittedAt: nowIso,
+        ...planUpdate,
+      },
+      note: this.appendExecutionNote(execution.note, note),
+    };
+  }
+
+  private markProtectionAttachmentStarted(
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink,
+    nowIso: string,
+    note: string,
+    planUpdate: Record<string, unknown>
+  ): SuggestedTradeExecutionLink {
+    return {
+      ...execution,
+      protectionState: 'attaching',
+      protectionCheckedAt: nowIso,
+      protectionAttachedAt: null,
+      protectionLastError: null,
+      protectionPlan: {
+        ...(this.readRecordValue(execution.protectionPlan) ?? {}),
+        source: 'suggested_trade_execution',
+        symbol: trade.symbol,
+        side: trade.side,
+        timeframe: trade.timeframe,
+        brokerKey: execution.brokerKey ?? null,
+        accountId: execution.accountId ?? null,
+        orderId: execution.orderId ?? null,
         ...planUpdate,
       },
       note: this.appendExecutionNote(execution.note, note),
@@ -8923,12 +9680,13 @@ export class SuggestedTradesService {
     }
     const terminalOrderWithPartialFill = Boolean(
       positiveFilledQuantity &&
-        normalizedStatus &&
-        ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(normalizedStatus)
+      normalizedStatus &&
+      ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(normalizedStatus)
     );
-    const executionState = deltaClosedFilledOrder || terminalOrderWithPartialFill
-      ? 'filled'
-      : this.mapExecutionState(normalizedStatus, snapshot.statusRank);
+    const executionState =
+      deltaClosedFilledOrder || terminalOrderWithPartialFill
+        ? 'filled'
+        : this.mapExecutionState(normalizedStatus, snapshot.statusRank);
 
     return {
       ...(existing ?? {}),
@@ -10112,6 +10870,7 @@ export class SuggestedTradesService {
       normalized === 'pending' ||
       normalized === 'pre_trade_blocked' ||
       normalized === 'submitting' ||
+      normalized === 'working' ||
       normalized === 'placed' ||
       normalized === 'failed' ||
       normalized === 'manual_review'

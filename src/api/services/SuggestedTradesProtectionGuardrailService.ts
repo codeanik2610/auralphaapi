@@ -3,6 +3,7 @@ import { AlertRepository } from '../../database';
 import { coreDataSource } from '../../database/data-source';
 import { env } from '../../env';
 import { Logger } from '../../lib/logger';
+import { SuggestedTradesService } from './SuggestedTradesService';
 
 const log = new Logger(__filename);
 const LOOP_KEY = 'suggested-trades-protection-guardrails';
@@ -17,7 +18,10 @@ const ACTIVE_ORDER_STATUSES = new Set([
 ]);
 
 type GuardrailStatus = 'ok' | 'degraded' | 'disabled';
-type GuardrailIssueCode = 'attached_protection_inactive' | 'delta_filled_protection_stale';
+type GuardrailIssueCode =
+  | 'attached_protection_inactive'
+  | 'delta_filled_protection_stale'
+  | 'open_position_unprotected';
 
 interface ProtectionExecutionRow {
   suggestedTradeId?: string | null;
@@ -96,17 +100,23 @@ export interface SuggestedTradesProtectionGuardrailItem {
   ageSeconds: number | null;
   issues: SuggestedTradesProtectionGuardrailIssue[];
   alertEmitted: boolean;
+  recoveryTriggered: boolean;
+  recoveryRefreshed: number | null;
+  recoveryError: string | null;
 }
 
 export interface SuggestedTradesProtectionGuardrailResponse {
   status: GuardrailStatus;
   timestamp: string;
   emitAlerts: boolean;
+  attemptRecovery: boolean;
   monitoredTrades: number;
   issueTrades: number;
   criticalIssues: number;
   warningIssues: number;
   alertsEmitted: number;
+  recoveriesTriggered: number;
+  recoveryFailures: number;
   staleAfterMs: number;
   items: SuggestedTradesProtectionGuardrailItem[];
   detail?: string;
@@ -116,6 +126,9 @@ export interface SuggestedTradesProtectionGuardrailResponse {
 export class SuggestedTradesProtectionGuardrailService {
   @Inject(() => AlertRepository)
   private alertRepository!: AlertRepository;
+
+  @Inject(() => SuggestedTradesService)
+  private suggestedTradesService!: SuggestedTradesService;
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -161,6 +174,7 @@ export class SuggestedTradesProtectionGuardrailService {
   async runAudit(
     options: {
       emitAlerts?: boolean;
+      attemptRecovery?: boolean;
       now?: Date;
       maxTrades?: number;
       staleAfterMs?: number;
@@ -168,6 +182,7 @@ export class SuggestedTradesProtectionGuardrailService {
   ): Promise<SuggestedTradesProtectionGuardrailResponse> {
     const now = options.now ?? new Date();
     const emitAlerts = options.emitAlerts !== false;
+    const attemptRecovery = options.attemptRecovery ?? emitAlerts;
     const staleAfterMs = this.normalizePositiveInteger(
       options.staleAfterMs ?? env.suggestedTradesProtectionGuardrails.staleAfterMs,
       env.suggestedTradesProtectionGuardrails.staleAfterMs,
@@ -186,11 +201,14 @@ export class SuggestedTradesProtectionGuardrailService {
         status: 'disabled',
         timestamp: now.toISOString(),
         emitAlerts,
+        attemptRecovery,
         monitoredTrades: 0,
         issueTrades: 0,
         criticalIssues: 0,
         warningIssues: 0,
         alertsEmitted: 0,
+        recoveriesTriggered: 0,
+        recoveryFailures: 0,
         staleAfterMs,
         items: [],
         detail: 'Suggested trades protection guardrails are disabled by configuration.',
@@ -209,6 +227,8 @@ export class SuggestedTradesProtectionGuardrailService {
 
     const items: SuggestedTradesProtectionGuardrailItem[] = [];
     let alertsEmitted = 0;
+    let recoveriesTriggered = 0;
+    let recoveryFailures = 0;
     for (const row of rows) {
       const positions = await this.listOpenPositionSnapshots(row);
       const item = this.evaluateExecution(row, positions, orderById, now, staleAfterMs);
@@ -218,6 +238,14 @@ export class SuggestedTradesProtectionGuardrailService {
             alertsEmitted += 1;
             item.alertEmitted = true;
           }
+        }
+      }
+      if (attemptRecovery && this.shouldTriggerRecovery(item)) {
+        const recovered = await this.triggerRecovery(item);
+        if (recovered) {
+          recoveriesTriggered += 1;
+        } else {
+          recoveryFailures += 1;
         }
       }
       items.push(item);
@@ -237,11 +265,14 @@ export class SuggestedTradesProtectionGuardrailService {
       status: issueTrades > 0 ? 'degraded' : 'ok',
       timestamp: now.toISOString(),
       emitAlerts,
+      attemptRecovery,
       monitoredTrades: items.length,
       issueTrades,
       criticalIssues,
       warningIssues,
       alertsEmitted,
+      recoveriesTriggered,
+      recoveryFailures,
       staleAfterMs,
       items,
       ...(items.length === 0
@@ -320,12 +351,13 @@ export class SuggestedTradesProtectionGuardrailService {
           AND (
             LOWER(COALESCE(execution_record.protection_state, '')) = 'attached'
             OR (
-              LOWER(COALESCE(execution_record.broker_key, '')) = 'delta_exchange'
-              AND LOWER(COALESCE(execution_record.protection_state, '')) IN ('waiting_for_position', 'attaching')
+              LOWER(COALESCE(execution_record.protection_state, '')) IN ('pending', 'waiting_for_fill', 'waiting_for_position', 'attaching', 'failed', 'manual_unlinked')
               AND (
+                COALESCE(execution_record.position_id, '') <> ''
+                OR LOWER(COALESCE(execution_record.position_status, '')) IN ('open', 'partial', 'partially_closed', 'partially_closed_position')
                 execution_record.filled_at IS NOT NULL
                 OR LOWER(COALESCE(execution_record.execution_state, '')) = 'filled'
-                OR UPPER(COALESCE(execution_record.order_status, '')) IN ('CLOSED', 'FILLED')
+                OR UPPER(COALESCE(execution_record.order_status, '')) IN ('CLOSED', 'FILLED', 'PARTIALLY_FILLED', 'PARTIAL')
               )
             )
           )
@@ -423,7 +455,9 @@ export class SuggestedTradesProtectionGuardrailService {
       if (positionId && externalId === positionId) {
         return true;
       }
-      return Boolean(symbolBase && this.normalizeSymbolBase(this.readString(position.symbol)) === symbolBase);
+      return Boolean(
+        symbolBase && this.normalizeSymbolBase(this.readString(position.symbol)) === symbolBase
+      );
     });
   }
 
@@ -440,7 +474,9 @@ export class SuggestedTradesProtectionGuardrailService {
     const stopLossOrderId = this.readNullableString(plan.stopLossOrderId);
     const takeProfitOrderId = this.readNullableString(plan.takeProfitOrderId);
     const stopLossSnapshot = stopLossOrderId ? (orderById.get(stopLossOrderId) ?? null) : null;
-    const takeProfitSnapshot = takeProfitOrderId ? (orderById.get(takeProfitOrderId) ?? null) : null;
+    const takeProfitSnapshot = takeProfitOrderId
+      ? (orderById.get(takeProfitOrderId) ?? null)
+      : null;
     const positionProtection = this.resolvePositionProtection(positions);
     const referenceTime =
       this.toTimestamp(row.protectionCheckedAt) ??
@@ -460,12 +496,30 @@ export class SuggestedTradesProtectionGuardrailService {
       brokerKey === 'mudrex'
         ? positionProtection.takeProfitActive
         : Boolean(takeProfitSnapshot && this.isActiveOrderSnapshot(takeProfitSnapshot));
+    const missingProtection = !stopLossActive || !takeProfitActive;
+    const openPositionIsStale =
+      referenceTime === null || now.getTime() - referenceTime > staleAfterMs;
 
-    if (protectionState === 'attached' && positions.length > 0 && (!stopLossActive || !takeProfitActive)) {
+    if (protectionState === 'attached' && positions.length > 0 && missingProtection) {
       issues.push({
         code: 'attached_protection_inactive',
         severity: 'High',
-        message: 'Execution is marked attached, but the open position does not have active SL and TP protection snapshots.',
+        message:
+          'Execution is marked attached, but the open position does not have active SL and TP protection snapshots.',
+      });
+    }
+
+    if (
+      protectionState !== 'attached' &&
+      protectionState !== 'not_required' &&
+      positions.length > 0 &&
+      missingProtection &&
+      (openPositionIsStale || protectionState === 'failed' || protectionState === 'manual_unlinked')
+    ) {
+      issues.push({
+        code: 'open_position_unprotected',
+        severity: 'High',
+        message: `Open live position has missing SL/TP protection while protection state is ${protectionState}.`,
       });
     }
 
@@ -473,7 +527,7 @@ export class SuggestedTradesProtectionGuardrailService {
       brokerKey === 'delta_exchange' &&
       (protectionState === 'waiting_for_position' || protectionState === 'attaching') &&
       this.isFilledExecution(row) &&
-      (referenceTime === null || now.getTime() - referenceTime > staleAfterMs)
+      openPositionIsStale
     ) {
       issues.push({
         code: 'delta_filled_protection_stale',
@@ -511,7 +565,40 @@ export class SuggestedTradesProtectionGuardrailService {
       ageSeconds,
       issues,
       alertEmitted: false,
+      recoveryTriggered: false,
+      recoveryRefreshed: null,
+      recoveryError: null,
     };
+  }
+
+  private shouldTriggerRecovery(item: SuggestedTradesProtectionGuardrailItem): boolean {
+    if (!item.issues.length || !item.userId || !item.brokerKey || !item.accountId || !item.symbol) {
+      return false;
+    }
+    return item.issues.some((issue) =>
+      [
+        'attached_protection_inactive',
+        'delta_filled_protection_stale',
+        'open_position_unprotected',
+      ].includes(issue.code)
+    );
+  }
+
+  private async triggerRecovery(item: SuggestedTradesProtectionGuardrailItem): Promise<boolean> {
+    try {
+      const refreshed = await this.suggestedTradesService.syncExecutionForPositionUpdates(
+        item.userId,
+        item.brokerKey,
+        item.accountId ?? '',
+        [item.symbol]
+      );
+      item.recoveryTriggered = true;
+      item.recoveryRefreshed = refreshed;
+      return true;
+    } catch (error) {
+      item.recoveryError = error instanceof Error ? error.message : String(error);
+      return false;
+    }
   }
 
   private async emitIssueAlert(
@@ -631,9 +718,9 @@ export class SuggestedTradesProtectionGuardrailService {
     const orderStatus = this.readString(row.orderStatus).toUpperCase();
     return Boolean(
       row.filledAt ||
-        executionState === 'filled' ||
-        orderStatus === 'CLOSED' ||
-        orderStatus === 'FILLED'
+      executionState === 'filled' ||
+      orderStatus === 'CLOSED' ||
+      orderStatus === 'FILLED'
     );
   }
 

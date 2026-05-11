@@ -277,13 +277,13 @@ const buildDedupeKey = (payload: SuggestedTradeInsertPayload): string =>
 
 const EXECUTION_LOOKUP_CHUNK_SIZE = 200;
 const TERMINAL_EXECUTION_STATES = ['closed', 'cancelled', 'rejected', 'expired', 'failed'];
-const REMEDIABLE_PROTECTION_STATES = [
+const AUTOMATIC_REMEDIABLE_PROTECTION_STATES = [
   'pending',
   'waiting_for_fill',
   'waiting_for_position',
   'attaching',
-  'manual_unlinked',
 ];
+const MANUAL_REMEDIABLE_PROTECTION_STATE = 'manual_unlinked';
 const RETRIABLE_FAILED_PROTECTION_ERROR_PATTERNS = [
   '%position not found%',
   '%bad request%',
@@ -1008,15 +1008,30 @@ export class SuggestedTradeRepository {
 
   async listProtectionRemediationCandidates(
     limit: number,
-    staleBefore: Date
+    staleBefore: Date,
+    options: { automaticStaleBefore?: Date } = {}
   ): Promise<SuggestedTrade[]> {
+    const automaticStaleBefore = options.automaticStaleBefore ?? staleBefore;
     const builder = this.repository
       .createQueryBuilder('suggested_trade')
       .leftJoinAndSelect('suggested_trade.executionRecord', 'execution_record')
       .where("LOWER(COALESCE(execution_record.executionMode, '')) = 'live'")
       .andWhere(
         `(
-          LOWER(COALESCE(execution_record.protectionState, '')) IN (:...states)
+          (
+            LOWER(COALESCE(execution_record.protectionState, '')) IN (:...automaticStates)
+            AND (
+              execution_record.protection_checked_at IS NULL
+              OR execution_record.protection_checked_at <= :automaticStaleBefore
+            )
+          )
+          OR (
+            LOWER(COALESCE(execution_record.protectionState, '')) = :manualState
+            AND (
+              execution_record.protection_checked_at IS NULL
+              OR execution_record.protection_checked_at <= :manualStaleBefore
+            )
+          )
           OR (
             LOWER(COALESCE(execution_record.protectionState, '')) = 'failed'
             AND COALESCE(execution_record.protectionAttempts, 0) < 3
@@ -1024,10 +1039,17 @@ export class SuggestedTradeRepository {
               (_pattern, index) =>
                 `LOWER(COALESCE(execution_record.protectionLastError, '')) LIKE :retryErrorPattern${index}`
             ).join(' OR ')})
+            AND (
+              execution_record.protection_checked_at IS NULL
+              OR execution_record.protection_checked_at <= :automaticStaleBefore
+            )
           )
         )`,
         {
-          states: REMEDIABLE_PROTECTION_STATES,
+          automaticStates: AUTOMATIC_REMEDIABLE_PROTECTION_STATES,
+          manualState: MANUAL_REMEDIABLE_PROTECTION_STATE,
+          automaticStaleBefore,
+          manualStaleBefore: staleBefore,
           ...Object.fromEntries(
             RETRIABLE_FAILED_PROTECTION_ERROR_PATTERNS.map((pattern, index) => [
               `retryErrorPattern${index}`,
@@ -1039,13 +1061,6 @@ export class SuggestedTradeRepository {
       .andWhere(
         "LOWER(COALESCE(execution_record.executionState, '')) NOT IN (:...terminalStates)",
         { terminalStates: TERMINAL_EXECUTION_STATES }
-      )
-      .andWhere(
-        `(
-          execution_record.protection_checked_at IS NULL
-          OR execution_record.protection_checked_at <= :staleBefore
-        )`,
-        { staleBefore }
       )
       .addSelect(
         `COALESCE(

@@ -20,6 +20,10 @@ const MAX_ISSUE_TRADES = Math.max(
   0,
   Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_GUARDRAIL_ISSUE_TRADES || 0)
 );
+const MAX_RECOVERY_FAILURES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_GUARDRAIL_RECOVERY_FAILURES || 0)
+);
 
 async function persistReport(report: Record<string, unknown>): Promise<void> {
   if (!OUTPUT_FILE) {
@@ -43,6 +47,11 @@ async function run(): Promise<void> {
     if (report.issueTrades > MAX_ISSUE_TRADES) {
       throw new Error(
         `protection guardrail issue trades ${report.issueTrades} exceeds ${MAX_ISSUE_TRADES}`
+      );
+    }
+    if (report.recoveryFailures > MAX_RECOVERY_FAILURES) {
+      throw new Error(
+        `protection guardrail recovery failures ${report.recoveryFailures} exceeds ${MAX_RECOVERY_FAILURES}`
       );
     }
   } finally {

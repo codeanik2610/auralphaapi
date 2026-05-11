@@ -1163,7 +1163,10 @@ async function runAutomationSchedulePersistenceAssertions(): Promise<void> {
     _config: Record<string, unknown>,
     fields: Record<string, unknown>
   ) => fields;
-  service.resolveAutomationTimeZone = async (_userId: string, automationTimeZone?: string | null) => {
+  service.resolveAutomationTimeZone = async (
+    _userId: string,
+    automationTimeZone?: string | null
+  ) => {
     requestedTimeZones.push(automationTimeZone ?? null);
     return 'Asia/Kolkata';
   };
@@ -2795,6 +2798,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       const { service } = createService();
       const whatsappCalls: Array<Record<string, unknown>> = [];
       const notificationCalls: Array<Record<string, unknown>> = [];
+      const outputs: Array<Record<string, unknown>> = [];
 
       service.resolveTradeSuggestionProfile = async () => ({
         sourceTemplateId: 'template-1',
@@ -2858,16 +2862,20 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       };
       service.suggestedTradesService = {
         attemptAutoLiveExecutionForAutomation: async () => ({
-          outcome: 'placed',
-          message: 'Order placed',
+          outcome: 'working',
+          message: 'Order accepted for fill/protection tracking',
           brokerKey: 'mudrex',
           accountId: 'account-1',
           preTradeCheckId: 'check-2',
           orderId: 'order-1',
+          protectionState: 'waiting_for_fill',
         }),
       };
       service.automationRunOutputRepository = {
-        createOutput: async () => undefined,
+        createOutput: async (payload: Record<string, unknown>) => {
+          outputs.push(payload);
+          return payload;
+        },
       };
       service.whatsappNotificationsService = {
         queueLiveTradeSuggestionReadyNotification: async (payload: Record<string, unknown>) => {
@@ -2886,7 +2894,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         },
       };
 
-      await service.generateTradeSuggestions(
+      const result = await service.generateTradeSuggestions(
         automation,
         'run-trade-2',
         {
@@ -2902,7 +2910,16 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         new Date('2026-04-04T11:05:00.000Z')
       );
 
+      assert.equal(result.autoLivePlaced, 1);
       assert.equal(whatsappCalls.length, 0);
+      assert.equal(outputs.length, 2);
+      assert.equal(outputs[1]?.outputType, 'trade-suggestion.live-auto');
+      assert.equal(outputs[1]?.status, 'Working');
+      assert.equal((outputs[1]?.payload as Record<string, unknown>)?.outcome, 'working');
+      assert.equal(
+        (outputs[1]?.payload as Record<string, unknown>)?.protectionState,
+        'waiting_for_fill'
+      );
       assert.equal(notificationCalls.length, 1);
       assert.equal(notificationCalls[0]?.source, 'trade-suggestion.created:st-2');
       assert.equal(notificationCalls[0]?.message, 'New trade idea created for ETHUSDT 15m LONG.');

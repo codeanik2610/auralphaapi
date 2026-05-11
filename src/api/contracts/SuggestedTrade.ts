@@ -49,6 +49,7 @@ export type SuggestedTradeRouteAttemptStatus =
   | 'pending'
   | 'pre_trade_blocked'
   | 'submitting'
+  | 'working'
   | 'placed'
   | 'failed'
   | 'manual_review'

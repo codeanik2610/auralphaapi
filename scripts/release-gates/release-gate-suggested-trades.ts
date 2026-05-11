@@ -75,6 +75,14 @@ const MAX_PROTECTION_RETRIABLE_FAILED_TRADES = Math.max(
   0,
   Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_RETRIABLE_FAILED_TRADES || 0)
 );
+const MAX_PROTECTION_GUARDRAIL_ISSUE_TRADES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_GUARDRAIL_ISSUE_TRADES || 0)
+);
+const MAX_PROTECTION_GUARDRAIL_RECOVERY_FAILURES = Math.max(
+  0,
+  Number(process.env.SUGGESTED_TRADES_MAX_PROTECTION_GUARDRAIL_RECOVERY_FAILURES || 0)
+);
 const MIN_PROTECTION_ATTACHMENT_RATE = Math.max(
   0,
   Number(process.env.SUGGESTED_TRADES_MIN_PROTECTION_ATTACHMENT_RATE || 0)
@@ -105,6 +113,10 @@ const RUN_LIFECYCLE_SMOKE =
     .toLowerCase() !== 'false';
 const REQUIRE_ROLLOUT_ENABLED =
   String(process.env.SUGGESTED_TRADES_REQUIRE_ROLLOUT_ENABLED || 'true')
+    .trim()
+    .toLowerCase() !== 'false';
+const REQUIRE_PROTECTION_GUARDRAILS_ENABLED =
+  String(process.env.SUGGESTED_TRADES_REQUIRE_PROTECTION_GUARDRAILS_ENABLED || 'true')
     .trim()
     .toLowerCase() !== 'false';
 const OUTPUT_FILE = String(
@@ -168,6 +180,8 @@ async function writeStepSummary(summary: {
     protectionActionableTrades: number;
     protectionUnresolvedTrades: number;
     protectionRetriableFailedTrades: number;
+    protectionGuardrailIssueTrades: number;
+    protectionGuardrailRecoveryFailures: number;
     minProtectionAttachmentRate: number;
     minQueueToOrderConversionRate: number;
     maxOverviewLatencyMs: number;
@@ -206,6 +220,17 @@ async function writeStepSummary(summary: {
     syncStatusLatencyMs: number | null;
     detail: string;
   };
+  finalProtectionGuardrails: {
+    status: string;
+    monitoredTrades: number;
+    issueTrades: number;
+    criticalIssues: number;
+    warningIssues: number;
+    alertsEmitted: number;
+    recoveriesTriggered: number;
+    recoveryFailures: number;
+    attemptRecovery: boolean;
+  };
 }): Promise<void> {
   if (!STEP_SUMMARY_FILE) {
     return;
@@ -235,6 +260,8 @@ async function writeStepSummary(summary: {
     `- protectionActionableTrades <= ${summary.thresholds.protectionActionableTrades}`,
     `- protectionUnresolvedTrades <= ${summary.thresholds.protectionUnresolvedTrades}`,
     `- protectionRetriableFailedTrades <= ${summary.thresholds.protectionRetriableFailedTrades}`,
+    `- protectionGuardrailIssueTrades <= ${summary.thresholds.protectionGuardrailIssueTrades}`,
+    `- protectionGuardrailRecoveryFailures <= ${summary.thresholds.protectionGuardrailRecoveryFailures}`,
     `- protectionAttachmentRate >= ${summary.thresholds.minProtectionAttachmentRate}`,
     `- queueToOrderConversionRate >= ${summary.thresholds.minQueueToOrderConversionRate}`,
     `- overviewLatencyMs <= ${summary.thresholds.maxOverviewLatencyMs}`,
@@ -281,6 +308,18 @@ async function writeStepSummary(summary: {
     `- summaryLatencyMs: ${summary.finalHealth.summaryLatencyMs ?? 'n/a'}`,
     `- syncStatusLatencyMs: ${summary.finalHealth.syncStatusLatencyMs ?? 'n/a'}`,
     `- detail: ${summary.finalHealth.detail || 'n/a'}`,
+    '',
+    '### Final protection guardrails',
+    '',
+    `- status: ${summary.finalProtectionGuardrails.status}`,
+    `- monitoredTrades: ${summary.finalProtectionGuardrails.monitoredTrades}`,
+    `- issueTrades: ${summary.finalProtectionGuardrails.issueTrades}`,
+    `- criticalIssues: ${summary.finalProtectionGuardrails.criticalIssues}`,
+    `- warningIssues: ${summary.finalProtectionGuardrails.warningIssues}`,
+    `- alertsEmitted: ${summary.finalProtectionGuardrails.alertsEmitted}`,
+    `- recoveriesTriggered: ${summary.finalProtectionGuardrails.recoveriesTriggered}`,
+    `- recoveryFailures: ${summary.finalProtectionGuardrails.recoveryFailures}`,
+    `- attemptRecovery: ${summary.finalProtectionGuardrails.attemptRecovery ? 'yes' : 'no'}`,
     '',
   ];
 
@@ -374,6 +413,37 @@ async function runLifecycleSmoke(): Promise<void> {
 async function readSuggestedTradeHealth(accessToken: string): Promise<JsonRecord> {
   const response = await requestJson('/health/suggested-trades', {}, accessToken);
   return asRecord(response.data);
+}
+
+async function readSuggestedTradeProtectionGuardrails(accessToken: string): Promise<JsonRecord> {
+  const response = await requestJson(
+    '/health/suggested-trades-protection-guardrails?emitAlerts=false',
+    {},
+    accessToken
+  );
+  return asRecord(response.data);
+}
+
+function assertProtectionGuardrailSnapshot(params: {
+  guardrails: JsonRecord;
+  sampleLabel: string;
+}): void {
+  const { guardrails, sampleLabel } = params;
+  const status = readString(guardrails.status).toLowerCase();
+  const issueTrades = readNumber(guardrails.issueTrades);
+  const recoveryFailures = readNumber(guardrails.recoveryFailures);
+
+  if (REQUIRE_PROTECTION_GUARDRAILS_ENABLED) {
+    assert.notEqual(status, 'disabled', `${sampleLabel}: protection guardrails are disabled`);
+  }
+  assert.ok(
+    issueTrades <= MAX_PROTECTION_GUARDRAIL_ISSUE_TRADES,
+    `${sampleLabel}: protection guardrail issue trades ${issueTrades} exceeds ${MAX_PROTECTION_GUARDRAIL_ISSUE_TRADES}`
+  );
+  assert.ok(
+    recoveryFailures <= MAX_PROTECTION_GUARDRAIL_RECOVERY_FAILURES,
+    `${sampleLabel}: protection guardrail recovery failures ${recoveryFailures} exceeds ${MAX_PROTECTION_GUARDRAIL_RECOVERY_FAILURES}`
+  );
 }
 
 function assertGateSnapshot(params: { health: JsonRecord; sampleLabel: string }): void {
@@ -575,6 +645,11 @@ async function run(): Promise<void> {
     lastHealth.queueToOrderConversionRate === undefined
       ? null
       : readNumber(lastHealth.queueToOrderConversionRate);
+  const finalProtectionGuardrails = await readSuggestedTradeProtectionGuardrails(accessToken);
+  assertProtectionGuardrailSnapshot({
+    guardrails: finalProtectionGuardrails,
+    sampleLabel: 'final protection guardrail gate',
+  });
 
   const summary = {
     baseUrl: BASE_URL,
@@ -599,6 +674,8 @@ async function run(): Promise<void> {
       protectionActionableTrades: MAX_PROTECTION_ACTIONABLE_TRADES,
       protectionUnresolvedTrades: MAX_PROTECTION_UNRESOLVED_TRADES,
       protectionRetriableFailedTrades: MAX_PROTECTION_RETRIABLE_FAILED_TRADES,
+      protectionGuardrailIssueTrades: MAX_PROTECTION_GUARDRAIL_ISSUE_TRADES,
+      protectionGuardrailRecoveryFailures: MAX_PROTECTION_GUARDRAIL_RECOVERY_FAILURES,
       minProtectionAttachmentRate: MIN_PROTECTION_ATTACHMENT_RATE,
       minQueueToOrderConversionRate: MIN_QUEUE_TO_ORDER_CONVERSION_RATE,
       maxOverviewLatencyMs: MAX_OVERVIEW_LATENCY_MS,
@@ -654,6 +731,17 @@ async function run(): Promise<void> {
           ? null
           : readNumber(lastHealth.syncStatusLatencyMs),
       detail: readString(lastHealth.detail),
+    },
+    finalProtectionGuardrails: {
+      status: readString(finalProtectionGuardrails.status),
+      monitoredTrades: readNumber(finalProtectionGuardrails.monitoredTrades),
+      issueTrades: readNumber(finalProtectionGuardrails.issueTrades),
+      criticalIssues: readNumber(finalProtectionGuardrails.criticalIssues),
+      warningIssues: readNumber(finalProtectionGuardrails.warningIssues),
+      alertsEmitted: readNumber(finalProtectionGuardrails.alertsEmitted),
+      recoveriesTriggered: readNumber(finalProtectionGuardrails.recoveriesTriggered),
+      recoveryFailures: readNumber(finalProtectionGuardrails.recoveryFailures),
+      attemptRecovery: Boolean(finalProtectionGuardrails.attemptRecovery),
     },
   };
 

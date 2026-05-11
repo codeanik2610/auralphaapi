@@ -469,7 +469,7 @@ export class AutomationExecutionService {
               ? suggestionAutoPaperPlaced > 0
                 ? 'Fresh entry signals were detected on the latest closed candle, persisted as suggested trades, and eligible paper orders were placed automatically after pre-trade clearance.'
                 : suggestionAutoLivePlaced > 0
-                  ? 'Fresh entry signals were detected on the latest closed candle, persisted as suggested trades, and eligible live orders were placed automatically after pre-trade clearance.'
+                  ? 'Fresh entry signals were detected on the latest closed candle, persisted as suggested trades, and eligible live orders were accepted after pre-trade clearance for fill/protection tracking.'
                   : suggestionAutoLiveReady > 0 ||
                       suggestionAutoLiveBlocked > 0 ||
                       suggestionAutoLiveSkipped > 0 ||
@@ -485,7 +485,7 @@ export class AutomationExecutionService {
         `Automation ${automation.id} (${automation.name}) completed in ${Math.max(
           0,
           finishedAt.getTime() - now.getTime()
-        )}ms with ${suggestedTradesInserted} new suggestion(s), ${suggestedTradesDuplicates} duplicate(s), ${suggestionSignalsDetected} signal(s), ${suggestionAutoPaperPlaced} paper auto placed, ${suggestionAutoLiveReady} live auto ready, ${suggestionAutoLivePlaced} live auto placed`
+        )}ms with ${suggestedTradesInserted} new suggestion(s), ${suggestedTradesDuplicates} duplicate(s), ${suggestionSignalsDetected} signal(s), ${suggestionAutoPaperPlaced} paper auto placed, ${suggestionAutoLiveReady} live auto ready, ${suggestionAutoLivePlaced} live auto accepted`
       );
 
       return {
@@ -1213,12 +1213,11 @@ export class AutomationExecutionService {
               {
                 placedInRun: autoLivePlaced,
                 freshnessEvaluatedAt: new Date(),
-                currentRunFreshnessFloorSeconds:
-                  resolveDefaultFreshnessGraceSeconds(timeframe),
+                currentRunFreshnessFloorSeconds: resolveDefaultFreshnessGraceSeconds(timeframe),
               }
             );
 
-          if (liveRollout.outcome === 'placed') {
+          if (liveRollout.outcome === 'placed' || liveRollout.outcome === 'working') {
             autoLivePlaced += 1;
           } else if (liveRollout.outcome === 'ready') {
             autoLiveReady += 1;
@@ -1241,15 +1240,17 @@ export class AutomationExecutionService {
             status:
               liveRollout.outcome === 'placed'
                 ? 'Created'
-                : liveRollout.outcome === 'ready'
-                  ? 'Ready'
-                  : liveRollout.outcome === 'failed'
-                    ? 'Failed'
-                    : liveRollout.outcome === 'blocked'
-                      ? 'Blocked'
-                      : liveRollout.outcome === 'disabled'
-                        ? 'Skipped'
-                        : 'Skipped',
+                : liveRollout.outcome === 'working'
+                  ? 'Working'
+                  : liveRollout.outcome === 'ready'
+                    ? 'Ready'
+                    : liveRollout.outcome === 'failed'
+                      ? 'Failed'
+                      : liveRollout.outcome === 'blocked'
+                        ? 'Blocked'
+                        : liveRollout.outcome === 'disabled'
+                          ? 'Skipped'
+                          : 'Skipped',
             title: `${item.symbol} ${timeframe} live auto rollout guard`,
             dedupeKey: `${dedupeKey}:live-auto`,
             payload: {
@@ -1260,6 +1261,7 @@ export class AutomationExecutionService {
               brokerKey: liveRollout.brokerKey ?? null,
               accountId: liveRollout.accountId ?? null,
               preTradeCheckId: liveRollout.preTradeCheckId ?? null,
+              protectionState: liveRollout.protectionState ?? null,
               runLimit: maxAutoLiveChecksPerRun,
               freshness: liveRollout.freshness ?? null,
             },
@@ -1315,10 +1317,7 @@ export class AutomationExecutionService {
       });
     }
 
-    if (
-      evaluation.evaluatedSymbols === 0 &&
-      this.isClosedCandleReadinessSkip(evaluation.items)
-    ) {
+    if (evaluation.evaluatedSymbols === 0 && this.isClosedCandleReadinessSkip(evaluation.items)) {
       await this.operationalEventService.logActivity(automation.userId, {
         type: 'Automation',
         title: `Trade suggestions skipped: ${automation.name}`,
@@ -1367,7 +1366,7 @@ export class AutomationExecutionService {
           ? autoPaperEnabled
             ? `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${autoPaperPlaced} paper order(s) auto-placed, ${autoPaperBlocked} blocked, ${autoPaperSkipped} skipped, ${autoPaperFailed} failed, ${symbolsSkipped} symbol(s) skipped`
             : autoLiveEnabled
-              ? `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${autoLivePlaced} live order(s) placed, ${autoLiveReady} rollout-ready, ${autoLiveBlocked} blocked, ${autoLiveSkipped} skipped, ${autoLiveDisabled} disabled, ${autoLiveFailed} failed, ${symbolsSkipped} symbol(s) skipped`
+              ? `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${autoLivePlaced} live order(s) accepted for fill/protection tracking, ${autoLiveReady} rollout-ready, ${autoLiveBlocked} blocked, ${autoLiveSkipped} skipped, ${autoLiveDisabled} disabled, ${autoLiveFailed} failed, ${symbolsSkipped} symbol(s) skipped`
               : `Detected ${signalsDetected} signal(s), inserted ${inserted} suggestion(s), ${duplicates} duplicate(s), ${symbolsSkipped} symbol(s) skipped`
           : `No fresh entry signals detected across ${evaluation.evaluatedSymbols} evaluated symbol(s); ${symbolsSkipped} symbol(s) skipped`,
     });
@@ -2271,8 +2270,12 @@ export class AutomationExecutionService {
     }
 
     return items.every((item) => {
-      const status = String(item.status || '').trim().toLowerCase();
-      const reason = String(item.reason || '').trim().toLowerCase();
+      const status = String(item.status || '')
+        .trim()
+        .toLowerCase();
+      const reason = String(item.reason || '')
+        .trim()
+        .toLowerCase();
       if (status !== 'no_data' && status !== 'stale') {
         return false;
       }
