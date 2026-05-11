@@ -1725,15 +1725,15 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
         },
       },
       {
-        currentRunFreshnessFloorSeconds: 480,
-        freshnessEvaluatedAt: new Date('2026-05-11T08:30:05.000Z'),
+        currentRunFreshnessFloorSeconds: 300,
+        freshnessEvaluatedAt: new Date('2026-05-11T08:30:00.000Z'),
       }
     );
     assert.equal(currentRunLatencyAllowed.outcome, 'ready');
     assert.equal(currentRunLatencyAllowed.freshness?.allowed, true);
-    assert.equal(currentRunLatencyAllowed.freshness?.ageAfterCloseSeconds, 305);
-    assert.equal(currentRunLatencyAllowed.freshness?.maxAgeAfterCloseSeconds, 480);
-    assert.equal(currentRunLatencyAllowed.freshness?.currentRunFreshnessFloorSeconds, 480);
+    assert.equal(currentRunLatencyAllowed.freshness?.ageAfterCloseSeconds, 300);
+    assert.equal(currentRunLatencyAllowed.freshness?.maxAgeAfterCloseSeconds, 300);
+    assert.equal(currentRunLatencyAllowed.freshness?.currentRunFreshnessFloorSeconds, 300);
     assert.equal(preTradeGateCalls, 3);
     baseTrade.timeframe = '1h';
 

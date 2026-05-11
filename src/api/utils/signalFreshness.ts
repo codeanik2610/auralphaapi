@@ -20,7 +20,7 @@ export interface SignalFreshnessEvaluation {
 export const DEFAULT_TRADE_SUGGESTION_FRESHNESS_GRACE_SECONDS: Record<string, number> = {
   '1m': 60,
   '3m': 120,
-  '5m': 480,
+  '5m': 300,
   '15m': 600,
   '30m': 900,
   '1h': 900,

@@ -1038,7 +1038,7 @@ function runTradeSuggestionExecutionPolicyValidationAssertions(): void {
 function runTradeSuggestionFreshnessPolicyAssertions(): void {
   const policy = normalizeTradeSuggestionFreshnessPolicy({});
 
-  assert.equal(resolveFreshnessGraceSeconds('5m', policy), 480);
+  assert.equal(resolveFreshnessGraceSeconds('5m', policy), 300);
   assert.equal(resolveFreshnessGraceSeconds('15m', policy), 600);
   assert.equal(resolveFreshnessGraceSeconds('1h', policy), 900);
 
@@ -1047,7 +1047,7 @@ function runTradeSuggestionFreshnessPolicyAssertions(): void {
       signalTime: '2026-05-02T06:10:00.000Z',
       timeframe: '5m',
       policy,
-      evaluatedAt: new Date('2026-05-02T06:21:42.000Z'),
+      evaluatedAt: new Date('2026-05-02T06:19:42.000Z'),
     }).allowed,
     true,
     '5m batch signal should remain executable after normal scan latency'
@@ -1089,11 +1089,11 @@ function runTradeSuggestionFreshnessPolicyAssertions(): void {
     signalTime: '2026-05-11T08:20:00.000Z',
     timeframe: '5m',
     policy: strictFiveMinutePolicy,
-    evaluatedAt: new Date('2026-05-11T08:30:05.000Z'),
+    evaluatedAt: new Date('2026-05-11T08:30:00.000Z'),
     minimumMaxAgeAfterCloseSeconds: resolveDefaultFreshnessGraceSeconds('5m'),
   });
   assert.equal(currentRunFiveMinuteEvaluation.allowed, true);
-  assert.equal(currentRunFiveMinuteEvaluation.maxAgeAfterCloseSeconds, 480);
+  assert.equal(currentRunFiveMinuteEvaluation.maxAgeAfterCloseSeconds, 300);
 }
 
 function runAutomationScheduleAuditAssertions(): void {
