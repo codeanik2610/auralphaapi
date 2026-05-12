@@ -39,6 +39,10 @@ import {
   resolveLiveAutoAdaptiveRoutingModeValue,
   resolveSuggestedTradeLiveAutoRuntimeConfig,
 } from '../src/api/services/suggested-trades/SuggestedTradeBrokerControls';
+import {
+  evaluateCustomRLadderTrailingStopMove,
+  normalizeCustomRLadderTrailingStopConfig,
+} from '../src/api/utils/trailingStopRLadder';
 import type { SuggestedTradeExecutionLink } from '../src/api/contracts/SuggestedTrade';
 import { AddSuggestedTradeExecutionRouteAttempts1800001800000 } from '../src/database/migrations_baseline/1800001800000-AddSuggestedTradeExecutionRouteAttempts';
 
@@ -9421,7 +9425,83 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   }
 }
 
+function runCustomRLadderTrailingStopAssertions(): void {
+  const config = normalizeCustomRLadderTrailingStopConfig({
+    enabled: true,
+    mode: 'custom_r_ladder',
+    rules: [
+      { whenProfitR: 2, moveStopToR: 1 },
+      { whenProfitR: 1, moveStopToR: 0 },
+      { whenProfitR: 3, moveStopToR: 2 },
+      { whenProfitR: 3, moveStopToR: 3 },
+    ],
+  });
+  assert.ok(config);
+  assert.deepEqual(config.rules, [
+    { whenProfitR: 1, moveStopToR: 0 },
+    { whenProfitR: 2, moveStopToR: 1 },
+    { whenProfitR: 3, moveStopToR: 2 },
+  ]);
+
+  const longMove = evaluateCustomRLadderTrailingStopMove({
+    side: 'long',
+    config,
+    entryPrice: 100,
+    originalStopLossPrice: 95,
+    currentStopLossPrice: 100,
+    currentPrice: 110.5,
+  });
+  assert.equal(longMove.action, 'move');
+  if (longMove.action === 'move') {
+    assert.equal(longMove.rule.whenProfitR, 2);
+    assert.equal(longMove.targetStopLossPrice, 105);
+  }
+
+  const shortMove = evaluateCustomRLadderTrailingStopMove({
+    side: 'short',
+    config,
+    entryPrice: 100,
+    originalStopLossPrice: 105,
+    currentStopLossPrice: 100,
+    currentPrice: 89.5,
+  });
+  assert.equal(shortMove.action, 'move');
+  if (shortMove.action === 'move') {
+    assert.equal(shortMove.rule.whenProfitR, 2);
+    assert.equal(shortMove.targetStopLossPrice, 95);
+  }
+
+  const noBackwardMove = evaluateCustomRLadderTrailingStopMove({
+    side: 'long',
+    config,
+    entryPrice: 100,
+    originalStopLossPrice: 95,
+    currentStopLossPrice: 106,
+    currentPrice: 110.5,
+  });
+  assert.deepEqual(noBackwardMove, {
+    action: 'none',
+    reason: 'would_move_backward',
+    profitR: 2.1,
+  });
+
+  const alreadyApplied = evaluateCustomRLadderTrailingStopMove({
+    side: 'long',
+    config,
+    entryPrice: 100,
+    originalStopLossPrice: 95,
+    currentStopLossPrice: 105,
+    currentPrice: 110.5,
+    lastAppliedWhenProfitR: 2,
+  });
+  assert.equal(alreadyApplied.action, 'none');
+  if (alreadyApplied.action === 'none') {
+    assert.equal(alreadyApplied.reason, 'already_applied');
+  }
+}
+
 async function main(): Promise<void> {
+  runCustomRLadderTrailingStopAssertions();
   await runSuggestedTradesControllerAssertions();
   await runSuggestedTradesOverviewControllerAssertions();
   runSuggestedTradeExecutionEntitySchemaAssertions();

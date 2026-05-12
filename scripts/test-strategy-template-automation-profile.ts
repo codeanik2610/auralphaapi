@@ -75,6 +75,14 @@ assert.deepEqual(explicitRiskWins.tradePlan.long?.takeProfitTargetsPct, [3.4]);
 const first60Managed = buildStrategyTemplateAutomationProfile({
   ...pythonTemplate,
   tradeManagement: {
+    trailingStop: {
+      enabled: true,
+      mode: 'custom_r_ladder',
+      rules: [
+        { whenProfitR: 1, moveStopToR: 0 },
+        { whenProfitR: 2, moveStopToR: 1 },
+      ],
+    },
     first60: {
       enabled: true,
       mode: 'post_entry_hold_or_exit',
@@ -112,15 +120,17 @@ const first60Managed = buildStrategyTemplateAutomationProfile({
 });
 
 assert.equal(first60Managed.tradeManagement?.first60?.enabled, true);
+assert.equal(first60Managed.tradeManagement?.trailingStop?.mode, 'custom_r_ladder');
+assert.deepEqual(first60Managed.tradeManagement?.trailingStop?.rules, [
+  { whenProfitR: 1, moveStopToR: 0 },
+  { whenProfitR: 2, moveStopToR: 1 },
+]);
 assert.equal(first60Managed.tradeManagement?.first60?.dataSource, 'market_candles_1m');
 assert.equal(first60Managed.tradeManagement?.first60?.long?.targetR, 5);
 assert.equal(first60Managed.tradeManagement?.first60?.long?.maxAdverseR, 0.75);
 assert.equal(first60Managed.tradeManagement?.first60?.long?.stopBasis, 'signal_candle_low');
 assert.equal(first60Managed.tradeManagement?.first60?.long?.decisionGate.status, 'observe_only');
-assert.equal(
-  first60Managed.tradeManagement?.first60?.long?.decisionGate.observeOnlyEnabled,
-  true
-);
+assert.equal(first60Managed.tradeManagement?.first60?.long?.decisionGate.observeOnlyEnabled, true);
 assert.equal(first60Managed.tradeManagement?.first60?.long?.decisionGate.managementEnabled, false);
 assert.equal(
   first60Managed.tradeManagement?.first60?.long?.decisionGate.evidenceRef,

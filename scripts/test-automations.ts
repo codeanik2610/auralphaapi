@@ -2237,6 +2237,16 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
           },
         },
         tradeManagement: {
+          trailingStop: {
+            enabled: true,
+            mode: 'custom_r_ladder',
+            basis: 'actual_fill',
+            updateOnlyInProfitDirection: true,
+            rules: [
+              { whenProfitR: 1, moveStopToR: 0 },
+              { whenProfitR: 2, moveStopToR: 1 },
+            ],
+          },
           first60: {
             enabled: true,
             mode: 'post_entry_hold_or_exit',
@@ -2377,6 +2387,16 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       assert.equal(longFirst60.maxAdverseR, 0.75);
       assert.equal(longFirst60.targetR, 5);
       assert.equal(longFirst60.stopBasis, 'signal_candle_low');
+      assert.deepEqual(longSnapshot.trailingStop, {
+        enabled: true,
+        mode: 'custom_r_ladder',
+        basis: 'actual_fill',
+        updateOnlyInProfitDirection: true,
+        rules: [
+          { whenProfitR: 1, moveStopToR: 0 },
+          { whenProfitR: 2, moveStopToR: 1 },
+        ],
+      });
       assert.deepEqual(longFirst60.decisionGate, {
         status: 'observe_only',
         observeOnlyEnabled: true,

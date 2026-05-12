@@ -1,3 +1,8 @@
+import {
+  CustomRLadderTrailingStopConfig,
+  normalizeCustomRLadderTrailingStopConfig,
+} from './trailingStopRLadder';
+
 export type StrategyTradeSide = 'long' | 'short';
 
 export type StrategyTemplateFirst60DecisionStatus =
@@ -56,6 +61,7 @@ export interface StrategyTemplateFirst60ManagementProfile {
 
 export interface StrategyTemplateTradeManagementProfile {
   first60: StrategyTemplateFirst60ManagementProfile | null;
+  trailingStop: CustomRLadderTrailingStopConfig | null;
 }
 
 export interface StrategyTemplateAutomationProfile {
@@ -216,7 +222,9 @@ const normalizeFirst60DecisionStatus = (
   if (['disabled', 'off'].includes(normalized)) {
     return 'disabled';
   }
-  if (['management_enabled', 'paper_management', 'live_management', 'enabled'].includes(normalized)) {
+  if (
+    ['management_enabled', 'paper_management', 'live_management', 'enabled'].includes(normalized)
+  ) {
     return 'management_enabled';
   }
   return null;
@@ -646,7 +654,11 @@ const buildFirst60DecisionGate = (
   return {
     status:
       status ??
-      (managementEnabled ? 'management_enabled' : observeOnlyEnabled ? 'observe_only' : 'candidate'),
+      (managementEnabled
+        ? 'management_enabled'
+        : observeOnlyEnabled
+          ? 'observe_only'
+          : 'candidate'),
     observeOnlyEnabled,
     managementEnabled,
     diagnosticsEnabled,
@@ -693,24 +705,32 @@ const buildTradeManagementProfile = (
 ): StrategyTemplateTradeManagementProfile | undefined => {
   const management = extractTradeManagementConfig(searchSpace);
   const first60 = parseRecord(management?.first60) || parseRecord(management?.first_60);
-  if (!first60) {
+  const trailingStop = normalizeCustomRLadderTrailingStopConfig(
+    management?.trailingStop ?? management?.trailing_stop
+  );
+  if (!first60 && !trailingStop) {
     return undefined;
   }
 
-  const long = buildFirst60Leg('long', first60);
-  const short = buildFirst60Leg('short', first60);
-  const enabled = (parseBoolean(first60.enabled) ?? true) && Boolean(long || short);
+  const long = first60 ? buildFirst60Leg('long', first60) : null;
+  const short = first60 ? buildFirst60Leg('short', first60) : null;
+  const enabled = first60
+    ? (parseBoolean(first60.enabled) ?? true) && Boolean(long || short)
+    : false;
 
   return {
-    first60: {
-      enabled,
-      mode:
-        readText(first60.mode, first60.decisionMode, first60.decision_mode) ||
-        'post_entry_hold_or_exit',
-      dataSource: readText(first60.dataSource, first60.data_source, first60.source) || null,
-      long,
-      short,
-    },
+    first60: first60
+      ? {
+          enabled,
+          mode:
+            readText(first60.mode, first60.decisionMode, first60.decision_mode) ||
+            'post_entry_hold_or_exit',
+          dataSource: readText(first60.dataSource, first60.data_source, first60.source) || null,
+          long,
+          short,
+        }
+      : null,
+    trailingStop,
   };
 };
 

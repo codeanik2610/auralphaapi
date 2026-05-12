@@ -68,6 +68,12 @@ import {
   normalizeTradeSuggestionLimitOrderExpiryPolicy,
   resolveLimitOrderExpirySeconds,
 } from '../utils/tradeSuggestionOrderExpiry';
+import {
+  CustomRLadderTrailingStopConfig,
+  CustomRLadderTrailingStopMove,
+  evaluateCustomRLadderTrailingStopMove,
+  resolveCustomRLadderTrailingStopConfigFromRecords,
+} from '../utils/trailingStopRLadder';
 import { OperationalEventService } from './OperationalEventService';
 import { PaperOrderExecutionService } from './PaperOrderExecutionService';
 import { BrokerReferenceDataService } from './BrokerReferenceDataService';
@@ -4572,6 +4578,12 @@ export class SuggestedTradesService {
       nextExecution,
       positionSnapshots
     );
+    nextExecution = await this.maybeApplyLiveTrailingStop(
+      input.userId,
+      trade,
+      nextExecution,
+      positionSnapshots
+    );
     nextExecution = await this.maybeAutoCancelSiblingProtectionOrders(
       input.userId,
       trade,
@@ -7900,6 +7912,12 @@ export class SuggestedTradesService {
             nextExecution,
             positionSnapshots
           );
+          nextExecution = await this.maybeApplyLiveTrailingStop(
+            userId,
+            trade,
+            nextExecution,
+            positionSnapshots
+          );
           nextExecution = await this.maybeAutoCancelSiblingProtectionOrders(
             userId,
             trade,
@@ -7959,6 +7977,12 @@ export class SuggestedTradesService {
         positionSnapshots
       );
       nextExecution = await this.maybeRemediateLiveProtection(
+        userId,
+        trade,
+        nextExecution,
+        positionSnapshots
+      );
+      nextExecution = await this.maybeApplyLiveTrailingStop(
         userId,
         trade,
         nextExecution,
@@ -8463,6 +8487,326 @@ export class SuggestedTradesService {
       nowIso,
       `Protection remediation is not supported for broker ${brokerKey}.`
     );
+  }
+
+  private async maybeApplyLiveTrailingStop(
+    userId: string,
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink,
+    positionSnapshots: LivePositionSnapshot[]
+  ): Promise<SuggestedTradeExecutionLink> {
+    if (execution.executionMode !== 'live') {
+      return execution;
+    }
+    if (this.normalizeProtectionState(execution.protectionState) !== 'attached') {
+      return execution;
+    }
+
+    const config = this.resolveExecutionTrailingStopConfig(trade, execution);
+    if (!config) {
+      return execution;
+    }
+
+    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
+    const accountId = this.readStringValue(execution.accountId);
+    if (!brokerKey || !accountId) {
+      return this.recordTrailingStopError(
+        trade,
+        execution,
+        new Date().toISOString(),
+        'Trailing SL update needs broker/account routing on the execution row.'
+      );
+    }
+
+    const position = this.selectBestPositionCandidate(trade, execution, positionSnapshots, {
+      allowPositionEvidenceFill: true,
+    });
+    if (!this.isActivePositionSnapshot(position) || !position) {
+      return execution;
+    }
+
+    const payload = position.payload ?? {};
+    const currentPrice = this.resolvePositionCurrentPrice(payload);
+    const entryPrice =
+      config.basis === 'planned_entry'
+        ? (this.readNumberValue(execution.entryPrice) ?? this.readNumberValue(trade.entryPrice))
+        : this.resolvePositionEntryPrice(payload, execution);
+    const originalStopLossPrice = this.resolveTrailingOriginalStopLossPrice(
+      trade,
+      execution,
+      payload
+    );
+    const currentStopLossPrice = this.resolveTrailingCurrentStopLossPrice(execution, payload);
+    const takeProfitPrice = this.resolveTrailingTakeProfitPrice(trade, execution, payload);
+    const lastAppliedWhenProfitR = this.readNumberValue(
+      this.readRecordValue(this.readRecordValue(execution.protectionPlan)?.trailingStop)
+        ?.lastAppliedWhenProfitR
+    );
+
+    if (!(entryPrice && originalStopLossPrice && currentPrice && takeProfitPrice)) {
+      return execution;
+    }
+
+    const move = evaluateCustomRLadderTrailingStopMove({
+      side: String(trade.side || '').toUpperCase() === 'SELL' ? 'short' : 'long',
+      config,
+      entryPrice,
+      originalStopLossPrice,
+      currentPrice,
+      currentStopLossPrice,
+      lastAppliedWhenProfitR,
+    });
+    if (move.action !== 'move') {
+      return execution;
+    }
+
+    if (!this.isTrailingStopMoveSafeAgainstCurrentPrice(move, currentPrice)) {
+      return execution;
+    }
+
+    if (brokerKey !== 'mudrex') {
+      return this.recordTrailingStopError(
+        trade,
+        execution,
+        new Date().toISOString(),
+        `Custom R ladder trailing SL is not supported for broker ${brokerKey}.`
+      );
+    }
+
+    const positionsAdapter = this.brokerRuntimeRegistry?.getPositionsAdapter?.(brokerKey) as {
+      createRiskOrder?: (
+        positionId: string,
+        body: Record<string, unknown>,
+        context?: { userId?: string; brokerKey?: string; accountId?: string }
+      ) => Promise<unknown>;
+    };
+    if (!positionsAdapter?.createRiskOrder) {
+      return this.recordTrailingStopError(
+        trade,
+        execution,
+        new Date().toISOString(),
+        'Trailing SL update needs a broker positions adapter that can replace risk orders.'
+      );
+    }
+
+    const nowIso = new Date().toISOString();
+    const stopLossPrice = this.formatNumericString(move.targetStopLossPrice);
+    const formattedTakeProfitPrice = this.formatNumericString(takeProfitPrice);
+    if (!stopLossPrice || !formattedTakeProfitPrice) {
+      return this.recordTrailingStopError(
+        trade,
+        execution,
+        nowIso,
+        'Trailing SL update could not format the replacement SL/TP prices.'
+      );
+    }
+
+    try {
+      await positionsAdapter.createRiskOrder(
+        position.externalId,
+        {
+          stoploss_price: stopLossPrice,
+          takeprofit_price: formattedTakeProfitPrice,
+          order_source: 'positions_desk',
+          is_stoploss: true,
+          is_takeprofit: true,
+        },
+        {
+          userId,
+          brokerKey,
+          accountId,
+        }
+      );
+    } catch (error) {
+      return this.recordTrailingStopError(
+        trade,
+        execution,
+        nowIso,
+        `Trailing SL update failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
+    const history = Array.isArray(existingTrailing.history) ? existingTrailing.history : [];
+    const trailingStop = {
+      ...config,
+      originalStopLossPrice:
+        this.readNumberValue(existingTrailing.originalStopLossPrice) ?? originalStopLossPrice,
+      lastAppliedWhenProfitR: move.rule.whenProfitR,
+      lastMoveStopToR: move.rule.moveStopToR,
+      lastStopLossPrice: stopLossPrice,
+      lastCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
+      lastProfitR: Number(move.profitR.toFixed(6)),
+      lastCheckedAt: nowIso,
+      lastUpdatedAt: nowIso,
+      lastError: null,
+      history: [
+        ...history.slice(-9),
+        {
+          at: nowIso,
+          whenProfitR: move.rule.whenProfitR,
+          moveStopToR: move.rule.moveStopToR,
+          stopLossPrice,
+          currentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
+          profitR: Number(move.profitR.toFixed(6)),
+          positionId: position.externalId,
+        },
+      ],
+    };
+    const note = `Trailing SL moved to ${stopLossPrice} after price crossed ${move.rule.whenProfitR}R; stop now locks ${move.rule.moveStopToR}R.`;
+
+    await this.operationalEventService?.logActivity?.(userId, {
+      type: 'Suggested Trade',
+      title: `Trailing SL updated: ${trade.symbol}`,
+      status: 'Success',
+      route: 'Suggested Trades',
+      stream: 'Execution',
+      related: `${brokerKey} · ${accountId}`,
+      referenceId: trade.id,
+      symbol: trade.symbol,
+      description: note,
+    });
+
+    return {
+      ...execution,
+      stopLossPrice,
+      takeProfitPrice: execution.takeProfitPrice ?? formattedTakeProfitPrice,
+      protectionCheckedAt: nowIso,
+      protectionLastError: null,
+      protectionPlan: {
+        ...plan,
+        source: 'suggested_trade_execution',
+        symbol: trade.symbol,
+        side: trade.side,
+        timeframe: trade.timeframe,
+        brokerKey,
+        accountId,
+        positionId: position.externalId,
+        attachedStopLossPrice: stopLossPrice,
+        attachedTakeProfitPrice: formattedTakeProfitPrice,
+        trailingStop,
+      },
+      note: this.appendExecutionNote(execution.note, note),
+    };
+  }
+
+  private resolveExecutionTrailingStopConfig(
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink
+  ): CustomRLadderTrailingStopConfig | null {
+    const plan = this.readRecordValue(execution.protectionPlan);
+    const meta = this.readRecordValue(trade.meta);
+    const tradeManagementSnapshot = this.readRecordValue(meta?.tradeManagementSnapshot);
+    return resolveCustomRLadderTrailingStopConfigFromRecords(plan, tradeManagementSnapshot, meta);
+  }
+
+  private resolveTrailingOriginalStopLossPrice(
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink,
+    positionPayload: Record<string, unknown>
+  ): number | null {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const trailing = this.readRecordValue(plan.trailingStop) ?? {};
+    return (
+      this.readNumberValue(trailing.originalStopLossPrice) ??
+      this.readNumberValue(plan.originalStopLossPrice) ??
+      this.readNumberValue(plan.initialStopLossPrice) ??
+      this.readNumberValue(plan.attachedStopLossPrice) ??
+      this.resolvePositionStopLossPrice(positionPayload) ??
+      this.readNumberValue(plan.stopLossPrice) ??
+      this.readNumberValue(execution.stopLossPrice) ??
+      this.readNumberValue(trade.stopLossPrice)
+    );
+  }
+
+  private resolveTrailingCurrentStopLossPrice(
+    execution: SuggestedTradeExecutionLink,
+    positionPayload: Record<string, unknown>
+  ): number | null {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const trailing = this.readRecordValue(plan.trailingStop) ?? {};
+    return (
+      this.resolvePositionStopLossPrice(positionPayload) ??
+      this.readNumberValue(trailing.lastStopLossPrice) ??
+      this.readNumberValue(execution.stopLossPrice) ??
+      this.readNumberValue(plan.attachedStopLossPrice) ??
+      this.readNumberValue(plan.stopLossPrice)
+    );
+  }
+
+  private resolveTrailingTakeProfitPrice(
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink,
+    positionPayload: Record<string, unknown>
+  ): number | null {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    return (
+      this.resolvePositionTakeProfitPrice(positionPayload) ??
+      this.readNumberValue(plan.attachedTakeProfitPrice) ??
+      this.readNumberValue(plan.takeProfitPrice) ??
+      this.readNumberValue(execution.takeProfitPrice) ??
+      this.readNumberValue(
+        Array.isArray(trade.takeProfitTargets) ? trade.takeProfitTargets[0] : null
+      )
+    );
+  }
+
+  private resolvePositionStopLossPrice(payload: Record<string, unknown>): number | null {
+    return (
+      this.readNumberValue(payload.stoploss_price) ??
+      this.readNumberValue(payload.stopLossPrice) ??
+      this.readNumberValue(payload.stop_loss_price) ??
+      this.readNumberValue(this.readRecordValue(payload.stoploss)?.price) ??
+      this.readNumberValue(this.readRecordValue(payload.stopLoss)?.price) ??
+      this.readNumberValue(this.readRecordValue(payload.stop_loss)?.price)
+    );
+  }
+
+  private resolvePositionTakeProfitPrice(payload: Record<string, unknown>): number | null {
+    return (
+      this.readNumberValue(payload.takeprofit_price) ??
+      this.readNumberValue(payload.takeProfitPrice) ??
+      this.readNumberValue(payload.take_profit_price) ??
+      this.readNumberValue(this.readRecordValue(payload.takeprofit)?.price) ??
+      this.readNumberValue(this.readRecordValue(payload.takeProfit)?.price) ??
+      this.readNumberValue(this.readRecordValue(payload.take_profit)?.price)
+    );
+  }
+
+  private isTrailingStopMoveSafeAgainstCurrentPrice(
+    move: CustomRLadderTrailingStopMove,
+    currentPrice: number
+  ): boolean {
+    return move.side === 'short'
+      ? move.targetStopLossPrice > currentPrice
+      : move.targetStopLossPrice < currentPrice;
+  }
+
+  private recordTrailingStopError(
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink,
+    nowIso: string,
+    message: string
+  ): SuggestedTradeExecutionLink {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
+    const config = this.resolveExecutionTrailingStopConfig(trade, execution);
+    return {
+      ...execution,
+      protectionCheckedAt: nowIso,
+      protectionLastError: message,
+      protectionPlan: {
+        ...plan,
+        trailingStop: {
+          ...(config ?? {}),
+          ...existingTrailing,
+          lastCheckedAt: nowIso,
+          lastError: message,
+        },
+      },
+      note: this.appendExecutionNote(execution.note, message),
+    };
   }
 
   private async persistLiveProtectionAttachmentStarted(

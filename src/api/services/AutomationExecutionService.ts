@@ -2203,12 +2203,13 @@ export class AutomationExecutionService {
     }
   ): Record<string, unknown> | null {
     const first60 = profile.tradeManagement?.first60;
-    if (!first60?.enabled) {
+    const trailingStop = profile.tradeManagement?.trailingStop ?? null;
+    if (!first60?.enabled && !trailingStop) {
       return null;
     }
 
-    const first60Leg = leg.side === 'long' ? first60.long : first60.short;
-    if (!first60Leg?.enabled) {
+    const first60Leg = first60 ? (leg.side === 'long' ? first60.long : first60.short) : null;
+    if (first60?.enabled && !first60Leg?.enabled && !trailingStop) {
       return null;
     }
 
@@ -2221,21 +2222,28 @@ export class AutomationExecutionService {
       signalTime: context.signalTime.toISOString(),
       capturedAt: context.capturedAt.toISOString(),
       timeframe: context.timeframe,
-      first60: {
-        enabled: true,
-        mode: first60.mode,
-        dataSource: first60.dataSource,
-        decisionGate: { ...first60Leg.decisionGate },
-        windowMinutes: first60Leg.windowMinutes,
-        evaluationTimeframe: first60Leg.evaluationTimeframe,
-        requiredFavorableR: first60Leg.requiredFavorableR,
-        maxAdverseR: first60Leg.maxAdverseR,
-        targetR: first60Leg.targetR,
-        entryBasis: first60Leg.entryBasis,
-        stopBasis: first60Leg.stopBasis,
-        passAction: first60Leg.passAction,
-        failAction: first60Leg.failAction,
-      },
+      ...(first60?.enabled && first60Leg?.enabled
+        ? {
+            first60: {
+              enabled: true,
+              mode: first60.mode,
+              dataSource: first60.dataSource,
+              decisionGate: { ...first60Leg.decisionGate },
+              windowMinutes: first60Leg.windowMinutes,
+              evaluationTimeframe: first60Leg.evaluationTimeframe,
+              requiredFavorableR: first60Leg.requiredFavorableR,
+              maxAdverseR: first60Leg.maxAdverseR,
+              targetR: first60Leg.targetR,
+              entryBasis: first60Leg.entryBasis,
+              stopBasis: first60Leg.stopBasis,
+              passAction: first60Leg.passAction,
+              failAction: first60Leg.failAction,
+            },
+          }
+        : {}),
+      ...(trailingStop
+        ? { trailingStop: { ...trailingStop, rules: [...trailingStop.rules] } }
+        : {}),
     };
   }
 
