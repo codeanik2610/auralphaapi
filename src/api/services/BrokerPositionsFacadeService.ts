@@ -1222,6 +1222,59 @@ export class BrokerPositionsFacadeService {
     );
   }
 
+  private addLifecycleIdentifier(identifiers: Set<string>, value: unknown): void {
+    const normalized = this.readString(value).toLowerCase();
+    if (normalized) {
+      identifiers.add(normalized);
+    }
+  }
+
+  private getPositionLifecycleIdentifiers(position: PositionRecord): Set<string> {
+    const identifiers = new Set<string>();
+    const rawPayload = this.toRecord((position as Record<string, unknown>).rawPayload);
+    const summary = this.toRecord(position.positionSummary);
+
+    [
+      position.id,
+      position.external_id,
+      position.externalId,
+      this.pickFirst(rawPayload || {}, [
+        'id',
+        'external_id',
+        'externalId',
+        'position_id',
+        'positionId',
+        'position_uuid',
+        'positionUuid',
+        'future_position_uuid',
+        'futurePositionUuid',
+      ]),
+      this.pickFirst(summary || {}, ['id', 'externalId', 'external_id']),
+    ].forEach((value) => this.addLifecycleIdentifier(identifiers, value));
+
+    return identifiers;
+  }
+
+  private isLifecycleIdentifierMatch(value: unknown, identifiers: Set<string>): boolean {
+    const normalized = this.readString(value).toLowerCase();
+    return Boolean(normalized && identifiers.has(normalized));
+  }
+
+  private readOrderLinkedPositionId(payload: Record<string, unknown>): string {
+    return this.readString(
+      this.pickFirst(payload, [
+        'position_id',
+        'positionId',
+        'position_uuid',
+        'positionUuid',
+        'future_position_uuid',
+        'futurePositionUuid',
+        'future_position_id',
+        'futurePositionId',
+      ])
+    );
+  }
+
   private getLifecycleWindowStart(position: PositionRecord): Date | null {
     const candidates = [
       this.toIsoString(position.created_at),
@@ -1232,7 +1285,7 @@ export class BrokerPositionsFacadeService {
     if (!pivot || Number.isNaN(pivot.getTime())) {
       return null;
     }
-    return new Date(pivot.getTime() - 1000 * 60 * 60 * 24 * 30);
+    return new Date(pivot.getTime() - 1000 * 60 * 60 * 6);
   }
 
   private mapRelatedLiveOrderSnapshot(
@@ -1249,17 +1302,16 @@ export class BrokerPositionsFacadeService {
     trackedOrderIds: string[]
   ): PositionLifecycleOrderItem {
     const payload = this.toRecord(this.parsePayloadJson(row.payload)) || {};
+    const positionIdentifiers = this.getPositionLifecycleIdentifiers(position);
     const orderId =
       this.readString(row.externalId) ||
       this.readString(payload.external_id) ||
       this.readString(payload.externalId) ||
       this.readString(payload.id) ||
       '';
-    const linkedPositionId = this.readString(
-      this.pickFirst(payload, ['position_id', 'positionId'])
-    );
+    const linkedPositionId = this.readOrderLinkedPositionId(payload);
     const relation =
-      linkedPositionId && linkedPositionId === position.id
+      linkedPositionId && this.isLifecycleIdentifierMatch(linkedPositionId, positionIdentifiers)
         ? 'position'
         : trackedOrderIds.includes(orderId)
           ? 'protection'
@@ -1326,15 +1378,8 @@ export class BrokerPositionsFacadeService {
   ): PositionLifecycleOrderItem {
     const orderId = this.readString(row.orderId) || this.readString(row.externalId) || '';
     const orderType = this.readString(row.orderType);
-    const normalizedOrderType = orderType.toLowerCase();
     const reduceOnly = this.readBoolean(row.reduceOnly);
-    const relation =
-      trackedOrderIds.includes(orderId) ||
-      normalizedOrderType.includes('stoploss') ||
-      normalizedOrderType.includes('takeprofit') ||
-      reduceOnly === true
-        ? 'protection'
-        : 'symbol';
+    const relation = trackedOrderIds.includes(orderId) ? 'protection' : 'symbol';
     const orderPrice =
       this.toNumber(row.orderPrice) ??
       this.toNumber(row.triggerPrice) ??
@@ -1362,6 +1407,31 @@ export class BrokerPositionsFacadeService {
       updatedAt: this.toIsoString(row.orderUpdatedAt) || this.toIsoString(row.lastSeenAt) || null,
       detailUrl: orderId ? `/orders?selected=${encodeURIComponent(orderId)}` : undefined,
     };
+  }
+
+  private isProtectionLifecycleOrder(item: PositionLifecycleOrderItem): boolean {
+    const orderType = this.readString(item.orderType).toLowerCase();
+    const triggerType = this.readString(item.triggerType).toLowerCase();
+    const relation = this.readString(item.relation).toLowerCase();
+    return (
+      item.reduceOnly === true ||
+      relation.includes('stop') ||
+      relation.includes('target') ||
+      relation.includes('take') ||
+      orderType.includes('stop') ||
+      orderType.includes('takeprofit') ||
+      orderType.includes('take profit') ||
+      triggerType.includes('stop') ||
+      triggerType.includes('takeprofit') ||
+      triggerType.includes('take profit')
+    );
+  }
+
+  private shouldIncludeRelatedLiveOrder(item: PositionLifecycleOrderItem): boolean {
+    if (item.relation !== 'symbol') {
+      return true;
+    }
+    return !this.isProtectionLifecycleOrder(item);
   }
 
   private dedupeLifecycleOrders(items: PositionLifecycleOrderItem[]): PositionLifecycleOrderItem[] {
@@ -2138,8 +2208,12 @@ export class BrokerPositionsFacadeService {
     }>;
 
     return this.dedupeLifecycleOrders([
-      ...rows.map((row) => this.mapRelatedLiveOrderSnapshot(row, position, trackedOrderIds)),
-      ...riskRows.map((row) => this.mapRelatedLiveRiskOrderSnapshot(row, trackedOrderIds)),
+      ...rows
+        .map((row) => this.mapRelatedLiveOrderSnapshot(row, position, trackedOrderIds))
+        .filter((item) => this.shouldIncludeRelatedLiveOrder(item)),
+      ...riskRows
+        .map((row) => this.mapRelatedLiveRiskOrderSnapshot(row, trackedOrderIds))
+        .filter((item) => this.shouldIncludeRelatedLiveOrder(item)),
     ])
       .sort((left, right) => {
         const rank = (item: PositionLifecycleOrderItem): number =>

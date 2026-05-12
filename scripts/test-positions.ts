@@ -2352,6 +2352,111 @@ async function positionsGuard12(): Promise<void> {
   console.log('Positions phase 12 assertions passed.');
 }
 
+async function positionsGuard13(): Promise<void> {
+  const { BrokerPositionsFacadeService } =
+    await import('../src/api/services/BrokerPositionsFacadeService');
+
+  const service: any = new BrokerPositionsFacadeService();
+  const position = {
+    id: 'mudrex:acc-1:2026-05-12T04:03:38Z:LONG',
+    external_id: 'mudrex:acc-1:2026-05-12T04:03:38Z:LONG',
+    externalId: 'mudrex:acc-1:2026-05-12T04:03:38Z:LONG',
+    symbol: 'JSTUSDT',
+    created_at: '2026-05-12T04:03:38.000Z',
+    rawPayload: {
+      id: '019e1a5a-c7df-796d-8a66-507104d017d2',
+      symbol: 'JSTUSDT',
+      position_type: 'long',
+    },
+    positionSummary: {
+      id: 'mudrex:acc-1:2026-05-12T04:03:38Z:LONG',
+      externalId: 'mudrex:acc-1:2026-05-12T04:03:38Z:LONG',
+    },
+  };
+
+  const linkedOrder = service.mapRelatedLiveOrderSnapshot(
+    {
+      externalId: 'current-sl',
+      symbol: 'JSTUSDT',
+      orderStatus: 'OPEN',
+      payload: JSON.stringify({
+        id: 'current-sl',
+        future_position_uuid: '019e1a5a-c7df-796d-8a66-507104d017d2',
+        order_type: 'STOPLOSS',
+        price: '0.08831',
+      }),
+      firstSeenAt: '2026-05-12T04:04:00.000Z',
+      lastSeenAt: '2026-05-12T04:04:00.000Z',
+    },
+    position,
+    []
+  );
+  assert.equal(linkedOrder.relation, 'position');
+  assert.equal(linkedOrder.linkedPositionId, '019e1a5a-c7df-796d-8a66-507104d017d2');
+  assert.equal(service.shouldIncludeRelatedLiveOrder(linkedOrder), true);
+
+  const staleOrder = service.mapRelatedLiveOrderSnapshot(
+    {
+      externalId: 'old-sl',
+      symbol: 'JSTUSDT',
+      orderStatus: 'FILLED',
+      payload: JSON.stringify({
+        id: 'old-sl',
+        future_position_uuid: '019e18cc-7894-7bba-a7af-5722c4eac3c5',
+        order_type: 'STOPLOSS',
+        price: '0.08726',
+      }),
+      firstSeenAt: '2026-05-11T20:48:34.000Z',
+      lastSeenAt: '2026-05-11T20:48:34.000Z',
+    },
+    position,
+    []
+  );
+  assert.equal(staleOrder.relation, 'symbol');
+  assert.equal(service.shouldIncludeRelatedLiveOrder(staleOrder), false);
+
+  const staleRiskOrder = service.mapRelatedLiveRiskOrderSnapshot(
+    {
+      orderId: 'old-tp',
+      symbol: 'JSTUSDT',
+      status: 'CREATED',
+      side: 'SELL',
+      orderType: 'TAKEPROFIT',
+      orderPrice: 0.08496,
+      reduceOnly: false,
+      firstSeenAt: '2026-05-10T20:36:19.000Z',
+      lastSeenAt: '2026-05-10T20:36:19.000Z',
+    },
+    []
+  );
+  assert.equal(staleRiskOrder.relation, 'symbol');
+  assert.equal(service.shouldIncludeRelatedLiveOrder(staleRiskOrder), false);
+
+  const trackedRiskOrder = service.mapRelatedLiveRiskOrderSnapshot(
+    {
+      orderId: 'current-tp',
+      symbol: 'JSTUSDT',
+      status: 'CREATED',
+      side: 'SELL',
+      orderType: 'TAKEPROFIT',
+      orderPrice: 0.08859,
+      reduceOnly: false,
+      firstSeenAt: '2026-05-12T04:04:00.000Z',
+      lastSeenAt: '2026-05-12T04:04:00.000Z',
+    },
+    ['current-tp']
+  );
+  assert.equal(trackedRiskOrder.relation, 'protection');
+  assert.equal(service.shouldIncludeRelatedLiveOrder(trackedRiskOrder), true);
+
+  assert.equal(
+    service.getLifecycleWindowStart(position)?.toISOString(),
+    '2026-05-11T22:03:38.000Z'
+  );
+
+  console.log('Positions phase 13 assertions passed.');
+}
+
 const suiteSteps = {
   '01': positionsGuard01,
   '04': positionsGuard04,
@@ -2362,6 +2467,7 @@ const suiteSteps = {
   '10': positionsGuard10,
   '11': positionsGuard11,
   '12': positionsGuard12,
+  '13': positionsGuard13,
 } as const;
 
 export async function runPositionsSuite(): Promise<void> {
@@ -2375,6 +2481,7 @@ export async function runPositionsSuite(): Promise<void> {
     '10',
     '11',
     '12',
+    '13',
   ]);
 }
 
