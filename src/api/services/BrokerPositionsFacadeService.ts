@@ -1409,29 +1409,8 @@ export class BrokerPositionsFacadeService {
     };
   }
 
-  private isProtectionLifecycleOrder(item: PositionLifecycleOrderItem): boolean {
-    const orderType = this.readString(item.orderType).toLowerCase();
-    const triggerType = this.readString(item.triggerType).toLowerCase();
-    const relation = this.readString(item.relation).toLowerCase();
-    return (
-      item.reduceOnly === true ||
-      relation.includes('stop') ||
-      relation.includes('target') ||
-      relation.includes('take') ||
-      orderType.includes('stop') ||
-      orderType.includes('takeprofit') ||
-      orderType.includes('take profit') ||
-      triggerType.includes('stop') ||
-      triggerType.includes('takeprofit') ||
-      triggerType.includes('take profit')
-    );
-  }
-
   private shouldIncludeRelatedLiveOrder(item: PositionLifecycleOrderItem): boolean {
-    if (item.relation !== 'symbol') {
-      return true;
-    }
-    return !this.isProtectionLifecycleOrder(item);
+    return item.relation !== 'symbol';
   }
 
   private dedupeLifecycleOrders(items: PositionLifecycleOrderItem[]): PositionLifecycleOrderItem[] {

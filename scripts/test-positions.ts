@@ -2415,6 +2415,26 @@ async function positionsGuard13(): Promise<void> {
   assert.equal(staleOrder.relation, 'symbol');
   assert.equal(service.shouldIncludeRelatedLiveOrder(staleOrder), false);
 
+  const staleEntryOrder = service.mapRelatedLiveOrderSnapshot(
+    {
+      externalId: 'old-short-entry',
+      symbol: 'JSTUSDT',
+      orderStatus: 'FILLED',
+      payload: JSON.stringify({
+        id: 'old-short-entry',
+        future_position_uuid: '019e18cc-7894-7bba-a7af-5722c4eac3c5',
+        order_type: 'SHORT',
+        price: '0.08723',
+      }),
+      firstSeenAt: '2026-05-11T20:48:34.000Z',
+      lastSeenAt: '2026-05-12T04:20:00.000Z',
+    },
+    position,
+    []
+  );
+  assert.equal(staleEntryOrder.relation, 'symbol');
+  assert.equal(service.shouldIncludeRelatedLiveOrder(staleEntryOrder), false);
+
   const staleRiskOrder = service.mapRelatedLiveRiskOrderSnapshot(
     {
       orderId: 'old-tp',
