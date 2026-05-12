@@ -96,6 +96,7 @@ import {
   mudrexPositionHasProtection,
   normalizeMudrexLiveAutoOrderSizing as normalizeMudrexLiveAutoOrderSizingForBroker,
   remediateMudrexLiveProtection as remediateMudrexLiveProtectionForBroker,
+  resolveMudrexRiskOrderPositionId,
   validateMudrexProtectionAttachability,
 } from './suggested-trades/MudrexSuggestedTradeBroker';
 import {
@@ -8589,6 +8590,21 @@ export class SuggestedTradesService {
       );
     }
 
+    const riskOrderPositionId = this.resolveTrailingRiskOrderPositionId(
+      brokerKey,
+      execution,
+      position,
+      payload
+    );
+    if (!riskOrderPositionId) {
+      return this.recordTrailingStopError(
+        trade,
+        execution,
+        new Date().toISOString(),
+        'Trailing SL update could not resolve the broker position id for risk-order replacement.'
+      );
+    }
+
     const nowIso = new Date().toISOString();
     const stopLossPrice = this.formatNumericString(move.targetStopLossPrice);
     const formattedTakeProfitPrice = this.formatNumericString(takeProfitPrice);
@@ -8603,7 +8619,7 @@ export class SuggestedTradesService {
 
     try {
       await positionsAdapter.createRiskOrder(
-        position.externalId,
+        riskOrderPositionId,
         {
           stoploss_price: stopLossPrice,
           takeprofit_price: formattedTakeProfitPrice,
@@ -8650,7 +8666,8 @@ export class SuggestedTradesService {
           stopLossPrice,
           currentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
           profitR: Number(move.profitR.toFixed(6)),
-          positionId: position.externalId,
+          positionId: riskOrderPositionId,
+          snapshotPositionId: position.externalId,
         },
       ],
     };
@@ -8682,7 +8699,8 @@ export class SuggestedTradesService {
         timeframe: trade.timeframe,
         brokerKey,
         accountId,
-        positionId: position.externalId,
+        positionId: riskOrderPositionId,
+        snapshotPositionId: position.externalId,
         attachedStopLossPrice: stopLossPrice,
         attachedTakeProfitPrice: formattedTakeProfitPrice,
         trailingStop,
@@ -8699,6 +8717,31 @@ export class SuggestedTradesService {
     const meta = this.readRecordValue(trade.meta);
     const tradeManagementSnapshot = this.readRecordValue(meta?.tradeManagementSnapshot);
     return resolveCustomRLadderTrailingStopConfigFromRecords(plan, tradeManagementSnapshot, meta);
+  }
+
+  private resolveTrailingRiskOrderPositionId(
+    brokerKey: string,
+    execution: SuggestedTradeExecutionLink,
+    position: LivePositionSnapshot,
+    positionPayload: Record<string, unknown>
+  ): string | null {
+    if (brokerKey === 'mudrex') {
+      const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+      const payloadPositionId = resolveMudrexRiskOrderPositionId(position, positionPayload);
+      const planPositionId = this.readStringValue(plan.positionId);
+      const executionPositionId = this.readStringValue(execution.positionId);
+      if (payloadPositionId && payloadPositionId !== position.externalId) {
+        return payloadPositionId;
+      }
+      return (
+        planPositionId ??
+        executionPositionId ??
+        payloadPositionId ??
+        this.readStringValue(position.externalId)
+      );
+    }
+
+    return this.readStringValue(position.externalId) ?? this.readStringValue(execution.positionId);
   }
 
   private resolveTrailingOriginalStopLossPrice(

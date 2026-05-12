@@ -9399,6 +9399,8 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'using equivalent broker symbol',
     'Shadow route would select',
     'pre_trade_check',
+    'resolveTrailingRiskOrderPositionId',
+    'resolveMudrexRiskOrderPositionId(position, positionPayload)',
   ]) {
     assert.equal(
       serviceSource.includes(marker),
