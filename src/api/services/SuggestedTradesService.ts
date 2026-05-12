@@ -4009,6 +4009,7 @@ export class SuggestedTradesService {
       input.prepared.orderType
     );
     let protectionAttached = protectionStatus === 'attached' && !deltaLimitProtectionProvisional;
+    let protectionClosedPosition = false;
     let protectionAttachmentNote: string | null = null;
     let protectionNote = protectionAttached
       ? ` Native SL/TP protection attached${
@@ -4044,6 +4045,9 @@ export class SuggestedTradesService {
       if (attachedProtection.attached) {
         protectionAttached = true;
       }
+      if (attachedProtection.closedPosition) {
+        protectionClosedPosition = true;
+      }
       if (attachedProtection.note) {
         protectionAttachmentNote = attachedProtection.note;
         protectionNote =
@@ -4061,6 +4065,7 @@ export class SuggestedTradesService {
       deltaLimitProtectionProvisional,
       needsPostFillProtection,
       protectionAttachmentNote,
+      protectionClosedPosition,
       fallbackProtectionState: input.submittingExecution.protectionState,
       fallbackProtectionLastError: input.submittingExecution.protectionLastError,
     });
@@ -4094,8 +4099,18 @@ export class SuggestedTradesService {
       ...input.submittingExecution,
       orderId: createdOrderId,
       orderStatus: createdOrderStatus,
-      executionState: unresolvedProtection ? 'working' : 'linked',
+      executionState: protectionClosedPosition
+        ? 'closed'
+        : unresolvedProtection
+          ? 'working'
+          : 'linked',
       linkedAt,
+      positionStatus: protectionClosedPosition
+        ? 'CLOSED'
+        : input.submittingExecution.positionStatus,
+      positionClosedAt: protectionClosedPosition
+        ? linkedAt
+        : input.submittingExecution.positionClosedAt,
       protectionState: protectionResolution.protectionState,
       protectionCheckedAt: linkedAt,
       protectionAttachedAt: protectionAttached ? linkedAt : null,
@@ -4177,6 +4192,7 @@ export class SuggestedTradesService {
     deltaLimitProtectionProvisional: boolean;
     needsPostFillProtection: boolean;
     protectionAttachmentNote: string | null;
+    protectionClosedPosition?: boolean;
     fallbackProtectionState: SuggestedTradeProtectionState | null | undefined;
     fallbackProtectionLastError: string | null | undefined;
   }): {
@@ -4190,6 +4206,16 @@ export class SuggestedTradesService {
       return {
         protectionState: 'attached',
         protectionLastError: null,
+      };
+    }
+
+    if (input.protectionClosedPosition) {
+      return {
+        protectionState: 'not_required',
+        protectionLastError: null,
+        routeNote:
+          input.protectionAttachmentNote ??
+          'Position closed because SL/TP was already breached before protection could attach.',
       };
     }
 
@@ -8331,7 +8357,16 @@ export class SuggestedTradesService {
           takeProfitPrice
         );
         if (manualMessage) {
-          return this.markProtectionManualUnlinked(execution, nowIso, manualMessage);
+          return this.remediateMudrexLiveProtection({
+            userId,
+            trade,
+            execution,
+            position,
+            prices,
+            nowIso,
+            brokerKey,
+            accountId: this.readStringValue(execution.accountId) ?? '',
+          });
         }
       }
       return execution;

@@ -355,6 +355,7 @@ export class SuggestedTradesProtectionGuardrailService {
               AND (
                 COALESCE(execution_record.position_id, '') <> ''
                 OR LOWER(COALESCE(execution_record.position_status, '')) IN ('open', 'partial', 'partially_closed', 'partially_closed_position')
+                OR
                 execution_record.filled_at IS NOT NULL
                 OR LOWER(COALESCE(execution_record.execution_state, '')) = 'filled'
                 OR UPPER(COALESCE(execution_record.order_status, '')) IN ('CLOSED', 'FILLED', 'PARTIALLY_FILLED', 'PARTIAL')

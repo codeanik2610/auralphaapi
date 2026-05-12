@@ -39,6 +39,21 @@ export interface MudrexProtectionPositionsAdapter {
     body: Record<string, unknown>,
     context?: { userId?: string; brokerKey?: string; accountId?: string }
   ) => Promise<unknown>;
+  closePosition?: (
+    positionId: string,
+    context?: { userId?: string; brokerKey?: string; accountId?: string }
+  ) => Promise<unknown>;
+}
+
+type MudrexProtectionAttachabilityIssueReason =
+  | 'stop_loss_breached'
+  | 'take_profit_crossed'
+  | 'protection_rejected_breached'
+  | 'liquidation_unsafe';
+
+interface MudrexProtectionAttachabilityIssue {
+  reason: MudrexProtectionAttachabilityIssueReason;
+  message: string;
 }
 
 export interface MudrexLiveProtectionRepairInput {
@@ -104,6 +119,7 @@ export interface MudrexLiveAutoOrderSizingInput {
 
 export interface MudrexLiveAutoProtectionAttachmentResult {
   attached: boolean;
+  closedPosition?: boolean;
   note: string | null;
 }
 
@@ -229,6 +245,18 @@ export function validateMudrexProtectionAttachability(
   stopLossPrice: string,
   takeProfitPrice: string
 ): string | null {
+  return (
+    inspectMudrexProtectionAttachability(trade, positionPayload, stopLossPrice, takeProfitPrice)
+      ?.message ?? null
+  );
+}
+
+function inspectMudrexProtectionAttachability(
+  trade: SuggestedTradeSideLike,
+  positionPayload: Record<string, unknown>,
+  stopLossPrice: string,
+  takeProfitPrice: string
+): MudrexProtectionAttachabilityIssue | null {
   const side = resolveMudrexPositionEntrySide(trade, positionPayload);
   const stopLoss = readNumberValue(stopLossPrice);
   const takeProfit = readNumberValue(takeProfitPrice);
@@ -247,27 +275,114 @@ export function validateMudrexProtectionAttachability(
 
   if (side === 'buy') {
     if (currentPrice && stopLoss >= currentPrice) {
-      return `Mudrex protection needs manual action: planned stop-loss ${stopLossPrice} is already breached for current price ${formatNumericString(currentPrice) || currentPrice}.`;
+      return {
+        reason: 'stop_loss_breached',
+        message: `Mudrex protection needs immediate close: planned stop-loss ${stopLossPrice} is already breached for current price ${formatNumericString(currentPrice) || currentPrice}.`,
+      };
     }
     if (currentPrice && takeProfit <= currentPrice) {
-      return `Mudrex protection needs manual action: planned take-profit ${takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}.`;
+      return {
+        reason: 'take_profit_crossed',
+        message: `Mudrex protection needs immediate close: planned take-profit ${takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}.`,
+      };
     }
     if (liquidationPrice && stopLoss <= liquidationPrice) {
-      return `Mudrex protection needs manual action: planned stop-loss ${stopLossPrice} is at or beyond liquidation price ${formatNumericString(liquidationPrice) || liquidationPrice}.`;
+      return {
+        reason: 'liquidation_unsafe',
+        message: `Mudrex protection needs manual action: planned stop-loss ${stopLossPrice} is at or beyond liquidation price ${formatNumericString(liquidationPrice) || liquidationPrice}.`,
+      };
     }
     return null;
   }
 
   if (currentPrice && stopLoss <= currentPrice) {
-    return `Mudrex protection needs manual action: planned stop-loss ${stopLossPrice} is already breached for current price ${formatNumericString(currentPrice) || currentPrice}.`;
+    return {
+      reason: 'stop_loss_breached',
+      message: `Mudrex protection needs immediate close: planned stop-loss ${stopLossPrice} is already breached for current price ${formatNumericString(currentPrice) || currentPrice}.`,
+    };
   }
   if (currentPrice && takeProfit >= currentPrice) {
-    return `Mudrex protection needs manual action: planned take-profit ${takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}.`;
+    return {
+      reason: 'take_profit_crossed',
+      message: `Mudrex protection needs immediate close: planned take-profit ${takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}.`,
+    };
   }
   if (liquidationPrice && stopLoss >= liquidationPrice) {
-    return `Mudrex protection needs manual action: planned stop-loss ${stopLossPrice} is at or beyond liquidation price ${formatNumericString(liquidationPrice) || liquidationPrice}.`;
+    return {
+      reason: 'liquidation_unsafe',
+      message: `Mudrex protection needs manual action: planned stop-loss ${stopLossPrice} is at or beyond liquidation price ${formatNumericString(liquidationPrice) || liquidationPrice}.`,
+    };
   }
   return null;
+}
+
+function shouldCloseMudrexPositionForAttachabilityIssue(
+  issue: MudrexProtectionAttachabilityIssue | null
+): boolean {
+  return Boolean(
+    issue &&
+    (issue.reason === 'stop_loss_breached' ||
+      issue.reason === 'take_profit_crossed' ||
+      issue.reason === 'protection_rejected_breached')
+  );
+}
+
+function buildMudrexProtectionBrokerRejectIssue(
+  error: unknown
+): MudrexProtectionAttachabilityIssue | null {
+  const message = error instanceof Error ? error.message : String(error || '');
+  const normalized = message.toLowerCase();
+  if (
+    !normalized.includes('already crossed') &&
+    !normalized.includes('already breached') &&
+    !normalized.includes('protection levels')
+  ) {
+    return null;
+  }
+  return {
+    reason: 'protection_rejected_breached',
+    message: `Mudrex protection needs immediate close: broker rejected SL/TP because ${message}.`,
+  };
+}
+
+async function closeMudrexPositionForBreachedProtection(input: {
+  positionsAdapter: MudrexProtectionPositionsAdapter | null | undefined;
+  positionId: string;
+  userId: string;
+  brokerKey: string;
+  accountId: string;
+  issue: MudrexProtectionAttachabilityIssue;
+}): Promise<{ closed: boolean; note: string }> {
+  if (!input.positionsAdapter?.closePosition) {
+    return {
+      closed: false,
+      note: `${input.issue.message} Mudrex close-position adapter is unavailable; position still needs urgent manual close.`,
+    };
+  }
+
+  try {
+    await input.positionsAdapter.closePosition(input.positionId, {
+      userId: input.userId,
+      brokerKey: input.brokerKey,
+      accountId: input.accountId,
+    });
+    return {
+      closed: true,
+      note: `${input.issue.message} Mudrex position was closed immediately because protection was already breached before SL/TP could attach.`,
+    };
+  } catch (error) {
+    return {
+      closed: false,
+      note: `${input.issue.message} Mudrex immediate close failed: ${
+        error instanceof Error ? error.message : String(error)
+      }.`,
+    };
+  }
+}
+
+function appendProtectionNote(existing: unknown, next: string): string {
+  const current = readStringValue(existing);
+  return current ? `${current} ${next}` : next;
 }
 
 export function normalizeMudrexLiveAutoOrderSizing(
@@ -471,7 +586,7 @@ export async function attachMudrexLiveAutoProtectionIfNeeded(
   }
 
   const positionsAdapter = input.positionsAdapter;
-  if (!positionsAdapter?.getPositions || !positionsAdapter?.createRiskOrder) {
+  if (!positionsAdapter?.getPositions) {
     return {
       attached: false,
       note: 'Mudrex order created, but the positions adapter is unavailable for automatic SL/TP attachment.',
@@ -529,21 +644,76 @@ export async function attachMudrexLiveAutoProtectionIfNeeded(
       input.requestedEntryPrice,
       input.requestedTakeProfitPrice
     );
-    await positionsAdapter.createRiskOrder(
-      positionId,
-      {
-        stoploss_price: stopLossPrice,
-        takeprofit_price: takeProfitPrice,
-        order_source: 'positions_desk',
-        is_stoploss: true,
-        is_takeprofit: true,
-      },
-      {
+    const attachabilityIssue = inspectMudrexProtectionAttachability(
+      input,
+      position,
+      stopLossPrice,
+      takeProfitPrice
+    );
+    if (attachabilityIssue && shouldCloseMudrexPositionForAttachabilityIssue(attachabilityIssue)) {
+      const closeResult = await closeMudrexPositionForBreachedProtection({
+        positionsAdapter,
+        positionId,
         userId: input.userId,
         brokerKey: input.brokerKey,
         accountId: input.accountId,
+        issue: attachabilityIssue,
+      });
+      return {
+        attached: false,
+        closedPosition: closeResult.closed,
+        note: closeResult.note,
+      };
+    }
+    if (attachabilityIssue) {
+      return {
+        attached: false,
+        note: attachabilityIssue.message,
+      };
+    }
+
+    if (!positionsAdapter.createRiskOrder) {
+      return {
+        attached: false,
+        note: 'Mudrex order created, but the positions adapter cannot create automatic SL/TP protection.',
+      };
+    }
+
+    try {
+      await positionsAdapter.createRiskOrder(
+        positionId,
+        {
+          stoploss_price: stopLossPrice,
+          takeprofit_price: takeProfitPrice,
+          order_source: 'positions_desk',
+          is_stoploss: true,
+          is_takeprofit: true,
+        },
+        {
+          userId: input.userId,
+          brokerKey: input.brokerKey,
+          accountId: input.accountId,
+        }
+      );
+    } catch (error) {
+      const brokerRejectIssue = buildMudrexProtectionBrokerRejectIssue(error);
+      if (brokerRejectIssue && shouldCloseMudrexPositionForAttachabilityIssue(brokerRejectIssue)) {
+        const closeResult = await closeMudrexPositionForBreachedProtection({
+          positionsAdapter,
+          positionId,
+          userId: input.userId,
+          brokerKey: input.brokerKey,
+          accountId: input.accountId,
+          issue: brokerRejectIssue,
+        });
+        return {
+          attached: false,
+          closedPosition: closeResult.closed,
+          note: closeResult.note,
+        };
       }
-    );
+      throw error;
+    }
 
     return {
       attached: true,
@@ -630,22 +800,6 @@ export async function remediateMudrexLiveProtection(
     );
   }
 
-  if (!input.protectionRepairEnabled) {
-    return input.markProtectionManualUnlinked(
-      input.execution,
-      input.nowIso,
-      'Mudrex automatic SL/TP protection repair is disabled by broker-specific control.'
-    );
-  }
-
-  if (!input.positionsAdapter?.createRiskOrder) {
-    return input.markProtectionFailed(
-      input.execution,
-      input.nowIso,
-      'Mudrex positions adapter is unavailable for protection remediation.'
-    );
-  }
-
   const positionId = resolveMudrexRiskOrderPositionId(input.position, positionPayload);
   const actualEntryPrice = input.resolvePositionEntryPrice(positionPayload, input.execution);
   if (!positionId || !(actualEntryPrice && actualEntryPrice > 0)) {
@@ -675,26 +829,117 @@ export async function remediateMudrexLiveProtection(
     stopLossPrice,
     takeProfitPrice
   );
+  const attachabilityIssue = inspectMudrexProtectionAttachability(
+    input.trade,
+    positionPayload,
+    stopLossPrice,
+    takeProfitPrice
+  );
+  if (attachabilityIssue && shouldCloseMudrexPositionForAttachabilityIssue(attachabilityIssue)) {
+    const closeResult = await closeMudrexPositionForBreachedProtection({
+      positionsAdapter: input.positionsAdapter,
+      positionId,
+      userId: input.userId,
+      brokerKey: input.brokerKey,
+      accountId: input.accountId,
+      issue: attachabilityIssue,
+    });
+    if (closeResult.closed) {
+      return {
+        ...input.execution,
+        executionState: 'closed',
+        positionStatus: 'CLOSED',
+        positionClosedAt: input.nowIso,
+        protectionState: 'not_required',
+        protectionCheckedAt: input.nowIso,
+        protectionAttachedAt: null,
+        protectionLastError: null,
+        protectionPlan: {
+          ...(input.execution.protectionPlan ?? {}),
+          positionId,
+          autoClosedAt: input.nowIso,
+          autoCloseReason: attachabilityIssue.reason,
+          stopLossPrice,
+          takeProfitPrice,
+        },
+        note: appendProtectionNote(input.execution.note, closeResult.note),
+      };
+    }
+    return input.markProtectionFailed(input.execution, input.nowIso, closeResult.note);
+  }
   if (attachabilityError) {
     return input.markProtectionManualUnlinked(input.execution, input.nowIso, attachabilityError);
   }
 
-  try {
-    await input.positionsAdapter.createRiskOrder(
-      positionId,
-      {
-        stoploss_price: stopLossPrice,
-        takeprofit_price: takeProfitPrice,
-        order_source: 'positions_desk',
-        is_stoploss: true,
-        is_takeprofit: true,
-      },
-      {
-        userId: input.userId,
-        brokerKey: input.brokerKey,
-        accountId: input.accountId,
-      }
+  if (!input.protectionRepairEnabled) {
+    return input.markProtectionManualUnlinked(
+      input.execution,
+      input.nowIso,
+      'Mudrex automatic SL/TP protection repair is disabled by broker-specific control.'
     );
+  }
+
+  if (!input.positionsAdapter?.createRiskOrder) {
+    return input.markProtectionFailed(
+      input.execution,
+      input.nowIso,
+      'Mudrex positions adapter is unavailable for protection remediation.'
+    );
+  }
+
+  try {
+    try {
+      await input.positionsAdapter.createRiskOrder(
+        positionId,
+        {
+          stoploss_price: stopLossPrice,
+          takeprofit_price: takeProfitPrice,
+          order_source: 'positions_desk',
+          is_stoploss: true,
+          is_takeprofit: true,
+        },
+        {
+          userId: input.userId,
+          brokerKey: input.brokerKey,
+          accountId: input.accountId,
+        }
+      );
+    } catch (error) {
+      const brokerRejectIssue = buildMudrexProtectionBrokerRejectIssue(error);
+      if (brokerRejectIssue && shouldCloseMudrexPositionForAttachabilityIssue(brokerRejectIssue)) {
+        const closeResult = await closeMudrexPositionForBreachedProtection({
+          positionsAdapter: input.positionsAdapter,
+          positionId,
+          userId: input.userId,
+          brokerKey: input.brokerKey,
+          accountId: input.accountId,
+          issue: brokerRejectIssue,
+        });
+        if (closeResult.closed) {
+          return {
+            ...input.execution,
+            executionState: 'closed',
+            positionStatus: 'CLOSED',
+            positionClosedAt: input.nowIso,
+            protectionState: 'not_required',
+            protectionCheckedAt: input.nowIso,
+            protectionAttachedAt: null,
+            protectionLastError: null,
+            protectionPlan: {
+              ...(input.execution.protectionPlan ?? {}),
+              positionId,
+              autoClosedAt: input.nowIso,
+              autoCloseReason: brokerRejectIssue.reason,
+              stopLossPrice,
+              takeProfitPrice,
+            },
+            note: appendProtectionNote(input.execution.note, closeResult.note),
+          };
+        }
+        return input.markProtectionFailed(input.execution, input.nowIso, closeResult.note);
+      }
+      throw error;
+    }
     return input.markProtectionAttached(
       input.trade,
       input.execution,

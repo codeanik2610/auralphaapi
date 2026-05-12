@@ -2039,6 +2039,10 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
     body: Record<string, unknown>;
     context?: Record<string, unknown>;
   }> = [];
+  const mudrexClosedPositions: Array<{
+    positionId: string;
+    context?: Record<string, unknown>;
+  }> = [];
 
   function buildPreTradeResult(body: Record<string, any>, checkId: string) {
     const brokerKey = String(body.routing?.brokerKey || '')
@@ -2546,6 +2550,10 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
           return {
             status: 'CREATED',
           };
+        },
+        async closePosition(positionId: string, context?: Record<string, unknown>) {
+          mudrexClosedPositions.push({ positionId, context });
+          return { success: true };
         },
       };
     },
@@ -3251,7 +3259,7 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       }
     );
 
-    assert.equal(protectionFailureResult.outcome, 'working', protectionFailureResult.message);
+    assert.equal(protectionFailureResult.outcome, 'placed', protectionFailureResult.message);
     assert.equal(protectionFailureResult.brokerKey, 'mudrex');
     assert.equal(protectionFailureResult.orderId, 'mudrex-live-order-risk-10');
     assert.deepEqual(protectionFailureRoutes, ['mudrex:acc-1']);
@@ -3260,23 +3268,19 @@ async function runSuggestedTradeAdaptiveRouteSelectionAssertions(): Promise<void
       .reverse()
       .find((execution) => Array.isArray(execution.routeAttempts));
     assert.equal(protectionFailureExecution?.orderId, 'mudrex-live-order-risk-10');
-    assert.equal(protectionFailureExecution?.executionState, 'working');
-    assert.equal(protectionFailureExecution?.protectionState, 'manual_unlinked');
-    assert.match(
-      String(protectionFailureExecution?.protectionLastError || ''),
-      /automatic SL\/TP attachment failed/
-    );
-    assert.match(String(protectionFailureExecution?.protectionLastError || ''), /already crossed/);
+    assert.equal(protectionFailureExecution?.executionState, 'closed');
+    assert.equal(protectionFailureExecution?.positionStatus, 'CLOSED');
+    assert.equal(protectionFailureExecution?.protectionState, 'not_required');
+    assert.equal(protectionFailureExecution?.protectionLastError, null);
+    assert.match(String(protectionFailureExecution?.note || ''), /closed immediately/);
+    assert.equal(mudrexClosedPositions.at(-1)?.positionId, 'mudrex-pos-st-live-auto-risk-10');
     const protectionFailureAttempts =
       (protectionFailureExecution?.routeAttempts as Array<Record<string, unknown>> | undefined) ??
       [];
     assert.equal(protectionFailureAttempts.length, 1);
-    assert.equal(protectionFailureAttempts[0]?.status, 'manual_review');
-    assert.equal(
-      protectionFailureAttempts[0]?.failureClassification,
-      'order_created_protection_unresolved'
-    );
-    assert.match(String(protectionFailureAttempts[0]?.failureMessage || ''), /already crossed/);
+    assert.equal(protectionFailureAttempts[0]?.status, 'placed');
+    assert.equal(protectionFailureAttempts[0]?.failureClassification, undefined);
+    assert.equal(protectionFailureAttempts[0]?.failureMessage, undefined);
     mudrexRiskOrderFailureMessage = null;
   } finally {
     env.suggestedTrades.rolloutEnabled = originalRolloutEnabled;
@@ -5233,6 +5237,49 @@ async function runSuggestedTradeBrokerLiveAutoProtectionAttachHandlerAssertions(
   assert.equal(classBackedAdapter.positionCalls.length, 1);
   assert.equal(classBackedAdapter.riskOrderCalls.length, 1);
   assert.equal(classBackedAdapter.riskOrderCalls[0]?.positionId, 'class-backed-position-1');
+
+  const closedPositions: Array<{ positionId: string; context?: Record<string, unknown> }> = [];
+  const crossedTargetResult = await attachMudrexLiveAutoProtectionIfNeeded({
+    userId: 'user-1',
+    brokerKey: 'mudrex',
+    accountId: 'acc-1',
+    brokerSymbol: 'JSTUSDT',
+    side: 'buy',
+    orderId: 'mudrex-live-order-crossed-target',
+    requestedEntryPrice: 0.08836,
+    requestedStopLossPrice: 0.08831,
+    requestedTakeProfitPrice: 0.08859,
+    waitForPoll: async () => undefined,
+    positionsAdapter: {
+      async getPositions() {
+        return [
+          {
+            id: 'mudrex-live-position-crossed-target',
+            symbol: 'JSTUSDT',
+            side: 'Long',
+            status: 'open',
+            entry_price: '0.08836',
+            current_price: '0.08871',
+            updated_at: '2026-05-12T04:18:51.000Z',
+          },
+        ];
+      },
+      async createRiskOrder() {
+        throw new Error('risk order must not be created after target is crossed');
+      },
+      async closePosition(positionId, context) {
+        closedPositions.push({ positionId, context });
+        return { success: true };
+      },
+    },
+  });
+
+  assert.equal(crossedTargetResult.attached, false);
+  assert.equal(crossedTargetResult.closedPosition, true);
+  assert.match(String(crossedTargetResult.note || ''), /take-profit 0.088590 is already crossed/);
+  assert.equal(closedPositions.length, 1);
+  assert.equal(closedPositions[0]?.positionId, 'mudrex-live-position-crossed-target');
+  assert.equal(closedPositions[0]?.context?.accountId, 'acc-1');
 }
 
 async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promise<void> {
@@ -5316,6 +5363,77 @@ async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promi
     assert.equal(riskOrders[0]?.context?.brokerKey, 'mudrex');
     assert.equal(nextExecution.protectionState, 'attached');
     assert.equal(nextExecution.protectionAttempts, 1);
+  }
+
+  {
+    const closedPositions: Array<{ positionId: string; context?: Record<string, unknown> }> = [];
+
+    const nextExecution = await remediateMudrexLiveProtection({
+      userId: 'user-1',
+      trade: {
+        symbol: 'JSTUSDT',
+        side: 'BUY',
+        timeframe: '5m',
+      },
+      execution: {
+        orderId: 'mudrex-order-crossed-target',
+        entryPrice: '0.08836',
+        protectionAttempts: 1,
+        protectionState: 'attaching',
+      } as any,
+      position: {
+        externalId: 'mudrex-snapshot-crossed-target',
+        payload: {
+          id: 'mudrex-native-position-crossed-target',
+          side: 'Long',
+          entry_price: '0.08836',
+          current_price: '0.08871',
+        },
+      },
+      prices: {
+        requestedEntryPrice: 0.08836,
+        stopLossPrice: 0.08831,
+        takeProfitPrice: 0.08859,
+      },
+      nowIso: '2026-05-12T04:18:51.000Z',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+      positionsAdapter: {
+        async createRiskOrder() {
+          throw new Error('risk order must not be created after target is crossed');
+        },
+        async closePosition(positionId: string, context?: Record<string, unknown>) {
+          closedPositions.push({ positionId, context });
+          return { success: true };
+        },
+      },
+      protectionRepairEnabled: true,
+      resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
+      deriveScaledProtectionPrice: (
+        _actualEntryPrice,
+        _requestedEntryPrice,
+        requestedTargetPrice
+      ) => String(requestedTargetPrice),
+      formatNumericString: (value) =>
+        value === null || value === undefined ? null : String(value),
+      markProtectionAttached: () => {
+        throw new Error('Mudrex handler should close instead of attaching after target is crossed');
+      },
+      markProtectionManualUnlinked: () => {
+        throw new Error('Mudrex handler should close instead of marking manual');
+      },
+      markProtectionFailed: () => {
+        throw new Error('Mudrex handler should not fail when immediate close succeeds');
+      },
+    });
+
+    assert.equal(nextExecution.executionState, 'closed');
+    assert.equal(nextExecution.positionStatus, 'CLOSED');
+    assert.equal(nextExecution.protectionState, 'not_required');
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.match(String(nextExecution.note || ''), /closed immediately/);
+    assert.equal(closedPositions.length, 1);
+    assert.equal(closedPositions[0]?.positionId, 'mudrex-native-position-crossed-target');
   }
 
   {
@@ -5883,8 +6001,11 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
     );
 
     assert.equal(riskOrderCalled, false);
-    assert.equal(nextExecution.protectionState, 'manual_unlinked');
-    assert.match(String(nextExecution.protectionLastError || ''), /manual action/);
+    assert.equal(nextExecution.protectionState, 'failed');
+    assert.match(
+      String(nextExecution.protectionLastError || ''),
+      /close-position adapter is unavailable/
+    );
   }
 
   {
@@ -6357,11 +6478,16 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
 
   {
     const service = new SuggestedTradesService() as any;
+    const closedPositions: string[] = [];
     service.brokerRuntimeRegistry = {
       getPositionsAdapter() {
         return {
           async createRiskOrder() {
             throw new Error('breached SL must not create Mudrex protection');
+          },
+          async closePosition(positionId: string) {
+            closedPositions.push(positionId);
+            return { success: true };
           },
         };
       },
@@ -6424,8 +6550,13 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
       ]
     );
 
-    assert.equal(nextExecution.protectionState, 'manual_unlinked');
-    assert.match(String(nextExecution.protectionLastError || ''), /already breached/);
+    assert.equal(nextExecution.executionState, 'closed');
+    assert.equal(nextExecution.positionStatus, 'CLOSED');
+    assert.equal(nextExecution.protectionState, 'not_required');
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.match(String(nextExecution.note || ''), /already breached/);
+    assert.match(String(nextExecution.note || ''), /closed immediately/);
+    assert.deepEqual(closedPositions, ['mudrex-native-position-current-open-breached']);
 
     const persisted = service.toExecutionPersistencePayload(
       {
@@ -6473,11 +6604,16 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
 
   {
     const service = new SuggestedTradesService() as any;
+    const closedPositions: string[] = [];
     service.brokerRuntimeRegistry = {
       getPositionsAdapter() {
         return {
           async createRiskOrder() {
             throw new Error('exhausted breached Mudrex protection must not retry broker order');
+          },
+          async closePosition(positionId: string) {
+            closedPositions.push(positionId);
+            return { success: true };
           },
         };
       },
@@ -6540,8 +6676,13 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
       ]
     );
 
-    assert.equal(nextExecution.protectionState, 'manual_unlinked');
-    assert.match(String(nextExecution.protectionLastError || ''), /already breached/);
+    assert.equal(nextExecution.executionState, 'closed');
+    assert.equal(nextExecution.positionStatus, 'CLOSED');
+    assert.equal(nextExecution.protectionState, 'not_required');
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.match(String(nextExecution.note || ''), /already breached/);
+    assert.match(String(nextExecution.note || ''), /closed immediately/);
+    assert.deepEqual(closedPositions, ['mudrex-native-position-failed-breached']);
   }
 
   {
