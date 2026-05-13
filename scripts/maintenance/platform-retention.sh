@@ -27,13 +27,21 @@ POSTGRES_INDEX_MAX_ATTEMPTS=5
 POSTGRES_INDEX_RETRY_SECONDS=15
 DISK_PRESSURE_THRESHOLD_PERCENT=90
 MYSQL_TEMP_RECLAIM_THRESHOLD_GB=4
+SYSTEM_JOURNAL_VACUUM_SIZE="200M"
+TMP_CLEANUP_PATH="/tmp"
+TMP_CLEANUP_MIN_AGE_DAYS=1
 RUN_DOCKER_PRUNE=true
+RUN_DOCKER_BUILDER_PRUNE=true
+RUN_DOCKER_IMAGE_PRUNE=true
+RUN_DOCKER_VOLUME_PRUNE=true
 RUN_DB_VACUUM=true
 EXACT_CANDLE_COUNT=false
 RUN_POSTGRES_CANDLES=true
 RUN_MYSQL_SCHEDULER_RUN_LOGS=true
 RUN_MYSQL_BINLOG_PURGE=true
 RUN_MYSQL_TEMP_RECLAIM=true
+RUN_SYSTEM_JOURNAL_VACUUM=true
+RUN_TMP_CLEANUP=true
 CREATE_POSTGRES_CANDLE_RETENTION_INDEX=true
 DOCKER_BUILDER_PRUNE_RAN=false
 DOCKER_IMAGE_PRUNE_RAN=false
@@ -54,12 +62,15 @@ Purpose:
   - Docker build cache: prune old build cache.
   - Docker images: prune old unused images only, never the images backing running containers or volumes.
   - Docker local volumes: report attached volume footprint and prune unused local volumes only.
+  - Phase 1 safe cleanup: Docker build cache, system journal vacuum, and old temp files.
 
 Safety:
   --dry-run is the default and never deletes data.
   --apply requires AURALPHA_RETENTION_CONFIRM=delete.
+  --phase1-safe-cleanup-only skips database retention, image pruning, and volume pruning.
 
 Options:
+  --phase1-safe-cleanup-only          Only run Docker build cache, journal, and temp cleanup.
   --candle-retention-days DAYS       Default: 90
   --scheduler-run-keep-runs COUNT    Default: 5
   --postgres-container NAME          Default: auralpha-postgres-1
@@ -77,9 +88,17 @@ Options:
   --postgres-index-retry-seconds N    Default: 15
   --disk-pressure-threshold-percent N Default: 90
   --mysql-temp-reclaim-threshold-gb N Default: 4
+  --system-journal-vacuum-size SIZE   Default: 200M
+  --tmp-cleanup-path PATH             Default: /tmp, must be /tmp or under /tmp
+  --tmp-cleanup-min-age-days DAYS     Default: 1
   --skip-docker-prune                Do not prune Docker build cache, unused images, or unused volumes in --apply.
+  --skip-docker-builder-prune         Do not prune Docker build cache in --apply.
+  --skip-docker-image-prune           Do not prune old unused Docker images in --apply.
+  --skip-docker-volume-prune          Do not prune unused Docker volumes in --apply.
   --skip-mysql-binlog-purge          Do not purge MySQL binary logs in --apply.
   --skip-mysql-temp-reclaim          Do not restart MySQL to reclaim #innodb_temp.
+  --skip-system-journal-vacuum        Do not vacuum system journal logs in --apply.
+  --skip-tmp-cleanup                  Do not remove old files under the temp cleanup path.
   --skip-vacuum                      Do not run VACUUM ANALYZE after Postgres deletes.
   --skip-postgres-candles            Do not delete Postgres candle rows in --apply.
   --skip-mysql-scheduler-run-logs    Do not delete MySQL scheduler run logs in --apply.
@@ -138,6 +157,15 @@ function parse_args() {
         ;;
       --apply)
         MODE="apply"
+        shift
+        ;;
+      --phase1-safe-cleanup-only)
+        RUN_POSTGRES_CANDLES=false
+        RUN_MYSQL_SCHEDULER_RUN_LOGS=false
+        RUN_MYSQL_BINLOG_PURGE=false
+        RUN_MYSQL_TEMP_RECLAIM=false
+        RUN_DOCKER_IMAGE_PRUNE=false
+        RUN_DOCKER_VOLUME_PRUNE=false
         shift
         ;;
       --candle-retention-days)
@@ -208,8 +236,35 @@ function parse_args() {
         MYSQL_TEMP_RECLAIM_THRESHOLD_GB="${2:-}"
         shift 2
         ;;
+      --system-journal-vacuum-size)
+        SYSTEM_JOURNAL_VACUUM_SIZE="${2:-}"
+        shift 2
+        ;;
+      --tmp-cleanup-path)
+        TMP_CLEANUP_PATH="${2:-}"
+        shift 2
+        ;;
+      --tmp-cleanup-min-age-days)
+        TMP_CLEANUP_MIN_AGE_DAYS="${2:-}"
+        shift 2
+        ;;
       --skip-docker-prune)
         RUN_DOCKER_PRUNE=false
+        RUN_DOCKER_BUILDER_PRUNE=false
+        RUN_DOCKER_IMAGE_PRUNE=false
+        RUN_DOCKER_VOLUME_PRUNE=false
+        shift
+        ;;
+      --skip-docker-builder-prune)
+        RUN_DOCKER_BUILDER_PRUNE=false
+        shift
+        ;;
+      --skip-docker-image-prune)
+        RUN_DOCKER_IMAGE_PRUNE=false
+        shift
+        ;;
+      --skip-docker-volume-prune)
+        RUN_DOCKER_VOLUME_PRUNE=false
         shift
         ;;
       --skip-mysql-binlog-purge)
@@ -218,6 +273,14 @@ function parse_args() {
         ;;
       --skip-mysql-temp-reclaim)
         RUN_MYSQL_TEMP_RECLAIM=false
+        shift
+        ;;
+      --skip-system-journal-vacuum)
+        RUN_SYSTEM_JOURNAL_VACUUM=false
+        shift
+        ;;
+      --skip-tmp-cleanup)
+        RUN_TMP_CLEANUP=false
         shift
         ;;
       --skip-vacuum)
@@ -262,6 +325,7 @@ function validate_inputs() {
   require_uint "POSTGRES_INDEX_RETRY_SECONDS" "${POSTGRES_INDEX_RETRY_SECONDS}"
   require_uint "DISK_PRESSURE_THRESHOLD_PERCENT" "${DISK_PRESSURE_THRESHOLD_PERCENT}"
   require_uint "MYSQL_TEMP_RECLAIM_THRESHOLD_GB" "${MYSQL_TEMP_RECLAIM_THRESHOLD_GB}"
+  require_uint "TMP_CLEANUP_MIN_AGE_DAYS" "${TMP_CLEANUP_MIN_AGE_DAYS}"
   require_safe_container_name "POSTGRES_CONTAINER" "${POSTGRES_CONTAINER}"
   require_safe_container_name "MYSQL_CONTAINER" "${MYSQL_CONTAINER}"
   require_safe_identifier "POSTGRES_DB" "${POSTGRES_DB}"
@@ -271,6 +335,18 @@ function validate_inputs() {
   if [[ "${DISK_PRESSURE_THRESHOLD_PERCENT}" -gt 100 ]]; then
     fail "DISK_PRESSURE_THRESHOLD_PERCENT must be between 1 and 100. Got: ${DISK_PRESSURE_THRESHOLD_PERCENT}"
   fi
+
+  if [[ ! "${SYSTEM_JOURNAL_VACUUM_SIZE}" =~ ^[1-9][0-9]*[KMG]?$ ]]; then
+    fail "SYSTEM_JOURNAL_VACUUM_SIZE must look like 200M, 1G, or 524288000. Got: ${SYSTEM_JOURNAL_VACUUM_SIZE}"
+  fi
+
+  case "${TMP_CLEANUP_PATH}" in
+    /tmp|/tmp/*)
+      ;;
+    *)
+      fail "TMP_CLEANUP_PATH must be /tmp or under /tmp. Got: ${TMP_CLEANUP_PATH}"
+      ;;
+  esac
 
   if [[ "${MODE}" == "apply" && "${AURALPHA_RETENTION_CONFIRM:-}" != "delete" ]]; then
     fail "--apply requires AURALPHA_RETENTION_CONFIRM=delete"
@@ -314,6 +390,38 @@ function print_disk_snapshot() {
 
 function print_docker_snapshot() {
   docker system df
+}
+
+function print_system_journal_report() {
+  if ! command -v journalctl >/dev/null 2>&1; then
+    echo "system_journal	skipped_journalctl_missing"
+    return
+  fi
+
+  journalctl --disk-usage || true
+}
+
+function get_tmp_cleanup_min_age_minutes() {
+  echo $((TMP_CLEANUP_MIN_AGE_DAYS * 24 * 60))
+}
+
+function print_tmp_cleanup_report() {
+  local min_age_minutes candidate_count
+  min_age_minutes="$(get_tmp_cleanup_min_age_minutes)"
+
+  echo "tmp_cleanup_path	${TMP_CLEANUP_PATH}"
+  echo "tmp_cleanup_min_age_days	${TMP_CLEANUP_MIN_AGE_DAYS}"
+  echo "tmp_cleanup_min_age_minutes	${min_age_minutes}"
+
+  if [[ ! -d "${TMP_CLEANUP_PATH}" ]]; then
+    echo "tmp_cleanup_path_size	0B"
+    echo "tmp_cleanup_candidate_count	0"
+    return
+  fi
+
+  du -sh "${TMP_CLEANUP_PATH}" 2>/dev/null | awk 'NR == 1 { print "tmp_cleanup_path_size\t" $1 }'
+  candidate_count="$(find "${TMP_CLEANUP_PATH}" -xdev -mindepth 1 -ignore_readdir_race -mmin +"${min_age_minutes}" -print 2>/dev/null | wc -l | awk '{ print $1 }')"
+  echo "tmp_cleanup_candidate_count	${candidate_count:-0}"
 }
 
 function get_docker_volume_root() {
@@ -736,7 +844,7 @@ PURGE BINARY LOGS BEFORE DATE_SUB(NOW(), INTERVAL ${MYSQL_BINLOG_RETENTION_HOURS
 }
 
 function apply_docker_builder_prune() {
-  if [[ "${RUN_DOCKER_PRUNE}" != "true" ]]; then
+  if [[ "${RUN_DOCKER_PRUNE}" != "true" || "${RUN_DOCKER_BUILDER_PRUNE}" != "true" ]]; then
     echo "docker_builder_prune	skipped"
     return
   fi
@@ -755,7 +863,7 @@ function apply_docker_builder_prune() {
 }
 
 function apply_docker_image_prune() {
-  if [[ "${RUN_DOCKER_PRUNE}" != "true" ]]; then
+  if [[ "${RUN_DOCKER_PRUNE}" != "true" || "${RUN_DOCKER_IMAGE_PRUNE}" != "true" ]]; then
     echo "docker_image_prune	skipped"
     return
   fi
@@ -774,7 +882,7 @@ function apply_docker_image_prune() {
 }
 
 function apply_docker_volume_prune() {
-  if [[ "${RUN_DOCKER_PRUNE}" != "true" ]]; then
+  if [[ "${RUN_DOCKER_PRUNE}" != "true" || "${RUN_DOCKER_VOLUME_PRUNE}" != "true" ]]; then
     echo "docker_volume_prune	skipped"
     return
   fi
@@ -830,6 +938,47 @@ function apply_mysql_temp_reclaim() {
   echo "mysql_temp_reclaim_after_gb	${after_gb}"
 }
 
+function apply_system_journal_vacuum() {
+  if [[ "${RUN_SYSTEM_JOURNAL_VACUUM}" != "true" ]]; then
+    echo "system_journal_vacuum	skipped"
+    return
+  fi
+
+  if ! command -v journalctl >/dev/null 2>&1; then
+    echo "system_journal_vacuum	skipped_journalctl_missing"
+    return
+  fi
+
+  journalctl --vacuum-size="${SYSTEM_JOURNAL_VACUUM_SIZE}" || {
+    echo "system_journal_vacuum	failed"
+    return
+  }
+  echo "system_journal_vacuum	size_${SYSTEM_JOURNAL_VACUUM_SIZE}"
+}
+
+function apply_tmp_cleanup() {
+  local min_age_minutes
+
+  if [[ "${RUN_TMP_CLEANUP}" != "true" ]]; then
+    echo "tmp_cleanup	skipped"
+    return
+  fi
+
+  if [[ ! -d "${TMP_CLEANUP_PATH}" ]]; then
+    echo "tmp_cleanup	skipped_path_missing"
+    return
+  fi
+
+  min_age_minutes="$(get_tmp_cleanup_min_age_minutes)"
+  find "${TMP_CLEANUP_PATH}" \
+    -xdev \
+    -mindepth 1 \
+    -ignore_readdir_race \
+    -mmin +"${min_age_minutes}" \
+    -exec rm -rf -- {} + 2>/dev/null || true
+  echo "tmp_cleanup	older_than_${TMP_CLEANUP_MIN_AGE_DAYS}_days"
+}
+
 function main() {
   parse_args "$@"
   validate_inputs
@@ -853,11 +1002,19 @@ postgres_index_max_attempts	${POSTGRES_INDEX_MAX_ATTEMPTS}
 postgres_index_retry_seconds	${POSTGRES_INDEX_RETRY_SECONDS}
 disk_pressure_threshold_percent	${DISK_PRESSURE_THRESHOLD_PERCENT}
 mysql_temp_reclaim_threshold_gb	${MYSQL_TEMP_RECLAIM_THRESHOLD_GB}
+system_journal_vacuum_size	${SYSTEM_JOURNAL_VACUUM_SIZE}
+tmp_cleanup_path	${TMP_CLEANUP_PATH}
+tmp_cleanup_min_age_days	${TMP_CLEANUP_MIN_AGE_DAYS}
 run_postgres_candles	${RUN_POSTGRES_CANDLES}
 run_mysql_scheduler_run_logs	${RUN_MYSQL_SCHEDULER_RUN_LOGS}
 run_mysql_binlog_purge	${RUN_MYSQL_BINLOG_PURGE}
 run_mysql_temp_reclaim	${RUN_MYSQL_TEMP_RECLAIM}
 run_docker_prune	${RUN_DOCKER_PRUNE}
+run_docker_builder_prune	${RUN_DOCKER_BUILDER_PRUNE}
+run_docker_image_prune	${RUN_DOCKER_IMAGE_PRUNE}
+run_docker_volume_prune	${RUN_DOCKER_VOLUME_PRUNE}
+run_system_journal_vacuum	${RUN_SYSTEM_JOURNAL_VACUUM}
+run_tmp_cleanup	${RUN_TMP_CLEANUP}
 EOF
 
   section "Disk Before"
@@ -872,9 +1029,15 @@ EOF
   section "Disk Pressure Report Before Cleanup"
   print_disk_pressure_report
 
+  section "Phase 1 Safe Cleanup Report Before"
+  print_system_journal_report
+  print_tmp_cleanup_report
+
   if [[ "${MODE}" == "apply" ]]; then
     section "Applying Early Disk Pressure Cleanup"
     apply_docker_builder_prune
+    apply_system_journal_vacuum
+    apply_tmp_cleanup
     apply_docker_image_prune
     apply_docker_volume_prune
     apply_mysql_temp_reclaim
@@ -884,6 +1047,10 @@ EOF
 
     section "Disk Pressure Report After Early Cleanup"
     print_disk_pressure_report
+
+    section "Phase 1 Safe Cleanup Report After"
+    print_system_journal_report
+    print_tmp_cleanup_report
   fi
 
   section "Postgres market_candles_1m Retention Report"
