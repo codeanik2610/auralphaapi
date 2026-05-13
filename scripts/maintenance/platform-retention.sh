@@ -12,7 +12,7 @@ fi
 MODE="dry-run"
 CANDLE_RETENTION_DAYS=90
 SCHEDULER_RUN_KEEP_RUNS=5
-MYSQL_APP_DATA_RETENTION_HOURS=2
+MYSQL_APP_DATA_RETENTION_HOURS=1
 MYSQL_APP_DATA_RETENTION_ONLY=false
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-auralpha-postgres-1}"
 MYSQL_CONTAINER="${MYSQL_CONTAINER:-auralpha-mysql-1}"
@@ -60,7 +60,7 @@ Purpose:
   - Postgres market_candles_1m: keep last 90 days by open_time.
   - MySQL scheduler_run_logs: keep latest 5 finished runs per scheduler/user scope.
     Related exchange_asset_update_logs and scheduler_health_check_results cascade from those runs.
-  - MySQL app operational data: keep the last 2 hours of email, activity, and alert rows.
+  - MySQL app operational data: keep the last configured hour window of email, activity, and alert rows.
   - MySQL binary logs: purge logs older than the configured short local window.
   - MySQL InnoDB temp space: restart MySQL under disk pressure to reclaim #innodb_temp.
   - Docker build cache: prune old build cache.
@@ -78,7 +78,7 @@ Options:
   --mysql-app-data-retention-only     Only run MySQL email/activity/alert retention.
   --candle-retention-days DAYS       Default: 90
   --scheduler-run-keep-runs COUNT    Default: 5
-  --mysql-app-data-retention-hours N  Default: 2
+  --mysql-app-data-retention-hours N  Default: 1
   --postgres-container NAME          Default: auralpha-postgres-1
   --mysql-container NAME             Default: auralpha-mysql-1
   --postgres-db NAME                 Default: auralpha

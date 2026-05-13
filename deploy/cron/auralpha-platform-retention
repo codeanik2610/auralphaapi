@@ -6,8 +6,8 @@ MAILTO=""
 # (Docker build cache, journal vacuum, old /tmp files) plus unused-image
 # and unused-volume cleanup.
 # Uses flock so a long cleanup cannot overlap the next run.
-0 * * * * root cd /opt/auralpha/Backend/aurAlpha && /usr/bin/flock -n /var/lock/auralpha-platform-retention.lock bash -lc 'AURALPHA_RETENTION_CONFIRM=delete ./scripts/maintenance/platform-retention.sh --apply --mysql-app-data-retention-hours 2' >> /var/log/auralpha-platform-retention.log 2>&1
+0 * * * * root cd /opt/auralpha/Backend/aurAlpha && /usr/bin/flock -n /var/lock/auralpha-platform-retention.lock bash -lc 'AURALPHA_RETENTION_CONFIRM=delete ./scripts/maintenance/platform-retention.sh --apply --mysql-app-data-retention-hours 1' >> /var/log/auralpha-platform-retention.log 2>&1
 
-# Keep MySQL email, activity, and alert data to a 2-hour operational window
+# Keep MySQL email, activity, and alert data to a 1-hour operational window
 # between full retention runs without touching candles or Docker.
-5,20,35,50 * * * * root cd /opt/auralpha/Backend/aurAlpha && /usr/bin/flock -n /var/lock/auralpha-platform-retention.lock bash -lc 'AURALPHA_RETENTION_CONFIRM=delete ./scripts/maintenance/platform-retention.sh --apply --mysql-app-data-retention-only --mysql-app-data-retention-hours 2' >> /var/log/auralpha-platform-retention.log 2>&1
+5,20,35,50 * * * * root cd /opt/auralpha/Backend/aurAlpha && /usr/bin/flock -n /var/lock/auralpha-platform-retention.lock bash -lc 'AURALPHA_RETENTION_CONFIRM=delete ./scripts/maintenance/platform-retention.sh --apply --mysql-app-data-retention-only --mysql-app-data-retention-hours 1' >> /var/log/auralpha-platform-retention.log 2>&1
