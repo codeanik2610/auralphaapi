@@ -8558,7 +8558,15 @@ export class SuggestedTradesService {
       lastAppliedWhenProfitR,
     });
     if (move.action !== 'move') {
-      return execution;
+      return this.clearTrailingStopErrorWhenNoMoveNeeded(
+        execution,
+        config,
+        new Date().toISOString(),
+        move.reason,
+        move.profitR,
+        currentPrice,
+        currentStopLossPrice
+      );
     }
 
     if (!this.isTrailingStopMoveSafeAgainstCurrentPrice(move, currentPrice)) {
@@ -8945,6 +8953,46 @@ export class SuggestedTradesService {
         },
       },
       note: this.appendExecutionNote(execution.note, message),
+    };
+  }
+
+  private clearTrailingStopErrorWhenNoMoveNeeded(
+    execution: SuggestedTradeExecutionLink,
+    config: CustomRLadderTrailingStopConfig,
+    nowIso: string,
+    reason: string,
+    profitR: number | null | undefined,
+    currentPrice: number,
+    currentStopLossPrice: number | null
+  ): SuggestedTradeExecutionLink {
+    const priorError = String(execution.protectionLastError || '').trim();
+    if (
+      !priorError.toLowerCase().startsWith('trailing sl update failed') ||
+      !['already_applied', 'would_move_backward', 'no_rule_crossed'].includes(reason)
+    ) {
+      return execution;
+    }
+
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
+    return {
+      ...execution,
+      protectionCheckedAt: nowIso,
+      protectionLastError: null,
+      protectionPlan: {
+        ...plan,
+        trailingStop: {
+          ...config,
+          ...existingTrailing,
+          lastCheckedAt: nowIso,
+          lastCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
+          lastStopLossPrice:
+            this.formatNumericString(currentStopLossPrice) ?? currentStopLossPrice ?? null,
+          lastProfitR: typeof profitR === 'number' ? Number(profitR.toFixed(6)) : null,
+          lastNoopReason: reason,
+          lastError: null,
+        },
+      },
     };
   }
 

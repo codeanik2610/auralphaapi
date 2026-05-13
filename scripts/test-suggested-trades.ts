@@ -9401,6 +9401,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'pre_trade_check',
     'resolveTrailingRiskOrderPositionId',
     'resolveTrailingRiskOrderIds',
+    'clearTrailingStopErrorWhenNoMoveNeeded',
     'positionsAdapter.updateRiskOrder',
     'resolveMudrexRiskOrderPositionId(position, positionPayload)',
   ]) {
