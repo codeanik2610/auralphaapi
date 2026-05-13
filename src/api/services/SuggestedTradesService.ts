@@ -8050,6 +8050,15 @@ export class SuggestedTradesService {
     const activeOrderStatus = this.isActiveLimitEntryOrderStatus(orderStatus);
     const partialFillEvidence =
       orderStatus === 'PARTIALLY_FILLED' || this.hasPositiveFilledQuantity(execution);
+    const remainingQuantity = this.readNumberValue(execution.remainingQuantity);
+    if (
+      partialFillEvidence &&
+      remainingQuantity !== null &&
+      remainingQuantity <= 0 &&
+      execution.canceledAt
+    ) {
+      return execution;
+    }
     const terminalOrderStatus = Boolean(
       orderStatus &&
       ['FILLED', 'CLOSED', 'CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(orderStatus)

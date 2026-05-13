@@ -5064,8 +5064,59 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     /Partially filled limit entry order exceeded 15m for 5m/
   );
 
+  const firstPartialFillPayload: Record<string, unknown> = {
+    ...((savedExecutionPayload as Record<string, unknown> | null) ?? {}),
+  };
+  const partialFillExecution: Record<string, unknown> = {
+    ...firstPartialFillPayload,
+    orderStatus: 'PARTIALLY_FILLED',
+    remainingQuantity: 0,
+    canceledAt: '2026-04-04T10:20:00.000Z',
+  };
   savedExecutionPayload = null;
   cancelledOrders.length = 0;
+  const clearedPartialFillRemainderTrade = {
+    ...partialFillRemainderTrade,
+    id: 'st-limit-expiry-partial-fill-remainder-cleared',
+    dedupeKey: 'dedupe-limit-expiry-partial-fill-remainder-cleared',
+    executionRecord: null,
+    meta: {
+      execution: partialFillExecution,
+    },
+  };
+  const partialFillRepository = service.suggestedTradeRepository;
+  service.suggestedTradeRepository = {
+    ...partialFillRepository,
+    async getLinkedOrderSnapshot() {
+      return {
+        orderStatus: 'PARTIAL_FILLED',
+        statusRank: 2,
+        lastSeenAt: '2026-04-04T10:30:00.000Z',
+        payload: {
+          created_at: '2026-04-04T10:01:00.000Z',
+          updated_at: '2026-04-04T10:30:00.000Z',
+          filled_quantity: 300,
+          remaining_quantity: 0,
+        },
+      };
+    },
+  };
+
+  const refreshedClearedPartialFillRemainderTrade = await service.refreshExecutionOutcomes(
+    'user-1',
+    [clearedPartialFillRemainderTrade]
+  );
+
+  assert.ok([0, 1].includes(refreshedClearedPartialFillRemainderTrade));
+  assert.deepEqual(cancelledOrders, []);
+  const clearedPayload = savedExecutionPayload ?? partialFillExecution;
+  assert.equal(clearedPayload['remainingQuantity'], 0);
+  assert.equal(clearedPayload['canceledAt'], '2026-04-04T10:20:00.000Z');
+  assert.equal(
+    (String(clearedPayload['note'] || '').match(/Partially filled limit entry order exceeded/g) ||
+      []).length,
+    1
+  );
 
   const terminalCancelTrade = {
     ...staleClosedPositionTrade,
