@@ -5096,7 +5096,7 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
           created_at: '2026-04-04T10:01:00.000Z',
           updated_at: '2026-04-04T10:30:00.000Z',
           filled_quantity: 300,
-          remaining_quantity: 0,
+          remaining_quantity: 2937,
         },
       };
     },

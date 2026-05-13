@@ -8050,13 +8050,7 @@ export class SuggestedTradesService {
     const activeOrderStatus = this.isActiveLimitEntryOrderStatus(orderStatus);
     const partialFillEvidence =
       orderStatus === 'PARTIALLY_FILLED' || this.hasPositiveFilledQuantity(execution);
-    const remainingQuantity = this.readNumberValue(execution.remainingQuantity);
-    if (
-      partialFillEvidence &&
-      remainingQuantity !== null &&
-      remainingQuantity <= 0 &&
-      execution.canceledAt
-    ) {
+    if (this.isClearedPartialFillEntryRemainder(execution)) {
       return execution;
     }
     const terminalOrderStatus = Boolean(
@@ -8210,6 +8204,25 @@ export class SuggestedTradesService {
 
   private isActiveLimitEntryOrderStatus(status: string | null): boolean {
     return Boolean(status && ['OPEN', 'PENDING', 'PARTIALLY_FILLED'].includes(status));
+  }
+
+  private isClearedPartialFillEntryRemainder(
+    execution: SuggestedTradeExecutionLink | null | undefined
+  ): boolean {
+    if (!execution) {
+      return false;
+    }
+
+    const orderStatus = this.normalizeOrderStatus(execution.orderStatus);
+    const partialFillEvidence =
+      orderStatus === 'PARTIALLY_FILLED' || this.hasPositiveFilledQuantity(execution);
+    const remainingQuantity = this.readNumberValue(execution.remainingQuantity);
+    return Boolean(
+      partialFillEvidence &&
+        remainingQuantity !== null &&
+        remainingQuantity <= 0 &&
+        execution.canceledAt
+    );
   }
 
   private isActiveUnfilledLiveEntryOrder(execution: SuggestedTradeExecutionLink): boolean {
@@ -10231,11 +10244,14 @@ export class SuggestedTradesService {
       this.readNumberValue(payload.filledQuantity) ??
       existing?.filledQuantity ??
       null;
-    const remainingQuantity =
+    const existingClearedPartialFillRemainder = this.isClearedPartialFillEntryRemainder(existing);
+    const snapshotRemainingQuantity =
       this.readNumberValue(payload.remaining_quantity) ??
-      this.readNumberValue(payload.remainingQuantity) ??
-      existing?.remainingQuantity ??
-      null;
+      this.readNumberValue(payload.remainingQuantity);
+    const remainingQuantity =
+      existingClearedPartialFillRemainder && this.isActiveLimitEntryOrderStatus(normalizedStatus)
+        ? (existing?.remainingQuantity ?? 0)
+        : (snapshotRemainingQuantity ?? existing?.remainingQuantity ?? null);
     const updatedAt =
       this.toIsoString(payload.updated_at) ?? this.toIsoString(payload.updatedAt) ?? null;
     const deltaClosedFilledOrder = this.isDeltaClosedFilledOrder(
@@ -10266,7 +10282,9 @@ export class SuggestedTradesService {
       ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(normalizedStatus)
     );
     const executionState =
-      deltaClosedFilledOrder || terminalOrderWithPartialFill
+      existingClearedPartialFillRemainder && this.isActiveLimitEntryOrderStatus(normalizedStatus)
+        ? (existing?.executionState ?? 'filled')
+        : deltaClosedFilledOrder || terminalOrderWithPartialFill
         ? 'filled'
         : this.mapExecutionState(normalizedStatus, snapshot.statusRank);
 
@@ -10292,13 +10310,15 @@ export class SuggestedTradesService {
           ? (updatedAt ?? existing?.filledAt ?? null)
           : (existing?.filledAt ?? null)),
       canceledAt:
-        this.toIsoString(payload.canceled_at) ??
-        this.toIsoString(payload.canceledAt) ??
-        this.toIsoString(payload.cancelled_at) ??
-        this.toIsoString(payload.cancelledAt) ??
-        (['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(normalizedStatus || '')
-          ? (updatedAt ?? existing?.canceledAt ?? null)
-          : (existing?.canceledAt ?? null)),
+        existingClearedPartialFillRemainder && this.isActiveLimitEntryOrderStatus(normalizedStatus)
+          ? (existing?.canceledAt ?? null)
+          : (this.toIsoString(payload.canceled_at) ??
+            this.toIsoString(payload.canceledAt) ??
+            this.toIsoString(payload.cancelled_at) ??
+            this.toIsoString(payload.cancelledAt) ??
+            (['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(normalizedStatus || '')
+              ? (updatedAt ?? existing?.canceledAt ?? null)
+              : (existing?.canceledAt ?? null))),
       filledPrice,
       filledQuantity,
       remainingQuantity,
