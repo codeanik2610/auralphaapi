@@ -5,6 +5,7 @@ import { OrdersOverviewController } from '../src/api/controllers/OrdersOverviewC
 import { BrokerOrdersFacadeService } from '../src/api/services/BrokerOrdersFacadeService';
 import { OrdersOverviewService } from '../src/api/services/OrdersOverviewService';
 import { coreDataSource } from '../src/database/data-source';
+import { OrdersSnapshotSourceRepository } from '../src/database/repositories/OrdersSnapshotSourceRepository';
 import { buildApiTimeContract, formatApiDisplayTime } from '../src/api/utils/apiTimeContract';
 import {
   validateCreateOrderBody,
@@ -1254,6 +1255,8 @@ async function runOrdersSnapshotDisplayNormalizationAssertions(): Promise<void> 
         ];
       }
       if (sql.includes('FROM scheduler_orders_snapshots') && sql.includes('account_id IN')) {
+        assert.match(sql, /suggested_trade_executions cleared_execution/);
+        assert.match(sql, /cleared_execution\.remaining_quantity <= 0/);
         assert.deepEqual(params, ['user-1', 'acct-delta', 'acct-mudrex']);
         return [
           {
@@ -1354,6 +1357,37 @@ async function runOrdersSnapshotDisplayNormalizationAssertions(): Promise<void> 
     assert.equal(detail.display_quantity, 0.01);
     assert.equal(detail.display_side, 'Short');
     assert.equal(detail.snapshot?.statusRank, 1);
+  } finally {
+    coreDataSource.query = originalQuery;
+  }
+}
+
+async function runOrdersSnapshotSourceRepositoryAssertions(): Promise<void> {
+  const originalQuery = coreDataSource.query.bind(coreDataSource);
+
+  try {
+    const repository = new OrdersSnapshotSourceRepository();
+    coreDataSource.query = (async (sql: string, params?: unknown[]) => {
+      assert.match(sql, /suggested_trade_executions cleared_execution/);
+      assert.match(sql, /cleared_execution\.order_id/);
+      assert.match(sql, /cleared_execution\.remaining_quantity <= 0/);
+      assert.deepEqual(params, ['user-1', 'acct-1']);
+      return [
+        {
+          accountId: 'acct-1',
+          externalId: 'open-entry-1',
+          statusRank: 1,
+          payloadJson: JSON.stringify({ id: 'open-entry-1', symbol: 'BTCUSDT' }),
+          firstSeenAt: '2026-04-10T11:54:00.000Z',
+          lastSeenAt: '2026-04-10T11:58:00.000Z',
+        },
+      ];
+    }) as typeof coreDataSource.query;
+
+    const grouped = await repository.listOpenOrdersForAccounts('user-1', ['acct-1']);
+
+    assert.equal(grouped.get('acct-1')?.length, 1);
+    assert.equal(grouped.get('acct-1')?.[0]?.externalId, 'open-entry-1');
   } finally {
     coreDataSource.query = originalQuery;
   }
@@ -1955,6 +1989,7 @@ async function main(): Promise<void> {
   await runOrdersOverviewServiceAssertions();
   await runOrdersDetailServiceAssertions();
   await runOrdersSnapshotDisplayNormalizationAssertions();
+  await runOrdersSnapshotSourceRepositoryAssertions();
   await runOrdersRefreshServiceAssertions();
   await runOrdersSyncStatusServiceAssertions();
   await runOrdersOverviewControllerAssertions();

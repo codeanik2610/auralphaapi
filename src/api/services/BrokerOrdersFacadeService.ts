@@ -2182,7 +2182,12 @@ export class BrokerOrdersFacadeService {
     }
 
     // status_rank: 1=open/pending, 2=partial, 3=filled, 4=terminal closed/cancelled/etc
-    where.push(openOnly ? 'status_rank > 0 AND status_rank <= 2' : 'status_rank >= 3');
+    if (openOnly) {
+      where.push('status_rank > 0 AND status_rank <= 2');
+      where.push(this.clearedPartialFillRemainderExclusionSql('scheduler_orders_snapshots'));
+    } else {
+      where.push('status_rank >= 3');
+    }
 
     const rows = (await coreDataSource.query(
       `SELECT payload_json AS payload
@@ -2890,10 +2895,7 @@ export class BrokerOrdersFacadeService {
     brokerKey: string,
     body: ValidatedCreateOrderBody
   ): ValidatedCreateOrderBody {
-    if (
-      !this.isLimitOnlyLiveEntryBroker(brokerKey) ||
-      !this.isPrimaryLiveEntryOrder(body)
-    ) {
+    if (!this.isLimitOnlyLiveEntryBroker(brokerKey) || !this.isPrimaryLiveEntryOrder(body)) {
       return body;
     }
 
@@ -3124,10 +3126,7 @@ export class BrokerOrdersFacadeService {
       if (!resolvedBrokerKey || !resolvedAccountId) {
         throw new BadRequestAppError('A broker route is required to create an order');
       }
-      validatedBody = this.normalizeLimitOnlyBrokerEntryOrder(
-        resolvedBrokerKey,
-        validatedBody
-      );
+      validatedBody = this.normalizeLimitOnlyBrokerEntryOrder(resolvedBrokerKey, validatedBody);
 
       if (validatedBody.execution_mode === 'live') {
         await this.riskKillSwitchService?.assertLiveTradingAllowed(userId, {
@@ -3954,6 +3953,7 @@ export class BrokerOrdersFacadeService {
        FROM scheduler_orders_snapshots
        WHERE user_id = ?
          AND account_id IN (${accountIds.map(() => '?').join(', ')})
+         ${openOnly ? `AND ${this.clearedPartialFillRemainderExclusionSql('scheduler_orders_snapshots')}` : ''}
        ORDER BY last_seen_at DESC`,
       [userId, ...accountIds]
     );
@@ -4060,6 +4060,21 @@ export class BrokerOrdersFacadeService {
       'FAILED',
       'EXPIRED',
     ].includes(status);
+  }
+
+  private clearedPartialFillRemainderExclusionSql(ordersAlias: string): string {
+    return `NOT EXISTS (
+            SELECT 1
+              FROM suggested_trade_executions cleared_execution
+             WHERE cleared_execution.user_id = ${ordersAlias}.user_id
+               AND COALESCE(cleared_execution.account_id, '') = COALESCE(${ordersAlias}.account_id, '')
+               AND LOWER(COALESCE(cleared_execution.broker_key, '')) = LOWER(COALESCE(${ordersAlias}.broker_key, ''))
+               AND COALESCE(cleared_execution.order_id, '') = COALESCE(${ordersAlias}.external_id, '')
+               AND UPPER(COALESCE(cleared_execution.order_status, '')) IN ('PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL')
+               AND cleared_execution.remaining_quantity IS NOT NULL
+               AND cleared_execution.remaining_quantity <= 0
+               AND cleared_execution.canceled_at IS NOT NULL
+          )`;
   }
 
   private isClosedSnapshotOrder(statusRank: number, payload: unknown): boolean {

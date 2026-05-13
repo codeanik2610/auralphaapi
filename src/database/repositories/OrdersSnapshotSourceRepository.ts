@@ -29,7 +29,9 @@ export class OrdersSnapshotSourceRepository {
     accountId: string,
     externalId: string
   ): Promise<OrderSnapshotSourceRow | null> {
-    const normalizedBrokerKey = String(brokerKey || '').trim().toLowerCase();
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
     const normalizedAccountId = String(accountId || '').trim();
     const normalizedExternalId = String(externalId || '').trim();
 
@@ -75,9 +77,7 @@ export class OrdersSnapshotSourceRepository {
       externalId: String(row.externalId || '').trim(),
       orderStatus: row.orderStatus ?? null,
       statusRank:
-        row.statusRank === undefined || row.statusRank === null
-          ? null
-          : Number(row.statusRank),
+        row.statusRank === undefined || row.statusRank === null ? null : Number(row.statusRank),
       payloadJson: this.parsePayloadRecord(row.payloadJson),
       firstSeenAt: this.toDate(row.firstSeenAt),
       lastSeenAt: this.toDate(row.lastSeenAt),
@@ -107,6 +107,7 @@ export class OrdersSnapshotSourceRepository {
           AND account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})
           AND status_rank > 0
           AND status_rank <= 2
+          AND ${this.clearedPartialFillRemainderExclusionSql('scheduler_orders_snapshots')}
         ORDER BY last_seen_at DESC, external_id ASC`,
       [userId, ...normalizedAccountIds]
     )) as Array<{
@@ -138,6 +139,21 @@ export class OrdersSnapshotSourceRepository {
     });
 
     return grouped;
+  }
+
+  private clearedPartialFillRemainderExclusionSql(ordersAlias: string): string {
+    return `NOT EXISTS (
+            SELECT 1
+              FROM suggested_trade_executions cleared_execution
+             WHERE cleared_execution.user_id = ${ordersAlias}.user_id
+               AND COALESCE(cleared_execution.account_id, '') = COALESCE(${ordersAlias}.account_id, '')
+               AND LOWER(COALESCE(cleared_execution.broker_key, '')) = LOWER(COALESCE(${ordersAlias}.broker_key, ''))
+               AND COALESCE(cleared_execution.order_id, '') = COALESCE(${ordersAlias}.external_id, '')
+               AND UPPER(COALESCE(cleared_execution.order_status, '')) IN ('PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL')
+               AND cleared_execution.remaining_quantity IS NOT NULL
+               AND cleared_execution.remaining_quantity <= 0
+               AND cleared_execution.canceled_at IS NOT NULL
+          )`;
   }
 
   private parsePayloadRecord(value: unknown): Record<string, unknown> | null {
