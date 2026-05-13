@@ -8580,13 +8580,18 @@ export class SuggestedTradesService {
         body: Record<string, unknown>,
         context?: { userId?: string; brokerKey?: string; accountId?: string }
       ) => Promise<unknown>;
+      updateRiskOrder?: (
+        positionId: string,
+        body: Record<string, unknown>,
+        context?: { userId?: string; brokerKey?: string; accountId?: string }
+      ) => Promise<unknown>;
     };
-    if (!positionsAdapter?.createRiskOrder) {
+    if (!positionsAdapter?.createRiskOrder && !positionsAdapter?.updateRiskOrder) {
       return this.recordTrailingStopError(
         trade,
         execution,
         new Date().toISOString(),
-        'Trailing SL update needs a broker positions adapter that can replace risk orders.'
+        'Trailing SL update needs a broker positions adapter that can create or update risk orders.'
       );
     }
 
@@ -8617,22 +8622,55 @@ export class SuggestedTradesService {
       );
     }
 
+    const riskOrderIds = this.resolveTrailingRiskOrderIds(execution, payload);
     try {
-      await positionsAdapter.createRiskOrder(
-        riskOrderPositionId,
-        {
-          stoploss_price: stopLossPrice,
-          takeprofit_price: formattedTakeProfitPrice,
-          order_source: 'positions_desk',
-          is_stoploss: true,
-          is_takeprofit: true,
-        },
-        {
-          userId,
-          brokerKey,
-          accountId,
-        }
-      );
+      if (
+        positionsAdapter.updateRiskOrder &&
+        riskOrderIds.stopLossOrderId &&
+        riskOrderIds.takeProfitOrderId
+      ) {
+        await positionsAdapter.updateRiskOrder(
+          riskOrderPositionId,
+          {
+            order_price: entryPrice,
+            stoploss_price: Number(stopLossPrice),
+            takeprofit_price: Number(formattedTakeProfitPrice),
+            stoploss_order_id: riskOrderIds.stopLossOrderId,
+            takeprofit_order_id: riskOrderIds.takeProfitOrderId,
+            trigger_type: riskOrderIds.triggerType ?? 'MARKET',
+            is_stoploss: true,
+            is_takeprofit: true,
+          },
+          {
+            userId,
+            brokerKey,
+            accountId,
+          }
+        );
+      } else if (positionsAdapter.createRiskOrder) {
+        await positionsAdapter.createRiskOrder(
+          riskOrderPositionId,
+          {
+            stoploss_price: stopLossPrice,
+            takeprofit_price: formattedTakeProfitPrice,
+            order_source: 'positions_desk',
+            is_stoploss: true,
+            is_takeprofit: true,
+          },
+          {
+            userId,
+            brokerKey,
+            accountId,
+          }
+        );
+      } else {
+        return this.recordTrailingStopError(
+          trade,
+          execution,
+          nowIso,
+          'Trailing SL update found broker risk-order IDs, but the positions adapter cannot update risk orders.'
+        );
+      }
     } catch (error) {
       return this.recordTrailingStopError(
         trade,
@@ -8701,6 +8739,8 @@ export class SuggestedTradesService {
         accountId,
         positionId: riskOrderPositionId,
         snapshotPositionId: position.externalId,
+        stopLossOrderId: riskOrderIds.stopLossOrderId ?? plan.stopLossOrderId,
+        takeProfitOrderId: riskOrderIds.takeProfitOrderId ?? plan.takeProfitOrderId,
         attachedStopLossPrice: stopLossPrice,
         attachedTakeProfitPrice: formattedTakeProfitPrice,
         trailingStop,
@@ -8744,6 +8784,62 @@ export class SuggestedTradesService {
     return this.readStringValue(position.externalId) ?? this.readStringValue(execution.positionId);
   }
 
+  private resolveTrailingRiskOrderIds(
+    execution: SuggestedTradeExecutionLink,
+    positionPayload: Record<string, unknown>
+  ): {
+    stopLossOrderId: string | null;
+    takeProfitOrderId: string | null;
+    triggerType: string | null;
+  } {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const stopLoss = this.readRecordValue(positionPayload.stoploss) ?? {};
+    const stopLossAlt = this.readRecordValue(positionPayload.stopLoss) ?? {};
+    const stopLossSnake = this.readRecordValue(positionPayload.stop_loss) ?? {};
+    const takeProfit = this.readRecordValue(positionPayload.takeprofit) ?? {};
+    const takeProfitAlt = this.readRecordValue(positionPayload.takeProfit) ?? {};
+    const takeProfitSnake = this.readRecordValue(positionPayload.take_profit) ?? {};
+    const stopLossOrderId =
+      this.readStringValue(plan.stopLossOrderId) ??
+      this.readStringValue(plan.stoplossOrderId) ??
+      this.readStringValue(plan.stoploss_order_id) ??
+      this.readStringValue(positionPayload.stoploss_order_id) ??
+      this.readStringValue(positionPayload.stopLossOrderId) ??
+      this.readStringValue(stopLoss.order_id) ??
+      this.readStringValue(stopLoss.orderId) ??
+      this.readStringValue(stopLossAlt.order_id) ??
+      this.readStringValue(stopLossAlt.orderId) ??
+      this.readStringValue(stopLossSnake.order_id) ??
+      this.readStringValue(stopLossSnake.orderId);
+    const takeProfitOrderId =
+      this.readStringValue(plan.takeProfitOrderId) ??
+      this.readStringValue(plan.takeprofitOrderId) ??
+      this.readStringValue(plan.takeprofit_order_id) ??
+      this.readStringValue(positionPayload.takeprofit_order_id) ??
+      this.readStringValue(positionPayload.takeProfitOrderId) ??
+      this.readStringValue(takeProfit.order_id) ??
+      this.readStringValue(takeProfit.orderId) ??
+      this.readStringValue(takeProfitAlt.order_id) ??
+      this.readStringValue(takeProfitAlt.orderId) ??
+      this.readStringValue(takeProfitSnake.order_id) ??
+      this.readStringValue(takeProfitSnake.orderId);
+    const triggerType =
+      this.readStringValue(plan.triggerType) ??
+      this.readStringValue(plan.trigger_type) ??
+      this.readStringValue(positionPayload.trigger_type) ??
+      this.readStringValue(positionPayload.triggerType) ??
+      this.readStringValue(stopLoss.trigger_type) ??
+      this.readStringValue(stopLoss.triggerType) ??
+      this.readStringValue(takeProfit.trigger_type) ??
+      this.readStringValue(takeProfit.triggerType);
+
+    return {
+      stopLossOrderId,
+      takeProfitOrderId,
+      triggerType,
+    };
+  }
+
   private resolveTrailingOriginalStopLossPrice(
     trade: SuggestedTrade,
     execution: SuggestedTradeExecutionLink,
@@ -8755,11 +8851,11 @@ export class SuggestedTradesService {
       this.readNumberValue(trailing.originalStopLossPrice) ??
       this.readNumberValue(plan.originalStopLossPrice) ??
       this.readNumberValue(plan.initialStopLossPrice) ??
-      this.readNumberValue(plan.attachedStopLossPrice) ??
-      this.resolvePositionStopLossPrice(positionPayload) ??
       this.readNumberValue(plan.stopLossPrice) ??
       this.readNumberValue(execution.stopLossPrice) ??
-      this.readNumberValue(trade.stopLossPrice)
+      this.readNumberValue(trade.stopLossPrice) ??
+      this.readNumberValue(plan.attachedStopLossPrice) ??
+      this.resolvePositionStopLossPrice(positionPayload)
     );
   }
 

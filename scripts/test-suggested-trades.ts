@@ -9400,6 +9400,8 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'Shadow route would select',
     'pre_trade_check',
     'resolveTrailingRiskOrderPositionId',
+    'resolveTrailingRiskOrderIds',
+    'positionsAdapter.updateRiskOrder',
     'resolveMudrexRiskOrderPositionId(position, positionPayload)',
   ]) {
     assert.equal(
