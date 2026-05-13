@@ -13,6 +13,7 @@ const ACTIVE_ORDER_STATUSES = new Set([
   'OPEN',
   'PENDING',
   'PARTIALLY_FILLED',
+  'PARTIAL_FILLED',
   'PARTIAL',
   'TRIGGER_PENDING',
 ]);
@@ -358,7 +359,7 @@ export class SuggestedTradesProtectionGuardrailService {
                 OR
                 execution_record.filled_at IS NOT NULL
                 OR LOWER(COALESCE(execution_record.execution_state, '')) = 'filled'
-                OR UPPER(COALESCE(execution_record.order_status, '')) IN ('CLOSED', 'FILLED', 'PARTIALLY_FILLED', 'PARTIAL')
+                OR UPPER(COALESCE(execution_record.order_status, '')) IN ('CLOSED', 'FILLED', 'PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL')
               )
             )
           )

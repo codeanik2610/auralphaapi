@@ -246,7 +246,9 @@ export class InternalOrdersSyncService {
       .trim()
       .toUpperCase();
     if (['OPEN', 'PENDING'].includes(normalized)) return 1;
-    if (['PARTIALLY_FILLED', 'PARTIAL', 'TRIGGER_PENDING'].includes(normalized)) return 2;
+    if (['PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL', 'TRIGGER_PENDING'].includes(normalized)) {
+      return 2;
+    }
     if (['FILLED', 'COMPLETED', 'EXECUTED'].includes(normalized)) return 3;
     if (['CLOSED', 'CANCELLED', 'CANCELED', 'REJECTED', 'FAILED', 'EXPIRED'].includes(normalized))
       return 4;
@@ -260,7 +262,9 @@ export class InternalOrdersSyncService {
 
     if (['OPEN', 'NEW', 'CREATED'].includes(normalized)) return 'OPEN';
     if (['PENDING', 'TRIGGER_PENDING'].includes(normalized)) return 'PENDING';
-    if (['PARTIALLY_FILLED', 'PARTIAL'].includes(normalized)) return 'PARTIALLY_FILLED';
+    if (['PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL'].includes(normalized)) {
+      return 'PARTIALLY_FILLED';
+    }
     if (['FILLED', 'COMPLETED', 'EXECUTED'].includes(normalized)) return 'FILLED';
     if (['CANCELLED', 'CANCELED'].includes(normalized)) return 'CANCELLED';
     if (['CLOSED'].includes(normalized)) return 'CLOSED';

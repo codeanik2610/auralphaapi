@@ -906,7 +906,16 @@ export class BrokerCanaryProtectionMonitorService {
   private isActiveOrderSnapshot(snapshot: OrderSnapshotRow): boolean {
     const status = this.readString(snapshot.orderStatus).toUpperCase();
     const rank = Number(snapshot.statusRank);
-    if (['OPEN', 'PENDING', 'PARTIALLY_FILLED', 'PARTIAL', 'TRIGGER_PENDING'].includes(status)) {
+    if (
+      [
+        'OPEN',
+        'PENDING',
+        'PARTIALLY_FILLED',
+        'PARTIAL_FILLED',
+        'PARTIAL',
+        'TRIGGER_PENDING',
+      ].includes(status)
+    ) {
       return true;
     }
     return Number.isFinite(rank) && rank > 0 && rank < 4;

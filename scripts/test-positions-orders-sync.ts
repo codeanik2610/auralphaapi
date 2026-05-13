@@ -1796,6 +1796,22 @@ function testOrdersSyncStaleCutoffFloorsToSqlSecond(): void {
   assert.equal(cutoff.toISOString(), '2026-05-05T16:43:33.000Z');
 }
 
+function testOrdersSyncNormalizesMudrexPartialFilledAlias(): void {
+  const service = new InternalOrdersSyncService() as any;
+  const row = service.buildOrderRow('user-1', 'acct-1', 'mudrex', {
+    id: 'mudrex-partial-entry',
+    symbol: 'CFXUSDT',
+    status: 'PARTIAL_FILLED',
+    order_type: 'LONG',
+    trigger_type: 'LIMIT',
+    quantity: 3237,
+    filled_quantity: 300,
+  });
+
+  assert.equal(row.orderStatus, 'PARTIALLY_FILLED');
+  assert.equal(row.statusRank, 2);
+}
+
 async function testOrdersSyncActiveOpenSnapshotReopensTerminalSnapshot(): Promise<void> {
   const service = new InternalOrdersSyncService() as any;
   const originalQuery = (coreDataSource as any).query;
@@ -2003,6 +2019,7 @@ async function run(): Promise<void> {
   await testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById();
   testOrdersSyncStaleCutoffFloorsToSqlSecond();
+  testOrdersSyncNormalizesMudrexPartialFilledAlias();
   await testOrdersSyncActiveOpenSnapshotReopensTerminalSnapshot();
   await testOrdersHistoryReconciliationPrunesDriftedTerminalRows();
   await testOrdersHistoryReconciliationKeepsProtectedTrackedRows();

@@ -8187,9 +8187,16 @@ export class SuggestedTradesService {
   }
 
   private isAlreadyTerminalCancelError(message: string): boolean {
-    return String(message || '')
-      .toLowerCase()
-      .includes('terminal state');
+    const normalized = String(message || '').toLowerCase();
+    return (
+      normalized.includes('terminal state') ||
+      normalized.includes('too late to cancel') ||
+      normalized.includes('not found') ||
+      normalized.includes('does not exist') ||
+      normalized.includes('already cancelled') ||
+      normalized.includes('already canceled') ||
+      normalized.includes('already closed')
+    );
   }
 
   private isActiveLimitEntryOrderStatus(status: string | null): boolean {
@@ -11195,7 +11202,9 @@ export class SuggestedTradesService {
     const normalized = raw.toUpperCase();
     if (['OPEN', 'NEW', 'CREATED'].includes(normalized)) return 'OPEN';
     if (['PENDING', 'TRIGGER_PENDING'].includes(normalized)) return 'PENDING';
-    if (['PARTIALLY_FILLED', 'PARTIAL'].includes(normalized)) return 'PARTIALLY_FILLED';
+    if (['PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL'].includes(normalized)) {
+      return 'PARTIALLY_FILLED';
+    }
     if (['FILLED', 'COMPLETED', 'EXECUTED'].includes(normalized)) return 'FILLED';
     if (['CANCELLED', 'CANCELED'].includes(normalized)) return 'CANCELLED';
     if (['CLOSED'].includes(normalized)) return 'CLOSED';

@@ -4961,6 +4961,112 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
   savedExecutionPayload = null;
   cancelledOrders.length = 0;
 
+  const partialFillRemainderTrade = {
+    ...staleClosedPositionTrade,
+    id: 'st-limit-expiry-partial-fill-remainder',
+    dedupeKey: 'dedupe-limit-expiry-partial-fill-remainder',
+    executionRecord: null,
+    meta: {
+      execution: {
+        executionMode: 'live',
+        orderId: 'ord-limit-partial-fill-remainder',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        executionState: 'filled',
+        orderStatus: 'PARTIAL_FILLED',
+        orderType: 'limit',
+        linkedAt: '2026-04-04T10:01:00.000Z',
+        submittedAt: '2026-04-04T10:01:00.000Z',
+        filledAt: '2026-04-04T10:04:00.000Z',
+        entryPrice: '100',
+        quantity: 3237,
+        filledQuantity: 300,
+        remainingQuantity: 2937,
+        positionId: 'partial-fill-position',
+        positionStatus: 'OPEN',
+        positionOpenedAt: '2026-04-04T10:04:00.000Z',
+        protectionState: 'attached',
+        note: 'Mudrex partial fill created a protected position while the entry remainder stayed open.',
+      },
+    },
+  };
+
+  service.suggestedTradeRepository = {
+    async getLinkedOrderSnapshot() {
+      return {
+        orderStatus: 'PARTIAL_FILLED',
+        statusRank: 2,
+        lastSeenAt: '2026-04-04T10:20:00.000Z',
+        payload: {
+          created_at: '2026-04-04T10:01:00.000Z',
+          updated_at: '2026-04-04T10:20:00.000Z',
+          filled_quantity: 300,
+          remaining_quantity: 2937,
+        },
+      };
+    },
+    async getLinkedPositionSnapshots() {
+      return [
+        {
+          externalId: 'partial-fill-position',
+          status: 'OPEN',
+          statusRank: 1,
+          firstSeenAt: '2026-04-04T10:04:00.000Z',
+          lastSeenAt: '2026-04-04T10:20:00.000Z',
+          payload: {
+            status: 'open',
+            side: 'long',
+            created_at: '2026-04-04T10:04:00.000Z',
+            entry_price: 100,
+            quantity: 300,
+          },
+        },
+      ];
+    },
+    async saveSuggestedTrade(item: Record<string, unknown>) {
+      return {
+        ...item,
+        updatedAt: new Date('2026-04-04T10:20:00.000Z'),
+      };
+    },
+    async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+      savedExecutionPayload = { ...payload };
+      return {
+        ...payload,
+        createdAt: new Date('2026-04-04T10:20:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:20:00.000Z'),
+      };
+    },
+  };
+
+  const refreshedPartialFillRemainderTrade = await service.refreshExecutionOutcomes('user-1', [
+    partialFillRemainderTrade,
+  ]);
+
+  assert.equal(refreshedPartialFillRemainderTrade, 1);
+  assert.deepEqual(cancelledOrders, [
+    {
+      orderId: 'ord-limit-partial-fill-remainder',
+      context: {
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+      },
+    },
+  ]);
+  assert.equal(savedExecutionPayload?.['executionState'], 'filled');
+  assert.equal(savedExecutionPayload?.['orderStatus'], 'PARTIALLY_FILLED');
+  assert.equal(savedExecutionPayload?.['remainingQuantity'], 0);
+  assert.equal(savedExecutionPayload?.['positionId'], 'partial-fill-position');
+  assert.equal(savedExecutionPayload?.['positionStatus'], 'OPEN');
+  assert.match(
+    String(savedExecutionPayload?.['note'] || ''),
+    /Partially filled limit entry order exceeded 15m for 5m/
+  );
+
+  savedExecutionPayload = null;
+  cancelledOrders.length = 0;
+
   const terminalCancelTrade = {
     ...staleClosedPositionTrade,
     id: 'st-limit-expiry-terminal-cancel',
@@ -4992,6 +5098,54 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     },
   };
 
+  service.suggestedTradeRepository = {
+    async getLinkedOrderSnapshot() {
+      return {
+        orderStatus: 'OPEN',
+        statusRank: 1,
+        lastSeenAt: '2026-04-04T10:20:00.000Z',
+        payload: {
+          created_at: '2026-04-04T10:01:00.000Z',
+          updated_at: '2026-04-04T10:20:00.000Z',
+          filled_quantity: 0,
+        },
+      };
+    },
+    async getLinkedPositionSnapshots() {
+      return [
+        {
+          externalId: 'older-closed-position',
+          status: 'CLOSED',
+          statusRank: 3,
+          firstSeenAt: '2026-04-04T08:00:00.000Z',
+          lastSeenAt: '2026-04-04T08:15:00.000Z',
+          payload: {
+            status: 'closed',
+            side: 'long',
+            created_at: '2026-04-04T08:00:00.000Z',
+            closed_at: '2026-04-04T08:15:00.000Z',
+            entry_price: 100,
+            quantity: 1,
+          },
+        },
+      ];
+    },
+    async saveSuggestedTrade(item: Record<string, unknown>) {
+      return {
+        ...item,
+        updatedAt: new Date('2026-04-04T10:20:00.000Z'),
+      };
+    },
+    async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+      savedExecutionPayload = { ...payload };
+      return {
+        ...payload,
+        createdAt: new Date('2026-04-04T10:20:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:20:00.000Z'),
+      };
+    },
+  };
+
   service.brokerRuntimeRegistry = {
     supportsOrdersAdapter() {
       return true;
@@ -4999,7 +5153,7 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     getOrdersAdapter() {
       return {
         async cancelOrder() {
-          throw new Error('order is in terminal state');
+          throw new Error('order not found or too late to cancel');
         },
       };
     },
