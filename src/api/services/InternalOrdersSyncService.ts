@@ -298,6 +298,60 @@ export class InternalOrdersSyncService {
     DATE_FORMAT(last_seen_at, '%Y-%m-%dT%H:%i:%s.000Z')
   )`;
 
+  private readOrderObservedAt(order: Record<string, unknown>): Date | null {
+    for (const key of [
+      'updated_at',
+      'filled_at',
+      'closed_at',
+      'cancelled_at',
+      'canceled_at',
+      'created_at',
+    ]) {
+      const raw = String(order[key] || '').trim();
+      if (!raw || raw.toLowerCase() === 'null' || raw.toLowerCase() === 'undefined') {
+        continue;
+      }
+      const parsed = new Date(raw);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  private filterHistoryOrdersForSnapshotWindow(
+    items: unknown[],
+    historyStart: Date,
+    historyEnd: Date
+  ): unknown[] {
+    const startMs = historyStart.getTime();
+    const endMs = historyEnd.getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      return items;
+    }
+
+    return items.filter((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        return true;
+      }
+
+      const order = item as Record<string, unknown>;
+      const status = this.normalizeOrderStatus(String(order.status || '').trim() || null);
+      const statusRank = this.computeOrderStatusRank(status || '');
+      if (statusRank < 3) {
+        return true;
+      }
+
+      const observedAt = this.readOrderObservedAt(order);
+      if (!observedAt) {
+        return true;
+      }
+
+      const observedMs = observedAt.getTime();
+      return observedMs >= startMs && observedMs <= endMs;
+    });
+  }
+
   private async getCheckpoint(accountId: string): Promise<Date | null> {
     const rows = (await coreDataSource.query(
       `SELECT checkpoint_at FROM scheduler_sync_checkpoints
@@ -894,17 +948,21 @@ export class InternalOrdersSyncService {
                 : `status: ${row.orderStatus || 'UNKNOWN'} (unchanged)`;
           }
 
-          logEntries.push({
-            runLogId,
-            source: 'orders',
-            accountId: row.accountId,
-            actionType,
-            symbol: row.symbol,
-            externalId: row.externalId,
-            message,
-          });
+          if (actionType !== 'skipped') {
+            logEntries.push({
+              runLogId,
+              source: 'orders',
+              accountId: row.accountId,
+              actionType,
+              symbol: row.symbol,
+              externalId: row.externalId,
+              message,
+            });
+          }
         }
-        await this.exchangeAssetUpdateLogRepository.createMany(logEntries);
+        if (logEntries.length) {
+          await this.exchangeAssetUpdateLogRepository.createMany(logEntries);
+        }
       }
     }
 
@@ -1244,7 +1302,12 @@ export class InternalOrdersSyncService {
             // authoritative for currently active orders, even when an older terminal
             // history/snapshot row exists for the same broker order id.
             const activeOrderIds = new Set(this.extractOrderExternalIds(openOrders));
-            const historyOrdersForUpsert = historyOrders.filter((item) => {
+            const historyOrdersInWindow = this.filterHistoryOrdersForSnapshotWindow(
+              historyOrders,
+              historyStart,
+              historyEnd
+            );
+            const historyOrdersForUpsert = historyOrdersInWindow.filter((item) => {
               if (!item || typeof item !== 'object' || Array.isArray(item)) {
                 return true;
               }
@@ -1377,7 +1440,7 @@ export class InternalOrdersSyncService {
                 resolvedBrokerKey.toLowerCase(),
                 historyStart,
                 historyEnd,
-                historyOrders,
+                historyOrdersInWindow,
                 request.runLogId,
                 trackedSubmissionOrderIds
               );

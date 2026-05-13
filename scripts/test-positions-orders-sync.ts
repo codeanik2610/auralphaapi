@@ -1812,6 +1812,102 @@ function testOrdersSyncNormalizesMudrexPartialFilledAlias(): void {
   assert.equal(row.statusRank, 2);
 }
 
+function testOrdersSyncFiltersTerminalHistoryOutsideWindow(): void {
+  const service = new InternalOrdersSyncService() as any;
+  const filtered = service.filterHistoryOrdersForSnapshotWindow(
+    [
+      {
+        id: 'old-filled',
+        symbol: 'AVNTUSDT',
+        status: 'FILLED',
+        updated_at: '2026-04-10T09:00:00.000Z',
+      },
+      {
+        id: 'inside-filled',
+        symbol: 'AVNTUSDT',
+        status: 'FILLED',
+        updated_at: '2026-05-12T09:00:00.000Z',
+      },
+      {
+        id: 'future-cancelled',
+        symbol: 'AVNTUSDT',
+        status: 'CANCELLED',
+        updated_at: '2026-05-14T09:00:00.000Z',
+      },
+      {
+        id: 'old-open',
+        symbol: 'AVNTUSDT',
+        status: 'OPEN',
+        updated_at: '2026-04-10T09:00:00.000Z',
+      },
+      {
+        id: 'terminal-without-time',
+        symbol: 'AVNTUSDT',
+        status: 'FILLED',
+      },
+    ],
+    new Date('2026-05-12T00:00:00.000Z'),
+    new Date('2026-05-13T00:00:00.000Z')
+  ) as Array<Record<string, unknown>>;
+
+  assert.deepEqual(
+    filtered.map((item) => item.id),
+    ['inside-filled', 'old-open', 'terminal-without-time']
+  );
+}
+
+async function testOrdersSyncDoesNotWriteSkippedDetailLogs(): Promise<void> {
+  const service = new InternalOrdersSyncService() as any;
+  const originalQuery = (coreDataSource as any).query;
+  const item = {
+    id: 'unchanged-order',
+    symbol: 'BTCUSDT',
+    status: 'FILLED',
+    updated_at: '2026-05-12T09:00:00.000Z',
+  };
+  const existingRow = service.buildOrderRow('user-1', 'acct-1', 'mudrex', item);
+  const loggedEntries: Array<Record<string, unknown>> = [];
+
+  service.exchangeAssetUpdateLogRepository = {
+    async createMany(entries: Array<Record<string, unknown>>) {
+      loggedEntries.push(...entries);
+    },
+  };
+
+  (coreDataSource as any).query = async (sql: string) => {
+    const statement = String(sql || '');
+    if (statement.includes('SELECT external_id, order_status, payload_hash, status_rank')) {
+      return [
+        {
+          external_id: 'unchanged-order',
+          order_status: existingRow.orderStatus,
+          payload_hash: existingRow.payloadHash,
+          status_rank: existingRow.statusRank,
+        },
+      ];
+    }
+    if (statement.includes('INSERT INTO scheduler_orders_snapshots')) {
+      return [{ affectedRows: 0 }];
+    }
+    throw new Error(`Unexpected SQL in skipped order log test: ${statement}`);
+  };
+
+  try {
+    const result = await service.upsertOrderSnapshotsFromItems(
+      'user-1',
+      'acct-1',
+      'mudrex',
+      [item],
+      'run-1'
+    );
+
+    assert.equal(result.skipped, 1);
+    assert.deepEqual(loggedEntries, []);
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
 async function testOrdersSyncActiveOpenSnapshotReopensTerminalSnapshot(): Promise<void> {
   const service = new InternalOrdersSyncService() as any;
   const originalQuery = (coreDataSource as any).query;
@@ -2020,6 +2116,8 @@ async function run(): Promise<void> {
   await testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById();
   testOrdersSyncStaleCutoffFloorsToSqlSecond();
   testOrdersSyncNormalizesMudrexPartialFilledAlias();
+  testOrdersSyncFiltersTerminalHistoryOutsideWindow();
+  await testOrdersSyncDoesNotWriteSkippedDetailLogs();
   await testOrdersSyncActiveOpenSnapshotReopensTerminalSnapshot();
   await testOrdersHistoryReconciliationPrunesDriftedTerminalRows();
   await testOrdersHistoryReconciliationKeepsProtectedTrackedRows();
