@@ -12,6 +12,8 @@ fi
 MODE="dry-run"
 CANDLE_RETENTION_DAYS=90
 SCHEDULER_RUN_KEEP_RUNS=5
+MYSQL_APP_DATA_RETENTION_HOURS=2
+MYSQL_APP_DATA_RETENTION_ONLY=false
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-auralpha-postgres-1}"
 MYSQL_CONTAINER="${MYSQL_CONTAINER:-auralpha-mysql-1}"
 POSTGRES_DB="${POSTGRES_DB:-auralpha}"
@@ -38,6 +40,7 @@ RUN_DB_VACUUM=true
 EXACT_CANDLE_COUNT=false
 RUN_POSTGRES_CANDLES=true
 RUN_MYSQL_SCHEDULER_RUN_LOGS=true
+RUN_MYSQL_APP_DATA_RETENTION=true
 RUN_MYSQL_BINLOG_PURGE=true
 RUN_MYSQL_TEMP_RECLAIM=true
 RUN_SYSTEM_JOURNAL_VACUUM=true
@@ -57,6 +60,7 @@ Purpose:
   - Postgres market_candles_1m: keep last 90 days by open_time.
   - MySQL scheduler_run_logs: keep latest 5 finished runs per scheduler/user scope.
     Related exchange_asset_update_logs and scheduler_health_check_results cascade from those runs.
+  - MySQL app operational data: keep the last 2 hours of email, activity, and alert rows.
   - MySQL binary logs: purge logs older than the configured short local window.
   - MySQL InnoDB temp space: restart MySQL under disk pressure to reclaim #innodb_temp.
   - Docker build cache: prune old build cache.
@@ -71,8 +75,10 @@ Safety:
 
 Options:
   --phase1-safe-cleanup-only          Only run Docker build cache, journal, and temp cleanup.
+  --mysql-app-data-retention-only     Only run MySQL email/activity/alert retention.
   --candle-retention-days DAYS       Default: 90
   --scheduler-run-keep-runs COUNT    Default: 5
+  --mysql-app-data-retention-hours N  Default: 2
   --postgres-container NAME          Default: auralpha-postgres-1
   --mysql-container NAME             Default: auralpha-mysql-1
   --postgres-db NAME                 Default: auralpha
@@ -102,6 +108,7 @@ Options:
   --skip-vacuum                      Do not run VACUUM ANALYZE after Postgres deletes.
   --skip-postgres-candles            Do not delete Postgres candle rows in --apply.
   --skip-mysql-scheduler-run-logs    Do not delete MySQL scheduler run logs in --apply.
+  --skip-mysql-app-data-retention     Do not delete MySQL email/activity/alert rows in --apply.
   --skip-candle-retention-index      Do not create the leading Postgres open_time index.
   --exact-candle-count               Count old candle rows even without a leading open_time index.
   -h, --help                         Show this help.
@@ -162,10 +169,25 @@ function parse_args() {
       --phase1-safe-cleanup-only)
         RUN_POSTGRES_CANDLES=false
         RUN_MYSQL_SCHEDULER_RUN_LOGS=false
+        RUN_MYSQL_APP_DATA_RETENTION=false
         RUN_MYSQL_BINLOG_PURGE=false
         RUN_MYSQL_TEMP_RECLAIM=false
         RUN_DOCKER_IMAGE_PRUNE=false
         RUN_DOCKER_VOLUME_PRUNE=false
+        shift
+        ;;
+      --mysql-app-data-retention-only)
+        MYSQL_APP_DATA_RETENTION_ONLY=true
+        RUN_POSTGRES_CANDLES=false
+        RUN_MYSQL_SCHEDULER_RUN_LOGS=false
+        RUN_MYSQL_BINLOG_PURGE=false
+        RUN_MYSQL_TEMP_RECLAIM=false
+        RUN_DOCKER_PRUNE=false
+        RUN_DOCKER_BUILDER_PRUNE=false
+        RUN_DOCKER_IMAGE_PRUNE=false
+        RUN_DOCKER_VOLUME_PRUNE=false
+        RUN_SYSTEM_JOURNAL_VACUUM=false
+        RUN_TMP_CLEANUP=false
         shift
         ;;
       --candle-retention-days)
@@ -174,6 +196,10 @@ function parse_args() {
         ;;
       --scheduler-run-keep-runs|--exchange-log-keep-runs)
         SCHEDULER_RUN_KEEP_RUNS="${2:-}"
+        shift 2
+        ;;
+      --mysql-app-data-retention-hours)
+        MYSQL_APP_DATA_RETENTION_HOURS="${2:-}"
         shift 2
         ;;
       --postgres-container)
@@ -295,6 +321,10 @@ function parse_args() {
         RUN_MYSQL_SCHEDULER_RUN_LOGS=false
         shift
         ;;
+      --skip-mysql-app-data-retention)
+        RUN_MYSQL_APP_DATA_RETENTION=false
+        shift
+        ;;
       --skip-candle-retention-index)
         CREATE_POSTGRES_CANDLE_RETENTION_INDEX=false
         shift
@@ -317,6 +347,7 @@ function parse_args() {
 function validate_inputs() {
   require_uint "CANDLE_RETENTION_DAYS" "${CANDLE_RETENTION_DAYS}"
   require_uint "SCHEDULER_RUN_KEEP_RUNS" "${SCHEDULER_RUN_KEEP_RUNS}"
+  require_uint "MYSQL_APP_DATA_RETENTION_HOURS" "${MYSQL_APP_DATA_RETENTION_HOURS}"
   require_uint "POSTGRES_BATCH_SIZE" "${POSTGRES_BATCH_SIZE}"
   require_uint "MYSQL_BATCH_SIZE" "${MYSQL_BATCH_SIZE}"
   require_uint "MAX_BATCHES" "${MAX_BATCHES}"
@@ -733,6 +764,109 @@ LIMIT 100;
 "
 }
 
+function mysql_app_data_cutoff_sql() {
+  cat <<SQL
+DATE_SUB(NOW(), INTERVAL ${MYSQL_APP_DATA_RETENTION_HOURS} HOUR)
+SQL
+}
+
+function print_mysql_app_data_retention_report() {
+  local cutoff_sql
+  cutoff_sql="$(mysql_app_data_cutoff_sql)"
+
+  echo "setting	value"
+  mysql_query "
+SELECT 'database', DATABASE();
+SELECT 'app_data_retention_hours', ${MYSQL_APP_DATA_RETENTION_HOURS};
+SELECT 'app_data_cutoff_mysql_time', ${cutoff_sql};
+SELECT 'run_mysql_app_data_retention', '${RUN_MYSQL_APP_DATA_RETENTION}';
+"
+
+  echo "table	retention_column	total_rows	deletable_rows	oldest_deletable	newest_deletable"
+  mysql_query "
+SELECT
+  'email_deliveries',
+  'updated_at',
+  COUNT(*),
+  COALESCE(SUM(updated_at < ${cutoff_sql}), 0),
+  COALESCE(CAST(MIN(CASE WHEN updated_at < ${cutoff_sql} THEN updated_at END) AS CHAR), 'none'),
+  COALESCE(CAST(MAX(CASE WHEN updated_at < ${cutoff_sql} THEN updated_at END) AS CHAR), 'none')
+FROM email_deliveries
+UNION ALL
+SELECT
+  'activity_logs',
+  'createdAt',
+  COUNT(*),
+  COALESCE(SUM(createdAt < ${cutoff_sql}), 0),
+  COALESCE(CAST(MIN(CASE WHEN createdAt < ${cutoff_sql} THEN createdAt END) AS CHAR), 'none'),
+  COALESCE(CAST(MAX(CASE WHEN createdAt < ${cutoff_sql} THEN createdAt END) AS CHAR), 'none')
+FROM activity_logs
+UNION ALL
+SELECT
+  'activity_exports',
+  'updatedAt',
+  COUNT(*),
+  COALESCE(SUM(updatedAt < ${cutoff_sql}), 0),
+  COALESCE(CAST(MIN(CASE WHEN updatedAt < ${cutoff_sql} THEN updatedAt END) AS CHAR), 'none'),
+  COALESCE(CAST(MAX(CASE WHEN updatedAt < ${cutoff_sql} THEN updatedAt END) AS CHAR), 'none')
+FROM activity_exports
+UNION ALL
+SELECT
+  'alerts',
+  'createdAt',
+  COUNT(*),
+  COALESCE(SUM(createdAt < ${cutoff_sql}), 0),
+  COALESCE(CAST(MIN(CASE WHEN createdAt < ${cutoff_sql} THEN createdAt END) AS CHAR), 'none'),
+  COALESCE(CAST(MAX(CASE WHEN createdAt < ${cutoff_sql} THEN createdAt END) AS CHAR), 'none')
+FROM alerts
+UNION ALL
+SELECT
+  'automation_alerts',
+  'createdAt',
+  COUNT(*),
+  COALESCE(SUM(createdAt < ${cutoff_sql}), 0),
+  COALESCE(CAST(MIN(CASE WHEN createdAt < ${cutoff_sql} THEN createdAt END) AS CHAR), 'none'),
+  COALESCE(CAST(MAX(CASE WHEN createdAt < ${cutoff_sql} THEN createdAt END) AS CHAR), 'none')
+FROM automation_alerts;
+"
+
+  echo "email_delivery_status	total_rows	deletable_rows	oldest_deletable	newest_deletable"
+  mysql_query "
+SELECT
+  status,
+  COUNT(*),
+  COALESCE(SUM(updated_at < ${cutoff_sql}), 0),
+  COALESCE(CAST(MIN(CASE WHEN updated_at < ${cutoff_sql} THEN updated_at END) AS CHAR), 'none'),
+  COALESCE(CAST(MAX(CASE WHEN updated_at < ${cutoff_sql} THEN updated_at END) AS CHAR), 'none')
+FROM email_deliveries
+GROUP BY status
+ORDER BY COUNT(*) DESC, status ASC;
+"
+
+  echo "alert_related_table	cascade_parent	total_rows	rows_removed_with_old_alerts	oldest_related_removed	newest_related_removed"
+  mysql_query "
+SELECT
+  'alert_actions',
+  'alerts',
+  COUNT(*),
+  COALESCE(SUM(alerts.createdAt < ${cutoff_sql}), 0),
+  COALESCE(CAST(MIN(CASE WHEN alerts.createdAt < ${cutoff_sql} THEN alert_actions.createdAt END) AS CHAR), 'none'),
+  COALESCE(CAST(MAX(CASE WHEN alerts.createdAt < ${cutoff_sql} THEN alert_actions.createdAt END) AS CHAR), 'none')
+FROM alert_actions
+LEFT JOIN alerts ON alerts.id = alert_actions.alertId
+UNION ALL
+SELECT
+  'signal_alert_links',
+  'alerts',
+  COUNT(*),
+  COALESCE(SUM(alerts.createdAt < ${cutoff_sql}), 0),
+  COALESCE(CAST(MIN(CASE WHEN alerts.createdAt < ${cutoff_sql} THEN signal_alert_links.created_at END) AS CHAR), 'none'),
+  COALESCE(CAST(MAX(CASE WHEN alerts.createdAt < ${cutoff_sql} THEN signal_alert_links.created_at END) AS CHAR), 'none')
+FROM signal_alert_links
+LEFT JOIN alerts ON alerts.id = signal_alert_links.alert_id;
+"
+}
+
 function print_mysql_binlog_report() {
   mysql_query "
 SHOW BINARY LOGS;
@@ -829,6 +963,64 @@ SELECT ROW_COUNT();
   done
 
   echo "mysql_scheduler_run_logs_deleted_total	${total_deleted}"
+}
+
+function apply_mysql_app_data_retention_table() {
+  local label="$1"
+  local delete_sql="$2"
+  local deleted total_deleted batch_number
+  total_deleted=0
+  batch_number=0
+
+  while [[ "${batch_number}" -lt "${MAX_BATCHES}" ]]; do
+    deleted="$(mysql_query "
+SET sql_log_bin = 0;
+${delete_sql}
+LIMIT ${MYSQL_BATCH_SIZE};
+SELECT ROW_COUNT();
+")"
+    deleted="$(printf '%s\n' "${deleted}" | tail -n 1)"
+    deleted="${deleted//$'\n'/}"
+    deleted="${deleted:-0}"
+    total_deleted=$((total_deleted + deleted))
+    batch_number=$((batch_number + 1))
+    echo "mysql_app_data_${label}_deleted_batch_${batch_number}	${deleted}"
+    if [[ "${deleted}" -eq 0 ]]; then
+      break
+    fi
+  done
+
+  echo "mysql_app_data_${label}_deleted_total	${total_deleted}"
+}
+
+function apply_mysql_app_data_retention() {
+  local cutoff_sql
+  cutoff_sql="$(mysql_app_data_cutoff_sql)"
+
+  if [[ "${RUN_MYSQL_APP_DATA_RETENTION}" != "true" ]]; then
+    echo "mysql_app_data_retention	skipped"
+    return
+  fi
+
+  apply_mysql_app_data_retention_table \
+    "email_deliveries" \
+    "DELETE FROM email_deliveries WHERE updated_at < ${cutoff_sql}"
+
+  apply_mysql_app_data_retention_table \
+    "activity_exports" \
+    "DELETE FROM activity_exports WHERE updatedAt < ${cutoff_sql}"
+
+  apply_mysql_app_data_retention_table \
+    "activity_logs" \
+    "DELETE FROM activity_logs WHERE createdAt < ${cutoff_sql}"
+
+  apply_mysql_app_data_retention_table \
+    "automation_alerts" \
+    "DELETE FROM automation_alerts WHERE createdAt < ${cutoff_sql}"
+
+  apply_mysql_app_data_retention_table \
+    "alerts" \
+    "DELETE FROM alerts WHERE createdAt < ${cutoff_sql}"
 }
 
 function apply_mysql_binlog_purge() {
@@ -990,6 +1182,8 @@ mode	${MODE}
 root_dir	${ROOT_DIR}
 candle_retention_days	${CANDLE_RETENTION_DAYS}
 scheduler_run_keep_runs	${SCHEDULER_RUN_KEEP_RUNS}
+mysql_app_data_retention_hours	${MYSQL_APP_DATA_RETENTION_HOURS}
+mysql_app_data_retention_only	${MYSQL_APP_DATA_RETENTION_ONLY}
 postgres_container	${POSTGRES_CONTAINER}
 mysql_container	${MYSQL_CONTAINER}
 postgres_batch_size	${POSTGRES_BATCH_SIZE}
@@ -1007,6 +1201,7 @@ tmp_cleanup_path	${TMP_CLEANUP_PATH}
 tmp_cleanup_min_age_days	${TMP_CLEANUP_MIN_AGE_DAYS}
 run_postgres_candles	${RUN_POSTGRES_CANDLES}
 run_mysql_scheduler_run_logs	${RUN_MYSQL_SCHEDULER_RUN_LOGS}
+run_mysql_app_data_retention	${RUN_MYSQL_APP_DATA_RETENTION}
 run_mysql_binlog_purge	${RUN_MYSQL_BINLOG_PURGE}
 run_mysql_temp_reclaim	${RUN_MYSQL_TEMP_RECLAIM}
 run_docker_prune	${RUN_DOCKER_PRUNE}
@@ -1016,6 +1211,21 @@ run_docker_volume_prune	${RUN_DOCKER_VOLUME_PRUNE}
 run_system_journal_vacuum	${RUN_SYSTEM_JOURNAL_VACUUM}
 run_tmp_cleanup	${RUN_TMP_CLEANUP}
 EOF
+
+  if [[ "${MYSQL_APP_DATA_RETENTION_ONLY}" == "true" ]]; then
+    section "MySQL App Data Retention Report"
+    print_mysql_app_data_retention_report
+
+    if [[ "${MODE}" == "apply" ]]; then
+      section "Applying MySQL App Data Retention"
+      apply_mysql_app_data_retention
+    else
+      section "Dry Run"
+      echo "No data was deleted. Re-run with AURALPHA_RETENTION_CONFIRM=delete and --apply to execute cleanup."
+    fi
+
+    return 0
+  fi
 
   section "Disk Before"
   print_disk_snapshot
@@ -1059,6 +1269,9 @@ EOF
   section "MySQL scheduler_run_logs Retention Report"
   print_mysql_scheduler_run_log_report
 
+  section "MySQL App Data Retention Report"
+  print_mysql_app_data_retention_report
+
   section "MySQL Binary Log Report"
   print_mysql_binlog_report
 
@@ -1073,6 +1286,9 @@ EOF
       section "Applying MySQL Scheduler Run Log Retention"
       echo "mysql_scheduler_run_logs	skipped"
     fi
+
+    section "Applying MySQL App Data Retention"
+    apply_mysql_app_data_retention
 
     section "Applying Docker Builder Prune"
     apply_docker_builder_prune
