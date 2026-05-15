@@ -4704,6 +4704,13 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
         submittedAt: '2026-04-04T10:01:00.000Z',
         entryPrice: '100',
         quantity: 1,
+        protectionPlan: {
+          brokerKey: 'mudrex',
+          accountId: 'acc-1',
+          orderId: 'ord-limit-1',
+          stopLossOrderId: 'mudrex-sl-1',
+          takeProfitOrderId: 'mudrex-tp-1',
+        },
         note: 'Live limit order linked.',
       },
     },
@@ -4792,6 +4799,167 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
   assert.match(
     String(savedExecutionPayload?.['note'] || ''),
     /Limit entry order expired after 15m for 5m/
+  );
+
+  savedExecutionPayload = null;
+  cancelledOrders.length = 0;
+
+  const deltaLimitTrade = {
+    ...trade,
+    id: 'st-delta-limit-expiry',
+    symbol: 'SPXUSDT',
+    side: 'SELL',
+    dedupeKey: 'dedupe-delta-limit-expiry',
+    executionRecord: null,
+    meta: {
+      execution: {
+        executionMode: 'live',
+        orderId: 'delta-entry-1',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+        executionState: 'working',
+        orderStatus: 'OPEN',
+        orderType: 'limit',
+        linkedAt: '2026-04-04T10:01:00.000Z',
+        submittedAt: '2026-04-04T10:01:00.000Z',
+        entryPrice: '100',
+        quantity: 1,
+        protectionPlan: {
+          brokerKey: 'delta_exchange',
+          accountId: 'acc-1',
+          orderId: 'delta-entry-1',
+          stopLossOrderId: 'delta-sl-1',
+          takeProfitOrderId: 'delta-tp-1',
+        },
+        note: 'Delta live limit order linked with native protection.',
+      },
+    },
+  };
+
+  const refreshedDeltaLimitTrade = await service.refreshExecutionOutcomes('user-1', [
+    deltaLimitTrade,
+  ]);
+
+  assert.equal(refreshedDeltaLimitTrade, 1);
+  assert.deepEqual(cancelledOrders, [
+    {
+      orderId: 'delta-entry-1',
+      context: {
+        userId: 'user-1',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+      },
+    },
+    {
+      orderId: 'delta-sl-1',
+      context: {
+        userId: 'user-1',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+      },
+    },
+    {
+      orderId: 'delta-tp-1',
+      context: {
+        userId: 'user-1',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+      },
+    },
+  ]);
+  assert.equal(savedExecutionPayload?.['executionState'], 'expired');
+  assert.equal(savedExecutionPayload?.['orderStatus'], 'EXPIRED');
+  assert.match(
+    String(savedExecutionPayload?.['note'] || ''),
+    /Delta native protection cancel requested after unfilled entry expiry: delta-sl-1, delta-tp-1/
+  );
+  assert.deepEqual(
+    (savedExecutionPayload?.['protectionPlan'] as Record<string, unknown>)
+      ?.siblingProtectionCancelledOrderIds,
+    ['delta-sl-1', 'delta-tp-1']
+  );
+
+  savedExecutionPayload = null;
+  cancelledOrders.length = 0;
+
+  const terminalDeltaLimitTrade = {
+    ...trade,
+    id: 'st-delta-terminal-limit-cleanup',
+    symbol: 'SPXUSDT',
+    side: 'SELL',
+    dedupeKey: 'dedupe-delta-terminal-limit-cleanup',
+    executionRecord: null,
+    meta: {
+      execution: {
+        executionMode: 'live',
+        orderId: 'delta-entry-terminal',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+        executionState: 'expired',
+        orderStatus: 'CANCELLED',
+        orderType: 'limit',
+        linkedAt: '2026-04-04T10:01:00.000Z',
+        submittedAt: '2026-04-04T10:01:00.000Z',
+        entryPrice: '100',
+        quantity: 1,
+        filledQuantity: 0,
+        remainingQuantity: 0,
+        protectionPlan: {
+          brokerKey: 'delta_exchange',
+          accountId: 'acc-1',
+          orderId: 'delta-entry-terminal',
+          stopLossOrderId: 'delta-terminal-sl-1',
+          takeProfitOrderId: 'delta-terminal-tp-1',
+        },
+        note: 'Delta entry was already terminal before reconciliation.',
+      },
+    },
+  };
+  service.suggestedTradeRepository = {
+    ...service.suggestedTradeRepository,
+    async getLinkedOrderSnapshot() {
+      return {
+        orderStatus: 'CANCELLED',
+        statusRank: 4,
+        lastSeenAt: '2026-04-04T10:20:00.000Z',
+        payload: {
+          created_at: '2026-04-04T10:01:00.000Z',
+          updated_at: '2026-04-04T10:20:00.000Z',
+          filled_quantity: 0,
+        },
+      };
+    },
+    async getLinkedPositionSnapshots() {
+      return [];
+    },
+  };
+
+  const refreshedTerminalDeltaLimitTrade = await service.refreshExecutionOutcomes('user-1', [
+    terminalDeltaLimitTrade,
+  ]);
+
+  assert.equal(refreshedTerminalDeltaLimitTrade, 1);
+  assert.deepEqual(cancelledOrders, [
+    {
+      orderId: 'delta-terminal-sl-1',
+      context: {
+        userId: 'user-1',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+      },
+    },
+    {
+      orderId: 'delta-terminal-tp-1',
+      context: {
+        userId: 'user-1',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+      },
+    },
+  ]);
+  assert.match(
+    String(savedExecutionPayload?.['note'] || ''),
+    /Delta native protection cancel requested after unfilled entry expiry: delta-terminal-sl-1, delta-terminal-tp-1/
   );
 
   savedExecutionPayload = null;

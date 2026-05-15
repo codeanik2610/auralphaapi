@@ -8118,6 +8118,17 @@ export class SuggestedTradesService {
         brokerKey,
         accountId,
       });
+      const protectionCleanup = partialFillEvidence
+        ? { note: null, protectionPlan: null }
+        : await this.cancelDeltaProtectionOrdersForExpiredEntry({
+            userId,
+            brokerKey,
+            accountId,
+            entryOrderId: orderId,
+            execution,
+            adapter,
+            nowIso,
+          });
       if (partialFillEvidence) {
         return {
           ...execution,
@@ -8141,12 +8152,27 @@ export class SuggestedTradesService {
         exitPrice: null,
         realizedPnl: null,
         outcome: null,
-        note: this.appendExecutionNote(execution.note, expiryMessage),
+        protectionPlan: protectionCleanup.protectionPlan ?? execution.protectionPlan,
+        note: this.appendExecutionNote(
+          this.appendExecutionNote(execution.note, expiryMessage),
+          protectionCleanup.note ?? ''
+        ),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (this.isAlreadyTerminalCancelError(message)) {
         const terminalMessage = 'Broker reported order already terminal during expiry cancel.';
+        const protectionCleanup = partialFillEvidence
+          ? { note: null, protectionPlan: null }
+          : await this.cancelDeltaProtectionOrdersForExpiredEntry({
+              userId,
+              brokerKey,
+              accountId,
+              entryOrderId: orderId,
+              execution,
+              adapter,
+              nowIso,
+            });
         if (partialFillEvidence) {
           return {
             ...execution,
@@ -8173,9 +8199,13 @@ export class SuggestedTradesService {
           exitPrice: null,
           realizedPnl: null,
           outcome: null,
+          protectionPlan: protectionCleanup.protectionPlan ?? execution.protectionPlan,
           note: this.appendExecutionNote(
-            this.appendExecutionNote(execution.note, expiryMessage),
-            terminalMessage
+            this.appendExecutionNote(
+              this.appendExecutionNote(execution.note, expiryMessage),
+              terminalMessage
+            ),
+            protectionCleanup.note ?? ''
           ),
         };
       }
@@ -8187,6 +8217,96 @@ export class SuggestedTradesService {
         ),
       };
     }
+  }
+
+  private async cancelDeltaProtectionOrdersForExpiredEntry(input: {
+    userId: string;
+    brokerKey: string;
+    accountId: string;
+    entryOrderId: string;
+    execution: SuggestedTradeExecutionLink;
+    adapter: {
+      cancelOrder?: (
+        orderId: string,
+        context?: { userId: string; brokerKey: string; accountId: string }
+      ) => Promise<unknown>;
+    };
+    nowIso: string;
+  }): Promise<{ note: string | null; protectionPlan: Record<string, unknown> | null }> {
+    if (input.brokerKey !== 'delta_exchange' || !input.adapter.cancelOrder) {
+      return { note: null, protectionPlan: null };
+    }
+
+    const currentPlan = this.readRecordValue(input.execution.protectionPlan) ?? {};
+    const protectionOrderIds = Array.from(
+      new Set(
+        [
+          this.readStringValue(currentPlan.stopLossOrderId) ??
+            this.readStringValue(currentPlan.stop_loss_order_id),
+          this.readStringValue(currentPlan.takeProfitOrderId) ??
+            this.readStringValue(currentPlan.take_profit_order_id),
+        ].filter((value): value is string => Boolean(value && value !== input.entryOrderId))
+      )
+    );
+    if (!protectionOrderIds.length) {
+      return { note: null, protectionPlan: null };
+    }
+
+    const cancelledOrderIds: string[] = [];
+    const terminalOrderIds: string[] = [];
+    const failedOrderMessages: string[] = [];
+    for (const protectionOrderId of protectionOrderIds) {
+      try {
+        await input.adapter.cancelOrder(protectionOrderId, {
+          userId: input.userId,
+          brokerKey: input.brokerKey,
+          accountId: input.accountId,
+        });
+        cancelledOrderIds.push(protectionOrderId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (this.isAlreadyTerminalCancelError(message)) {
+          terminalOrderIds.push(protectionOrderId);
+          continue;
+        }
+        failedOrderMessages.push(`${protectionOrderId}: ${message}`);
+      }
+    }
+
+    const noteParts: string[] = [];
+    if (cancelledOrderIds.length) {
+      noteParts.push(
+        `Delta native protection cancel requested after unfilled entry expiry: ${cancelledOrderIds.join(
+          ', '
+        )}.`
+      );
+    }
+    if (terminalOrderIds.length) {
+      noteParts.push(
+        `Delta native protection was already terminal during entry expiry cleanup: ${terminalOrderIds.join(
+          ', '
+        )}.`
+      );
+    }
+    if (failedOrderMessages.length) {
+      noteParts.push(
+        `Delta native protection cancel failed after entry expiry: ${failedOrderMessages.join(
+          '; '
+        )}.`
+      );
+    }
+
+    return {
+      note: noteParts.join(' ') || null,
+      protectionPlan: {
+        ...currentPlan,
+        siblingProtectionCancelRequestedAt: input.nowIso,
+        siblingProtectionCancelOrderIds: protectionOrderIds,
+        siblingProtectionCancelledOrderIds: cancelledOrderIds,
+        siblingProtectionAlreadyTerminalOrderIds: terminalOrderIds,
+        siblingProtectionCancelFailures: failedOrderMessages,
+      },
+    };
   }
 
   private isAlreadyTerminalCancelError(message: string): boolean {
@@ -10046,13 +10166,6 @@ export class SuggestedTradesService {
       return execution;
     }
 
-    if (this.isUnfilledTerminalEntryExecution(execution)) {
-      return execution;
-    }
-    if (this.isActiveUnfilledLiveEntryOrder(execution)) {
-      return execution;
-    }
-
     const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
     const accountId = this.readStringValue(execution.accountId);
     const orderId = this.readStringValue(execution.orderId);
@@ -10061,6 +10174,38 @@ export class SuggestedTradesService {
     }
 
     if (!this.brokerRuntimeRegistry?.supportsOrdersAdapter?.(brokerKey)) {
+      return execution;
+    }
+
+    if (this.isUnfilledTerminalEntryExecution(execution)) {
+      const plan = this.readRecordValue(execution.protectionPlan);
+      if (this.readStringValue(plan?.siblingProtectionCancelRequestedAt)) {
+        return execution;
+      }
+      const adapter = this.brokerRuntimeRegistry?.getOrdersAdapter?.(brokerKey);
+      if (!adapter?.cancelOrder) {
+        return execution;
+      }
+      const protectionCleanup = await this.cancelDeltaProtectionOrdersForExpiredEntry({
+        userId,
+        brokerKey,
+        accountId,
+        entryOrderId: orderId,
+        execution,
+        adapter,
+        nowIso: new Date().toISOString(),
+      });
+      if (!protectionCleanup.note && !protectionCleanup.protectionPlan) {
+        return execution;
+      }
+      return {
+        ...execution,
+        protectionPlan: protectionCleanup.protectionPlan ?? execution.protectionPlan,
+        note: this.appendExecutionNote(execution.note, protectionCleanup.note ?? ''),
+      };
+    }
+
+    if (this.isActiveUnfilledLiveEntryOrder(execution)) {
       return execution;
     }
 
