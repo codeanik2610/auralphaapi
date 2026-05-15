@@ -9884,6 +9884,78 @@ function runCustomRLadderTrailingStopAssertions(): void {
   if (alreadyApplied.action === 'none') {
     assert.equal(alreadyApplied.reason, 'already_applied');
   }
+
+  const riskRewardConfig = normalizeCustomRLadderTrailingStopConfig({
+    enabled: true,
+    mode: 'custom_r_ladder',
+    rules: [
+      { whenProfitR: 0.4, moveStopToR: 0 },
+      { whenProfitR: 1.5, moveStopToR: 0.5 },
+      { whenProfitR: 2, moveStopToR: 1.3 },
+      { whenProfitR: 3, moveStopToR: 2.4 },
+      { whenProfitR: 4, trailDistanceR: 0.6 },
+    ],
+  });
+  assert.ok(riskRewardConfig);
+  assert.deepEqual(riskRewardConfig.rules, [
+    { whenProfitR: 0.4, moveStopToR: 0 },
+    { whenProfitR: 1.5, moveStopToR: 0.5 },
+    { whenProfitR: 2, moveStopToR: 1.3 },
+    { whenProfitR: 3, moveStopToR: 2.4 },
+    { whenProfitR: 4, moveStopToR: 3.4, trailDistanceR: 0.6 },
+  ]);
+
+  const peakTrailingMove = evaluateCustomRLadderTrailingStopMove({
+    side: 'long',
+    config: riskRewardConfig,
+    entryPrice: 100,
+    originalStopLossPrice: 95,
+    currentStopLossPrice: 117,
+    currentPrice: 123,
+    peakProfitR: 5,
+    lastAppliedWhenProfitR: 4,
+    lastAppliedMoveStopToR: 3.4,
+  });
+  assert.equal(peakTrailingMove.action, 'move');
+  if (peakTrailingMove.action === 'move') {
+    assert.equal(peakTrailingMove.rule.whenProfitR, 4);
+    assert.equal(peakTrailingMove.rule.trailDistanceR, 0.6);
+    assert.equal(Number(peakTrailingMove.profitR.toFixed(6)), 4.6);
+    assert.equal(peakTrailingMove.peakProfitR, 5);
+    assert.equal(Number(peakTrailingMove.lockedProfitR.toFixed(6)), 4.4);
+    assert.equal(Number(peakTrailingMove.targetStopLossPrice.toFixed(6)), 122);
+  }
+
+  const shortPeakTrailingMove = evaluateCustomRLadderTrailingStopMove({
+    side: 'short',
+    config: riskRewardConfig,
+    entryPrice: 100,
+    originalStopLossPrice: 105,
+    currentStopLossPrice: 83,
+    currentPrice: 75,
+  });
+  assert.equal(shortPeakTrailingMove.action, 'move');
+  if (shortPeakTrailingMove.action === 'move') {
+    assert.equal(shortPeakTrailingMove.rule.whenProfitR, 4);
+    assert.equal(Number(shortPeakTrailingMove.lockedProfitR.toFixed(6)), 4.4);
+    assert.equal(Number(shortPeakTrailingMove.targetStopLossPrice.toFixed(6)), 78);
+  }
+
+  const trailingAlreadyApplied = evaluateCustomRLadderTrailingStopMove({
+    side: 'long',
+    config: riskRewardConfig,
+    entryPrice: 100,
+    originalStopLossPrice: 95,
+    currentStopLossPrice: 122,
+    currentPrice: 125,
+    peakProfitR: 5,
+    lastAppliedWhenProfitR: 4,
+    lastAppliedMoveStopToR: 4.4,
+  });
+  assert.equal(trailingAlreadyApplied.action, 'none');
+  if (trailingAlreadyApplied.action === 'none') {
+    assert.equal(trailingAlreadyApplied.reason, 'already_applied');
+  }
 }
 
 async function main(): Promise<void> {

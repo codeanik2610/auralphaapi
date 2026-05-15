@@ -8568,10 +8568,12 @@ export class SuggestedTradesService {
     );
     const currentStopLossPrice = this.resolveTrailingCurrentStopLossPrice(execution, payload);
     const takeProfitPrice = this.resolveTrailingTakeProfitPrice(trade, execution, payload);
-    const lastAppliedWhenProfitR = this.readNumberValue(
-      this.readRecordValue(this.readRecordValue(execution.protectionPlan)?.trailingStop)
-        ?.lastAppliedWhenProfitR
+    const trailingState = this.readRecordValue(
+      this.readRecordValue(execution.protectionPlan)?.trailingStop
     );
+    const lastAppliedWhenProfitR = this.readNumberValue(trailingState?.lastAppliedWhenProfitR);
+    const peakProfitR = this.readNumberValue(trailingState?.peakProfitR);
+    const lastAppliedMoveStopToR = this.readNumberValue(trailingState?.lastMoveStopToR);
 
     if (!(entryPrice && originalStopLossPrice && currentPrice && takeProfitPrice)) {
       return execution;
@@ -8584,7 +8586,9 @@ export class SuggestedTradesService {
       originalStopLossPrice,
       currentPrice,
       currentStopLossPrice,
+      peakProfitR,
       lastAppliedWhenProfitR,
+      lastAppliedMoveStopToR,
     });
     if (move.action !== 'move') {
       return this.clearTrailingStopErrorWhenNoMoveNeeded(
@@ -8725,10 +8729,11 @@ export class SuggestedTradesService {
       originalStopLossPrice:
         this.readNumberValue(existingTrailing.originalStopLossPrice) ?? originalStopLossPrice,
       lastAppliedWhenProfitR: move.rule.whenProfitR,
-      lastMoveStopToR: move.rule.moveStopToR,
+      lastMoveStopToR: move.lockedProfitR,
       lastStopLossPrice: stopLossPrice,
       lastCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
       lastProfitR: Number(move.profitR.toFixed(6)),
+      peakProfitR: Number(move.peakProfitR.toFixed(6)),
       lastCheckedAt: nowIso,
       lastUpdatedAt: nowIso,
       lastError: null,
@@ -8737,7 +8742,13 @@ export class SuggestedTradesService {
         {
           at: nowIso,
           whenProfitR: move.rule.whenProfitR,
-          moveStopToR: move.rule.moveStopToR,
+          moveStopToR: move.lockedProfitR,
+          ...(move.rule.trailDistanceR
+            ? {
+                trailDistanceR: move.rule.trailDistanceR,
+                peakProfitR: Number(move.peakProfitR.toFixed(6)),
+              }
+            : {}),
           stopLossPrice,
           currentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
           profitR: Number(move.profitR.toFixed(6)),
@@ -8746,7 +8757,13 @@ export class SuggestedTradesService {
         },
       ],
     };
-    const note = `Trailing SL moved to ${stopLossPrice} after price crossed ${move.rule.whenProfitR}R; stop now locks ${move.rule.moveStopToR}R.`;
+    const note = move.rule.trailDistanceR
+      ? `Trailing SL moved to ${stopLossPrice} after observed peak ${Number(
+          move.peakProfitR.toFixed(6)
+        )}R; stop now trails by ${move.rule.trailDistanceR}R and locks ${Number(
+          move.lockedProfitR.toFixed(6)
+        )}R.`
+      : `Trailing SL moved to ${stopLossPrice} after price crossed ${move.rule.whenProfitR}R; stop now locks ${move.lockedProfitR}R.`;
 
     await this.operationalEventService?.logActivity?.(userId, {
       type: 'Suggested Trade',

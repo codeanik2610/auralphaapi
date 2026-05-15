@@ -3,6 +3,7 @@ export type TrailingStopSide = 'long' | 'short';
 export interface CustomRLadderTrailingStopRule {
   whenProfitR: number;
   moveStopToR: number;
+  trailDistanceR?: number;
 }
 
 export interface CustomRLadderTrailingStopConfig {
@@ -20,14 +21,18 @@ export interface CustomRLadderTrailingStopEvaluationInput {
   originalStopLossPrice: number;
   currentPrice: number;
   currentStopLossPrice?: number | null;
+  peakProfitR?: number | null;
   lastAppliedWhenProfitR?: number | null;
+  lastAppliedMoveStopToR?: number | null;
 }
 
 export interface CustomRLadderTrailingStopMove {
   action: 'move';
   side: TrailingStopSide;
   profitR: number;
+  peakProfitR: number;
   riskPerUnit: number;
+  lockedProfitR: number;
   rule: CustomRLadderTrailingStopRule;
   targetStopLossPrice: number;
 }
@@ -135,20 +140,35 @@ const normalizeRule = (value: unknown): CustomRLadderTrailingStopRule | null => 
       rule.lockR ??
       rule.lock_r
   );
+  const trailDistanceR = parseNumber(
+    rule.trailDistanceR ??
+      rule.trail_distance_r ??
+      rule.trailingDistanceR ??
+      rule.trailing_distance_r ??
+      rule.trailByR ??
+      rule.trail_by_r ??
+      rule.peakTrailR ??
+      rule.peak_trail_r
+  );
+  const resolvedMoveStopToR =
+    moveStopToR ??
+    (whenProfitR !== null && trailDistanceR !== null ? whenProfitR - trailDistanceR : null);
 
   if (
     whenProfitR === null ||
-    moveStopToR === null ||
+    resolvedMoveStopToR === null ||
     whenProfitR <= 0 ||
-    moveStopToR < 0 ||
-    moveStopToR >= whenProfitR
+    resolvedMoveStopToR < 0 ||
+    resolvedMoveStopToR >= whenProfitR ||
+    (trailDistanceR !== null && trailDistanceR <= 0)
   ) {
     return null;
   }
 
   return {
     whenProfitR,
-    moveStopToR,
+    moveStopToR: resolvedMoveStopToR,
+    ...(trailDistanceR !== null ? { trailDistanceR } : {}),
   };
 };
 
@@ -260,26 +280,41 @@ export function evaluateCustomRLadderTrailingStopMove(
     input.side === 'short'
       ? (input.entryPrice - input.currentPrice) / riskPerUnit
       : (input.currentPrice - input.entryPrice) / riskPerUnit;
+  const priorPeakProfitR =
+    typeof input.peakProfitR === 'number' && Number.isFinite(input.peakProfitR)
+      ? input.peakProfitR
+      : null;
+  const peakProfitR = Math.max(profitR, priorPeakProfitR ?? profitR);
   const crossedRule = [...input.config.rules]
     .reverse()
-    .find((rule) => profitR + EPSILON >= rule.whenProfitR);
+    .find((rule) => peakProfitR + EPSILON >= rule.whenProfitR);
   if (!crossedRule) {
     return { action: 'none', reason: 'no_rule_crossed', profitR };
   }
 
   const lastApplied = input.lastAppliedWhenProfitR;
+  const lockedProfitR = crossedRule.trailDistanceR
+    ? Math.max(crossedRule.moveStopToR, peakProfitR - crossedRule.trailDistanceR)
+    : crossedRule.moveStopToR;
+  const lastAppliedMoveStopToR =
+    typeof input.lastAppliedMoveStopToR === 'number' &&
+    Number.isFinite(input.lastAppliedMoveStopToR)
+      ? input.lastAppliedMoveStopToR
+      : null;
   if (
     typeof lastApplied === 'number' &&
     Number.isFinite(lastApplied) &&
-    lastApplied + EPSILON >= crossedRule.whenProfitR
+    lastApplied + EPSILON >= crossedRule.whenProfitR &&
+    (!crossedRule.trailDistanceR ||
+      (lastAppliedMoveStopToR !== null && lastAppliedMoveStopToR + EPSILON >= lockedProfitR))
   ) {
     return { action: 'none', reason: 'already_applied', profitR };
   }
 
   const targetStopLossPrice =
     input.side === 'short'
-      ? input.entryPrice - crossedRule.moveStopToR * riskPerUnit
-      : input.entryPrice + crossedRule.moveStopToR * riskPerUnit;
+      ? input.entryPrice - lockedProfitR * riskPerUnit
+      : input.entryPrice + lockedProfitR * riskPerUnit;
   const currentStopLossPrice =
     typeof input.currentStopLossPrice === 'number' && Number.isFinite(input.currentStopLossPrice)
       ? input.currentStopLossPrice
@@ -299,8 +334,13 @@ export function evaluateCustomRLadderTrailingStopMove(
     action: 'move',
     side: input.side,
     profitR,
+    peakProfitR,
     riskPerUnit,
-    rule: crossedRule,
+    lockedProfitR,
+    rule: {
+      ...crossedRule,
+      moveStopToR: lockedProfitR,
+    },
     targetStopLossPrice,
   };
 }
