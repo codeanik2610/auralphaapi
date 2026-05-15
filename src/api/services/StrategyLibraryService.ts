@@ -1013,9 +1013,19 @@ export class StrategyLibraryService {
     const authoredTarget = String(config.authoredCodeTarget || config.codeTarget || '')
       .trim()
       .toLowerCase();
-    const codeDefinition = String(config.authoredCodeDefinition || config.codeDefinition || '').trim();
+    const compiledTarget = String(config.compiledCodeTarget || '')
+      .trim()
+      .toLowerCase();
+    const codeDefinition = String(
+      config.authoredCodeDefinition || config.codeDefinition || config.compiledCodeDefinition || ''
+    ).trim();
+    const isPythonBackedTemplate =
+      (authoredTarget === 'python' || compiledTarget === 'python') && Boolean(codeDefinition);
 
     if (editorMode === 'custom-python') {
+      return 'Custom Python';
+    }
+    if (isPythonBackedTemplate) {
       return 'Custom Python';
     }
     if (editorMode === 'rule-based') {

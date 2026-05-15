@@ -10451,6 +10451,10 @@ async function runStrategyLibraryTemplateMappingAssertions(): Promise<void> {
     templateVersion: 5,
     config: {
       editorMode: 'rule-based',
+      authoredCodeTarget: 'python',
+      compiledCodeTarget: 'python',
+      authoredCodeDefinition:
+        'class StrategyDraft:\n    def entry(self, ctx):\n        return True\n    def exit(self, ctx):\n        return False',
       entryLogic: 'ema(20) > ema(50)',
       exitLogic: 'ema(20) < ema(50)',
       market: 'crypto-futures',
@@ -10494,7 +10498,7 @@ async function runStrategyLibraryTemplateMappingAssertions(): Promise<void> {
 
   assert.equal(item.templateName, 'Momentum Template');
   assert.equal(item.templateVersion, 5);
-  assert.equal(item.templateType, 'Rule-based');
+  assert.equal(item.templateType, 'Custom Python');
   assert.equal(item.templateAutomationReady, true);
   assert.equal(Array.isArray(item.templateAutomationReasons), true);
   assert.equal(Object.prototype.hasOwnProperty.call(item.overrides ?? {}, 'required'), false);
