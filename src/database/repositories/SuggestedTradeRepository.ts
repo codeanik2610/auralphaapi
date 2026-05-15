@@ -341,57 +341,123 @@ export class SuggestedTradeRepository {
   async saveSuggestedTradeExecution(
     payload: SuggestedTradeExecutionUpsertPayload
   ): Promise<SuggestedTradeExecution> {
+    const safePayload = await this.preserveExistingLiveExecutionLink(payload);
     const entity = this.executionRepository.create({
-      suggestedTradeId: payload.suggestedTradeId,
-      userId: payload.userId,
-      executionMode: normalizeOptionalString(payload.executionMode)?.toLowerCase() ?? null,
-      preTradeCheckId: normalizeOptionalString(payload.preTradeCheckId),
-      preTradeState: normalizeOptionalString(payload.preTradeState)?.toLowerCase() ?? null,
-      preTradeCheckedAt: normalizeOptionalDate(payload.preTradeCheckedAt),
-      preTradeBlockedReason: normalizeOptionalString(payload.preTradeBlockedReason),
-      acceptedBy: normalizeOptionalString(payload.acceptedBy)?.toLowerCase() ?? null,
-      acceptedAt: normalizeOptionalDate(payload.acceptedAt),
-      orderId: normalizeOptionalString(payload.orderId),
-      paperOrderId: normalizeOptionalString(payload.paperOrderId),
-      brokerKey: normalizeOptionalString(payload.brokerKey)?.toLowerCase() ?? null,
-      accountId: normalizeOptionalString(payload.accountId),
-      orderStatus: normalizeOptionalString(payload.orderStatus),
-      paperOrderStatus: normalizeOptionalString(payload.paperOrderStatus),
-      executionState: normalizeOptionalString(payload.executionState)?.toLowerCase() ?? null,
-      orderType: normalizeOptionalString(payload.orderType),
-      triggerType: normalizeOptionalString(payload.triggerType),
-      leverage: normalizeOptionalNumber(payload.leverage),
-      quantity: normalizeOptionalNumber(payload.quantity),
-      entryPrice: normalizeDecimal(payload.entryPrice),
-      stopLossPrice: normalizeDecimal(payload.stopLossPrice),
-      takeProfitPrice: normalizeDecimal(payload.takeProfitPrice),
-      protectionState: normalizeOptionalString(payload.protectionState)?.toLowerCase() ?? null,
-      protectionSource: normalizeOptionalString(payload.protectionSource)?.toLowerCase() ?? null,
-      protectionPlan: normalizeOptionalRecord(payload.protectionPlan),
-      routeAttempts: normalizeOptionalRecordArray(payload.routeAttempts),
-      protectionAttempts: normalizeOptionalUnsignedInteger(payload.protectionAttempts),
-      protectionLastError: normalizeOptionalString(payload.protectionLastError),
-      protectionCheckedAt: normalizeOptionalDate(payload.protectionCheckedAt),
-      protectionAttachedAt: normalizeOptionalDate(payload.protectionAttachedAt),
-      submittedAt: normalizeOptionalDate(payload.submittedAt),
-      linkedAt: normalizeOptionalDate(payload.linkedAt),
-      lastSeenAt: normalizeOptionalDate(payload.lastSeenAt),
-      filledAt: normalizeOptionalDate(payload.filledAt),
-      canceledAt: normalizeOptionalDate(payload.canceledAt),
-      filledPrice: normalizeDecimal(payload.filledPrice),
-      filledQuantity: normalizeOptionalNumber(payload.filledQuantity),
-      remainingQuantity: normalizeOptionalNumber(payload.remainingQuantity),
-      positionId: normalizeOptionalString(payload.positionId),
-      positionStatus: normalizeOptionalString(payload.positionStatus),
-      positionOpenedAt: normalizeOptionalDate(payload.positionOpenedAt),
-      positionClosedAt: normalizeOptionalDate(payload.positionClosedAt),
-      exitPrice: normalizeDecimal(payload.exitPrice),
-      realizedPnl: normalizeDecimal(payload.realizedPnl),
-      outcome: normalizeOptionalString(payload.outcome)?.toLowerCase() ?? null,
-      note: normalizeOptionalString(payload.note),
+      suggestedTradeId: safePayload.suggestedTradeId,
+      userId: safePayload.userId,
+      executionMode: normalizeOptionalString(safePayload.executionMode)?.toLowerCase() ?? null,
+      preTradeCheckId: normalizeOptionalString(safePayload.preTradeCheckId),
+      preTradeState: normalizeOptionalString(safePayload.preTradeState)?.toLowerCase() ?? null,
+      preTradeCheckedAt: normalizeOptionalDate(safePayload.preTradeCheckedAt),
+      preTradeBlockedReason: normalizeOptionalString(safePayload.preTradeBlockedReason),
+      acceptedBy: normalizeOptionalString(safePayload.acceptedBy)?.toLowerCase() ?? null,
+      acceptedAt: normalizeOptionalDate(safePayload.acceptedAt),
+      orderId: normalizeOptionalString(safePayload.orderId),
+      paperOrderId: normalizeOptionalString(safePayload.paperOrderId),
+      brokerKey: normalizeOptionalString(safePayload.brokerKey)?.toLowerCase() ?? null,
+      accountId: normalizeOptionalString(safePayload.accountId),
+      orderStatus: normalizeOptionalString(safePayload.orderStatus),
+      paperOrderStatus: normalizeOptionalString(safePayload.paperOrderStatus),
+      executionState: normalizeOptionalString(safePayload.executionState)?.toLowerCase() ?? null,
+      orderType: normalizeOptionalString(safePayload.orderType),
+      triggerType: normalizeOptionalString(safePayload.triggerType),
+      leverage: normalizeOptionalNumber(safePayload.leverage),
+      quantity: normalizeOptionalNumber(safePayload.quantity),
+      entryPrice: normalizeDecimal(safePayload.entryPrice),
+      stopLossPrice: normalizeDecimal(safePayload.stopLossPrice),
+      takeProfitPrice: normalizeDecimal(safePayload.takeProfitPrice),
+      protectionState: normalizeOptionalString(safePayload.protectionState)?.toLowerCase() ?? null,
+      protectionSource:
+        normalizeOptionalString(safePayload.protectionSource)?.toLowerCase() ?? null,
+      protectionPlan: normalizeOptionalRecord(safePayload.protectionPlan),
+      routeAttempts: normalizeOptionalRecordArray(safePayload.routeAttempts),
+      protectionAttempts: normalizeOptionalUnsignedInteger(safePayload.protectionAttempts),
+      protectionLastError: normalizeOptionalString(safePayload.protectionLastError),
+      protectionCheckedAt: normalizeOptionalDate(safePayload.protectionCheckedAt),
+      protectionAttachedAt: normalizeOptionalDate(safePayload.protectionAttachedAt),
+      submittedAt: normalizeOptionalDate(safePayload.submittedAt),
+      linkedAt: normalizeOptionalDate(safePayload.linkedAt),
+      lastSeenAt: normalizeOptionalDate(safePayload.lastSeenAt),
+      filledAt: normalizeOptionalDate(safePayload.filledAt),
+      canceledAt: normalizeOptionalDate(safePayload.canceledAt),
+      filledPrice: normalizeDecimal(safePayload.filledPrice),
+      filledQuantity: normalizeOptionalNumber(safePayload.filledQuantity),
+      remainingQuantity: normalizeOptionalNumber(safePayload.remainingQuantity),
+      positionId: normalizeOptionalString(safePayload.positionId),
+      positionStatus: normalizeOptionalString(safePayload.positionStatus),
+      positionOpenedAt: normalizeOptionalDate(safePayload.positionOpenedAt),
+      positionClosedAt: normalizeOptionalDate(safePayload.positionClosedAt),
+      exitPrice: normalizeDecimal(safePayload.exitPrice),
+      realizedPnl: normalizeDecimal(safePayload.realizedPnl),
+      outcome: normalizeOptionalString(safePayload.outcome)?.toLowerCase() ?? null,
+      note: normalizeOptionalString(safePayload.note),
     });
 
     return this.executionRepository.save(entity);
+  }
+
+  private async preserveExistingLiveExecutionLink(
+    payload: SuggestedTradeExecutionUpsertPayload
+  ): Promise<SuggestedTradeExecutionUpsertPayload> {
+    if (normalizeOptionalString(payload.orderId)) {
+      return payload;
+    }
+
+    const existing = await this.executionRepository.findOne({
+      where: { suggestedTradeId: payload.suggestedTradeId },
+    });
+    const existingOrderId = normalizeOptionalString(existing?.orderId);
+    if (!existing || !existingOrderId) {
+      return payload;
+    }
+
+    const incomingMode = normalizeOptionalString(payload.executionMode)?.toLowerCase();
+    const existingMode = normalizeOptionalString(existing.executionMode)?.toLowerCase();
+    if (incomingMode && incomingMode !== 'live') {
+      return payload;
+    }
+    if (existingMode !== 'live') {
+      return payload;
+    }
+
+    return {
+      ...payload,
+      executionMode: normalizeOptionalString(payload.executionMode) ?? existing.executionMode,
+      orderId: existing.orderId,
+      brokerKey: normalizeOptionalString(payload.brokerKey) ?? existing.brokerKey,
+      accountId: normalizeOptionalString(payload.accountId) ?? existing.accountId,
+      linkedAt: payload.linkedAt ?? existing.linkedAt,
+      protectionSource:
+        normalizeOptionalString(payload.protectionSource) ?? existing.protectionSource,
+      protectionPlan: this.mergeProtectionPlanLinkFields(
+        payload.protectionPlan,
+        existing.protectionPlan
+      ),
+    };
+  }
+
+  private mergeProtectionPlanLinkFields(
+    incoming: Record<string, unknown> | null | undefined,
+    existing: Record<string, unknown> | null | undefined
+  ): Record<string, unknown> | null | undefined {
+    const existingPlan = normalizeOptionalRecord(existing);
+    if (!existingPlan) {
+      return incoming;
+    }
+
+    const incomingPlan = normalizeOptionalRecord(incoming);
+    if (!incomingPlan) {
+      return existingPlan;
+    }
+
+    return {
+      ...incomingPlan,
+      orderId: normalizeOptionalString(incomingPlan.orderId) ?? existingPlan.orderId,
+      stopLossOrderId:
+        normalizeOptionalString(incomingPlan.stopLossOrderId) ?? existingPlan.stopLossOrderId,
+      takeProfitOrderId:
+        normalizeOptionalString(incomingPlan.takeProfitOrderId) ?? existingPlan.takeProfitOrderId,
+    };
   }
 
   async getLinkedOrderSnapshot(

@@ -4276,6 +4276,81 @@ async function runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions(): Pr
   }
 }
 
+async function runSuggestedTradeExecutionLinkPreservationAssertions(): Promise<void> {
+  const repository = new SuggestedTradeRepository() as any;
+  const savedEntities: Array<Record<string, unknown>> = [];
+  const existingLiveExecution = {
+    suggestedTradeId: 'st-link-preserve',
+    userId: 'user-1',
+    executionMode: 'live',
+    orderId: 'live-order-1',
+    brokerKey: 'delta_exchange',
+    accountId: 'acc-1',
+    linkedAt: new Date('2026-05-14T04:42:34.000Z'),
+    protectionSource: 'suggested_trade_execution',
+    protectionPlan: {
+      source: 'suggested_trade_execution',
+      orderId: 'live-order-1',
+      stopLossOrderId: 'sl-1',
+      takeProfitOrderId: 'tp-1',
+    },
+  };
+
+  Object.defineProperty(repository, 'executionRepository', {
+    value: {
+      async findOne({ where }: { where: { suggestedTradeId: string } }) {
+        return where.suggestedTradeId === 'st-link-preserve' ? existingLiveExecution : null;
+      },
+      create(entity: Record<string, unknown>) {
+        return entity;
+      },
+      async save(entity: Record<string, unknown>) {
+        savedEntities.push(entity);
+        return entity;
+      },
+    },
+  });
+
+  await repository.saveSuggestedTradeExecution({
+    suggestedTradeId: 'st-link-preserve',
+    userId: 'user-1',
+    executionMode: 'live',
+    orderId: null,
+    brokerKey: null,
+    accountId: null,
+    orderStatus: 'OPEN',
+    executionState: 'working',
+    protectionPlan: {
+      source: 'suggested_trade_execution',
+      orderId: null,
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+    },
+  });
+
+  assert.equal(savedEntities[0]?.orderId, 'live-order-1');
+  assert.equal(savedEntities[0]?.brokerKey, 'delta_exchange');
+  assert.equal(savedEntities[0]?.accountId, 'acc-1');
+  assert.deepEqual(savedEntities[0]?.linkedAt, existingLiveExecution.linkedAt);
+  assert.deepEqual(savedEntities[0]?.protectionPlan, {
+    source: 'suggested_trade_execution',
+    orderId: 'live-order-1',
+    stopLossOrderId: 'sl-1',
+    takeProfitOrderId: 'tp-1',
+  });
+
+  await repository.saveSuggestedTradeExecution({
+    suggestedTradeId: 'st-link-preserve',
+    userId: 'user-1',
+    executionMode: 'paper',
+    orderId: null,
+    paperOrderId: 'paper-1',
+  });
+
+  assert.equal(savedEntities[1]?.orderId, null);
+  assert.equal(savedEntities[1]?.paperOrderId, 'paper-1');
+}
+
 function runSuggestedTradeDeltaClosedFilledTimestampAssertions(): void {
   const service = new SuggestedTradesService() as any;
 
@@ -5113,8 +5188,10 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
   assert.equal(clearedPayload['remainingQuantity'], 0);
   assert.equal(clearedPayload['canceledAt'], '2026-04-04T10:20:00.000Z');
   assert.equal(
-    (String(clearedPayload['note'] || '').match(/Partially filled limit entry order exceeded/g) ||
-      []).length,
+    (
+      String(clearedPayload['note'] || '').match(/Partially filled limit entry order exceeded/g) ||
+      []
+    ).length,
     1
   );
 
@@ -9730,6 +9807,7 @@ async function main(): Promise<void> {
   await runSuggestedTradeDeltaProductPreflightAssertions();
   await runSuggestedTradeReconcileAssertions();
   await runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions();
+  await runSuggestedTradeExecutionLinkPreservationAssertions();
   runSuggestedTradeDeltaClosedFilledTimestampAssertions();
   await runSuggestedTradeLimitOrderExpiryAssertions();
   await runSuggestedTradeBrokerLiveAutoSizingHandlerAssertions();
