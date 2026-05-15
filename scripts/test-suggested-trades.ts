@@ -5846,6 +5846,105 @@ async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promi
       'delta-tp-1'
     );
   }
+
+  {
+    const closedPositions: Array<{ positionId: string; context?: Record<string, unknown> }> = [];
+
+    const nextExecution = await remediateDeltaLiveProtection({
+      userId: 'user-1',
+      trade: {
+        id: 'st-delta-crossed-protection',
+        symbol: 'GALAUSDT',
+        side: 'SELL',
+        timeframe: '5m',
+      },
+      execution: {
+        orderId: 'delta-entry-crossed',
+        entryPrice: '0.003604',
+        quantity: '118',
+        filledQuantity: 25,
+        protectionState: 'pending',
+        protectionAttempts: 0,
+      } as any,
+      position: {
+        externalId: '27912',
+        payload: {
+          product_id: '27912',
+          entry_price: '0.00361',
+          quantity_contracts: '25',
+          mark_price: '0.00362174',
+        },
+      },
+      prices: {
+        requestedEntryPrice: 0.003604,
+        stopLossPrice: 0.003612,
+        takeProfitPrice: 0.00354,
+      },
+      nowIso: '2026-05-15T08:06:01.000Z',
+      brokerKey: 'delta_exchange',
+      accountId: 'acc-delta-1',
+      ordersAdapter: {
+        async createLiveAutoProtectiveOrdersForPosition() {
+          throw new Error('Delta handler should close instead of creating crossed protection');
+        },
+      },
+      positionsAdapter: {
+        async closePosition(positionId: string, context?: Record<string, unknown>) {
+          closedPositions.push({ positionId, context });
+          return { order_id: 'delta-close-1', status: 'open' };
+        },
+      },
+      protectionRepairEnabled: true,
+      resolveLiveProtectionOrderContext: async () => ({
+        stopLossOrderId: null,
+        takeProfitOrderId: null,
+        stopLossStatus: null,
+        takeProfitStatus: null,
+        activeOrderIds: [],
+      }),
+      hasUsableProtectionContext: () => false,
+      resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
+      resolvePositionCurrentPrice: (payload) => Number(payload.mark_price),
+      deriveScaledProtectionPrice: (actualEntryPrice, requestedEntryPrice, requestedTargetPrice) =>
+        Number(
+          ((actualEntryPrice * requestedTargetPrice) / requestedEntryPrice).toFixed(6)
+        ).toFixed(6),
+      resolveLiveAutoAssetRoute: async () => {
+        throw new Error('Delta handler should not resolve route after crossed protection');
+      },
+      resolveActiveProtectionOrdersForSymbol: async () => {
+        throw new Error(
+          'Delta handler should not inspect symbol protection after crossed protection'
+        );
+      },
+      unwrapOrderPlacementResponse: (response) => response as Record<string, unknown>,
+      markProtectionAttached: () => {
+        throw new Error('Delta handler should close instead of attaching crossed protection');
+      },
+      markProtectionAttaching: () => {
+        throw new Error('Delta handler should close instead of marking attaching');
+      },
+      markProtectionManualUnlinked: () => {
+        throw new Error('Delta handler should auto-close crossed protection when possible');
+      },
+      markProtectionFailed: () => {
+        throw new Error('Delta handler should not fail when immediate close succeeds');
+      },
+    });
+
+    assert.equal(closedPositions.length, 1);
+    assert.equal(closedPositions[0]?.positionId, '27912');
+    assert.equal(closedPositions[0]?.context?.brokerKey, 'delta_exchange');
+    assert.equal(nextExecution.executionState, 'closed');
+    assert.equal(nextExecution.positionStatus, 'CLOSED');
+    assert.equal(nextExecution.protectionState, 'not_required');
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.match(String(nextExecution.note || ''), /closed immediately/);
+    assert.equal(
+      (nextExecution.protectionPlan as Record<string, unknown>).autoCloseReason,
+      'unsafe_protection_already_crossed'
+    );
+  }
 }
 
 async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void> {

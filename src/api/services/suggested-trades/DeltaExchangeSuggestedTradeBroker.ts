@@ -64,6 +64,13 @@ export interface DeltaProtectionOrdersAdapter {
   ) => Promise<unknown>;
 }
 
+export interface DeltaProtectionPositionsAdapter {
+  closePosition?: (
+    positionId: string,
+    context?: { userId?: string; brokerKey?: string; accountId?: string }
+  ) => Promise<unknown>;
+}
+
 export interface DeltaLiveAutoProductRulePreflightAdapter {
   preflightLiveAutoOrder?: (
     assetId: string,
@@ -113,6 +120,7 @@ export interface DeltaLiveProtectionRepairInput {
   brokerKey: string;
   accountId: string;
   ordersAdapter: DeltaProtectionOrdersAdapter | null | undefined;
+  positionsAdapter?: DeltaProtectionPositionsAdapter | null | undefined;
   protectionRepairEnabled: boolean;
   resolveLiveProtectionOrderContext: (
     userId: string,
@@ -356,8 +364,85 @@ export function resolveDeltaInactiveAttachedProtectionManualReason(input: {
   if (input.entrySide === 'sell' && currentPrice >= stopLossPrice) {
     return `Delta Exchange attached protection is inactive and planned stop-loss ${formatNumericString(stopLossPrice) || stopLossPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
   }
+  if (input.entrySide === 'buy' && currentPrice >= takeProfitPrice) {
+    return `Delta Exchange attached protection is inactive and planned take-profit ${formatNumericString(takeProfitPrice) || takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
+  }
+  if (input.entrySide === 'sell' && currentPrice <= takeProfitPrice) {
+    return `Delta Exchange attached protection is inactive and planned take-profit ${formatNumericString(takeProfitPrice) || takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
+  }
 
   return null;
+}
+
+function shouldCloseDeltaPositionForManualReason(message: string | null): boolean {
+  const normalized = String(message || '').toLowerCase();
+  return normalized.includes('already crossed');
+}
+
+function resolveDeltaPositionCloseId(
+  position: LivePositionSnapshotLike & { externalId?: unknown }
+): string | null {
+  const payload = position.payload ?? {};
+  return (
+    readStringValue(position.externalId) ??
+    readStringValue(payload.id) ??
+    readStringValue(payload.position_id) ??
+    readStringValue(payload.positionId) ??
+    readStringValue(payload.product_id) ??
+    readStringValue(payload.asset_uuid)
+  );
+}
+
+async function closeDeltaPositionForUnsafeProtection(input: {
+  positionsAdapter: DeltaProtectionPositionsAdapter | null | undefined;
+  position: LivePositionSnapshotLike & { externalId?: unknown };
+  userId: string;
+  brokerKey: string;
+  accountId: string;
+  issueMessage: string;
+}): Promise<{ closed: boolean; note: string; positionId: string | null }> {
+  const positionId = resolveDeltaPositionCloseId(input.position);
+  if (!positionId) {
+    return {
+      closed: false,
+      positionId: null,
+      note: `${input.issueMessage} Delta position id is unavailable; position still needs urgent manual close.`,
+    };
+  }
+
+  if (!input.positionsAdapter?.closePosition) {
+    return {
+      closed: false,
+      positionId,
+      note: `${input.issueMessage} Delta close-position adapter is unavailable; position still needs urgent manual close.`,
+    };
+  }
+
+  try {
+    await input.positionsAdapter.closePosition(positionId, {
+      userId: input.userId,
+      brokerKey: input.brokerKey,
+      accountId: input.accountId,
+    });
+    return {
+      closed: true,
+      positionId,
+      note: `${input.issueMessage} Delta position was closed immediately because protection was already unsafe before SL/TP could attach.`,
+    };
+  } catch (error) {
+    return {
+      closed: false,
+      positionId,
+      note: `${input.issueMessage} Delta immediate close failed: ${
+        error instanceof Error ? error.message : String(error)
+      }.`,
+    };
+  }
+}
+
+function appendProtectionNote(existing: unknown, next: string): string {
+  const current = readStringValue(existing);
+  return current ? `${current} ${next}` : next;
 }
 
 export async function normalizeDeltaLiveAutoOrderSizing(
@@ -501,6 +586,39 @@ export async function remediateDeltaLiveProtection(
     currentPrice: input.resolvePositionCurrentPrice(positionPayload),
   });
   if (manualReason) {
+    if (shouldCloseDeltaPositionForManualReason(manualReason)) {
+      const closeResult = await closeDeltaPositionForUnsafeProtection({
+        positionsAdapter: input.positionsAdapter,
+        position: input.position,
+        userId: input.userId,
+        brokerKey: input.brokerKey,
+        accountId: input.accountId,
+        issueMessage: manualReason,
+      });
+      if (closeResult.closed) {
+        return {
+          ...input.execution,
+          executionState: 'closed',
+          positionId: closeResult.positionId ?? readStringValue(input.position.externalId),
+          positionStatus: 'CLOSED',
+          positionClosedAt: input.nowIso,
+          protectionState: 'not_required',
+          protectionCheckedAt: input.nowIso,
+          protectionAttachedAt: null,
+          protectionLastError: null,
+          protectionPlan: {
+            ...(input.execution.protectionPlan ?? {}),
+            positionId: closeResult.positionId ?? readStringValue(input.position.externalId),
+            autoClosedAt: input.nowIso,
+            autoCloseReason: 'unsafe_protection_already_crossed',
+            stopLossPrice,
+            takeProfitPrice,
+          },
+          note: appendProtectionNote(input.execution.note, closeResult.note),
+        };
+      }
+      return input.markProtectionFailed(input.execution, input.nowIso, closeResult.note);
+    }
     return input.markProtectionManualUnlinked(input.execution, input.nowIso, manualReason);
   }
   if (

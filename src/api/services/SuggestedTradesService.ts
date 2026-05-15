@@ -8219,9 +8219,9 @@ export class SuggestedTradesService {
     const remainingQuantity = this.readNumberValue(execution.remainingQuantity);
     return Boolean(
       partialFillEvidence &&
-        remainingQuantity !== null &&
-        remainingQuantity <= 0 &&
-        execution.canceledAt
+      remainingQuantity !== null &&
+      remainingQuantity <= 0 &&
+      execution.canceledAt
     );
   }
 
@@ -9327,6 +9327,7 @@ export class SuggestedTradesService {
     return remediateDeltaLiveProtectionForBroker({
       ...input,
       ordersAdapter,
+      positionsAdapter: this.brokerRuntimeRegistry?.getPositionsAdapter?.('delta_exchange'),
       protectionRepairEnabled: this.isProtectionRepairEnabledForBroker(input.brokerKey),
       resolveLiveProtectionOrderContext: (
         userId,
@@ -10285,8 +10286,8 @@ export class SuggestedTradesService {
       existingClearedPartialFillRemainder && this.isActiveLimitEntryOrderStatus(normalizedStatus)
         ? (existing?.executionState ?? 'filled')
         : deltaClosedFilledOrder || terminalOrderWithPartialFill
-        ? 'filled'
-        : this.mapExecutionState(normalizedStatus, snapshot.statusRank);
+          ? 'filled'
+          : this.mapExecutionState(normalizedStatus, snapshot.statusRank);
 
     return {
       ...(existing ?? {}),
