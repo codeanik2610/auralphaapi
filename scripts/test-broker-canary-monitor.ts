@@ -357,11 +357,57 @@ async function testOpenCanaryMissingProtectionEmitsAlert(): Promise<void> {
   assert.equal(alerts[0]?.channel, 'Broker Canary');
   assert.equal(alerts[0]?.source, 'broker-canary-monitor:submission-1');
   assert.equal(alerts[0]?.severity, 'High');
+  assert.equal(alerts[0]?.suppressEmailDelivery, false);
   assert.match(
     String(alerts[0]?.message || ''),
     /stop-loss protective order snapshot sl-1 is missing/i
   );
   assert.equal(response.items[0]?.lifecycle, 'OPEN_UNPROTECTED');
+}
+
+async function testWarningOnlyCanaryAlertSuppressesEmailDelivery(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const service = createService(alerts);
+
+  const response = await withMockedQuery(
+    async (sql) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [
+          createCandidate({
+            brokerKey: 'mudrex',
+            brokerOrderId: 'mudrex-entry-1',
+            requestSymbol: null,
+            requestOrderSymbol: 'BTCUSDT',
+            stopLossOrderId: 'mudrex-sl-1',
+            takeProfitOrderId: 'mudrex-tp-1',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
+  );
+
+  assert.equal(response.status, 'degraded');
+  assert.equal(response.issueSubmissions, 1);
+  assert.equal(response.criticalIssues, 0);
+  assert.equal(response.warningIssues, 3);
+  assert.equal(response.alertsEmitted, 1);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0]?.channel, 'Broker Canary');
+  assert.equal(alerts[0]?.severity, 'Medium');
+  assert.equal(alerts[0]?.suppressEmailDelivery, true);
+  assert.match(String(alerts[0]?.message || ''), /Entry order snapshot mudrex-entry-1 is missing/i);
 }
 
 async function testOpenCanaryMissingProtectionAutoFreezesBrokerAccount(): Promise<void> {
@@ -951,6 +997,7 @@ async function main(): Promise<void> {
   await testMudrexOpenPositionProtectionCanComeFromPositionSnapshot();
   await testMudrexOpenPositionMissingTakeProfitAlerts();
   await testOpenCanaryMissingProtectionEmitsAlert();
+  await testWarningOnlyCanaryAlertSuppressesEmailDelivery();
   await testOpenCanaryMissingProtectionAutoFreezesBrokerAccount();
   await testOpenCanaryStaleSnapshotAutoFreezesBrokerAccount();
   await testOpenCanaryMissingProtectionDryRunDoesNotAutoFreeze();

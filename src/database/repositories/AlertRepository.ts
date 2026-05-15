@@ -36,6 +36,7 @@ export interface CreateAlertPayload {
   source?: string | null;
   urgency?: string | null;
   applyEscalationPolicy?: boolean;
+  suppressEmailDelivery?: boolean;
 }
 
 export interface AlertChannelOpenSnapshot {
@@ -438,7 +439,9 @@ export class AlertRepository {
     });
     const normalizedSeverity = this.normalizeAlertSeverity(payload.severity);
     const shouldCreateInApp = this.shouldCreateInAppAlert(settings, normalizedSeverity);
-    const shouldQueueEmail = this.shouldQueueEmailDelivery(settings, normalizedSeverity);
+    const shouldQueueEmail =
+      !payload.suppressEmailDelivery &&
+      this.shouldQueueEmailDelivery(settings, normalizedSeverity);
 
     if (!shouldCreateInApp && !shouldQueueEmail) {
       return null;

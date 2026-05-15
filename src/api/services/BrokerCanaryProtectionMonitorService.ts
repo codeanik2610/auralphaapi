@@ -849,6 +849,7 @@ export class BrokerCanaryProtectionMonitorService {
       source,
       urgency,
       applyEscalationPolicy: true,
+      suppressEmailDelivery: severity !== 'High',
     });
 
     return Boolean(created);

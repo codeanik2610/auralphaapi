@@ -1494,6 +1494,71 @@ async function runAlertDeliveryPolicyAssertions(): Promise<void> {
   assert.equal(emailOnlyDeliveries[0].route, 'Manual triage');
   assert.match(String(emailOnlyDeliveries[0].body || ''), /Due in 30 min/);
 
+  const suppressedRepo = new AlertRepository() as any;
+  const suppressedAlerts: Array<Record<string, unknown>> = [];
+  const suppressedDeliveries: Array<Record<string, unknown>> = [];
+
+  Object.defineProperty(suppressedRepo, 'appSettingsRepository', {
+    get: () => ({
+      async findOne() {
+        return {
+          notifyEmail: true,
+          notifyInApp: true,
+          notificationChannel: 'both',
+          notificationSeverity: 'all',
+          escalationRoute: 'risk-review',
+          escalationSlaMinutes: 15,
+        };
+      },
+    }),
+  });
+  Object.defineProperty(suppressedRepo, 'userEntityRepository', {
+    get: () => ({
+      async findOne() {
+        return { email: 'alerts@auralpha.com' };
+      },
+    }),
+  });
+  Object.defineProperty(suppressedRepo, 'alertRepository', {
+    get: () => ({
+      create(payload: Record<string, unknown>) {
+        return payload;
+      },
+      async save(payload: Record<string, unknown>) {
+        suppressedAlerts.push(payload);
+        return { id: 'alert-suppressed', ...payload };
+      },
+    }),
+  });
+  Object.defineProperty(suppressedRepo, 'emailDeliveryRepository', {
+    get: () => ({
+      create(payload: Record<string, unknown>) {
+        return payload;
+      },
+      async save(payload: Record<string, unknown>) {
+        suppressedDeliveries.push(payload);
+        return payload;
+      },
+    }),
+  });
+  suppressedRepo.findRecentEmailDeliveryBySignature = async () => null;
+
+  const suppressedResult = await suppressedRepo.createAlert({
+    userId: 'user-1',
+    severity: 'Medium',
+    channel: 'Broker Canary',
+    symbol: 'BTCUSDT',
+    message: 'Entry order snapshot is missing.',
+    route: 'Orders',
+    status: 'Open',
+    source: 'broker-canary-monitor:submission-1',
+    suppressEmailDelivery: true,
+  });
+
+  assert.equal(suppressedAlerts.length, 1);
+  assert.equal(suppressedDeliveries.length, 0);
+  assert.equal(suppressedResult?.id, 'alert-suppressed');
+
   const bothRepo = new AlertRepository() as any;
   const bothAlerts: Array<Record<string, unknown>> = [];
   const bothDeliveries: Array<Record<string, unknown>> = [];
