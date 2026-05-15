@@ -9956,6 +9956,24 @@ function runCustomRLadderTrailingStopAssertions(): void {
   if (trailingAlreadyApplied.action === 'none') {
     assert.equal(trailingAlreadyApplied.reason, 'already_applied');
   }
+
+  const service = new SuggestedTradesService() as any;
+  const replacementOrderIds = service.resolveTrailingRiskOrderIdsFromMutationResult({
+    protective_orders: [
+      {
+        kind: 'stop_loss',
+        order_id: 'delta-new-sl-1',
+      },
+      {
+        kind: 'take_profit',
+        order_id: 'delta-tp-1',
+      },
+    ],
+  });
+  assert.deepEqual(replacementOrderIds, {
+    stopLossOrderId: 'delta-new-sl-1',
+    takeProfitOrderId: 'delta-tp-1',
+  });
 }
 
 async function main(): Promise<void> {

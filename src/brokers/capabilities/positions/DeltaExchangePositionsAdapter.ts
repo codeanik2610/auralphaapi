@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Inject, Service } from 'typedi';
 import { BadRequestAppError, ServiceUnavailableAppError } from '../../../api';
 import {
@@ -57,6 +58,33 @@ type DeltaProductMaps = {
   bySymbol: Map<string, DeltaProduct>;
 };
 
+const DELTA_CLIENT_ORDER_ID_MAX_LENGTH = 32;
+const DELTA_CLIENT_ORDER_ID_PREFIX = 'aur_';
+
+interface DeltaOrderPayload {
+  id?: number | string;
+  product_id?: number | string;
+  product_symbol?: string;
+  side?: string | null;
+  stop_price?: string | number | null;
+  stop_order_type?: string | null;
+  size?: string | number | null;
+  state?: string | null;
+  order_type?: string | null;
+  reduce_only?: boolean | string | null;
+}
+
+interface DeltaProtectiveOrderResult {
+  kind: 'stop_loss' | 'take_profit';
+  order_id: string;
+  product_id: string;
+  status: string;
+  side: 'buy' | 'sell';
+  stop_price: string;
+  stop_order_type: 'stop_loss_order' | 'take_profit_order';
+  reduce_only: true;
+}
+
 @Service()
 export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
   readonly historyWindowMode = 'contiguous' as const;
@@ -65,9 +93,11 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
   @Inject(() => DeltaExchangeHttpClient)
   private deltaHttpClient!: DeltaExchangeHttpClient;
 
-  private productCache:
-    | { fetchedAt: number; byId: Map<string, DeltaProduct>; bySymbol: Map<string, DeltaProduct> }
-    | null = null;
+  private productCache: {
+    fetchedAt: number;
+    byId: Map<string, DeltaProduct>;
+    bySymbol: Map<string, DeltaProduct>;
+  } | null = null;
 
   private async getProductMaps(): Promise<DeltaProductMaps> {
     const now = Date.now();
@@ -81,7 +111,9 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     for (const item of Array.isArray(products) ? products : []) {
       const id = String(item.id ?? '').trim();
       if (id) byId.set(id, item);
-      const symbol = String(item.symbol ?? '').trim().toUpperCase();
+      const symbol = String(item.symbol ?? '')
+        .trim()
+        .toUpperCase();
       if (symbol) bySymbol.set(symbol, item);
     }
     this.productCache = { fetchedAt: now, byId, bySymbol };
@@ -116,11 +148,7 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     _query: PositionLiqPriceQuery,
     context?: BrokerPositionContext
   ): Promise<unknown> {
-    const position = await this.findPosition(
-      positionId,
-      context?.accountId,
-      context?.userId
-    );
+    const position = await this.findPosition(positionId, context?.accountId, context?.userId);
     return position?.liquidation_price ? String(position.liquidation_price) : '0';
   }
 
@@ -129,35 +157,487 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     _body: AddMarginBody,
     _context?: BrokerPositionContext
   ): Promise<unknown> {
-    throw new ServiceUnavailableAppError(
-      'Delta Exchange margin updates are not enabled yet'
-    );
+    throw new ServiceUnavailableAppError('Delta Exchange margin updates are not enabled yet');
   }
 
   async createRiskOrder(
-    _positionId: string,
-    _body: CreateRiskOrderBody,
-    _context?: BrokerPositionContext
+    positionId: string,
+    body: CreateRiskOrderBody,
+    context?: BrokerPositionContext
   ): Promise<unknown> {
-    throw new ServiceUnavailableAppError(
-      'Delta Exchange risk orders are not enabled yet'
+    this.assertRiskOrderBodyFlags(body.is_stoploss, body.is_takeprofit);
+    const position = await this.requireOpenPosition(positionId, context);
+    const productId = this.resolvePositionProductId(position);
+    const size = this.resolvePositionContractSize(position);
+    const entrySide = this.resolvePositionEntrySide(position);
+    const stopLossPrice = this.requirePositivePrice(body.stoploss_price, 'stoploss_price');
+    const takeProfitPrice = this.requirePositivePrice(body.takeprofit_price, 'takeprofit_price');
+    this.assertProtectionPricesAgainstPosition(entrySide, position, stopLossPrice, takeProfitPrice);
+
+    const protectiveOrders = await this.createProtectiveOrdersForPosition(
+      productId,
+      size,
+      entrySide,
+      stopLossPrice,
+      takeProfitPrice,
+      `risk-create:${positionId}:${stopLossPrice}:${takeProfitPrice}`,
+      context
     );
+
+    return {
+      message: 'Delta Exchange risk orders attached',
+      status: 'created',
+      protection_status: protectiveOrders.length ? 'attached' : 'not_requested',
+      protective_orders: protectiveOrders,
+      stop_loss_order_id:
+        protectiveOrders.find((order) => order.kind === 'stop_loss')?.order_id ?? null,
+      take_profit_order_id:
+        protectiveOrders.find((order) => order.kind === 'take_profit')?.order_id ?? null,
+    };
   }
 
   async updateRiskOrder(
-    _positionId: string,
-    _body: UpdateRiskOrderBody,
-    _context?: BrokerPositionContext
+    positionId: string,
+    body: UpdateRiskOrderBody,
+    context?: BrokerPositionContext
   ): Promise<unknown> {
-    throw new ServiceUnavailableAppError(
-      'Delta Exchange risk order updates are not enabled yet'
+    this.assertRiskOrderBodyFlags(body.is_stoploss, body.is_takeprofit);
+    const position = await this.requireOpenPosition(positionId, context);
+    const productId = this.resolvePositionProductId(position);
+    const size = this.resolvePositionContractSize(position);
+    const entrySide = this.resolvePositionEntrySide(position);
+    const stopLossPrice = this.requirePositivePrice(body.stoploss_price, 'stoploss_price');
+    const takeProfitPrice = this.requirePositivePrice(body.takeprofit_price, 'takeprofit_price');
+    const stopLossOrderId = String(body.stoploss_order_id || '').trim();
+    const takeProfitOrderId = String(body.takeprofit_order_id || '').trim();
+    if (!stopLossOrderId || !takeProfitOrderId) {
+      throw new BadRequestAppError(
+        'Delta Exchange risk order update requires existing stop-loss and take-profit order ids'
+      );
+    }
+
+    this.assertProtectionPricesAgainstPosition(entrySide, position, stopLossPrice, takeProfitPrice);
+
+    const [currentStopLoss, currentTakeProfit] = await Promise.all([
+      this.getDeltaOrder(stopLossOrderId, context),
+      this.getDeltaOrder(takeProfitOrderId, context),
+    ]);
+    const exitSide = this.resolveExitSide(entrySide);
+    this.assertRiskOrderMatchesPosition(currentStopLoss, 'stop_loss', productId, size, exitSide);
+    this.assertRiskOrderMatchesPosition(
+      currentTakeProfit,
+      'take_profit',
+      productId,
+      size,
+      exitSide
+    );
+    this.assertTrailingStopImproves(
+      entrySide,
+      this.toNumber(currentStopLoss.stop_price),
+      stopLossPrice
+    );
+
+    const replacementStopLoss = await this.createProtectiveOrder(
+      productId,
+      size,
+      exitSide,
+      'stop_loss',
+      'stop_loss_order',
+      stopLossPrice,
+      this.buildClientOrderId(`risk-update:${positionId}:${stopLossOrderId}:${stopLossPrice}`),
+      context
+    );
+
+    try {
+      await this.cancelDeltaOrder(currentStopLoss, context);
+    } catch (error) {
+      try {
+        await this.cancelDeltaOrder(
+          {
+            id: replacementStopLoss.order_id,
+            product_id: replacementStopLoss.product_id,
+          },
+          context
+        );
+      } catch {
+        // The original cancel error is more actionable; keep it as the reported failure.
+      }
+      throw new BadRequestAppError(
+        `Delta Exchange created replacement stop-loss ${replacementStopLoss.order_id}, but could not cancel old stop-loss ${stopLossOrderId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+
+    const currentTakeProfitPrice = this.toNumber(currentTakeProfit.stop_price);
+    return {
+      message: 'Delta Exchange risk order updated',
+      status: 'updated',
+      stop_loss_order_id: replacementStopLoss.order_id,
+      take_profit_order_id: takeProfitOrderId,
+      replaced_stop_loss_order_id: stopLossOrderId,
+      stoploss_price: replacementStopLoss.stop_price,
+      takeprofit_price: String(
+        currentTakeProfitPrice > 0 ? currentTakeProfitPrice : takeProfitPrice
+      ),
+      protective_orders: [
+        replacementStopLoss,
+        {
+          kind: 'take_profit',
+          order_id: takeProfitOrderId,
+          product_id: String(productId),
+          status: currentTakeProfit.state ?? 'open',
+          side: exitSide,
+          stop_price: String(currentTakeProfitPrice > 0 ? currentTakeProfitPrice : takeProfitPrice),
+          stop_order_type: 'take_profit_order',
+          reduce_only: true,
+        },
+      ],
+    };
+  }
+
+  private async requireOpenPosition(
+    positionId: string,
+    context?: BrokerPositionContext
+  ): Promise<DeltaPositionPayload> {
+    const position = await this.findPosition(positionId, context?.accountId, context?.userId);
+    if (!position) {
+      throw new BadRequestAppError('Delta position not found');
+    }
+    const size = this.toNumber(position.size);
+    if (!(Math.abs(size) > 0)) {
+      throw new BadRequestAppError('Delta position size is zero');
+    }
+    return position;
+  }
+
+  private resolvePositionProductId(position: DeltaPositionPayload): number {
+    const productId = Number(position.product_id);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      throw new BadRequestAppError('Delta position is missing product_id');
+    }
+    return productId;
+  }
+
+  private resolvePositionContractSize(position: DeltaPositionPayload): number {
+    const size = Math.abs(this.toNumber(position.size));
+    if (!(size > 0)) {
+      throw new BadRequestAppError('Delta position size is zero');
+    }
+    if (!Number.isInteger(size)) {
+      throw new BadRequestAppError(
+        'Delta Exchange risk orders require a whole-number contract size'
+      );
+    }
+    return size;
+  }
+
+  private resolvePositionEntrySide(position: DeltaPositionPayload): 'buy' | 'sell' {
+    const size = this.toNumber(position.size);
+    if (size > 0) return 'buy';
+    if (size < 0) return 'sell';
+    throw new BadRequestAppError('Delta position size is zero');
+  }
+
+  private resolveExitSide(entrySide: 'buy' | 'sell'): 'buy' | 'sell' {
+    return entrySide === 'buy' ? 'sell' : 'buy';
+  }
+
+  private assertRiskOrderBodyFlags(isStopLoss: unknown, isTakeProfit: unknown): void {
+    if (isStopLoss !== true || isTakeProfit !== true) {
+      throw new BadRequestAppError(
+        'Delta Exchange risk orders require both stop-loss and take-profit flags'
+      );
+    }
+  }
+
+  private requirePositivePrice(value: unknown, field: string): number {
+    const numeric = this.toNumber(value as string | number | null | undefined);
+    if (!(numeric > 0)) {
+      throw new BadRequestAppError(`Delta Exchange risk order ${field} must be positive`);
+    }
+    return numeric;
+  }
+
+  private assertProtectionPricesAgainstPosition(
+    entrySide: 'buy' | 'sell',
+    position: DeltaPositionPayload,
+    stopLossPrice: number,
+    takeProfitPrice: number
+  ): void {
+    const markPrice = this.toNumber(position.mark_price);
+    const entryPrice = this.toNumber(position.entry_price);
+    const referencePrice = markPrice > 0 ? markPrice : entryPrice;
+    if (!(referencePrice > 0)) {
+      throw new BadRequestAppError(
+        'Delta Exchange risk order update requires a live mark or entry price'
+      );
+    }
+
+    if (entrySide === 'buy') {
+      if (!(stopLossPrice < referencePrice)) {
+        throw new BadRequestAppError(
+          'Delta Exchange long stop-loss must remain below the current mark price'
+        );
+      }
+      if (!(takeProfitPrice > referencePrice)) {
+        throw new BadRequestAppError(
+          'Delta Exchange long take-profit must remain above the current mark price'
+        );
+      }
+      return;
+    }
+
+    if (!(stopLossPrice > referencePrice)) {
+      throw new BadRequestAppError(
+        'Delta Exchange short stop-loss must remain above the current mark price'
+      );
+    }
+    if (!(takeProfitPrice < referencePrice)) {
+      throw new BadRequestAppError(
+        'Delta Exchange short take-profit must remain below the current mark price'
+      );
+    }
+  }
+
+  private async getDeltaOrder(
+    orderId: string,
+    context?: BrokerPositionContext
+  ): Promise<DeltaOrderPayload> {
+    const normalizedOrderId = String(orderId || '').trim();
+    if (!normalizedOrderId) {
+      throw new BadRequestAppError('Delta Exchange order id is required');
+    }
+    return this.deltaHttpClient.signedGet<DeltaOrderPayload>(
+      context?.accountId,
+      `/v2/orders/${encodeURIComponent(normalizedOrderId)}`,
+      undefined,
+      context?.userId
     );
   }
 
-  async reversePosition(_positionId: string, _context?: BrokerPositionContext): Promise<unknown> {
-    throw new ServiceUnavailableAppError(
-      'Delta Exchange reverse position is not enabled yet'
+  private assertRiskOrderMatchesPosition(
+    order: DeltaOrderPayload,
+    kind: 'stop_loss' | 'take_profit',
+    productId: number,
+    size: number,
+    exitSide: 'buy' | 'sell'
+  ): void {
+    const orderId = String(order.id ?? '').trim();
+    if (!orderId) {
+      throw new BadRequestAppError(`Delta Exchange ${kind} order is missing id`);
+    }
+
+    const orderProductId = Number(order.product_id);
+    if (orderProductId !== productId) {
+      throw new BadRequestAppError(
+        `Delta Exchange ${kind} order product does not match the open position`
+      );
+    }
+
+    if (!this.isActiveRiskOrderState(order.state)) {
+      throw new BadRequestAppError(
+        `Delta Exchange ${kind} order ${orderId} is not active (${String(order.state || 'unknown')})`
+      );
+    }
+
+    if (
+      String(order.side || '')
+        .trim()
+        .toLowerCase() !== exitSide
+    ) {
+      throw new BadRequestAppError(
+        `Delta Exchange ${kind} order side does not match the position exit side`
+      );
+    }
+
+    const expectedStopOrderType = kind === 'stop_loss' ? 'stop_loss_order' : 'take_profit_order';
+    if (
+      String(order.stop_order_type || '')
+        .trim()
+        .toLowerCase() !== expectedStopOrderType
+    ) {
+      throw new BadRequestAppError(
+        `Delta Exchange ${kind} order is not a ${expectedStopOrderType}`
+      );
+    }
+
+    if (!this.readBoolean(order.reduce_only)) {
+      throw new BadRequestAppError(`Delta Exchange ${kind} order must be reduce-only`);
+    }
+
+    if (Math.abs(this.toNumber(order.size) - size) > 1e-9) {
+      throw new BadRequestAppError(
+        `Delta Exchange ${kind} order size does not match the open position size`
+      );
+    }
+  }
+
+  private assertTrailingStopImproves(
+    entrySide: 'buy' | 'sell',
+    currentStopLossPrice: number,
+    nextStopLossPrice: number
+  ): void {
+    if (!(currentStopLossPrice > 0)) {
+      throw new BadRequestAppError('Delta Exchange existing stop-loss order is missing stop_price');
+    }
+    if (entrySide === 'buy' && !(nextStopLossPrice > currentStopLossPrice)) {
+      throw new BadRequestAppError(
+        'Delta Exchange long trailing stop update cannot move stop-loss backward'
+      );
+    }
+    if (entrySide === 'sell' && !(nextStopLossPrice < currentStopLossPrice)) {
+      throw new BadRequestAppError(
+        'Delta Exchange short trailing stop update cannot move stop-loss backward'
+      );
+    }
+  }
+
+  private isActiveRiskOrderState(state: string | null | undefined): boolean {
+    const normalized = String(state || '')
+      .trim()
+      .toLowerCase();
+    return ['open', 'pending', 'created', 'active', 'untriggered'].includes(normalized);
+  }
+
+  private readBoolean(value: unknown): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return value !== 0;
+    }
+    if (typeof value === 'string') {
+      return ['1', 'true', 'yes'].includes(value.trim().toLowerCase());
+    }
+    return false;
+  }
+
+  private async createProtectiveOrdersForPosition(
+    productId: number,
+    size: number,
+    entrySide: 'buy' | 'sell',
+    stopLossPrice: number,
+    takeProfitPrice: number,
+    idempotencyKey: string,
+    context?: BrokerPositionContext
+  ): Promise<DeltaProtectiveOrderResult[]> {
+    const exitSide = this.resolveExitSide(entrySide);
+    const stopLoss = await this.createProtectiveOrder(
+      productId,
+      size,
+      exitSide,
+      'stop_loss',
+      'stop_loss_order',
+      stopLossPrice,
+      this.buildClientOrderId(`${idempotencyKey}:stop_loss`),
+      context
     );
+    const takeProfit = await this.createProtectiveOrder(
+      productId,
+      size,
+      exitSide,
+      'take_profit',
+      'take_profit_order',
+      takeProfitPrice,
+      this.buildClientOrderId(`${idempotencyKey}:take_profit`),
+      context
+    );
+    return [stopLoss, takeProfit];
+  }
+
+  private async createProtectiveOrder(
+    productId: number,
+    size: number,
+    side: 'buy' | 'sell',
+    kind: 'stop_loss' | 'take_profit',
+    stopOrderType: 'stop_loss_order' | 'take_profit_order',
+    stopPrice: number,
+    clientOrderId: string | undefined,
+    context?: BrokerPositionContext
+  ): Promise<DeltaProtectiveOrderResult> {
+    const formattedStopPrice = this.formatPrice(stopPrice);
+    const payload = await this.deltaHttpClient.signedPost<DeltaOrderPayload>(
+      context?.accountId,
+      '/v2/orders',
+      {
+        product_id: productId,
+        size,
+        side,
+        order_type: 'market_order',
+        time_in_force: 'gtc',
+        stop_order_type: stopOrderType,
+        stop_price: formattedStopPrice,
+        stop_trigger_method: 'mark_price',
+        reduce_only: true,
+        ...(clientOrderId ? { client_order_id: clientOrderId } : {}),
+      },
+      context?.userId
+    );
+    const orderId = String(payload.id ?? '').trim();
+    if (!orderId) {
+      throw new BadRequestAppError(
+        `Delta Exchange ${kind.replace('_', '-')} protection order did not return an order id`
+      );
+    }
+
+    return {
+      kind,
+      order_id: orderId,
+      product_id: String(productId),
+      status: payload.state ?? 'open',
+      side,
+      stop_price: formattedStopPrice,
+      stop_order_type: stopOrderType,
+      reduce_only: true,
+    };
+  }
+
+  private async cancelDeltaOrder(
+    order: Pick<DeltaOrderPayload, 'id' | 'product_id'>,
+    context?: BrokerPositionContext
+  ): Promise<void> {
+    const resolvedId = Number(order.id);
+    const productId = Number(order.product_id);
+    if (!Number.isFinite(resolvedId) || resolvedId <= 0) {
+      throw new BadRequestAppError(
+        'Cannot cancel Delta risk order: invalid order ID returned by Delta Exchange'
+      );
+    }
+    if (!Number.isFinite(productId) || productId <= 0) {
+      throw new BadRequestAppError(
+        'Cannot cancel Delta risk order: product_id is required but missing from order details'
+      );
+    }
+
+    await this.deltaHttpClient.signedDelete<unknown>(
+      context?.accountId,
+      '/v2/orders',
+      { id: resolvedId, product_id: productId },
+      context?.userId
+    );
+  }
+
+  private buildClientOrderId(idempotencyKey?: string): string | undefined {
+    const normalized = String(idempotencyKey || '').trim();
+    if (!normalized) {
+      return undefined;
+    }
+
+    const digestLength = DELTA_CLIENT_ORDER_ID_MAX_LENGTH - DELTA_CLIENT_ORDER_ID_PREFIX.length;
+    const digest = createHash('sha256').update(normalized).digest('hex').slice(0, digestLength);
+    return `${DELTA_CLIENT_ORDER_ID_PREFIX}${digest}`;
+  }
+
+  private formatPrice(value: number): string {
+    if (!Number.isFinite(value)) {
+      return String(value);
+    }
+    return String(Number(value.toFixed(12)));
+  }
+
+  async reversePosition(_positionId: string, _context?: BrokerPositionContext): Promise<unknown> {
+    throw new ServiceUnavailableAppError('Delta Exchange reverse position is not enabled yet');
   }
 
   async closePartial(
@@ -180,9 +660,8 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
       throw new BadRequestAppError('quantity must be a positive number');
     }
 
-    const orderType = String(body.order_type || '').toLowerCase() === 'market'
-      ? 'market_order'
-      : 'limit_order';
+    const orderType =
+      String(body.order_type || '').toLowerCase() === 'market' ? 'market_order' : 'limit_order';
     const reduceOnlySide = size > 0 ? 'sell' : 'buy';
     const payload = {
       product_id: Number(position.product_id),
@@ -265,7 +744,9 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
   async getClosingFills(
     productIds: string[],
     context?: BrokerPositionContext
-  ): Promise<Map<string, { closePrice: number; closedAt: string; fillType: string | null }> | undefined> {
+  ): Promise<
+    Map<string, { closePrice: number; closedAt: string; fillType: string | null }> | undefined
+  > {
     if (productIds.length === 0) return new Map();
 
     const targetSet = new Set(productIds.map(String));
@@ -278,7 +759,10 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
       targetSet
     );
 
-    const result = new Map<string, { closePrice: number; closedAt: string; fillType: string | null }>();
+    const result = new Map<
+      string,
+      { closePrice: number; closedAt: string; fillType: string | null }
+    >();
     // Fills are returned most-recent-first; first match per product wins.
     for (const fill of fills) {
       const pid = String(fill.product_id ?? '');
@@ -321,7 +805,9 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     const output: Array<Record<string, unknown>> = [];
 
     for (const groupFills of grouped.values()) {
-      const sorted = [...groupFills].sort((a, b) => toTimestamp(a.created_at) - toTimestamp(b.created_at));
+      const sorted = [...groupFills].sort(
+        (a, b) => toTimestamp(a.created_at) - toTimestamp(b.created_at)
+      );
       const state: PositionState = { sizeSigned: 0, avgEntry: 0, openedAt: null };
 
       for (const fill of sorted) {
@@ -361,11 +847,13 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
         const direction = state.sizeSigned > 0 ? 1 : -1;
         const realized = direction * (price - state.avgEntry) * closingQty;
         const afterSizeSigned = state.sizeSigned + delta;
-        const fillType = String(fill.fill_type || '').trim().toLowerCase();
+        const fillType = String(fill.fill_type || '')
+          .trim()
+          .toLowerCase();
         const isLiquidation = fillType === 'liquidation' || fillType === 'liquidate';
 
         output.push({
-          created_at: state.openedAt ?? (fill.created_at ?? ''),
+          created_at: state.openedAt ?? fill.created_at ?? '',
           updated_at: fill.created_at ?? '',
           stoploss: null,
           takeprofit: null,
@@ -388,7 +876,10 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
           symbol: fill.product_symbol ?? String(fill.product_id ?? ''),
           pnl: realized,
           realized,
-          duration: this.calculateDuration(state.openedAt ?? undefined, fill.created_at ?? undefined),
+          duration: this.calculateDuration(
+            state.openedAt ?? undefined,
+            fill.created_at ?? undefined
+          ),
           fill_type: fill.fill_type ?? null,
           commission: fill.commission ?? null,
         });
@@ -416,7 +907,9 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     }
 
     // Most recent first.
-    output.sort((a, b) => toTimestamp(String(b.updated_at || '')) - toTimestamp(String(a.updated_at || '')));
+    output.sort(
+      (a, b) => toTimestamp(String(b.updated_at || '')) - toTimestamp(String(a.updated_at || ''))
+    );
     return output;
   }
 
@@ -425,7 +918,9 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     productMaps: DeltaProductMaps
   ): DeltaProduct | undefined {
     const productId = String(fill.product_id ?? '').trim();
-    const productSymbol = String(fill.product_symbol ?? '').trim().toUpperCase();
+    const productSymbol = String(fill.product_symbol ?? '')
+      .trim()
+      .toUpperCase();
     return (
       (productId && productMaps.byId.get(productId)) ||
       (productSymbol && productMaps.bySymbol.get(productSymbol)) ||
@@ -508,31 +1003,28 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     return payload.find((item) => String(item.product_id ?? '') === positionId);
   }
 
-  private mapPosition(
-    item: DeltaPositionPayload,
-    productMaps: DeltaProductMaps
-  ) {
+  private mapPosition(item: DeltaPositionPayload, productMaps: DeltaProductMaps) {
     const isLong = this.toNumber(item.size) >= 0;
     const entryPrice = this.toNumber(item.entry_price);
     const markPrice = this.toNumber(item.mark_price) || entryPrice;
     const quantityContracts = Math.abs(this.toNumber(item.size));
     const productId = String(item.product_id ?? '').trim();
-    const productSymbol = String(item.product_symbol ?? '').trim().toUpperCase();
+    const productSymbol = String(item.product_symbol ?? '')
+      .trim()
+      .toUpperCase();
     const product =
       (productId && productMaps.byId.get(productId)) ||
       (productSymbol && productMaps.bySymbol.get(productSymbol)) ||
       undefined;
     const contractValue = this.toNumber(product?.contract_value ?? 0);
-    const baseQuantity =
-      contractValue > 0 ? quantityContracts * contractValue : null;
+    const baseQuantity = contractValue > 0 ? quantityContracts * contractValue : null;
     const quantity = baseQuantity ?? quantityContracts;
     const direction = isLong ? 1 : -1;
     const unrealizedPnl = direction * (markPrice - entryPrice) * quantity;
     const realizedPnl = this.toNumber(item.realized_pnl);
     const brokerLeverage = this.toPositiveNumericString(item.leverage);
     const derivedLeverage =
-      brokerLeverage ??
-      this.deriveLeverageFromMargin(item.margin, quantity, entryPrice, markPrice);
+      brokerLeverage ?? this.deriveLeverageFromMargin(item.margin, quantity, entryPrice, markPrice);
     const leverage = brokerLeverage ?? derivedLeverage;
     return {
       created_at: item.created_at ?? '',

@@ -2477,6 +2477,182 @@ async function positionsGuard13(): Promise<void> {
   console.log('Positions phase 13 assertions passed.');
 }
 
+async function positionsGuard14(): Promise<void> {
+  const { DeltaExchangePositionsAdapter } =
+    await import('../src/brokers/capabilities/positions/DeltaExchangePositionsAdapter');
+
+  const createAdapter = () => {
+    const adapter = new DeltaExchangePositionsAdapter() as any;
+    const postCalls: Array<{ accountId: string; path: string; body: Record<string, unknown> }> = [];
+    const deleteCalls: Array<{ accountId: string; path: string; body: Record<string, unknown> }> =
+      [];
+    let nextCreatedOrderId = 701;
+    let failCancelOldStop = false;
+
+    adapter.deltaHttpClient = {
+      async signedGet(
+        accountId: string,
+        path: string,
+        _query: Record<string, unknown> | undefined,
+        userId: string
+      ) {
+        assert.equal(accountId, 'delta-account-1');
+        assert.equal(userId, 'user-1');
+        if (path === '/v2/positions/margined') {
+          return [
+            {
+              product_id: '123',
+              product_symbol: 'BTCUSD',
+              size: '2',
+              entry_price: '100',
+              mark_price: '116',
+            },
+          ];
+        }
+        if (path === '/v2/orders/501') {
+          return {
+            id: '501',
+            product_id: '123',
+            side: 'sell',
+            stop_price: '102',
+            stop_order_type: 'stop_loss_order',
+            size: '2',
+            state: 'pending',
+            order_type: 'market_order',
+            reduce_only: true,
+          };
+        }
+        if (path === '/v2/orders/601') {
+          return {
+            id: '601',
+            product_id: '123',
+            side: 'sell',
+            stop_price: '130',
+            stop_order_type: 'take_profit_order',
+            size: '2',
+            state: 'pending',
+            order_type: 'market_order',
+            reduce_only: 'true',
+          };
+        }
+        throw new Error(`Unexpected signedGet path ${path}`);
+      },
+      async signedPost(accountId: string, path: string, body: Record<string, unknown>) {
+        postCalls.push({ accountId, path, body });
+        return { id: String(nextCreatedOrderId++), state: 'pending' };
+      },
+      async signedDelete(accountId: string, path: string, body: Record<string, unknown>) {
+        deleteCalls.push({ accountId, path, body });
+        if (failCancelOldStop && body.id === 501) {
+          throw new Error('cancel rejected');
+        }
+        return { success: true };
+      },
+    };
+
+    return {
+      adapter,
+      postCalls,
+      deleteCalls,
+      setNextCreatedOrderId(value: number) {
+        nextCreatedOrderId = value;
+      },
+      setFailCancelOldStop(value: boolean) {
+        failCancelOldStop = value;
+      },
+    };
+  };
+
+  const context = {
+    userId: 'user-1',
+    brokerKey: 'delta_exchange',
+    accountId: 'delta-account-1',
+  };
+
+  const success = createAdapter();
+  const result = await success.adapter.updateRiskOrder(
+    '123',
+    {
+      order_price: 100,
+      stoploss_price: 110,
+      takeprofit_price: 130,
+      stoploss_order_id: '501',
+      takeprofit_order_id: '601',
+      trigger_type: 'MARKET',
+      is_stoploss: true,
+      is_takeprofit: true,
+    },
+    context
+  );
+
+  assert.equal(result.stop_loss_order_id, '701');
+  assert.equal(result.take_profit_order_id, '601');
+  assert.equal(success.postCalls.length, 1);
+  assert.equal(success.postCalls[0].path, '/v2/orders');
+  assert.equal(success.postCalls[0].body.product_id, 123);
+  assert.equal(success.postCalls[0].body.size, 2);
+  assert.equal(success.postCalls[0].body.side, 'sell');
+  assert.equal(success.postCalls[0].body.stop_order_type, 'stop_loss_order');
+  assert.equal(success.postCalls[0].body.stop_price, '110');
+  assert.equal(success.postCalls[0].body.reduce_only, true);
+  assert.equal(typeof success.postCalls[0].body.client_order_id, 'string');
+  assert.deepEqual(success.deleteCalls, [
+    { accountId: 'delta-account-1', path: '/v2/orders', body: { id: 501, product_id: 123 } },
+  ]);
+
+  const backward = createAdapter();
+  await assert.rejects(
+    () =>
+      backward.adapter.updateRiskOrder(
+        '123',
+        {
+          order_price: 100,
+          stoploss_price: 101,
+          takeprofit_price: 130,
+          stoploss_order_id: '501',
+          takeprofit_order_id: '601',
+          trigger_type: 'MARKET',
+          is_stoploss: true,
+          is_takeprofit: true,
+        },
+        context
+      ),
+    (error: unknown) =>
+      error instanceof Error && /cannot move stop-loss backward/i.test(error.message)
+  );
+  assert.equal(backward.postCalls.length, 0);
+  assert.equal(backward.deleteCalls.length, 0);
+
+  const rollback = createAdapter();
+  rollback.setNextCreatedOrderId(801);
+  rollback.setFailCancelOldStop(true);
+  await assert.rejects(
+    () =>
+      rollback.adapter.updateRiskOrder(
+        '123',
+        {
+          order_price: 100,
+          stoploss_price: 111,
+          takeprofit_price: 130,
+          stoploss_order_id: '501',
+          takeprofit_order_id: '601',
+          trigger_type: 'MARKET',
+          is_stoploss: true,
+          is_takeprofit: true,
+        },
+        context
+      ),
+    (error: unknown) =>
+      error instanceof Error && /could not cancel old stop-loss 501/i.test(error.message)
+  );
+  assert.deepEqual(rollback.deleteCalls, [
+    { accountId: 'delta-account-1', path: '/v2/orders', body: { id: 501, product_id: 123 } },
+    { accountId: 'delta-account-1', path: '/v2/orders', body: { id: 801, product_id: 123 } },
+  ]);
+
+  console.log('Positions phase 14 assertions passed.');
+}
+
 const suiteSteps = {
   '01': positionsGuard01,
   '04': positionsGuard04,
@@ -2488,6 +2664,7 @@ const suiteSteps = {
   '11': positionsGuard11,
   '12': positionsGuard12,
   '13': positionsGuard13,
+  '14': positionsGuard14,
 } as const;
 
 export async function runPositionsSuite(): Promise<void> {
@@ -2502,6 +2679,7 @@ export async function runPositionsSuite(): Promise<void> {
     '11',
     '12',
     '13',
+    '14',
   ]);
 }
 

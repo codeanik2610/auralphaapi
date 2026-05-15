@@ -8606,12 +8606,13 @@ export class SuggestedTradesService {
       return execution;
     }
 
-    if (brokerKey !== 'mudrex') {
+    const brokerSupport = this.resolveCustomRLadderTrailingStopBrokerSupport(brokerKey);
+    if (!brokerSupport.supported) {
       return this.recordTrailingStopError(
         trade,
         execution,
         new Date().toISOString(),
-        `Custom R ladder trailing SL is not supported for broker ${brokerKey}.`
+        brokerSupport.reason
       );
     }
 
@@ -8664,13 +8665,14 @@ export class SuggestedTradesService {
     }
 
     const riskOrderIds = this.resolveTrailingRiskOrderIds(execution, payload);
+    let riskOrderMutationResult: unknown = null;
     try {
       if (
         positionsAdapter.updateRiskOrder &&
         riskOrderIds.stopLossOrderId &&
         riskOrderIds.takeProfitOrderId
       ) {
-        await positionsAdapter.updateRiskOrder(
+        riskOrderMutationResult = await positionsAdapter.updateRiskOrder(
           riskOrderPositionId,
           {
             order_price: entryPrice,
@@ -8689,7 +8691,7 @@ export class SuggestedTradesService {
           }
         );
       } else if (positionsAdapter.createRiskOrder) {
-        await positionsAdapter.createRiskOrder(
+        riskOrderMutationResult = await positionsAdapter.createRiskOrder(
           riskOrderPositionId,
           {
             stoploss_price: stopLossPrice,
@@ -8722,6 +8724,16 @@ export class SuggestedTradesService {
     }
 
     const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const responseRiskOrderIds =
+      this.resolveTrailingRiskOrderIdsFromMutationResult(riskOrderMutationResult);
+    const appliedStopLossOrderId =
+      responseRiskOrderIds.stopLossOrderId ??
+      riskOrderIds.stopLossOrderId ??
+      this.readStringValue(plan.stopLossOrderId);
+    const appliedTakeProfitOrderId =
+      responseRiskOrderIds.takeProfitOrderId ??
+      riskOrderIds.takeProfitOrderId ??
+      this.readStringValue(plan.takeProfitOrderId);
     const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
     const history = Array.isArray(existingTrailing.history) ? existingTrailing.history : [];
     const trailingStop = {
@@ -8753,6 +8765,8 @@ export class SuggestedTradesService {
           currentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
           profitR: Number(move.profitR.toFixed(6)),
           positionId: riskOrderPositionId,
+          stopLossOrderId: appliedStopLossOrderId,
+          takeProfitOrderId: appliedTakeProfitOrderId,
           snapshotPositionId: position.externalId,
         },
       ],
@@ -8793,8 +8807,8 @@ export class SuggestedTradesService {
         accountId,
         positionId: riskOrderPositionId,
         snapshotPositionId: position.externalId,
-        stopLossOrderId: riskOrderIds.stopLossOrderId ?? plan.stopLossOrderId,
-        takeProfitOrderId: riskOrderIds.takeProfitOrderId ?? plan.takeProfitOrderId,
+        stopLossOrderId: appliedStopLossOrderId ?? plan.stopLossOrderId,
+        takeProfitOrderId: appliedTakeProfitOrderId ?? plan.takeProfitOrderId,
         attachedStopLossPrice: stopLossPrice,
         attachedTakeProfitPrice: formattedTakeProfitPrice,
         trailingStop,
@@ -8811,6 +8825,31 @@ export class SuggestedTradesService {
     const meta = this.readRecordValue(trade.meta);
     const tradeManagementSnapshot = this.readRecordValue(meta?.tradeManagementSnapshot);
     return resolveCustomRLadderTrailingStopConfigFromRecords(plan, tradeManagementSnapshot, meta);
+  }
+
+  private resolveCustomRLadderTrailingStopBrokerSupport(
+    brokerKey: string
+  ): { supported: true } | { supported: false; reason: string } {
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (normalizedBrokerKey === 'mudrex') {
+      return { supported: true };
+    }
+    if (normalizedBrokerKey === 'delta_exchange') {
+      if (!this.isProtectionRepairEnabledForBroker(normalizedBrokerKey)) {
+        return {
+          supported: false,
+          reason:
+            'Custom R ladder trailing SL is disabled for Delta Exchange by protection repair controls.',
+        };
+      }
+      return { supported: true };
+    }
+    return {
+      supported: false,
+      reason: `Custom R ladder trailing SL is not supported for broker ${brokerKey}.`,
+    };
   }
 
   private resolveTrailingRiskOrderPositionId(
@@ -8892,6 +8931,62 @@ export class SuggestedTradesService {
       takeProfitOrderId,
       triggerType,
     };
+  }
+
+  private resolveTrailingRiskOrderIdsFromMutationResult(result: unknown): {
+    stopLossOrderId: string | null;
+    takeProfitOrderId: string | null;
+  } {
+    const record = this.readRecordValue(result);
+    if (!record) {
+      return { stopLossOrderId: null, takeProfitOrderId: null };
+    }
+
+    const data = this.readRecordValue(record.data) ?? {};
+    let stopLossOrderId =
+      this.readStringValue(record.stop_loss_order_id) ??
+      this.readStringValue(record.stoploss_order_id) ??
+      this.readStringValue(record.stopLossOrderId) ??
+      this.readStringValue(record.stoplossOrderId) ??
+      this.readStringValue(data.stop_loss_order_id) ??
+      this.readStringValue(data.stoploss_order_id) ??
+      this.readStringValue(data.stopLossOrderId) ??
+      this.readStringValue(data.stoplossOrderId);
+    let takeProfitOrderId =
+      this.readStringValue(record.take_profit_order_id) ??
+      this.readStringValue(record.takeprofit_order_id) ??
+      this.readStringValue(record.takeProfitOrderId) ??
+      this.readStringValue(record.takeprofitOrderId) ??
+      this.readStringValue(data.take_profit_order_id) ??
+      this.readStringValue(data.takeprofit_order_id) ??
+      this.readStringValue(data.takeProfitOrderId) ??
+      this.readStringValue(data.takeprofitOrderId);
+
+    const protectiveOrders = Array.isArray(record.protective_orders)
+      ? record.protective_orders
+      : Array.isArray(data.protective_orders)
+        ? data.protective_orders
+        : [];
+    for (const item of protectiveOrders) {
+      const order = this.readRecordValue(item);
+      if (!order) continue;
+      const kind = String(order.kind ?? order.type ?? order.stop_order_type ?? '')
+        .trim()
+        .toLowerCase();
+      const orderId =
+        this.readStringValue(order.order_id) ??
+        this.readStringValue(order.orderId) ??
+        this.readStringValue(order.id);
+      if (!orderId) continue;
+      if (!stopLossOrderId && (kind === 'stop_loss' || kind === 'stop_loss_order')) {
+        stopLossOrderId = orderId;
+      }
+      if (!takeProfitOrderId && (kind === 'take_profit' || kind === 'take_profit_order')) {
+        takeProfitOrderId = orderId;
+      }
+    }
+
+    return { stopLossOrderId, takeProfitOrderId };
   }
 
   private resolveTrailingOriginalStopLossPrice(
