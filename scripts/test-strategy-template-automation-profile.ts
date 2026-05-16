@@ -79,8 +79,12 @@ const first60Managed = buildStrategyTemplateAutomationProfile({
       enabled: true,
       mode: 'custom_r_ladder',
       rules: [
-        { whenProfitR: 1, moveStopToR: 0 },
-        { whenProfitR: 2, moveStopToR: 1 },
+        { whenProfitR: 0.5, moveStopToR: 0.1 },
+        { whenProfitR: 1, moveStopToR: 0.3 },
+        { whenProfitR: 2, moveStopToR: 1.2 },
+        { whenProfitR: 3, moveStopToR: 2.2 },
+        { whenProfitR: 4, moveStopToR: 3.2 },
+        { whenProfitR: 5, moveStopToR: 4.2 },
       ],
     },
     first60: {
@@ -122,8 +126,12 @@ const first60Managed = buildStrategyTemplateAutomationProfile({
 assert.equal(first60Managed.tradeManagement?.first60?.enabled, true);
 assert.equal(first60Managed.tradeManagement?.trailingStop?.mode, 'custom_r_ladder');
 assert.deepEqual(first60Managed.tradeManagement?.trailingStop?.rules, [
-  { whenProfitR: 1, moveStopToR: 0 },
-  { whenProfitR: 2, moveStopToR: 1 },
+  { whenProfitR: 0.5, moveStopToR: 0.1 },
+  { whenProfitR: 1, moveStopToR: 0.3 },
+  { whenProfitR: 2, moveStopToR: 1.2 },
+  { whenProfitR: 3, moveStopToR: 2.2 },
+  { whenProfitR: 4, moveStopToR: 3.2 },
+  { whenProfitR: 5, moveStopToR: 4.2 },
 ]);
 assert.equal(first60Managed.tradeManagement?.first60?.dataSource, 'market_candles_1m');
 assert.equal(first60Managed.tradeManagement?.first60?.long?.targetR, 5);

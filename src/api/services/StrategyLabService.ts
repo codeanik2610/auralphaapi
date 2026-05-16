@@ -401,6 +401,7 @@ export class StrategyLabService {
         : project.timeframe
           ? [project.timeframe]
           : [];
+      const tradeManagement = this.toRecord(config.tradeManagement);
 
       if (!assets.length) {
         throw new BadRequestAppError('Select at least one asset before running a backtest');
@@ -426,6 +427,7 @@ export class StrategyLabService {
         risk: this.resolveTemplateRiskConfig(project, config),
         parameters: config.parameters || project.parameters || null,
         filters: config.filters || null,
+        ...(Object.keys(tradeManagement).length ? { tradeManagement } : {}),
         projectVersion: Number(project.projectVersion || config.projectVersion || 1),
         sourceTemplateId:
           project.sourceTemplateId ||
@@ -447,7 +449,10 @@ export class StrategyLabService {
         templateVersion: Number(project.projectVersion || 1),
         sourceTemplateId: templateConfig.sourceTemplateId,
         sourceTemplateVersion: templateConfig.sourceTemplateVersion,
-        config: templateConfig,
+        config: {
+          ...templateConfig,
+          automationProfile: buildStrategyTemplateAutomationProfile(templateConfig),
+        },
       };
       const templateDiffSummary = await this.buildTemplateDiffSummary(
         userId,
@@ -614,6 +619,7 @@ export class StrategyLabService {
       ...this.toRecord(config.parameters),
     };
     const filters = this.toRecord(config.filters);
+    const tradeManagement = this.toRecord(config.tradeManagement);
     const maxRisk = this.cleanText(risk.maxRisk ?? risk.max_per_trade) || '1.5';
     const signalThreshold =
       this.cleanText(parameters.signalThreshold ?? parameters.signal_threshold) || '0.82';
@@ -674,6 +680,7 @@ export class StrategyLabService {
         useRegimeFilter: Boolean(filters.useRegimeFilter),
         paperTradeFirst: Boolean(filters.paperTradeFirst),
       },
+      ...(Object.keys(tradeManagement).length ? { tradeManagement } : {}),
       description: description || '',
       source: 'strategy_lab',
       sourceType: 'strategy_lab',

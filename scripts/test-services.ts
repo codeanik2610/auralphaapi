@@ -9674,6 +9674,22 @@ class StrategyDraft(Strategy):
         signalThreshold: '0.88',
         signal_threshold: '0.88',
       },
+      tradeManagement: {
+        trailingStop: {
+          enabled: true,
+          mode: 'custom_r_ladder',
+          basis: 'actual_fill',
+          updateOnlyInProfitDirection: true,
+          rules: [
+            { whenProfitR: 0.5, moveStopToR: 0.1 },
+            { whenProfitR: 1, moveStopToR: 0.3 },
+            { whenProfitR: 2, moveStopToR: 1.2 },
+            { whenProfitR: 3, moveStopToR: 2.2 },
+            { whenProfitR: 4, moveStopToR: 3.2 },
+            { whenProfitR: 5, moveStopToR: 4.2 },
+          ],
+        },
+      },
       filters: {
         useAiFilter: true,
         useRegimeFilter: true,
@@ -9793,6 +9809,20 @@ class StrategyDraft(Strategy):
   assert.equal(templateConfig?.shortEnabled, true);
   assert.equal(templateConfig?.entryShortLogic, 'ema(20) < ema(50)');
   assert.equal(templateConfig?.exitShortLogic, 'ema(20) > ema(50)');
+  const tradeManagement = templateConfig?.tradeManagement as Record<string, unknown>;
+  const trailingStop = tradeManagement?.trailingStop as Record<string, unknown>;
+  assert.deepEqual(trailingStop?.rules, [
+    { whenProfitR: 0.5, moveStopToR: 0.1 },
+    { whenProfitR: 1, moveStopToR: 0.3 },
+    { whenProfitR: 2, moveStopToR: 1.2 },
+    { whenProfitR: 3, moveStopToR: 2.2 },
+    { whenProfitR: 4, moveStopToR: 3.2 },
+    { whenProfitR: 5, moveStopToR: 4.2 },
+  ]);
+  const automationProfile = templateConfig?.automationProfile as Record<string, unknown>;
+  const profileTradeManagement = automationProfile?.tradeManagement as Record<string, unknown>;
+  const profileTrailingStop = profileTradeManagement?.trailingStop as Record<string, unknown>;
+  assert.deepEqual(profileTrailingStop?.rules, trailingStop?.rules);
   const inputSnapshot = config?.inputSnapshot as Record<string, unknown>;
   assert.equal(inputSnapshot?.sourceType, 'strategy_lab');
   assert.equal(inputSnapshot?.projectId, 'proj-1');
@@ -9868,6 +9898,22 @@ async function runStrategyLabMoveToTemplateAssertions(): Promise<void> {
         signalThreshold: '0.81',
         signal_threshold: '0.81',
       },
+      tradeManagement: {
+        trailingStop: {
+          enabled: true,
+          mode: 'custom_r_ladder',
+          basis: 'actual_fill',
+          updateOnlyInProfitDirection: true,
+          rules: [
+            { whenProfitR: 0.5, moveStopToR: 0.1 },
+            { whenProfitR: 1, moveStopToR: 0.3 },
+            { whenProfitR: 2, moveStopToR: 1.2 },
+            { whenProfitR: 3, moveStopToR: 2.2 },
+            { whenProfitR: 4, moveStopToR: 3.2 },
+            { whenProfitR: 5, moveStopToR: 4.2 },
+          ],
+        },
+      },
       filters: {
         useAiFilter: true,
         useRegimeFilter: true,
@@ -9941,6 +9987,20 @@ async function runStrategyLabMoveToTemplateAssertions(): Promise<void> {
   assert.match(String(config?.compiledCodeDefinition || ''), /ema\(ctx, 20\) > ema\(ctx, 50\)/);
   assert.equal(config?.risk?.maxRisk, '1.2');
   assert.equal(config?.parameters?.signalThreshold, '0.81');
+  const tradeManagement = config?.tradeManagement as Record<string, unknown>;
+  const trailingStop = tradeManagement?.trailingStop as Record<string, unknown>;
+  assert.deepEqual(trailingStop?.rules, [
+    { whenProfitR: 0.5, moveStopToR: 0.1 },
+    { whenProfitR: 1, moveStopToR: 0.3 },
+    { whenProfitR: 2, moveStopToR: 1.2 },
+    { whenProfitR: 3, moveStopToR: 2.2 },
+    { whenProfitR: 4, moveStopToR: 3.2 },
+    { whenProfitR: 5, moveStopToR: 4.2 },
+  ]);
+  const automationProfile = config?.automationProfile as Record<string, unknown>;
+  const profileTradeManagement = automationProfile?.tradeManagement as Record<string, unknown>;
+  const profileTrailingStop = profileTradeManagement?.trailingStop as Record<string, unknown>;
+  assert.deepEqual(profileTrailingStop?.rules, trailingStop?.rules);
   assert.equal(activities.length, 1);
   assert.equal(activities[0]?.stream, 'Templates');
 }

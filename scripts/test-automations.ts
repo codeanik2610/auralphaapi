@@ -2243,8 +2243,12 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
             basis: 'actual_fill',
             updateOnlyInProfitDirection: true,
             rules: [
-              { whenProfitR: 1, moveStopToR: 0 },
-              { whenProfitR: 2, moveStopToR: 1 },
+              { whenProfitR: 0.5, moveStopToR: 0.1 },
+              { whenProfitR: 1, moveStopToR: 0.3 },
+              { whenProfitR: 2, moveStopToR: 1.2 },
+              { whenProfitR: 3, moveStopToR: 2.2 },
+              { whenProfitR: 4, moveStopToR: 3.2 },
+              { whenProfitR: 5, moveStopToR: 4.2 },
             ],
           },
           first60: {
@@ -2393,8 +2397,12 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         basis: 'actual_fill',
         updateOnlyInProfitDirection: true,
         rules: [
-          { whenProfitR: 1, moveStopToR: 0 },
-          { whenProfitR: 2, moveStopToR: 1 },
+          { whenProfitR: 0.5, moveStopToR: 0.1 },
+          { whenProfitR: 1, moveStopToR: 0.3 },
+          { whenProfitR: 2, moveStopToR: 1.2 },
+          { whenProfitR: 3, moveStopToR: 2.2 },
+          { whenProfitR: 4, moveStopToR: 3.2 },
+          { whenProfitR: 5, moveStopToR: 4.2 },
         ],
       });
       assert.deepEqual(longFirst60.decisionGate, {

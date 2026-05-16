@@ -10125,6 +10125,44 @@ function runCustomRLadderTrailingStopAssertions(): void {
     assert.equal(trailingAlreadyApplied.reason, 'already_applied');
   }
 
+  const ema5PullbackConfig = normalizeCustomRLadderTrailingStopConfig({
+    enabled: true,
+    mode: 'custom_r_ladder',
+    basis: 'actual_fill',
+    updateOnlyInProfitDirection: true,
+    rules: [
+      { whenProfitR: 0.5, moveStopToR: 0.1 },
+      { whenProfitR: 1, moveStopToR: 0.3 },
+      { whenProfitR: 2, moveStopToR: 1.2 },
+      { whenProfitR: 3, moveStopToR: 2.2 },
+      { whenProfitR: 4, moveStopToR: 3.2 },
+      { whenProfitR: 5, moveStopToR: 4.2 },
+    ],
+  });
+  assert.ok(ema5PullbackConfig);
+  assert.deepEqual(ema5PullbackConfig.rules, [
+    { whenProfitR: 0.5, moveStopToR: 0.1 },
+    { whenProfitR: 1, moveStopToR: 0.3 },
+    { whenProfitR: 2, moveStopToR: 1.2 },
+    { whenProfitR: 3, moveStopToR: 2.2 },
+    { whenProfitR: 4, moveStopToR: 3.2 },
+    { whenProfitR: 5, moveStopToR: 4.2 },
+  ]);
+  const ema5PullbackMove = evaluateCustomRLadderTrailingStopMove({
+    side: 'long',
+    config: ema5PullbackConfig,
+    entryPrice: 100,
+    originalStopLossPrice: 95,
+    currentStopLossPrice: 116,
+    currentPrice: 125.5,
+  });
+  assert.equal(ema5PullbackMove.action, 'move');
+  if (ema5PullbackMove.action === 'move') {
+    assert.equal(ema5PullbackMove.rule.whenProfitR, 5);
+    assert.equal(ema5PullbackMove.lockedProfitR, 4.2);
+    assert.equal(ema5PullbackMove.targetStopLossPrice, 121);
+  }
+
   const service = new SuggestedTradesService() as any;
   const replacementOrderIds = service.resolveTrailingRiskOrderIdsFromMutationResult({
     protective_orders: [
