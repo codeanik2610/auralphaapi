@@ -30,6 +30,7 @@ import { strategyDataSource } from '../../database/pg-data-source';
 import { env } from '../../env';
 import { BinanceMarketCandle } from '../contracts/Binance';
 import { Logger } from '../../lib/logger/Logger';
+import { MarketService as BinanceMarketService } from '../../brokers/providers/binance';
 
 interface MarketsOverviewQuery {
   selectedSymbol?: string;
@@ -107,6 +108,8 @@ const DEFAULT_ASSETS_LIMIT = 200;
 const DEFAULT_SIGNALS_LIMIT = 20;
 const DEFAULT_CHART_LIMIT = 120;
 const CHART_SOURCE = 'pg.market_candles_1m';
+const LIVE_CHART_SOURCE = 'binance.futures.live';
+const HYDRATED_CHART_SOURCE = 'binance.futures.live+pg.market_candles_1m';
 const OVERVIEW_CACHE_TTL_MS = 15_000;
 const OVERVIEW_STALE_CACHE_TTL_MS = 5 * 60_000;
 const OVERVIEW_CACHE_MAX_ENTRIES = 200;
@@ -140,6 +143,12 @@ const getProvenanceSourceLabel = (
 
   if (normalized === 'pg.market_candles_1m') {
     return 'Binance futures candles';
+  }
+  if (normalized === 'binance.futures.live') {
+    return 'Binance futures live candles';
+  }
+  if (normalized === 'binance.futures.live+pg.market_candles_1m') {
+    return 'Binance futures live + warehouse candles';
   }
   if (normalized === 'mudrex') {
     return 'Mudrex broker price cache';
@@ -201,6 +210,9 @@ export class MarketsOverviewService {
 
   @Inject(() => SignalRepository)
   private signalRepository!: SignalRepository;
+
+  @Inject(() => BinanceMarketService)
+  private binanceMarketService!: BinanceMarketService;
 
   private readonly overviewCache = new Map<string, CachedOverviewEntry>();
 
@@ -406,23 +418,36 @@ export class MarketsOverviewService {
       endTime: query.endTime,
     });
 
-    const candles = await this.fetchChartCandles(
+    let candles = await this.fetchChartCandles(
       params.symbol,
       params.interval,
       params.limit,
       params.endTime
     );
+    let chartSource = CHART_SOURCE;
+
+    if (!params.endTime) {
+      const hydrated = await this.hydrateChartCandlesWithLiveData(
+        params.symbol,
+        params.interval,
+        params.limit,
+        candles
+      );
+      candles = hydrated.candles;
+      chartSource = hydrated.source;
+    }
+
     const startTime = candles[0]?.openTime ? new Date(candles[0].openTime).toISOString() : null;
     const endTime = candles[candles.length - 1]?.openTime
       ? new Date(candles[candles.length - 1].openTime).toISOString()
       : null;
-    const chartProvenance = this.buildChartProvenance(CHART_SOURCE, endTime);
+    const chartProvenance = this.buildChartProvenance(chartSource, endTime);
 
     return successResponse({
       symbol: params.symbol,
       interval: params.interval,
       limit: params.limit,
-      source: CHART_SOURCE,
+      source: chartSource,
       provenance: chartProvenance,
       candles,
       range: {
@@ -430,6 +455,63 @@ export class MarketsOverviewService {
         endTime,
       },
     });
+  }
+
+  private async hydrateChartCandlesWithLiveData(
+    symbol: string,
+    interval: string,
+    limit: number,
+    warehouseCandles: BinanceMarketCandle[]
+  ): Promise<{ candles: BinanceMarketCandle[]; source: string }> {
+    let liveCandles: BinanceMarketCandle[] = [];
+
+    try {
+      const response = await this.binanceMarketService.getCandles({
+        symbol,
+        interval,
+        limit: String(limit),
+      });
+      liveCandles = Array.isArray(response.data) ? response.data : [];
+    } catch (error) {
+      log.warn('Unable to hydrate market chart with live candles', {
+        symbol,
+        interval,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (!liveCandles.length) {
+      return { candles: warehouseCandles, source: CHART_SOURCE };
+    }
+
+    const candles = this.mergeChartCandles(warehouseCandles, liveCandles, limit);
+    return {
+      candles,
+      source: warehouseCandles.length ? HYDRATED_CHART_SOURCE : LIVE_CHART_SOURCE,
+    };
+  }
+
+  private mergeChartCandles(
+    warehouseCandles: BinanceMarketCandle[],
+    liveCandles: BinanceMarketCandle[],
+    limit: number
+  ): BinanceMarketCandle[] {
+    const byOpenTime = new Map<number, BinanceMarketCandle>();
+
+    [...warehouseCandles, ...liveCandles].forEach((candle) => {
+      const openTime = Number(candle?.openTime);
+      if (!Number.isFinite(openTime)) {
+        return;
+      }
+      byOpenTime.set(openTime, {
+        ...candle,
+        openTime,
+      });
+    });
+
+    return Array.from(byOpenTime.values())
+      .sort((left, right) => Number(left.openTime) - Number(right.openTime))
+      .slice(-limit);
   }
 
   private async getOverviewFromSnapshots(

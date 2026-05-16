@@ -360,6 +360,26 @@ async function runMarketsChartWarehouseSymbolResolutionAssertions(): Promise<voi
   (strategyDataSource as any).query = async (sql: string, params: unknown[]) => {
     capturedQueries.push({ sql, params });
     if (sql.includes('WITH bounds AS')) {
+      if (params[0] === 'DOGSUSDT') {
+        return [
+          {
+            bucket_ts: Date.parse('2026-04-13T03:00:00.000Z') / 1000,
+            open: '100',
+            high: '105',
+            low: '98',
+            close: '102',
+            volume: '1000',
+          },
+          {
+            bucket_ts: Date.parse('2026-04-13T03:05:00.000Z') / 1000,
+            open: '102',
+            high: '106',
+            low: '99',
+            close: '103',
+            volume: '1100',
+          },
+        ];
+      }
       return [
         {
           bucket_ts: Date.parse('2026-04-13T03:00:00.000Z') / 1000,
@@ -371,7 +391,8 @@ async function runMarketsChartWarehouseSymbolResolutionAssertions(): Promise<voi
         },
       ];
     }
-    return [{ symbol: 'AVAXUSDT' }];
+    const candidates = Array.isArray(params[0]) ? (params[0] as string[]) : [];
+    return [{ symbol: candidates.includes('DOGSUSDT') ? 'DOGSUSDT' : 'AVAXUSDT' }];
   };
 
   try {
@@ -395,6 +416,49 @@ async function runMarketsChartWarehouseSymbolResolutionAssertions(): Promise<voi
     assert.match(String(chartQuery?.sql || ''), /\$4::timestamptz/);
     assert.equal((chartQuery?.params[3] as Date).toISOString(), '2026-04-13T03:05:00.000Z');
     assert.equal(chartQuery?.params[4], 1);
+
+    service.binanceMarketService = {
+      async getCandles(query: Record<string, unknown>) {
+        assert.equal(query.symbol, 'DOGSUSDT');
+        assert.equal(query.interval, '5m');
+        assert.equal(query.limit, '2');
+        return createSuccess([
+          {
+            openTime: Date.parse('2026-04-13T03:05:00.000Z'),
+            open: 'live-102',
+            high: '106',
+            low: '99',
+            close: '104',
+            volume: '1200',
+          },
+          {
+            openTime: Date.parse('2026-04-13T03:10:00.000Z'),
+            open: '104',
+            high: '110',
+            low: '103',
+            close: '109',
+            volume: '1400',
+          },
+        ]);
+      },
+    };
+
+    const hydratedChart = await service.getSymbolChart('DOGSUSDT', {
+      interval: '5m',
+      limit: '2',
+    });
+
+    assert.equal(hydratedChart.data.source, 'binance.futures.live+pg.market_candles_1m');
+    assert.equal(
+      hydratedChart.data.provenance.sourceLabel,
+      'Binance futures live + warehouse candles'
+    );
+    assert.deepEqual(
+      (hydratedChart.data.candles as Array<{ openTime: number }>).map((candle) => candle.openTime),
+      [Date.parse('2026-04-13T03:05:00.000Z'), Date.parse('2026-04-13T03:10:00.000Z')]
+    );
+    assert.equal(hydratedChart.data.candles[0].open, 'live-102');
+    assert.equal(hydratedChart.data.range.endTime, '2026-04-13T03:10:00.000Z');
   } finally {
     (strategyDataSource as any).query = originalQuery;
     (strategyDataSource as any).isInitialized = originalInitialized;
