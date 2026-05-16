@@ -24,7 +24,10 @@ import {
   TRADE_SUGGESTION_EXECUTION_LIMIT_RULES,
   normalizeTradeSuggestionExecutionPolicy,
 } from '../utils/automationType';
-import { resolveDefaultFreshnessGraceSeconds } from '../utils/signalFreshness';
+import {
+  parseTimeframeSeconds,
+  resolveDefaultFreshnessGraceSeconds,
+} from '../utils/signalFreshness';
 import {
   buildStrategyTemplateAutomationProfile,
   StrategyTemplateAutomationProfile,
@@ -889,6 +892,10 @@ export class AutomationExecutionService {
 
     const candleSettings = this.resolveTradeSuggestionCandleSettings(config);
     const signalSelectionMode = this.resolveTradeSuggestionSignalSelectionMode(config);
+    const cursorReplayCandles = this.resolveTradeSuggestionCursorReplayCandles(
+      config,
+      signalSelectionMode
+    );
     const existingCursors = await this.automationCursorRepository.listByAutomationAndScope(
       automation.id,
       automation.userId,
@@ -916,12 +923,11 @@ export class AutomationExecutionService {
       candlesSchema: candleSettings.candlesSchema,
       candlesMaxRows: candleSettings.candlesMaxRows,
       signalSelectionMode,
-      cursorBySymbol: Object.fromEntries(
-        Array.from(cursorMap.entries()).flatMap(([symbol, cursor]) =>
-          cursor.lastEvaluatedSignalTime
-            ? [[symbol, cursor.lastEvaluatedSignalTime.toISOString()]]
-            : []
-        )
+      cursorBySymbol: this.buildSignalEvaluationCursorBySymbol(
+        cursorMap,
+        timeframe,
+        signalSelectionMode,
+        cursorReplayCandles
       ),
     });
 
@@ -1031,6 +1037,8 @@ export class AutomationExecutionService {
             latestClosedSignalTime: latestClosedSignalTime?.toISOString() ?? null,
             evaluationMode: 'latest-closed-candle',
             signalSelectionMode,
+            cursorPreviousSignalTime: currentCursor?.lastEvaluatedSignalTime?.toISOString() ?? null,
+            cursorReplayCandles,
             signalCount: 0,
             skippedHistoricalSignalCount,
           },
@@ -1311,6 +1319,8 @@ export class AutomationExecutionService {
           latestClosedSignalTime: latestClosedSignalTime?.toISOString() ?? null,
           evaluationMode: 'latest-closed-candle',
           signalSelectionMode,
+          cursorPreviousSignalTime: currentCursor?.lastEvaluatedSignalTime?.toISOString() ?? null,
+          cursorReplayCandles,
           signalCount: normalizedSignalEvents.length,
           skippedHistoricalSignalCount,
         },
@@ -1941,7 +1951,81 @@ export class AutomationExecutionService {
       inputSnapshot.catchupMode
     );
 
-    return rawMode?.trim().toLowerCase() === 'cursor_gap' ? 'cursor_gap' : 'latest_closed_only';
+    const normalizedMode = rawMode?.trim().toLowerCase();
+    if (normalizedMode === 'cursor_gap') {
+      return 'cursor_gap';
+    }
+    if (normalizedMode === 'latest_closed_only') {
+      return 'latest_closed_only';
+    }
+
+    const executionMode = this.readString(
+      execution.executionMode,
+      tradeSuggestion.executionMode,
+      config.executionMode,
+      nestedConfig.executionMode,
+      inputSnapshot.executionMode
+    )
+      ?.trim()
+      .toLowerCase();
+
+    return executionMode === 'live_trade_auto' ? 'cursor_gap' : 'latest_closed_only';
+  }
+
+  private resolveTradeSuggestionCursorReplayCandles(
+    config: Record<string, unknown>,
+    signalSelectionMode: 'latest_closed_only' | 'cursor_gap'
+  ): number {
+    if (signalSelectionMode !== 'cursor_gap') {
+      return 0;
+    }
+    const nestedConfig = this.parseRecord(config.config) ?? {};
+    const inputSnapshot = this.parseRecord(config.inputSnapshot) ?? {};
+    const tradeSuggestion = this.parseRecord(config.tradeSuggestion) ?? {};
+    const execution = this.parseRecord(tradeSuggestion.execution) ?? {};
+    const replayCandles = this.readNumber(
+      tradeSuggestion.cursorReplayCandles,
+      tradeSuggestion.catchupReplayCandles,
+      execution.cursorReplayCandles,
+      execution.catchupReplayCandles,
+      config.cursorReplayCandles,
+      config.catchupReplayCandles,
+      nestedConfig.cursorReplayCandles,
+      nestedConfig.catchupReplayCandles,
+      inputSnapshot.cursorReplayCandles,
+      inputSnapshot.catchupReplayCandles
+    );
+
+    if (replayCandles !== null && Number.isFinite(replayCandles)) {
+      return Math.min(24, Math.max(0, Math.floor(replayCandles)));
+    }
+    return 2;
+  }
+
+  private buildSignalEvaluationCursorBySymbol(
+    cursorMap: Map<string, { lastEvaluatedSignalTime?: Date | null }>,
+    timeframe: string,
+    signalSelectionMode: 'latest_closed_only' | 'cursor_gap',
+    cursorReplayCandles: number
+  ): Record<string, string> {
+    const timeframeSeconds = parseTimeframeSeconds(timeframe);
+    return Object.fromEntries(
+      Array.from(cursorMap.entries()).flatMap(([symbol, cursor]) => {
+        const cursorTime = cursor.lastEvaluatedSignalTime;
+        if (!cursorTime || Number.isNaN(cursorTime.getTime())) {
+          return [];
+        }
+
+        let effectiveCursorTime = cursorTime;
+        if (signalSelectionMode === 'cursor_gap' && timeframeSeconds && cursorReplayCandles > 0) {
+          effectiveCursorTime = new Date(
+            cursorTime.getTime() - timeframeSeconds * cursorReplayCandles * 1000
+          );
+        }
+
+        return [[symbol, effectiveCursorTime.toISOString()]];
+      })
+    );
   }
 
   private resolveTradeSuggestionSymbols(config: Record<string, unknown>): string[] {

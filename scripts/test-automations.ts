@@ -2037,7 +2037,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       );
 
       assert.equal(result.inserted, 1);
-      assert.equal(evaluatorCalls[0]?.signalSelectionMode, 'latest_closed_only');
+      assert.equal(evaluatorCalls[0]?.signalSelectionMode, 'cursor_gap');
       assert.equal(result.autoLiveReady, 1);
       assert.equal(liveAutoOptions[0]?.currentRunFreshnessFloorSeconds, 900);
       assert.ok(liveAutoOptions[0]?.freshnessEvaluatedAt instanceof Date);
@@ -2674,6 +2674,8 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         latestClosedSignalTime: '2026-04-04T11:00:00.000Z',
         evaluationMode: 'latest-closed-candle',
         signalSelectionMode: 'latest_closed_only',
+        cursorPreviousSignalTime: '2026-04-04T09:00:00.000Z',
+        cursorReplayCandles: 0,
         signalCount: 1,
         skippedHistoricalSignalCount: 1,
       });
@@ -2735,6 +2737,9 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       service.automationSignalEvaluatorService = {
         evaluateLatestSignals: async (payload: Record<string, unknown>) => {
           assert.equal(payload.signalSelectionMode, 'cursor_gap');
+          assert.deepEqual(payload.cursorBySymbol, {
+            BTCUSDT: '2026-04-04T07:00:00.000Z',
+          });
           return {
             evaluatedSymbols: 1,
             items: [
@@ -2809,6 +2814,8 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         latestClosedSignalTime: '2026-04-04T11:00:00.000Z',
         evaluationMode: 'latest-closed-candle',
         signalSelectionMode: 'cursor_gap',
+        cursorPreviousSignalTime: '2026-04-04T09:00:00.000Z',
+        cursorReplayCandles: 2,
         signalCount: 2,
         skippedHistoricalSignalCount: 0,
       });
