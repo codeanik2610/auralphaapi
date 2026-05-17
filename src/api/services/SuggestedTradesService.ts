@@ -9412,7 +9412,9 @@ export class SuggestedTradesService {
       return false;
     }
     const normalized = String(message || '').toLowerCase();
-    return normalized.includes('position not found') || normalized.includes('position size is zero');
+    return (
+      normalized.includes('position not found') || normalized.includes('position size is zero')
+    );
   }
 
   private clearTrailingStopErrorWhenPositionGone(
@@ -10199,8 +10201,9 @@ export class SuggestedTradesService {
       .trim()
       .toLowerCase();
     return (
-      error.includes('attached protection is inactive or missing') &&
-      error.includes('replacement protection is required')
+      error.includes('replacement protection is inactive after submission') ||
+      (error.includes('attached protection is inactive or missing') &&
+        error.includes('replacement protection is required'))
     );
   }
 
@@ -11009,14 +11012,17 @@ export class SuggestedTradesService {
 
     const normalizedExecutionStatus = this.normalizePositionStatus(execution.positionStatus);
     if (normalizedExecutionStatus === 'CLOSED' || normalizedExecutionStatus === 'LIQUIDATED') {
-      return true;
+      return this.isExecutionPositionClosureAfterFill(execution);
     }
 
-    if (!snapshots.length) {
+    const relevantSnapshots = snapshots.filter((snapshot) =>
+      this.isPositionCandidateFillTimeCompatible(execution, snapshot)
+    );
+    if (!relevantSnapshots.length) {
       return false;
     }
 
-    return snapshots.every((snapshot) => {
+    return relevantSnapshots.every((snapshot) => {
       const normalizedStatus = this.normalizePositionStatus(
         this.readStringValue(snapshot.status) ??
           this.readStringValue(snapshot.payload?.status) ??
@@ -11024,6 +11030,15 @@ export class SuggestedTradesService {
       );
       return normalizedStatus === 'CLOSED' || normalizedStatus === 'LIQUIDATED';
     });
+  }
+
+  private isExecutionPositionClosureAfterFill(execution: SuggestedTradeExecutionLink): boolean {
+    const filledMs = this.toTimestamp(execution.filledAt);
+    const closedMs = this.toTimestamp(execution.positionClosedAt);
+    if (!filledMs || !closedMs) {
+      return true;
+    }
+    return closedMs >= filledMs - 60 * 1000;
   }
 
   private async resolveLiveProtectionOrderContext(
@@ -11112,10 +11127,7 @@ export class SuggestedTradesService {
 
     const trackedOrderIds = [
       ...new Set(
-        candidatePairs.flatMap((pair) => [
-          pair.stopLossOrderId ?? '',
-          pair.takeProfitOrderId ?? '',
-        ])
+        candidatePairs.flatMap((pair) => [pair.stopLossOrderId ?? '', pair.takeProfitOrderId ?? ''])
       ),
     ].filter((value): value is string => Boolean(value));
     const fallbackPair = candidatePairs[0] ?? { stopLossOrderId: null, takeProfitOrderId: null };
@@ -11366,7 +11378,9 @@ export class SuggestedTradesService {
   private isPositionCandidateFillTimeCompatible(
     execution: SuggestedTradeExecutionLink,
     snapshot: {
+      status?: string | null;
       firstSeenAt: Date | string | null;
+      lastSeenAt?: Date | string | null;
       payload: Record<string, unknown> | null;
     }
   ): boolean {
@@ -11376,6 +11390,23 @@ export class SuggestedTradesService {
     }
 
     const payload = snapshot.payload ?? {};
+    const normalizedStatus = this.normalizePositionStatus(
+      this.readStringValue(snapshot.status) ?? this.readStringValue(payload.status) ?? null
+    );
+    const explicitClosedMs =
+      this.toTimestamp(payload.closed_at) ?? this.toTimestamp(payload.closedAt) ?? null;
+    const inferredClosedMs =
+      normalizedStatus === 'CLOSED' || normalizedStatus === 'LIQUIDATED'
+        ? (this.toTimestamp(payload.updated_at) ??
+          this.toTimestamp(payload.updatedAt) ??
+          this.toTimestamp(snapshot.lastSeenAt) ??
+          null)
+        : null;
+    const closedMs = explicitClosedMs ?? inferredClosedMs;
+    if (closedMs && closedMs < filledMs - 60 * 1000) {
+      return false;
+    }
+
     const openedMs =
       this.toTimestamp(payload.created_at) ?? this.toTimestamp(payload.createdAt) ?? null;
     if (!openedMs) {

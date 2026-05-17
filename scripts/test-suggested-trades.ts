@@ -4809,6 +4809,83 @@ async function runSuggestedTradeSiblingProtectionAutoCancelAssertions(): Promise
     assert.equal(nextExecution.protectionState, 'attached');
     assert.equal(nextExecution.note, undefined);
   }
+
+  {
+    const staleDeltaService = new SuggestedTradesService() as any;
+    let cancelCalled = false;
+    staleDeltaService.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'current-sl',
+      takeProfitOrderId: 'current-tp',
+      stopLossStatus: 'PENDING',
+      takeProfitStatus: 'PENDING',
+      activeOrderIds: ['current-sl', 'current-tp'],
+    });
+    staleDeltaService.brokerRuntimeRegistry = {
+      supportsOrdersAdapter() {
+        return true;
+      },
+      getOrdersAdapter() {
+        return {
+          async cancelOrder() {
+            cancelCalled = true;
+            throw new Error('stale closed Delta product row must not cancel current protection');
+          },
+        };
+      },
+    };
+
+    const nextExecution = await staleDeltaService.maybeAutoCancelSiblingProtectionOrders(
+      'user-1',
+      trade,
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+        orderId: 'new-entry',
+        orderStatus: 'CLOSED',
+        executionState: 'filled',
+        filledAt: '2026-04-04T10:30:00.000Z',
+        filledQuantity: 90,
+        positionId: '78842',
+        positionStatus: 'CLOSED',
+        positionClosedAt: '2026-04-04T07:49:19.000Z',
+        protectionState: 'attached',
+      },
+      [
+        {
+          externalId: '78842',
+          status: 'CLOSED',
+          statusRank: 3,
+          firstSeenAt: '2026-04-04T07:47:00.000Z',
+          lastSeenAt: '2026-04-04T10:31:00.000Z',
+          payload: {
+            status: 'closed',
+            side: 'long',
+            created_at: '2026-04-04T07:47:00.000Z',
+            closed_at: '2026-04-04T07:49:19.000Z',
+            updated_at: '2026-04-04T07:49:19.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(cancelCalled, false);
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.positionStatus, 'CLOSED');
+  }
+
+  {
+    const retryService = new SuggestedTradesService() as any;
+    assert.equal(
+      retryService.isDeltaReplacementProtectionFailure({
+        brokerKey: 'delta_exchange',
+        protectionAttempts: 1,
+        protectionLastError:
+          'Delta Exchange replacement protection is inactive after submission (SL 1 CANCELLED, TP 2 CANCELLED); replacement protection still needs operator review.',
+      }),
+      true
+    );
+  }
 }
 
 async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
@@ -6224,8 +6301,11 @@ async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promi
       hasUsableProtectionContext: () => false,
       resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
       resolvePositionCurrentPrice: (payload) => Number(payload.mark_price),
-      deriveScaledProtectionPrice: (_actualEntryPrice, _requestedEntryPrice, requestedTargetPrice) =>
-        String(requestedTargetPrice),
+      deriveScaledProtectionPrice: (
+        _actualEntryPrice,
+        _requestedEntryPrice,
+        requestedTargetPrice
+      ) => String(requestedTargetPrice),
       resolveLiveAutoAssetRoute: async () => ({
         assetId: 'delta-vvv-asset',
         brokerSymbol: 'VVVUSD',
@@ -10450,7 +10530,10 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
       positionId: 'position-1',
     }
   );
-  assert.deepEqual(attachedWithTrailing.protectionPlan.trailingStop.rules, ema5PullbackConfig.rules);
+  assert.deepEqual(
+    attachedWithTrailing.protectionPlan.trailingStop.rules,
+    ema5PullbackConfig.rules
+  );
 
   const livePositionRiskOrderIds = service.resolveTrailingRiskOrderIds(
     {
