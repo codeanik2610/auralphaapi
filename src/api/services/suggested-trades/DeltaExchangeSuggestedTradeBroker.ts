@@ -320,6 +320,21 @@ export function isDeltaProtectionDirectionValid(
   return stopLossPrice > entryPrice && takeProfitPrice < entryPrice;
 }
 
+function isDeltaProtectionPlacementSafe(
+  entrySide: 'buy' | 'sell',
+  entryPrice: number,
+  stopLossPrice: number,
+  takeProfitPrice: number,
+  currentPrice: number | null
+): boolean {
+  if (currentPrice && currentPrice > 0) {
+    return entrySide === 'buy'
+      ? stopLossPrice < currentPrice && takeProfitPrice > currentPrice
+      : stopLossPrice > currentPrice && takeProfitPrice < currentPrice;
+  }
+  return isDeltaProtectionDirectionValid(entrySide, entryPrice, stopLossPrice, takeProfitPrice);
+}
+
 export function resolveDeltaInactiveAttachedProtectionManualReason(input: {
   entrySide: 'buy' | 'sell';
   actualEntryPrice: number | null;
@@ -343,32 +358,31 @@ export function resolveDeltaInactiveAttachedProtectionManualReason(input: {
   const takeProfitPrice = Number(
     deriveScaledProtectionPrice(actualEntryPrice, requestedEntryPrice, input.takeProfitPrice)
   );
+  const currentPrice = input.currentPrice;
+  if (currentPrice && currentPrice > 0) {
+    if (input.entrySide === 'buy' && currentPrice <= stopLossPrice) {
+      return `Delta Exchange attached protection is inactive and planned stop-loss ${formatNumericString(stopLossPrice) || stopLossPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
+    }
+    if (input.entrySide === 'sell' && currentPrice >= stopLossPrice) {
+      return `Delta Exchange attached protection is inactive and planned stop-loss ${formatNumericString(stopLossPrice) || stopLossPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
+    }
+    if (input.entrySide === 'buy' && currentPrice >= takeProfitPrice) {
+      return `Delta Exchange attached protection is inactive and planned take-profit ${formatNumericString(takeProfitPrice) || takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
+    }
+    if (input.entrySide === 'sell' && currentPrice <= takeProfitPrice) {
+      return `Delta Exchange attached protection is inactive and planned take-profit ${formatNumericString(takeProfitPrice) || takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
+    }
+  }
   if (
-    !isDeltaProtectionDirectionValid(
+    !isDeltaProtectionPlacementSafe(
       input.entrySide,
       actualEntryPrice,
       stopLossPrice,
-      takeProfitPrice
+      takeProfitPrice,
+      currentPrice
     )
   ) {
     return `Delta Exchange attached protection is inactive and stored protection prices are invalid for the filled ${input.entrySide} position; manual SL/TP action is required.`;
-  }
-
-  const currentPrice = input.currentPrice;
-  if (!(currentPrice && currentPrice > 0)) {
-    return null;
-  }
-  if (input.entrySide === 'buy' && currentPrice <= stopLossPrice) {
-    return `Delta Exchange attached protection is inactive and planned stop-loss ${formatNumericString(stopLossPrice) || stopLossPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
-  }
-  if (input.entrySide === 'sell' && currentPrice >= stopLossPrice) {
-    return `Delta Exchange attached protection is inactive and planned stop-loss ${formatNumericString(stopLossPrice) || stopLossPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
-  }
-  if (input.entrySide === 'buy' && currentPrice >= takeProfitPrice) {
-    return `Delta Exchange attached protection is inactive and planned take-profit ${formatNumericString(takeProfitPrice) || takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
-  }
-  if (input.entrySide === 'sell' && currentPrice <= takeProfitPrice) {
-    return `Delta Exchange attached protection is inactive and planned take-profit ${formatNumericString(takeProfitPrice) || takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}; manual action is required.`;
   }
 
   return null;
@@ -577,13 +591,14 @@ export async function remediateDeltaLiveProtection(
     )
   );
   const entrySide = String(input.trade.side || '').toUpperCase() === 'SELL' ? 'sell' : 'buy';
+  const currentPrice = input.resolvePositionCurrentPrice(positionPayload);
   const manualReason = resolveDeltaInactiveAttachedProtectionManualReason({
     entrySide,
     actualEntryPrice,
     requestedEntryPrice: input.prices.requestedEntryPrice,
     stopLossPrice: input.prices.stopLossPrice,
     takeProfitPrice: input.prices.takeProfitPrice,
-    currentPrice: input.resolvePositionCurrentPrice(positionPayload),
+    currentPrice,
   });
   if (manualReason) {
     if (shouldCloseDeltaPositionForManualReason(manualReason)) {
@@ -622,7 +637,13 @@ export async function remediateDeltaLiveProtection(
     return input.markProtectionManualUnlinked(input.execution, input.nowIso, manualReason);
   }
   if (
-    !isDeltaProtectionDirectionValid(entrySide, actualEntryPrice, stopLossPrice, takeProfitPrice)
+    !isDeltaProtectionPlacementSafe(
+      entrySide,
+      actualEntryPrice,
+      stopLossPrice,
+      takeProfitPrice,
+      currentPrice
+    )
   ) {
     return input.markProtectionFailed(
       input.execution,

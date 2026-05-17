@@ -6018,6 +6018,101 @@ async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promi
   {
     const closedPositions: Array<{ positionId: string; context?: Record<string, unknown> }> = [];
 
+    const profitLockedProtectionOrders: Array<{
+      assetId: string;
+      body: Record<string, unknown>;
+    }> = [];
+    const profitLockedExecution = await remediateDeltaLiveProtection({
+      userId: 'user-1',
+      trade: {
+        id: 'st-delta-profit-lock-repair',
+        symbol: 'VVVUSDT',
+        side: 'BUY',
+        timeframe: '5m',
+      },
+      execution: {
+        orderId: 'delta-entry-profit-lock',
+        entryPrice: '13.862',
+        quantity: '2',
+        protectionState: 'attached',
+        protectionAttempts: 0,
+      } as any,
+      position: {
+        externalId: '59172',
+        payload: {
+          entry_price: '13.862',
+          quantity_contracts: '2',
+          mark_price: '13.975',
+        },
+      },
+      prices: {
+        requestedEntryPrice: 13.862,
+        stopLossPrice: 13.871568928571,
+        takeProfitPrice: 14.452378571429,
+      },
+      nowIso: '2026-05-17T09:05:00.000Z',
+      brokerKey: 'delta_exchange',
+      accountId: 'acc-delta-1',
+      ordersAdapter: {
+        async createLiveAutoProtectiveOrdersForPosition(
+          assetId: string,
+          body: Record<string, unknown>
+        ) {
+          profitLockedProtectionOrders.push({ assetId, body });
+          return {
+            stop_loss_order_id: 'delta-profit-lock-sl',
+            take_profit_order_id: 'delta-profit-lock-tp',
+          };
+        },
+      },
+      protectionRepairEnabled: true,
+      resolveLiveProtectionOrderContext: async () => ({
+        stopLossOrderId: 'old-cancelled-sl',
+        takeProfitOrderId: 'old-pending-tp',
+        stopLossStatus: 'CANCELLED',
+        takeProfitStatus: 'PENDING',
+        activeOrderIds: ['old-pending-tp'],
+      }),
+      hasUsableProtectionContext: () => false,
+      resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
+      resolvePositionCurrentPrice: (payload) => Number(payload.mark_price),
+      deriveScaledProtectionPrice: (_actualEntryPrice, _requestedEntryPrice, requestedTargetPrice) =>
+        String(requestedTargetPrice),
+      resolveLiveAutoAssetRoute: async () => ({
+        assetId: 'delta-vvv-asset',
+        brokerSymbol: 'VVVUSD',
+        candidateSymbols: ['VVVUSDT'],
+      }),
+      resolveActiveProtectionOrdersForSymbol: async () => ({
+        stopLossOrderIds: [],
+        takeProfitOrderIds: [],
+        unclassifiedOrderIds: [],
+        activeOrderIds: [],
+      }),
+      unwrapOrderPlacementResponse: (response) => response as Record<string, unknown>,
+      markProtectionAttached: () => {
+        throw new Error('Delta handler should create replacement profit-lock protection');
+      },
+      markProtectionAttaching: (trade, execution, nowIso, note, planUpdate, attempted) =>
+        ({
+          ...execution,
+          protectionState: 'attaching',
+          protectionCheckedAt: nowIso,
+          protectionAttempts: Number(execution.protectionAttempts ?? 0) + (attempted ? 1 : 0),
+          note,
+          protectionPlan: planUpdate,
+        }) as any,
+      markProtectionManualUnlinked: () => {
+        throw new Error('Delta profit-lock protection should not require manual action');
+      },
+      markProtectionFailed: () => {
+        throw new Error('Delta profit-lock protection should not fail direction validation');
+      },
+    });
+    assert.equal(profitLockedProtectionOrders.length, 1);
+    assert.equal(profitLockedProtectionOrders[0]?.body.stopLossPrice, 13.871568928571);
+    assert.equal(profitLockedExecution.protectionState, 'attaching');
+
     const nextExecution = await remediateDeltaLiveProtection({
       userId: 'user-1',
       trade: {
@@ -10164,6 +10259,73 @@ function runCustomRLadderTrailingStopAssertions(): void {
   }
 
   const service = new SuggestedTradesService() as any;
+  const actualFillOriginalStop = service.resolveTrailingOriginalStopLossPrice(
+    { stopLossPrice: '86.91' },
+    {
+      stopLossPrice: '86.91',
+      protectionPlan: {
+        stopLossPrice: '86.91',
+      },
+    },
+    {
+      entry_price: '86.91',
+      stoploss_price: '86.960029',
+    },
+    {
+      basis: 'actual_fill',
+      entryPrice: 86.91,
+      side: 'short',
+    }
+  );
+  assert.equal(actualFillOriginalStop, 86.960029);
+
+  const attachedWithTrailing = service.markProtectionAttached(
+    {
+      symbol: 'ICPUSDT',
+      side: 'BUY',
+      timeframe: '5m',
+      meta: {
+        tradeManagementSnapshot: {
+          trailingStop: ema5PullbackConfig,
+        },
+      },
+    },
+    {
+      executionMode: 'live',
+      protectionPlan: {
+        stopLossPrice: '2.62',
+      },
+    },
+    '2026-05-17T08:30:00.000Z',
+    'attached',
+    {
+      positionId: 'position-1',
+    }
+  );
+  assert.deepEqual(attachedWithTrailing.protectionPlan.trailingStop.rules, ema5PullbackConfig.rules);
+
+  const livePositionRiskOrderIds = service.resolveTrailingRiskOrderIds(
+    {
+      protectionPlan: {
+        stopLossOrderId: 'old-sl-order',
+        takeProfitOrderId: 'old-tp-order',
+      },
+    },
+    {
+      stoploss_order_id: 'current-sl-order',
+      takeprofit_order_id: 'current-tp-order',
+    }
+  );
+  assert.equal(livePositionRiskOrderIds.stopLossOrderId, 'old-sl-order');
+  assert.equal(livePositionRiskOrderIds.takeProfitOrderId, 'old-tp-order');
+
+  const positionProtectionOrderIds = service.resolveProtectionOrderIdsFromPositionPayload({
+    stoploss_order_id: 'current-sl-order',
+    takeprofit_order_id: 'current-tp-order',
+  });
+  assert.equal(positionProtectionOrderIds.stopLossOrderId, 'current-sl-order');
+  assert.equal(positionProtectionOrderIds.takeProfitOrderId, 'current-tp-order');
+
   const replacementOrderIds = service.resolveTrailingRiskOrderIdsFromMutationResult({
     protective_orders: [
       {

@@ -8488,7 +8488,8 @@ export class SuggestedTradesService {
             trade.id,
             brokerKey,
             accountId,
-            orderId
+            orderId,
+            position.payload ?? {}
           );
           if (this.hasUsableProtectionContext(existingProtection)) {
             return this.markProtectionAttached(
@@ -8681,10 +8682,16 @@ export class SuggestedTradesService {
       config.basis === 'planned_entry'
         ? (this.readNumberValue(execution.entryPrice) ?? this.readNumberValue(trade.entryPrice))
         : this.resolvePositionEntryPrice(payload, execution);
+    const side = String(trade.side || '').toUpperCase() === 'SELL' ? 'short' : 'long';
     const originalStopLossPrice = this.resolveTrailingOriginalStopLossPrice(
       trade,
       execution,
-      payload
+      payload,
+      {
+        basis: config.basis,
+        entryPrice,
+        side,
+      }
     );
     const currentStopLossPrice = this.resolveTrailingCurrentStopLossPrice(execution, payload);
     const takeProfitPrice = this.resolveTrailingTakeProfitPrice(trade, execution, payload);
@@ -8700,7 +8707,7 @@ export class SuggestedTradesService {
     }
 
     const move = evaluateCustomRLadderTrailingStopMove({
-      side: String(trade.side || '').toUpperCase() === 'SELL' ? 'short' : 'long',
+      side,
       config,
       entryPrice,
       originalStopLossPrice,
@@ -8784,7 +8791,14 @@ export class SuggestedTradesService {
       );
     }
 
-    const riskOrderIds = this.resolveTrailingRiskOrderIds(execution, payload);
+    const riskOrderIds = await this.resolveTrailingRiskOrderIdsForLiveUpdate(
+      userId,
+      trade,
+      execution,
+      brokerKey,
+      accountId,
+      payload
+    );
     let riskOrderMutationResult: unknown = null;
     try {
       if (
@@ -8947,6 +8961,27 @@ export class SuggestedTradesService {
     return resolveCustomRLadderTrailingStopConfigFromRecords(plan, tradeManagementSnapshot, meta);
   }
 
+  private resolveProtectionPlanTrailingStop(
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink
+  ): Record<string, unknown> | null {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const existingTrailing = this.readRecordValue(plan.trailingStop);
+    if (existingTrailing) {
+      return existingTrailing;
+    }
+
+    const config = this.resolveExecutionTrailingStopConfig(trade, execution);
+    if (!config) {
+      return null;
+    }
+
+    return {
+      ...config,
+      rules: config.rules.map((rule) => ({ ...rule })),
+    };
+  }
+
   private resolveCustomRLadderTrailingStopBrokerSupport(
     brokerKey: string
   ): { supported: true } | { supported: false; reason: string } {
@@ -9006,36 +9041,19 @@ export class SuggestedTradesService {
     triggerType: string | null;
   } {
     const plan = this.readRecordValue(execution.protectionPlan) ?? {};
-    const stopLoss = this.readRecordValue(positionPayload.stoploss) ?? {};
-    const stopLossAlt = this.readRecordValue(positionPayload.stopLoss) ?? {};
-    const stopLossSnake = this.readRecordValue(positionPayload.stop_loss) ?? {};
-    const takeProfit = this.readRecordValue(positionPayload.takeprofit) ?? {};
-    const takeProfitAlt = this.readRecordValue(positionPayload.takeProfit) ?? {};
-    const takeProfitSnake = this.readRecordValue(positionPayload.take_profit) ?? {};
+    const positionOrderIds = this.resolveProtectionOrderIdsFromPositionPayload(positionPayload);
     const stopLossOrderId =
       this.readStringValue(plan.stopLossOrderId) ??
       this.readStringValue(plan.stoplossOrderId) ??
       this.readStringValue(plan.stoploss_order_id) ??
-      this.readStringValue(positionPayload.stoploss_order_id) ??
-      this.readStringValue(positionPayload.stopLossOrderId) ??
-      this.readStringValue(stopLoss.order_id) ??
-      this.readStringValue(stopLoss.orderId) ??
-      this.readStringValue(stopLossAlt.order_id) ??
-      this.readStringValue(stopLossAlt.orderId) ??
-      this.readStringValue(stopLossSnake.order_id) ??
-      this.readStringValue(stopLossSnake.orderId);
+      positionOrderIds.stopLossOrderId;
     const takeProfitOrderId =
       this.readStringValue(plan.takeProfitOrderId) ??
       this.readStringValue(plan.takeprofitOrderId) ??
       this.readStringValue(plan.takeprofit_order_id) ??
-      this.readStringValue(positionPayload.takeprofit_order_id) ??
-      this.readStringValue(positionPayload.takeProfitOrderId) ??
-      this.readStringValue(takeProfit.order_id) ??
-      this.readStringValue(takeProfit.orderId) ??
-      this.readStringValue(takeProfitAlt.order_id) ??
-      this.readStringValue(takeProfitAlt.orderId) ??
-      this.readStringValue(takeProfitSnake.order_id) ??
-      this.readStringValue(takeProfitSnake.orderId);
+      positionOrderIds.takeProfitOrderId;
+    const stopLoss = this.readRecordValue(positionPayload.stoploss) ?? {};
+    const takeProfit = this.readRecordValue(positionPayload.takeprofit) ?? {};
     const triggerType =
       this.readStringValue(plan.triggerType) ??
       this.readStringValue(plan.trigger_type) ??
@@ -9050,6 +9068,82 @@ export class SuggestedTradesService {
       stopLossOrderId,
       takeProfitOrderId,
       triggerType,
+    };
+  }
+
+  private async resolveTrailingRiskOrderIdsForLiveUpdate(
+    userId: string,
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink,
+    brokerKey: string,
+    accountId: string,
+    positionPayload: Record<string, unknown>
+  ): Promise<{
+    stopLossOrderId: string | null;
+    takeProfitOrderId: string | null;
+    triggerType: string | null;
+  }> {
+    const fallback = this.resolveTrailingRiskOrderIds(execution, positionPayload);
+    if (brokerKey !== 'delta_exchange') {
+      return fallback;
+    }
+
+    const orderId = this.readStringValue(execution.orderId);
+    if (!orderId) {
+      return fallback;
+    }
+
+    const protection = await this.resolveLiveProtectionOrderContext(
+      userId,
+      trade.id,
+      brokerKey,
+      accountId,
+      orderId,
+      positionPayload
+    );
+    if (!this.hasUsableProtectionContext(protection)) {
+      return fallback;
+    }
+
+    return {
+      stopLossOrderId: protection.stopLossOrderId,
+      takeProfitOrderId: protection.takeProfitOrderId,
+      triggerType: fallback.triggerType,
+    };
+  }
+
+  private resolveProtectionOrderIdsFromPositionPayload(positionPayload: Record<string, unknown>): {
+    stopLossOrderId: string | null;
+    takeProfitOrderId: string | null;
+  } {
+    const stopLoss = this.readRecordValue(positionPayload.stoploss) ?? {};
+    const stopLossAlt = this.readRecordValue(positionPayload.stopLoss) ?? {};
+    const stopLossSnake = this.readRecordValue(positionPayload.stop_loss) ?? {};
+    const takeProfit = this.readRecordValue(positionPayload.takeprofit) ?? {};
+    const takeProfitAlt = this.readRecordValue(positionPayload.takeProfit) ?? {};
+    const takeProfitSnake = this.readRecordValue(positionPayload.take_profit) ?? {};
+
+    return {
+      stopLossOrderId:
+        this.readStringValue(positionPayload.stoploss_order_id) ??
+        this.readStringValue(positionPayload.stopLossOrderId) ??
+        this.readStringValue(positionPayload.stop_loss_order_id) ??
+        this.readStringValue(stopLoss.order_id) ??
+        this.readStringValue(stopLoss.orderId) ??
+        this.readStringValue(stopLossAlt.order_id) ??
+        this.readStringValue(stopLossAlt.orderId) ??
+        this.readStringValue(stopLossSnake.order_id) ??
+        this.readStringValue(stopLossSnake.orderId),
+      takeProfitOrderId:
+        this.readStringValue(positionPayload.takeprofit_order_id) ??
+        this.readStringValue(positionPayload.takeProfitOrderId) ??
+        this.readStringValue(positionPayload.take_profit_order_id) ??
+        this.readStringValue(takeProfit.order_id) ??
+        this.readStringValue(takeProfit.orderId) ??
+        this.readStringValue(takeProfitAlt.order_id) ??
+        this.readStringValue(takeProfitAlt.orderId) ??
+        this.readStringValue(takeProfitSnake.order_id) ??
+        this.readStringValue(takeProfitSnake.orderId),
     };
   }
 
@@ -9112,20 +9206,65 @@ export class SuggestedTradesService {
   private resolveTrailingOriginalStopLossPrice(
     trade: SuggestedTrade,
     execution: SuggestedTradeExecutionLink,
-    positionPayload: Record<string, unknown>
+    positionPayload: Record<string, unknown>,
+    options?: {
+      basis?: CustomRLadderTrailingStopConfig['basis'];
+      entryPrice?: number | null;
+      side?: 'long' | 'short';
+    }
   ): number | null {
     const plan = this.readRecordValue(execution.protectionPlan) ?? {};
     const trailing = this.readRecordValue(plan.trailingStop) ?? {};
-    return (
-      this.readNumberValue(trailing.originalStopLossPrice) ??
-      this.readNumberValue(plan.originalStopLossPrice) ??
-      this.readNumberValue(plan.initialStopLossPrice) ??
-      this.readNumberValue(plan.stopLossPrice) ??
-      this.readNumberValue(execution.stopLossPrice) ??
-      this.readNumberValue(trade.stopLossPrice) ??
-      this.readNumberValue(plan.attachedStopLossPrice) ??
-      this.resolvePositionStopLossPrice(positionPayload)
-    );
+    const stickyOriginalStopLossPrice = this.readNumberValue(trailing.originalStopLossPrice);
+    if (stickyOriginalStopLossPrice !== null) {
+      return stickyOriginalStopLossPrice;
+    }
+
+    const positionStopLossPrice = this.resolvePositionStopLossPrice(positionPayload);
+    const plannedStopLossCandidates = [
+      this.readNumberValue(plan.originalStopLossPrice),
+      this.readNumberValue(plan.initialStopLossPrice),
+      this.readNumberValue(plan.stopLossPrice),
+      this.readNumberValue(execution.stopLossPrice),
+      this.readNumberValue(trade.stopLossPrice),
+      this.readNumberValue(plan.attachedStopLossPrice),
+    ].filter((value): value is number => value !== null);
+
+    if (options?.basis === 'actual_fill' && options.entryPrice && options.side) {
+      const directionalPositionStopLoss = this.isStopLossDirectionalForSide(
+        options.side,
+        options.entryPrice,
+        positionStopLossPrice
+      )
+        ? positionStopLossPrice
+        : null;
+      const directionalPlannedStopLoss = plannedStopLossCandidates.find((value) =>
+        this.isStopLossDirectionalForSide(options.side!, options.entryPrice!, value)
+      );
+      return (
+        directionalPositionStopLoss ??
+        directionalPlannedStopLoss ??
+        plannedStopLossCandidates[0] ??
+        positionStopLossPrice ??
+        null
+      );
+    }
+
+    return plannedStopLossCandidates[0] ?? positionStopLossPrice ?? null;
+  }
+
+  private isStopLossDirectionalForSide(
+    side: 'long' | 'short',
+    entryPrice: number,
+    stopLossPrice: number | null
+  ): stopLossPrice is number {
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
+      return false;
+    }
+    if (stopLossPrice === null || !Number.isFinite(stopLossPrice) || stopLossPrice <= 0) {
+      return false;
+    }
+    return side === 'short' ? stopLossPrice > entryPrice : stopLossPrice < entryPrice;
   }
 
   private resolveTrailingCurrentStopLossPrice(
@@ -9355,7 +9494,8 @@ export class SuggestedTradesService {
           trade.id,
           brokerKey,
           accountId,
-          orderId
+          orderId,
+          position.payload ?? {}
         );
         if (this.hasUsableProtectionContext(existingProtection)) {
           const duplicateProtectionReason = await this.resolveDeltaLinkedProtectionManualReason({
@@ -9423,7 +9563,8 @@ export class SuggestedTradesService {
       trade.id,
       brokerKey,
       accountId,
-      orderId
+      orderId,
+      position.payload ?? {}
     );
     if (this.hasUsableProtectionContext(protection)) {
       const duplicateProtectionReason = await this.resolveDeltaLinkedProtectionManualReason({
@@ -9573,7 +9714,8 @@ export class SuggestedTradesService {
           suggestedTradeId,
           brokerKey,
           accountId,
-          orderId
+          orderId,
+          input.position.payload ?? {}
         ),
       hasUsableProtectionContext: (context) => this.hasUsableProtectionContext(context),
       resolvePositionEntryPrice: (payload, execution) =>
@@ -10048,6 +10190,8 @@ export class SuggestedTradesService {
     planUpdate: Record<string, unknown>,
     attempted = false
   ): SuggestedTradeExecutionLink {
+    const existingPlan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const trailingStop = this.resolveProtectionPlanTrailingStop(trade, execution);
     return {
       ...execution,
       protectionState: 'attached',
@@ -10058,7 +10202,7 @@ export class SuggestedTradesService {
       protectionAttachedAt: execution.protectionAttachedAt ?? nowIso,
       protectionLastError: null,
       protectionPlan: {
-        ...(this.readRecordValue(execution.protectionPlan) ?? {}),
+        ...existingPlan,
         source: 'suggested_trade_execution',
         symbol: trade.symbol,
         side: trade.side,
@@ -10067,6 +10211,7 @@ export class SuggestedTradesService {
         accountId: execution.accountId ?? null,
         orderId: execution.orderId ?? null,
         attachedAt: execution.protectionAttachedAt ?? nowIso,
+        ...(trailingStop ? { trailingStop } : {}),
         ...planUpdate,
       },
       note: this.appendExecutionNote(execution.note, note),
@@ -10081,6 +10226,8 @@ export class SuggestedTradesService {
     planUpdate: Record<string, unknown>,
     attempted = false
   ): SuggestedTradeExecutionLink {
+    const existingPlan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const trailingStop = this.resolveProtectionPlanTrailingStop(trade, execution);
     return {
       ...execution,
       protectionState: 'attaching',
@@ -10091,7 +10238,7 @@ export class SuggestedTradesService {
       protectionAttachedAt: null,
       protectionLastError: null,
       protectionPlan: {
-        ...(this.readRecordValue(execution.protectionPlan) ?? {}),
+        ...existingPlan,
         source: 'suggested_trade_execution',
         symbol: trade.symbol,
         side: trade.side,
@@ -10100,6 +10247,7 @@ export class SuggestedTradesService {
         accountId: execution.accountId ?? null,
         orderId: execution.orderId ?? null,
         replacementSubmittedAt: nowIso,
+        ...(trailingStop ? { trailingStop } : {}),
         ...planUpdate,
       },
       note: this.appendExecutionNote(execution.note, note),
@@ -10113,6 +10261,8 @@ export class SuggestedTradesService {
     note: string,
     planUpdate: Record<string, unknown>
   ): SuggestedTradeExecutionLink {
+    const existingPlan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const trailingStop = this.resolveProtectionPlanTrailingStop(trade, execution);
     return {
       ...execution,
       protectionState: 'attaching',
@@ -10120,7 +10270,7 @@ export class SuggestedTradesService {
       protectionAttachedAt: null,
       protectionLastError: null,
       protectionPlan: {
-        ...(this.readRecordValue(execution.protectionPlan) ?? {}),
+        ...existingPlan,
         source: 'suggested_trade_execution',
         symbol: trade.symbol,
         side: trade.side,
@@ -10128,6 +10278,7 @@ export class SuggestedTradesService {
         brokerKey: execution.brokerKey ?? null,
         accountId: execution.accountId ?? null,
         orderId: execution.orderId ?? null,
+        ...(trailingStop ? { trailingStop } : {}),
         ...planUpdate,
       },
       note: this.appendExecutionNote(execution.note, note),
@@ -10772,8 +10923,12 @@ export class SuggestedTradesService {
     suggestedTradeId: string,
     brokerKey: string,
     accountId: string,
-    orderId: string
+    orderId: string,
+    positionPayload?: Record<string, unknown> | null
   ): Promise<LiveProtectionOrderContext> {
+    const positionOrderIds = positionPayload
+      ? this.resolveProtectionOrderIdsFromPositionPayload(positionPayload)
+      : { stopLossOrderId: null, takeProfitOrderId: null };
     const planRows = (await coreDataSource.query(
       `SELECT NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(protection_plan_json, '$.stopLossOrderId')), 'null'), '') AS stopLossOrderId,
               NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(protection_plan_json, '$.takeProfitOrderId')), 'null'), '') AS takeProfitOrderId
@@ -10789,8 +10944,10 @@ export class SuggestedTradesService {
       stopLossOrderId?: string | null;
       takeProfitOrderId?: string | null;
     }>;
-    let stopLossOrderId = this.readStringValue(planRows[0]?.stopLossOrderId);
-    let takeProfitOrderId = this.readStringValue(planRows[0]?.takeProfitOrderId);
+    const planOrderIds = {
+      stopLossOrderId: this.readStringValue(planRows[0]?.stopLossOrderId),
+      takeProfitOrderId: this.readStringValue(planRows[0]?.takeProfitOrderId),
+    };
 
     const rows = (await coreDataSource.query(
       `SELECT NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(response_json, '$.stop_loss_order_id')), 'null'), '') AS stopLossOrderId,
@@ -10815,24 +10972,49 @@ export class SuggestedTradesService {
       takeProfitOrderIdNested?: string | null;
     }>;
     const row = rows[0] ?? {};
-    stopLossOrderId =
-      stopLossOrderId ??
-      this.readStringValue(row.stopLossOrderId) ??
-      this.readStringValue(row.stopLossOrderIdNested) ??
-      null;
-    takeProfitOrderId =
-      takeProfitOrderId ??
-      this.readStringValue(row.takeProfitOrderId) ??
-      this.readStringValue(row.takeProfitOrderIdNested) ??
-      null;
-
-    const trackedOrderIds = [stopLossOrderId, takeProfitOrderId].filter((value): value is string =>
-      Boolean(value)
+    const responseOrderIds = {
+      stopLossOrderId:
+        this.readStringValue(row.stopLossOrderId) ??
+        this.readStringValue(row.stopLossOrderIdNested),
+      takeProfitOrderId:
+        this.readStringValue(row.takeProfitOrderId) ??
+        this.readStringValue(row.takeProfitOrderIdNested),
+    };
+    const candidatePairs = [
+      positionOrderIds,
+      planOrderIds,
+      responseOrderIds,
+      {
+        stopLossOrderId: positionOrderIds.stopLossOrderId,
+        takeProfitOrderId: planOrderIds.takeProfitOrderId ?? responseOrderIds.takeProfitOrderId,
+      },
+      {
+        stopLossOrderId: planOrderIds.stopLossOrderId ?? responseOrderIds.stopLossOrderId,
+        takeProfitOrderId: positionOrderIds.takeProfitOrderId,
+      },
+    ].filter(
+      (candidate, index, candidates) =>
+        Boolean(candidate.stopLossOrderId || candidate.takeProfitOrderId) &&
+        candidates.findIndex(
+          (item) =>
+            item.stopLossOrderId === candidate.stopLossOrderId &&
+            item.takeProfitOrderId === candidate.takeProfitOrderId
+        ) === index
     );
+
+    const trackedOrderIds = [
+      ...new Set(
+        candidatePairs.flatMap((pair) => [
+          pair.stopLossOrderId ?? '',
+          pair.takeProfitOrderId ?? '',
+        ])
+      ),
+    ].filter((value): value is string => Boolean(value));
+    const fallbackPair = candidatePairs[0] ?? { stopLossOrderId: null, takeProfitOrderId: null };
     if (!trackedOrderIds.length) {
       return {
-        stopLossOrderId,
-        takeProfitOrderId,
+        stopLossOrderId: fallbackPair.stopLossOrderId,
+        takeProfitOrderId: fallbackPair.takeProfitOrderId,
         stopLossStatus: null,
         takeProfitStatus: null,
         activeOrderIds: [],
@@ -10875,12 +11057,6 @@ export class SuggestedTradesService {
         )
     );
 
-    const stopLossStatus = stopLossOrderId
-      ? (snapshotById.get(stopLossOrderId)?.status ?? null)
-      : null;
-    const takeProfitStatus = takeProfitOrderId
-      ? (snapshotById.get(takeProfitOrderId)?.status ?? null)
-      : null;
     const activeOrderIds = trackedOrderIds.filter((trackedOrderId) => {
       const snapshot = snapshotById.get(trackedOrderId);
       return this.isActiveLiveProtectionOrder(
@@ -10888,10 +11064,30 @@ export class SuggestedTradesService {
         snapshot?.statusRank ?? null
       );
     });
+    const selectedPair =
+      candidatePairs.find(
+        (pair) =>
+          Boolean(pair.stopLossOrderId && pair.takeProfitOrderId) &&
+          activeOrderIds.includes(pair.stopLossOrderId!) &&
+          activeOrderIds.includes(pair.takeProfitOrderId!)
+      ) ??
+      candidatePairs.find((pair) =>
+        [pair.stopLossOrderId, pair.takeProfitOrderId].some((orderId) =>
+          orderId ? activeOrderIds.includes(orderId) : false
+        )
+      ) ??
+      fallbackPair;
+
+    const stopLossStatus = selectedPair.stopLossOrderId
+      ? (snapshotById.get(selectedPair.stopLossOrderId)?.status ?? null)
+      : null;
+    const takeProfitStatus = selectedPair.takeProfitOrderId
+      ? (snapshotById.get(selectedPair.takeProfitOrderId)?.status ?? null)
+      : null;
 
     return {
-      stopLossOrderId,
-      takeProfitOrderId,
+      stopLossOrderId: selectedPair.stopLossOrderId,
+      takeProfitOrderId: selectedPair.takeProfitOrderId,
       stopLossStatus,
       takeProfitStatus,
       activeOrderIds,
