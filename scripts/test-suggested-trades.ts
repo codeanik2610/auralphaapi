@@ -10074,7 +10074,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   }
 }
 
-function runCustomRLadderTrailingStopAssertions(): void {
+async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
   const config = normalizeCustomRLadderTrailingStopConfig({
     enabled: true,
     mode: 'custom_r_ladder',
@@ -10347,6 +10347,173 @@ function runCustomRLadderTrailingStopAssertions(): void {
   assert.equal(mergedPositionPayload.stoploss_price, '13.932172142856');
   assert.equal(mergedPositionPayload.takeprofit_price, '14.395378571429');
 
+  const staleTrailingPlan = repository.mergeProtectionPlanLinkFields(
+    {
+      stopLossOrderId: '1320080639',
+      takeProfitOrderId: '1320075078',
+      attachedStopLossPrice: '13.8715689285713',
+      attachedTakeProfitPrice: '14.395378571429',
+      trailingStop: {
+        lastUpdatedAt: '2026-05-17T08:57:30.641Z',
+        lastAppliedWhenProfitR: 1,
+        lastMoveStopToR: 0.3,
+        lastStopLossPrice: '13.8715689285713',
+        lastError: 'Trailing SL update failed: Delta position not found',
+      },
+    },
+    {
+      stopLossOrderId: 'delta-new-sl-5r',
+      takeProfitOrderId: '1320075078',
+      attachedStopLossPrice: '13.995964999998202',
+      attachedTakeProfitPrice: '14.395378571429',
+      trailingStop: {
+        lastUpdatedAt: '2026-05-17T10:34:34.564Z',
+        lastAppliedWhenProfitR: 5,
+        lastMoveStopToR: 4.2,
+        lastStopLossPrice: '13.995964999998202',
+        lastError: null,
+      },
+    }
+  );
+  assert.equal(staleTrailingPlan.stopLossOrderId, 'delta-new-sl-5r');
+  assert.equal(staleTrailingPlan.attachedStopLossPrice, '13.995964999998202');
+  assert.equal(staleTrailingPlan.trailingStop.lastAppliedWhenProfitR, 5);
+  assert.equal(staleTrailingPlan.trailingStop.lastError, null);
+
+  Object.defineProperty(repository, 'executionRepository', {
+    value: {
+      async findOne() {
+        return {
+          executionMode: 'live',
+          orderId: 'delta-entry-1',
+          brokerKey: 'delta_exchange',
+          accountId: 'delta-account-1',
+          stopLossPrice: '13.995964999998202',
+          takeProfitPrice: '14.395378571429',
+          protectionLastError: null,
+          protectionCheckedAt: new Date('2026-05-17T10:34:34.564Z'),
+          protectionPlan: {
+            stopLossOrderId: 'delta-new-sl-5r',
+            takeProfitOrderId: '1320075078',
+            attachedStopLossPrice: '13.995964999998202',
+            attachedTakeProfitPrice: '14.395378571429',
+            trailingStop: {
+              lastUpdatedAt: '2026-05-17T10:34:34.564Z',
+              lastAppliedWhenProfitR: 5,
+              lastMoveStopToR: 4.2,
+              lastStopLossPrice: '13.995964999998202',
+              lastError: null,
+            },
+          },
+        };
+      },
+    },
+  });
+  const preservedLiveExecution = await repository.preserveExistingLiveExecutionLink({
+    suggestedTradeId: 'st-vvv',
+    userId: 'user-1',
+    executionMode: 'live',
+    orderId: 'delta-entry-1',
+    brokerKey: 'delta_exchange',
+    accountId: 'delta-account-1',
+    stopLossPrice: '13.8715689285713',
+    takeProfitPrice: '14.395378571429',
+    protectionLastError: 'Trailing SL update failed: Delta position not found',
+    protectionCheckedAt: '2026-05-17T10:36:00.000Z',
+    protectionPlan: {
+      stopLossOrderId: '1320080639',
+      takeProfitOrderId: '1320075078',
+      attachedStopLossPrice: '13.8715689285713',
+      attachedTakeProfitPrice: '14.395378571429',
+      trailingStop: {
+        lastUpdatedAt: '2026-05-17T08:57:30.641Z',
+        lastAppliedWhenProfitR: 1,
+        lastMoveStopToR: 0.3,
+        lastStopLossPrice: '13.8715689285713',
+        lastError: 'Trailing SL update failed: Delta position not found',
+      },
+    },
+  });
+  assert.equal(preservedLiveExecution.stopLossPrice, '13.995964999998202');
+  assert.equal(preservedLiveExecution.protectionLastError, null);
+  assert.equal(
+    (preservedLiveExecution.protectionPlan as Record<string, any>).trailingStop
+      .lastAppliedWhenProfitR,
+    5
+  );
+
+  const missingPositionTrailing = service.clearTrailingStopErrorWhenPositionGone(
+    {
+      protectionPlan: {
+        trailingStop: {
+          lastUpdatedAt: '2026-05-17T10:34:34.564Z',
+          lastAppliedWhenProfitR: 5,
+          lastMoveStopToR: 4.2,
+          lastStopLossPrice: '13.995964999998202',
+          lastError: null,
+        },
+      },
+      protectionLastError: 'Trailing SL update failed: Delta position not found',
+    },
+    ema5PullbackConfig,
+    '2026-05-17T10:36:00.000Z',
+    9.4,
+    14.25,
+    13.995964999998202
+  );
+  assert.equal(missingPositionTrailing.protectionLastError, null);
+  assert.equal(
+    (missingPositionTrailing.protectionPlan as Record<string, any>).trailingStop.lastError,
+    null
+  );
+  assert.equal(
+    (missingPositionTrailing.protectionPlan as Record<string, any>).trailingStop.lastNoopReason,
+    'position_not_open'
+  );
+
+  const staleMissingPositionTrailing = service.clearTrailingStopErrorWhenPositionGone(
+    {
+      protectionPlan: {
+        stopLossOrderId: '1320080639',
+        takeProfitOrderId: '1320075078',
+        attachedStopLossPrice: '13.8715689285713',
+        attachedTakeProfitPrice: '14.395378571429',
+        trailingStop: {
+          lastUpdatedAt: '2026-05-17T08:57:30.641Z',
+          lastAppliedWhenProfitR: 1,
+          lastMoveStopToR: 0.3,
+          lastStopLossPrice: '13.8715689285713',
+          lastError: 'Trailing SL update failed: Delta position not found',
+        },
+      },
+      protectionLastError: 'Trailing SL update failed: Delta position not found',
+    },
+    ema5PullbackConfig,
+    '2026-05-17T10:36:00.000Z',
+    5.3,
+    14.25,
+    13.8715689285713
+  );
+  const preservedAfterStalePositionGone = await repository.preserveExistingLiveExecutionLink({
+    suggestedTradeId: 'st-vvv',
+    userId: 'user-1',
+    executionMode: 'live',
+    orderId: 'delta-entry-1',
+    brokerKey: 'delta_exchange',
+    accountId: 'delta-account-1',
+    stopLossPrice: '13.8715689285713',
+    takeProfitPrice: '14.395378571429',
+    protectionLastError: staleMissingPositionTrailing.protectionLastError,
+    protectionCheckedAt: staleMissingPositionTrailing.protectionCheckedAt,
+    protectionPlan: staleMissingPositionTrailing.protectionPlan as Record<string, unknown>,
+  });
+  assert.equal(preservedAfterStalePositionGone.stopLossPrice, '13.995964999998202');
+  assert.equal(
+    (preservedAfterStalePositionGone.protectionPlan as Record<string, any>).trailingStop
+      .lastAppliedWhenProfitR,
+    5
+  );
+
   const replacementOrderIds = service.resolveTrailingRiskOrderIdsFromMutationResult({
     protective_orders: [
       {
@@ -10366,7 +10533,7 @@ function runCustomRLadderTrailingStopAssertions(): void {
 }
 
 async function main(): Promise<void> {
-  runCustomRLadderTrailingStopAssertions();
+  await runCustomRLadderTrailingStopAssertions();
   await runSuggestedTradesControllerAssertions();
   await runSuggestedTradesOverviewControllerAssertions();
   runSuggestedTradeExecutionEntitySchemaAssertions();

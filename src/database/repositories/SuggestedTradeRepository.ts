@@ -235,13 +235,11 @@ const normalizeOptionalUnsignedInteger = (value: unknown): number => {
   return Math.max(0, Math.floor(numeric));
 };
 
-const normalizeOptionalRecord = (
-  value: Record<string, unknown> | null | undefined
-): Record<string, unknown> | null => {
+const normalizeOptionalRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
-  return value;
+  return value as Record<string, unknown>;
 };
 
 const normalizeOptionalRecordArray = (
@@ -399,7 +397,8 @@ export class SuggestedTradeRepository {
   private async preserveExistingLiveExecutionLink(
     payload: SuggestedTradeExecutionUpsertPayload
   ): Promise<SuggestedTradeExecutionUpsertPayload> {
-    if (normalizeOptionalString(payload.orderId)) {
+    const incomingMode = normalizeOptionalString(payload.executionMode)?.toLowerCase();
+    if (incomingMode && incomingMode !== 'live') {
       return payload;
     }
 
@@ -407,25 +406,29 @@ export class SuggestedTradeRepository {
       where: { suggestedTradeId: payload.suggestedTradeId },
     });
     const existingOrderId = normalizeOptionalString(existing?.orderId);
-    if (!existing || !existingOrderId) {
+    if (!existing) {
       return payload;
     }
 
-    const incomingMode = normalizeOptionalString(payload.executionMode)?.toLowerCase();
     const existingMode = normalizeOptionalString(existing.executionMode)?.toLowerCase();
-    if (incomingMode && incomingMode !== 'live') {
-      return payload;
-    }
     if (existingMode !== 'live') {
       return payload;
     }
+    const preferExistingTrailingState = this.shouldPreferExistingTrailingState(
+      payload.protectionPlan,
+      existing.protectionPlan
+    );
 
     return {
       ...payload,
       executionMode: normalizeOptionalString(payload.executionMode) ?? existing.executionMode,
-      orderId: existing.orderId,
+      orderId: normalizeOptionalString(payload.orderId) ?? existingOrderId,
       brokerKey: normalizeOptionalString(payload.brokerKey) ?? existing.brokerKey,
       accountId: normalizeOptionalString(payload.accountId) ?? existing.accountId,
+      stopLossPrice: preferExistingTrailingState ? existing.stopLossPrice : payload.stopLossPrice,
+      takeProfitPrice: preferExistingTrailingState
+        ? existing.takeProfitPrice
+        : payload.takeProfitPrice,
       linkedAt: payload.linkedAt ?? existing.linkedAt,
       protectionSource:
         normalizeOptionalString(payload.protectionSource) ?? existing.protectionSource,
@@ -433,6 +436,12 @@ export class SuggestedTradeRepository {
         payload.protectionPlan,
         existing.protectionPlan
       ),
+      protectionLastError: preferExistingTrailingState
+        ? existing.protectionLastError
+        : payload.protectionLastError,
+      protectionCheckedAt: preferExistingTrailingState
+        ? existing.protectionCheckedAt
+        : payload.protectionCheckedAt,
     };
   }
 
@@ -450,14 +459,132 @@ export class SuggestedTradeRepository {
       return existingPlan;
     }
 
-    return {
-      ...incomingPlan,
-      orderId: normalizeOptionalString(incomingPlan.orderId) ?? existingPlan.orderId,
-      stopLossOrderId:
-        normalizeOptionalString(incomingPlan.stopLossOrderId) ?? existingPlan.stopLossOrderId,
-      takeProfitOrderId:
-        normalizeOptionalString(incomingPlan.takeProfitOrderId) ?? existingPlan.takeProfitOrderId,
+    const preferExistingTrailingState = this.shouldPreferExistingTrailingState(
+      incomingPlan,
+      existingPlan
+    );
+    const selectedProtectionPlan = preferExistingTrailingState ? existingPlan : incomingPlan;
+    const trailingStop =
+      (preferExistingTrailingState
+        ? normalizeOptionalRecord(existingPlan.trailingStop)
+        : normalizeOptionalRecord(incomingPlan.trailingStop)) ??
+      normalizeOptionalRecord(existingPlan.trailingStop);
+
+    const merged: Record<string, unknown> = { ...incomingPlan };
+    const setOptionalField = (key: string, value: unknown): void => {
+      if (value === undefined || value === null || value === '') {
+        delete merged[key];
+        return;
+      }
+      merged[key] = value;
     };
+
+    setOptionalField(
+      'orderId',
+      normalizeOptionalString(incomingPlan.orderId) ?? existingPlan.orderId
+    );
+    setOptionalField(
+      'stopLossOrderId',
+      normalizeOptionalString(selectedProtectionPlan.stopLossOrderId) ??
+        normalizeOptionalString(incomingPlan.stopLossOrderId) ??
+        existingPlan.stopLossOrderId
+    );
+    setOptionalField(
+      'takeProfitOrderId',
+      normalizeOptionalString(selectedProtectionPlan.takeProfitOrderId) ??
+        normalizeOptionalString(incomingPlan.takeProfitOrderId) ??
+        existingPlan.takeProfitOrderId
+    );
+    setOptionalField(
+      'attachedStopLossPrice',
+      normalizeOptionalString(selectedProtectionPlan.attachedStopLossPrice) ??
+        incomingPlan.attachedStopLossPrice ??
+        existingPlan.attachedStopLossPrice
+    );
+    setOptionalField(
+      'attachedTakeProfitPrice',
+      normalizeOptionalString(selectedProtectionPlan.attachedTakeProfitPrice) ??
+        incomingPlan.attachedTakeProfitPrice ??
+        existingPlan.attachedTakeProfitPrice
+    );
+    setOptionalField(
+      'positionId',
+      normalizeOptionalString(selectedProtectionPlan.positionId) ??
+        normalizeOptionalString(incomingPlan.positionId) ??
+        existingPlan.positionId
+    );
+    setOptionalField(
+      'snapshotPositionId',
+      normalizeOptionalString(selectedProtectionPlan.snapshotPositionId) ??
+        normalizeOptionalString(incomingPlan.snapshotPositionId) ??
+        existingPlan.snapshotPositionId
+    );
+    if (trailingStop) {
+      merged.trailingStop = trailingStop;
+    }
+
+    return merged;
+  }
+
+  private shouldPreferExistingTrailingState(
+    incoming: Record<string, unknown> | null | undefined,
+    existing: Record<string, unknown> | null | undefined
+  ): boolean {
+    const incomingPlan = normalizeOptionalRecord(incoming);
+    const existingPlan = normalizeOptionalRecord(existing);
+    if (!existingPlan) {
+      return false;
+    }
+    const incomingTrailing = normalizeOptionalRecord(incomingPlan?.trailingStop);
+    const existingTrailing = normalizeOptionalRecord(existingPlan.trailingStop);
+    if (!existingTrailing) {
+      return false;
+    }
+    if (!incomingTrailing) {
+      return true;
+    }
+
+    const incomingFreshness = this.readTrailingStopFreshness(incomingTrailing);
+    const existingFreshness = this.readTrailingStopFreshness(existingTrailing);
+    if (existingFreshness.appliedWhenProfitR !== incomingFreshness.appliedWhenProfitR) {
+      return existingFreshness.appliedWhenProfitR > incomingFreshness.appliedWhenProfitR;
+    }
+    if (existingFreshness.moveStopToR !== incomingFreshness.moveStopToR) {
+      return existingFreshness.moveStopToR > incomingFreshness.moveStopToR;
+    }
+    if (existingFreshness.appliedAtMs !== incomingFreshness.appliedAtMs) {
+      return existingFreshness.appliedAtMs > incomingFreshness.appliedAtMs;
+    }
+    return existingFreshness.checkedAtMs > incomingFreshness.checkedAtMs;
+  }
+
+  private readTrailingStopFreshness(record: Record<string, unknown>): {
+    appliedAtMs: number;
+    checkedAtMs: number;
+    appliedWhenProfitR: number;
+    moveStopToR: number;
+  } {
+    const history = Array.isArray(record.history) ? record.history : [];
+    const lastHistory = normalizeOptionalRecord(history[history.length - 1]);
+    const appliedAtMs = Math.max(
+      this.toTimestampMs(record.lastUpdatedAt),
+      this.toTimestampMs(lastHistory?.at)
+    );
+    return {
+      appliedAtMs,
+      checkedAtMs: this.toTimestampMs(record.lastCheckedAt),
+      appliedWhenProfitR: normalizeOptionalNumber(record.lastAppliedWhenProfitR) ?? -Infinity,
+      moveStopToR: normalizeOptionalNumber(record.lastMoveStopToR) ?? -Infinity,
+    };
+  }
+
+  private toTimestampMs(value: unknown): number {
+    const normalized = normalizeOptionalString(value);
+    if (!normalized) {
+      return 0;
+    }
+    const timestamp = Date.parse(normalized);
+    return Number.isFinite(timestamp) ? timestamp : 0;
   }
 
   async getLinkedOrderSnapshot(

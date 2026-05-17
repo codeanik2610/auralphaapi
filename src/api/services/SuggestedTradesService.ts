@@ -8849,11 +8849,22 @@ export class SuggestedTradesService {
         );
       }
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (this.isTrailingStopPositionGoneError(brokerKey, errorMessage)) {
+        return this.clearTrailingStopErrorWhenPositionGone(
+          execution,
+          config,
+          nowIso,
+          move.profitR,
+          currentPrice,
+          currentStopLossPrice
+        );
+      }
       return this.recordTrailingStopError(
         trade,
         execution,
         nowIso,
-        `Trailing SL update failed: ${error instanceof Error ? error.message : String(error)}`
+        `Trailing SL update failed: ${errorMessage}`
       );
     }
 
@@ -9390,6 +9401,45 @@ export class SuggestedTradesService {
             this.formatNumericString(currentStopLossPrice) ?? currentStopLossPrice ?? null,
           lastProfitR: typeof profitR === 'number' ? Number(profitR.toFixed(6)) : null,
           lastNoopReason: reason,
+          lastError: null,
+        },
+      },
+    };
+  }
+
+  private isTrailingStopPositionGoneError(brokerKey: string, message: string): boolean {
+    if (brokerKey !== 'delta_exchange') {
+      return false;
+    }
+    const normalized = String(message || '').toLowerCase();
+    return normalized.includes('position not found') || normalized.includes('position size is zero');
+  }
+
+  private clearTrailingStopErrorWhenPositionGone(
+    execution: SuggestedTradeExecutionLink,
+    config: CustomRLadderTrailingStopConfig,
+    nowIso: string,
+    profitR: number | null | undefined,
+    currentPrice: number,
+    currentStopLossPrice: number | null
+  ): SuggestedTradeExecutionLink {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
+    return {
+      ...execution,
+      protectionCheckedAt: nowIso,
+      protectionLastError: null,
+      protectionPlan: {
+        ...plan,
+        trailingStop: {
+          ...config,
+          ...existingTrailing,
+          lastCheckedAt: nowIso,
+          lastCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
+          lastStopLossPrice:
+            this.formatNumericString(currentStopLossPrice) ?? currentStopLossPrice ?? null,
+          lastProfitR: typeof profitR === 'number' ? Number(profitR.toFixed(6)) : null,
+          lastNoopReason: 'position_not_open',
           lastError: null,
         },
       },
