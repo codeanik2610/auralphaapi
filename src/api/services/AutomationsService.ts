@@ -2363,35 +2363,29 @@ export class AutomationsService {
     const embeddedTemplateConfig =
       this.parseRecord(embeddedTemplate?.config) ?? this.parseRecord(embeddedTemplate);
 
+    const templateId = this.readString(
+      root.sourceTemplateId,
+      root.templateId,
+      tradeSuggestion.sourceTemplateId,
+      tradeSuggestion.templateId,
+      executionConfig.sourceTemplateId,
+      executionConfig.templateId,
+      nestedExecutionConfig.sourceTemplateId,
+      nestedExecutionConfig.templateId,
+      inputSnapshot.sourceTemplateId,
+      inputSnapshot.templateId,
+      nestedInputSnapshot.sourceTemplateId,
+      nestedInputSnapshot.templateId,
+      tradeSuggestionExecution.sourceTemplateId,
+      tradeSuggestionExecution.templateId,
+      nestedTradeSuggestionExecution.sourceTemplateId,
+      nestedTradeSuggestionExecution.templateId,
+      tradeSuggestionInputSnapshot.sourceTemplateId,
+      tradeSuggestionInputSnapshot.templateId
+    );
+
     let templateConfig = embeddedTemplateConfig;
-    if (!templateConfig) {
-      const templateId = this.readString(
-        root.sourceTemplateId,
-        root.templateId,
-        tradeSuggestion.sourceTemplateId,
-        tradeSuggestion.templateId,
-        executionConfig.sourceTemplateId,
-        executionConfig.templateId,
-        nestedExecutionConfig.sourceTemplateId,
-        nestedExecutionConfig.templateId,
-        inputSnapshot.sourceTemplateId,
-        inputSnapshot.templateId,
-        nestedInputSnapshot.sourceTemplateId,
-        nestedInputSnapshot.templateId,
-        tradeSuggestionExecution.sourceTemplateId,
-        tradeSuggestionExecution.templateId,
-        nestedTradeSuggestionExecution.sourceTemplateId,
-        nestedTradeSuggestionExecution.templateId,
-        tradeSuggestionInputSnapshot.sourceTemplateId,
-        tradeSuggestionInputSnapshot.templateId
-      );
-
-      if (!templateId) {
-        throw new BadRequestAppError(
-          'trade-suggestion automation must resolve a source template before it can be saved'
-        );
-      }
-
+    if (templateId) {
       const template = await this.strategyTemplateRepository.getStrategyTemplateById(
         userId,
         templateId
@@ -2400,6 +2394,10 @@ export class AutomationsService {
         throw new NotFoundAppError('Strategy template not found for trade-suggestion automation');
       }
       templateConfig = this.parseRecord(template.config) ?? {};
+    } else if (!templateConfig) {
+      throw new BadRequestAppError(
+        'trade-suggestion automation must resolve a source template before it can be saved'
+      );
     }
 
     const profile = buildStrategyTemplateAutomationProfile(templateConfig);

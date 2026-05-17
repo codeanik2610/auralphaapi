@@ -1817,20 +1817,7 @@ export class AutomationExecutionService {
     const embeddedTemplateConfig =
       this.parseRecord(embeddedTemplate?.config) ?? this.parseRecord(embeddedTemplate);
 
-    if (embeddedTemplateConfig) {
-      const embeddedProfile = buildStrategyTemplateAutomationProfile(embeddedTemplateConfig);
-      if (embeddedProfile.automationReady || !sourceTemplateId) {
-        return {
-          profile: embeddedProfile,
-          sourceTemplateId: this.readString(
-            embeddedTemplate?.id,
-            embeddedTemplate?.templateId,
-            sourceTemplateId
-          ),
-          templateConfig: embeddedTemplateConfig,
-        };
-      }
-
+    if (sourceTemplateId) {
       const template = await this.strategyTemplateRepository.getStrategyTemplateById(
         userId,
         sourceTemplateId
@@ -1843,34 +1830,22 @@ export class AutomationExecutionService {
         };
       }
 
+      throw new NotFoundAppError('Strategy template not found for trade-suggestion automation');
+    }
+
+    if (embeddedTemplateConfig) {
+      const embeddedProfile = buildStrategyTemplateAutomationProfile(embeddedTemplateConfig);
       return {
         profile: embeddedProfile,
         sourceTemplateId: this.readString(
           embeddedTemplate?.id,
-          embeddedTemplate?.templateId,
-          sourceTemplateId
+          embeddedTemplate?.templateId
         ),
         templateConfig: embeddedTemplateConfig,
       };
     }
 
-    if (!sourceTemplateId) {
-      throw new BadRequestAppError('trade-suggestion automation is missing a source template');
-    }
-
-    const template = await this.strategyTemplateRepository.getStrategyTemplateById(
-      userId,
-      sourceTemplateId
-    );
-    if (!template) {
-      throw new NotFoundAppError('Strategy template not found for trade-suggestion automation');
-    }
-
-    return {
-      profile: buildStrategyTemplateAutomationProfile(template.config ?? null),
-      sourceTemplateId: template.id,
-      templateConfig: this.parseRecord(template.config) ?? {},
-    };
+    throw new BadRequestAppError('trade-suggestion automation is missing a source template');
   }
 
   private resolveTradeSuggestionCandleSettings(config: Record<string, unknown>): {

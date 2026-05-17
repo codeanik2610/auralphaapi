@@ -1446,6 +1446,53 @@ async function runTradeSuggestionExecutabilityValidationAssertions(): Promise<vo
       /Template is not automation-ready/i
     );
   }
+
+  {
+    const service = createService();
+    service.backtestRepository = {
+      getBacktestById: async () => null,
+    };
+    service.strategyTemplateRepository = {
+      getStrategyTemplateById: async (_userId: string, templateId: string) => ({
+        id: templateId,
+        config: {
+          market: 'crypto-futures',
+          parameters: {
+            signalThreshold: '0.81',
+          },
+        },
+      }),
+    };
+
+    await assert.rejects(
+      () =>
+        service.createAutomation('user-1', {
+          name: 'Canonical template guard',
+          status: 'Draft',
+          automationType: 'trade-suggestion',
+          config: {
+            symbol: 'BTCUSDT',
+            timeframe: '1h',
+            sourceTemplateId: 'template-not-ready',
+            inputSnapshot: {
+              template: {
+                id: 'template-not-ready',
+                config: {
+                  market: 'crypto-futures',
+                  entryLogic: 'ema(5) > ema(21)',
+                  exitLogic: 'ema(5) < ema(21)',
+                  risk: {
+                    stopLossPct: 2,
+                    takeProfitTargetsPct: [4],
+                  },
+                },
+              },
+            },
+          },
+        }),
+      /Template is not automation-ready/i
+    );
+  }
 }
 
 async function runTradeSuggestionTemplateContractAssertions(): Promise<void> {
@@ -1537,6 +1584,31 @@ async function runTradeSuggestionTemplateContractAssertions(): Promise<void> {
   assert.equal(resolved.sourceTemplateId, 'template-legacy');
   assert.equal(resolved.profile.automationReady, true);
   assert.equal(resolved.profile.tradePlan.long?.enabled, true);
+
+  const canonicalTemplateResolved = await executionService.resolveTradeSuggestionProfile('user-1', {
+    sourceTemplateId: 'template-legacy',
+    inputSnapshot: {
+      template: {
+        id: 'template-legacy',
+        config: {
+          market: 'crypto-futures',
+          entryLogic: 'stale entry logic',
+          exitLogic: 'stale exit logic',
+          risk: {
+            stopLossPct: 99,
+            takeProfitTargetsPct: [100],
+          },
+          parameters: {
+            signalThreshold: '0.05',
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(canonicalTemplateResolved.sourceTemplateId, 'template-legacy');
+  assert.equal(canonicalTemplateResolved.profile.signalThreshold, 0.81);
+  assert.equal(canonicalTemplateResolved.profile.tradePlan.long?.stopLossPct, 2);
 
   const embeddedFallbackResolved = await executionService.resolveTradeSuggestionProfile('user-1', {
     sourceTemplateId: 'template-legacy',
