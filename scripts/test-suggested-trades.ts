@@ -10326,6 +10326,27 @@ function runCustomRLadderTrailingStopAssertions(): void {
   assert.equal(positionProtectionOrderIds.stopLossOrderId, 'current-sl-order');
   assert.equal(positionProtectionOrderIds.takeProfitOrderId, 'current-tp-order');
 
+  const repository = new SuggestedTradeRepository() as any;
+  const mergedPositionPayload = repository.mergeReadModelProtectionIntoPositionPayload({
+    payload: {
+      id: '59172',
+      status: 'open',
+      symbol: 'VVVUSD',
+      entry_price: '13.862',
+      current_price: '14.209',
+      stoploss: null,
+      takeprofit: null,
+    },
+    readModelStopLossPrice: '13.932172142856',
+    readModelTakeProfitPrice: '14.395378571429',
+    readModelStopLossOrderId: '1320080639',
+    readModelTakeProfitOrderId: '1320075078',
+  });
+  assert.equal(mergedPositionPayload.stoploss_order_id, '1320080639');
+  assert.equal(mergedPositionPayload.takeprofit_order_id, '1320075078');
+  assert.equal(mergedPositionPayload.stoploss_price, '13.932172142856');
+  assert.equal(mergedPositionPayload.takeprofit_price, '14.395378571429');
+
   const replacementOrderIds = service.resolveTrailingRiskOrderIdsFromMutationResult({
     protective_orders: [
       {

@@ -530,19 +530,30 @@ export class SuggestedTradeRepository {
     }
 
     const rows = (await coreDataSource.query(
-      `SELECT external_id AS externalId,
-              status,
-              status_rank AS statusRank,
-              first_seen_at AS firstSeenAt,
-              last_seen_at AS lastSeenAt,
-              payload_json AS payload
-         FROM scheduler_positions_snapshots
-        WHERE user_id = ?
-          AND account_id = ?
-          AND LOWER(broker_key) = ?
-          AND LOWER(symbol) IN (${symbolLookupValues.map(() => '?').join(',')})
-          AND last_seen_at >= ?
-        ORDER BY status_rank DESC, last_seen_at DESC
+      `SELECT scheduler_position.external_id AS externalId,
+              scheduler_position.status,
+              scheduler_position.status_rank AS statusRank,
+              scheduler_position.first_seen_at AS firstSeenAt,
+              scheduler_position.last_seen_at AS lastSeenAt,
+              scheduler_position.payload_json AS payload,
+              position_model.entry_price AS readModelEntryPrice,
+              position_model.current_price AS readModelCurrentPrice,
+              position_model.stoploss_price AS readModelStopLossPrice,
+              position_model.takeprofit_price AS readModelTakeProfitPrice,
+              position_model.stoploss_order_id AS readModelStopLossOrderId,
+              position_model.takeprofit_order_id AS readModelTakeProfitOrderId
+         FROM scheduler_positions_snapshots scheduler_position
+         LEFT JOIN position_read_models position_model
+                ON position_model.user_id = scheduler_position.user_id
+               AND position_model.account_id = scheduler_position.account_id
+               AND LOWER(position_model.broker_key) = LOWER(scheduler_position.broker_key)
+               AND position_model.external_id = scheduler_position.external_id
+        WHERE scheduler_position.user_id = ?
+          AND scheduler_position.account_id = ?
+          AND LOWER(scheduler_position.broker_key) = ?
+          AND LOWER(scheduler_position.symbol) IN (${symbolLookupValues.map(() => '?').join(',')})
+          AND scheduler_position.last_seen_at >= ?
+        ORDER BY scheduler_position.status_rank DESC, scheduler_position.last_seen_at DESC
         LIMIT ?`,
       [
         userId,
@@ -559,6 +570,12 @@ export class SuggestedTradeRepository {
       firstSeenAt?: Date | string | null;
       lastSeenAt?: Date | string | null;
       payload?: unknown;
+      readModelEntryPrice?: unknown;
+      readModelCurrentPrice?: unknown;
+      readModelStopLossPrice?: unknown;
+      readModelTakeProfitPrice?: unknown;
+      readModelStopLossOrderId?: unknown;
+      readModelTakeProfitOrderId?: unknown;
     }>;
 
     return rows.map((row) => ({
@@ -568,7 +585,7 @@ export class SuggestedTradeRepository {
         row.statusRank === undefined || row.statusRank === null ? null : Number(row.statusRank),
       firstSeenAt: row.firstSeenAt ?? null,
       lastSeenAt: row.lastSeenAt ?? null,
-      payload: this.parsePayloadObject(row.payload),
+      payload: this.mergeReadModelProtectionIntoPositionPayload(row),
     }));
   }
 
@@ -913,6 +930,40 @@ export class SuggestedTradeRepository {
     }
 
     return null;
+  }
+
+  private mergeReadModelProtectionIntoPositionPayload(row: {
+    payload?: unknown;
+    readModelEntryPrice?: unknown;
+    readModelCurrentPrice?: unknown;
+    readModelStopLossPrice?: unknown;
+    readModelTakeProfitPrice?: unknown;
+    readModelStopLossOrderId?: unknown;
+    readModelTakeProfitOrderId?: unknown;
+  }): Record<string, unknown> | null {
+    const parsedPayload = this.parsePayloadObject(row.payload);
+    const payload: Record<string, unknown> = parsedPayload ? { ...parsedPayload } : {};
+    let hasPayload = Boolean(parsedPayload);
+    const put = (key: string, value: unknown, overwrite = false) => {
+      const normalized = normalizeOptionalString(value);
+      if (!normalized) {
+        return;
+      }
+      if (!overwrite && payload[key] !== undefined && payload[key] !== null && payload[key] !== '') {
+        return;
+      }
+      payload[key] = normalized;
+      hasPayload = true;
+    };
+
+    put('entry_price', row.readModelEntryPrice);
+    put('current_price', row.readModelCurrentPrice);
+    put('stoploss_price', row.readModelStopLossPrice, true);
+    put('takeprofit_price', row.readModelTakeProfitPrice, true);
+    put('stoploss_order_id', row.readModelStopLossOrderId, true);
+    put('takeprofit_order_id', row.readModelTakeProfitOrderId, true);
+
+    return hasPayload ? payload : null;
   }
 
   async getSuggestedTradesSummary(
