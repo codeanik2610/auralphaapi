@@ -4592,6 +4592,154 @@ async function runSuggestedTradeSiblingProtectionAutoCancelAssertions(): Promise
   );
 
   {
+    const liveDeltaService = new SuggestedTradesService() as any;
+    const liveCancelledOrders: Array<{
+      orderId: string;
+      context: Record<string, unknown> | undefined;
+    }> = [];
+    liveDeltaService.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'stale-sl-1',
+      takeProfitOrderId: 'stale-tp-1',
+      stopLossStatus: 'CLOSED',
+      takeProfitStatus: null,
+      activeOrderIds: [],
+    });
+    liveDeltaService.brokerRuntimeRegistry = {
+      supportsOrdersAdapter() {
+        return true;
+      },
+      getOrdersAdapter() {
+        return {
+          async listOpenOrders() {
+            return [
+              {
+                id: 'live-tp-1',
+                symbol: 'BTCUSD',
+                status: 'open',
+                side: 'sell',
+                reduce_only: true,
+                stop_order_type: 'take_profit_order',
+              },
+            ];
+          },
+          async cancelOrder(orderId: string, context?: Record<string, unknown>) {
+            liveCancelledOrders.push({ orderId, context });
+            return { success: true };
+          },
+        };
+      },
+    };
+
+    const nextExecution = await liveDeltaService.maybeAutoCancelSiblingProtectionOrders(
+      'user-1',
+      trade,
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+        orderId: 'ord-entry-1',
+        positionId: 'pos-1',
+        positionStatus: 'CLOSED',
+        executionState: 'closed',
+        protectionState: 'attached',
+      },
+      [
+        {
+          externalId: 'pos-1',
+          status: 'CLOSED',
+          statusRank: 3,
+          firstSeenAt: '2026-04-04T10:02:00.000Z',
+          lastSeenAt: '2026-04-04T10:06:00.000Z',
+          payload: {
+            status: 'closed',
+            side: 'long',
+            created_at: '2026-04-04T10:02:00.000Z',
+            closed_at: '2026-04-04T10:06:00.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.deepEqual(liveCancelledOrders, [
+      {
+        orderId: 'live-tp-1',
+        context: {
+          userId: 'user-1',
+          brokerKey: 'delta_exchange',
+          accountId: 'acc-1',
+        },
+      },
+    ]);
+    assert.match(
+      String(nextExecution.note || ''),
+      /Sibling protection cancel requested after position close: live-tp-1/
+    );
+  }
+
+  {
+    const mudrexService = new SuggestedTradesService() as any;
+    let mudrexLiveListCalled = false;
+    let mudrexCancelCalled = false;
+    mudrexService.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+      stopLossStatus: null,
+      takeProfitStatus: null,
+      activeOrderIds: [],
+    });
+    mudrexService.brokerRuntimeRegistry = {
+      supportsOrdersAdapter() {
+        return true;
+      },
+      getOrdersAdapter() {
+        return {
+          async listOpenOrders() {
+            mudrexLiveListCalled = true;
+            throw new Error('Mudrex should not use the Delta live sibling sweep');
+          },
+          async cancelOrder() {
+            mudrexCancelCalled = true;
+            return { success: true };
+          },
+        };
+      },
+    };
+
+    await mudrexService.maybeAutoCancelSiblingProtectionOrders(
+      'user-1',
+      trade,
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-entry-1',
+        positionId: 'mudrex-pos-1',
+        positionStatus: 'CLOSED',
+        executionState: 'closed',
+        protectionState: 'not_required',
+      },
+      [
+        {
+          externalId: 'mudrex-pos-1',
+          status: 'CLOSED',
+          statusRank: 3,
+          firstSeenAt: '2026-04-04T10:02:00.000Z',
+          lastSeenAt: '2026-04-04T10:06:00.000Z',
+          payload: {
+            status: 'closed',
+            side: 'long',
+            created_at: '2026-04-04T10:02:00.000Z',
+            closed_at: '2026-04-04T10:06:00.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(mudrexLiveListCalled, false);
+    assert.equal(mudrexCancelCalled, false);
+  }
+
+  {
     const guardedService = new SuggestedTradesService() as any;
     let cancelCalled = false;
     guardedService.resolveLiveProtectionOrderContext = async () => ({
