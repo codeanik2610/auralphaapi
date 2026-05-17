@@ -82,12 +82,14 @@ import { RiskKillSwitchService } from './RiskKillSwitchService';
 import {
   DeltaLiveAutoProductRulePreflightAdapter,
   DeltaProtectionOrdersAdapter,
+  closeDeltaPositionForUnsafeProtection,
   describeDeltaActiveProtectionOrders,
   describeLiveProtectionOrderContext,
   hasExactlyOneDeltaProtectionPair,
   normalizeDeltaLiveAutoOrderSizing as normalizeDeltaLiveAutoOrderSizingForBroker,
   remediateDeltaLiveProtection as remediateDeltaLiveProtectionForBroker,
   resolveDeltaInactiveAttachedProtectionManualReason,
+  resolveDeltaProtectionPartialExecutionReason,
   resolveDeltaProtectionLookupSymbols,
 } from './suggested-trades/DeltaExchangeSuggestedTradeBroker';
 import {
@@ -407,6 +409,15 @@ interface LiveProtectionOrderContext {
   stopLossStatus: string | null;
   takeProfitStatus: string | null;
   activeOrderIds: string[];
+  orderDetails?: Record<
+    string,
+    {
+      status?: string | null;
+      quantity?: number | null;
+      filledQuantity?: number | null;
+      remainingQuantity?: number | null;
+    }
+  >;
 }
 
 interface DeltaActiveProtectionOrders {
@@ -414,6 +425,7 @@ interface DeltaActiveProtectionOrders {
   takeProfitOrderIds: string[];
   unclassifiedOrderIds: string[];
   activeOrderIds: string[];
+  orderDetails: NonNullable<LiveProtectionOrderContext['orderDetails']>;
 }
 
 interface DeltaProtectionOrderCandidate {
@@ -424,6 +436,11 @@ interface DeltaProtectionOrderCandidate {
   reduceOnly?: unknown;
   stopOrderType?: unknown;
   orderType?: unknown;
+  quantity?: unknown;
+  size?: unknown;
+  filledQuantity?: unknown;
+  remainingQuantity?: unknown;
+  unfilledSize?: unknown;
 }
 
 @Service()
@@ -8491,7 +8508,7 @@ export class SuggestedTradesService {
             orderId,
             position.payload ?? {}
           );
-          if (this.hasUsableProtectionContext(existingProtection)) {
+          if (this.hasUsableDeltaProtectionContext(existingProtection, execution, position)) {
             return this.markProtectionAttached(
               trade,
               execution,
@@ -9112,7 +9129,11 @@ export class SuggestedTradesService {
       orderId,
       positionPayload
     );
-    if (!this.hasUsableProtectionContext(protection)) {
+    if (
+      !this.hasUsableDeltaProtectionContext(protection, execution, {
+        payload: positionPayload,
+      })
+    ) {
       return fallback;
     }
 
@@ -9549,12 +9570,13 @@ export class SuggestedTradesService {
           orderId,
           position.payload ?? {}
         );
-        if (this.hasUsableProtectionContext(existingProtection)) {
+        if (this.hasUsableDeltaProtectionContext(existingProtection, execution, position)) {
           const duplicateProtectionReason = await this.resolveDeltaLinkedProtectionManualReason({
             userId,
             brokerKey,
             accountId,
             trade,
+            execution,
             position,
             protection: existingProtection,
           });
@@ -9618,12 +9640,13 @@ export class SuggestedTradesService {
       orderId,
       position.payload ?? {}
     );
-    if (this.hasUsableProtectionContext(protection)) {
+    if (this.hasUsableDeltaProtectionContext(protection, execution, position)) {
       const duplicateProtectionReason = await this.resolveDeltaLinkedProtectionManualReason({
         userId,
         brokerKey,
         accountId,
         trade,
+        execution,
         position,
         protection,
       });
@@ -9635,6 +9658,28 @@ export class SuggestedTradesService {
 
     const prices = this.resolveExecutionProtectionPrices(trade, execution);
     const positionPayload = position.payload ?? {};
+    const partialExecutionReason = resolveDeltaProtectionPartialExecutionReason(protection);
+    if (partialExecutionReason) {
+      return this.closeDeltaPositionForProtectionIssue({
+        userId,
+        brokerKey,
+        accountId,
+        execution,
+        position,
+        nowIso,
+        issueMessage: partialExecutionReason,
+        autoCloseReason: 'partial_protection_execution',
+      });
+    }
+    const mismatchReason = this.resolveDeltaProtectionContextMismatchReason(
+      protection,
+      execution,
+      position
+    );
+    if (mismatchReason) {
+      return this.markProtectionManualUnlinked(execution, nowIso, mismatchReason);
+    }
+
     const actualEntryPrice = this.resolvePositionEntryPrice(positionPayload, execution);
     const manualReason = prices
       ? resolveDeltaInactiveAttachedProtectionManualReason({
@@ -9647,6 +9692,18 @@ export class SuggestedTradesService {
         })
       : 'Delta Exchange attached protection is inactive or missing and no stored SL/TP plan is available for automatic replacement.';
     if (manualReason) {
+      if (String(manualReason).toLowerCase().includes('already crossed')) {
+        return this.closeDeltaPositionForProtectionIssue({
+          userId,
+          brokerKey,
+          accountId,
+          execution,
+          position,
+          nowIso,
+          issueMessage: manualReason,
+          autoCloseReason: 'unsafe_protection_already_crossed',
+        });
+      }
       return this.markProtectionManualUnlinked(execution, nowIso, manualReason);
     }
 
@@ -9659,11 +9716,62 @@ export class SuggestedTradesService {
     );
   }
 
+  private async closeDeltaPositionForProtectionIssue(input: {
+    userId: string;
+    brokerKey: string;
+    accountId: string;
+    execution: SuggestedTradeExecutionLink;
+    position: LivePositionSnapshot;
+    nowIso: string;
+    issueMessage: string;
+    autoCloseReason: string;
+  }): Promise<SuggestedTradeExecutionLink> {
+    const positionsAdapter = this.brokerRuntimeRegistry?.getPositionsAdapter?.(
+      'delta_exchange'
+    ) as {
+      closePosition?: (
+        positionId: string,
+        context?: { userId?: string; brokerKey?: string; accountId?: string }
+      ) => Promise<unknown>;
+    };
+    const closeResult = await closeDeltaPositionForUnsafeProtection({
+      positionsAdapter,
+      position: input.position,
+      userId: input.userId,
+      brokerKey: input.brokerKey,
+      accountId: input.accountId,
+      issueMessage: input.issueMessage,
+    });
+    if (!closeResult.closed) {
+      return this.markProtectionFailed(input.execution, input.nowIso, closeResult.note);
+    }
+
+    return {
+      ...input.execution,
+      executionState: 'closed',
+      positionId: closeResult.positionId ?? input.position.externalId,
+      positionStatus: 'CLOSED',
+      positionClosedAt: input.nowIso,
+      protectionState: 'not_required',
+      protectionCheckedAt: input.nowIso,
+      protectionAttachedAt: null,
+      protectionLastError: null,
+      protectionPlan: {
+        ...(input.execution.protectionPlan ?? {}),
+        positionId: closeResult.positionId ?? input.position.externalId,
+        autoClosedAt: input.nowIso,
+        autoCloseReason: input.autoCloseReason,
+      },
+      note: this.appendExecutionNote(input.execution.note, closeResult.note),
+    };
+  }
+
   private async resolveDeltaLinkedProtectionManualReason(input: {
     userId: string;
     brokerKey: string;
     accountId: string;
     trade: SuggestedTrade;
+    execution: SuggestedTradeExecutionLink;
     position: LivePositionSnapshot;
     protection: LiveProtectionOrderContext;
   }): Promise<string | null> {
@@ -9688,6 +9796,25 @@ export class SuggestedTradesService {
       linkedOrderIds.every((orderId) => activeOrderIds.has(orderId)) &&
       hasExactlyOneDeltaProtectionPair(activeSymbolProtection);
     if (onlyLinkedPairActive) {
+      const linkedContext: LiveProtectionOrderContext = {
+        stopLossOrderId: input.protection.stopLossOrderId,
+        takeProfitOrderId: input.protection.takeProfitOrderId,
+        stopLossStatus: input.protection.stopLossStatus,
+        takeProfitStatus: input.protection.takeProfitStatus,
+        activeOrderIds: activeSymbolProtection.activeOrderIds,
+        orderDetails: {
+          ...(activeSymbolProtection.orderDetails ?? {}),
+          ...(input.protection.orderDetails ?? {}),
+        },
+      };
+      const mismatchReason = this.resolveDeltaProtectionContextMismatchReason(
+        linkedContext,
+        input.execution,
+        input.position
+      );
+      if (mismatchReason) {
+        return mismatchReason;
+      }
       return null;
     }
 
@@ -9769,7 +9896,8 @@ export class SuggestedTradesService {
           orderId,
           input.position.payload ?? {}
         ),
-      hasUsableProtectionContext: (context) => this.hasUsableProtectionContext(context),
+      hasUsableProtectionContext: (context) =>
+        this.hasUsableDeltaProtectionContext(context, input.execution, input.position),
       resolvePositionEntryPrice: (payload, execution) =>
         this.resolvePositionEntryPrice(payload, execution),
       resolvePositionCurrentPrice: (payload) => this.resolvePositionCurrentPrice(payload),
@@ -9965,6 +10093,67 @@ export class SuggestedTradesService {
     );
   }
 
+  private hasUsableDeltaProtectionContext(
+    context: LiveProtectionOrderContext,
+    execution: SuggestedTradeExecutionLink,
+    position: LivePositionSnapshot | { payload: Record<string, unknown> | null }
+  ): boolean {
+    if (!this.hasUsableProtectionContext(context)) {
+      return false;
+    }
+    return this.resolveDeltaProtectionContextMismatchReason(context, execution, position) === null;
+  }
+
+  private resolveDeltaProtectionContextMismatchReason(
+    context: LiveProtectionOrderContext,
+    execution: SuggestedTradeExecutionLink,
+    position: LivePositionSnapshot | { payload: Record<string, unknown> | null }
+  ): string | null {
+    const partialReason = resolveDeltaProtectionPartialExecutionReason(context);
+    if (partialReason) {
+      return partialReason;
+    }
+
+    const positionSize = this.resolveDeltaOpenPositionSize(position.payload ?? {}, execution);
+    if (!(positionSize && positionSize > 0)) {
+      return null;
+    }
+
+    for (const [label, orderId] of [
+      ['stop-loss', context.stopLossOrderId],
+      ['take-profit', context.takeProfitOrderId],
+    ] as const) {
+      if (!orderId) {
+        continue;
+      }
+      const detail = context.orderDetails?.[orderId];
+      const orderSize = this.readNumberValue(detail?.quantity);
+      if (!(orderSize && orderSize > 0)) {
+        continue;
+      }
+      const drift = Math.abs(orderSize - positionSize) / Math.max(positionSize, 1e-9);
+      if (drift > 0.01) {
+        return `Delta Exchange linked ${label} order ${orderId} size ${this.formatNumericString(orderSize) || orderSize} does not match current open position size ${this.formatNumericString(positionSize) || positionSize}; manual cleanup is required.`;
+      }
+    }
+
+    return null;
+  }
+
+  private resolveDeltaOpenPositionSize(
+    positionPayload: Record<string, unknown>,
+    execution: SuggestedTradeExecutionLink
+  ): number | null {
+    return (
+      this.readNumberValue(positionPayload.quantity_contracts) ??
+      this.readNumberValue(positionPayload.quantityContracts) ??
+      this.readNumberValue(positionPayload.size) ??
+      this.readNumberValue(positionPayload.quantity) ??
+      this.readNumberValue(execution.filledQuantity) ??
+      this.readNumberValue(execution.quantity)
+    );
+  }
+
   private async resolveActiveDeltaProtectionOrdersForSymbol(input: {
     userId: string;
     brokerKey: string;
@@ -9982,6 +10171,7 @@ export class SuggestedTradesService {
         takeProfitOrderIds: [],
         unclassifiedOrderIds: [],
         activeOrderIds: [],
+        orderDetails: {},
       };
     }
 
@@ -10002,6 +10192,7 @@ export class SuggestedTradesService {
         takeProfitOrderIds: [],
         unclassifiedOrderIds: [],
         activeOrderIds: [],
+        orderDetails: {},
       };
     }
 
@@ -10013,7 +10204,14 @@ export class SuggestedTradesService {
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.side')) AS side,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.reduce_only')) AS reduceOnly,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_order_type')) AS stopOrderType,
-              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.order_type')) AS orderType
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.order_type')) AS orderType,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.quantity')) AS quantity,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.size')) AS size,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.filled_quantity')) AS filledQuantity,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.filledQuantity')) AS filledQuantityCamel,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.remaining_quantity')) AS remainingQuantity,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.remainingQuantity')) AS remainingQuantityCamel,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.unfilled_size')) AS unfilledSize
          FROM scheduler_orders_snapshots
         WHERE user_id = ?
           AND account_id = ?
@@ -10031,6 +10229,7 @@ export class SuggestedTradesService {
       takeProfitOrderIds: [],
       unclassifiedOrderIds: [],
       activeOrderIds: [],
+      orderDetails: {},
     };
 
     for (const row of rows) {
@@ -10096,6 +10295,11 @@ export class SuggestedTradesService {
         reduceOnly: row.reduce_only ?? row.reduceOnly,
         stopOrderType: row.stop_order_type ?? row.stopOrderType,
         orderType: row.order_type ?? row.orderType ?? row.type,
+        quantity: row.quantity ?? row.size,
+        size: row.size,
+        filledQuantity: row.filled_quantity ?? row.filledQuantity,
+        remainingQuantity: row.remaining_quantity ?? row.remainingQuantity,
+        unfilledSize: row.unfilled_size ?? row.unfilledSize,
       }));
   }
 
@@ -10133,6 +10337,21 @@ export class SuggestedTradesService {
     if (!context.activeOrderIds.includes(orderId)) {
       context.activeOrderIds.push(orderId);
     }
+    const quantity = this.readNumberValue(row.quantity) ?? this.readNumberValue(row.size);
+    const filledQuantity = this.readNumberValue(row.filledQuantity);
+    const explicitRemainingQuantity =
+      this.readNumberValue(row.remainingQuantity) ?? this.readNumberValue(row.unfilledSize);
+    const remainingQuantity =
+      explicitRemainingQuantity ??
+      (quantity !== null && filledQuantity !== null
+        ? Math.max(0, quantity - filledQuantity)
+        : null);
+    context.orderDetails[orderId] = {
+      status: orderStatus,
+      quantity,
+      filledQuantity,
+      remainingQuantity,
+    };
     if (stopOrderType.includes('stop_loss')) {
       if (!context.stopLossOrderIds.includes(orderId)) {
         context.stopLossOrderIds.push(orderId);
@@ -10521,6 +10740,7 @@ export class SuggestedTradesService {
         takeProfitOrderIds: [],
         unclassifiedOrderIds: [],
         activeOrderIds: [],
+        orderDetails: {},
       };
       const protectionSide = entrySide === 'buy' ? 'sell' : 'buy';
       for (const row of rows) {
@@ -11138,13 +11358,21 @@ export class SuggestedTradesService {
         stopLossStatus: null,
         takeProfitStatus: null,
         activeOrderIds: [],
+        orderDetails: {},
       };
     }
 
     const snapshots = (await coreDataSource.query(
       `SELECT external_id AS externalId,
               order_status AS orderStatus,
-              status_rank AS statusRank
+              status_rank AS statusRank,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.quantity')) AS quantity,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.size')) AS size,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.filled_quantity')) AS filledQuantity,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.filledQuantity')) AS filledQuantityCamel,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.remaining_quantity')) AS remainingQuantity,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.remainingQuantity')) AS remainingQuantityCamel,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.unfilled_size')) AS unfilledSize
          FROM scheduler_orders_snapshots
         WHERE user_id = ?
           AND account_id = ?
@@ -11155,6 +11383,13 @@ export class SuggestedTradesService {
       externalId?: string | null;
       orderStatus?: string | null;
       statusRank?: number | string | null;
+      quantity?: string | number | null;
+      size?: string | number | null;
+      filledQuantity?: string | number | null;
+      filledQuantityCamel?: string | number | null;
+      remainingQuantity?: string | number | null;
+      remainingQuantityCamel?: string | number | null;
+      unfilledSize?: string | number | null;
     }>;
 
     const snapshotById = new Map(
@@ -11169,12 +11404,51 @@ export class SuggestedTradesService {
                   snapshot.statusRank === undefined || snapshot.statusRank === null
                     ? null
                     : Number(snapshot.statusRank),
+                quantity:
+                  this.readNumberValue(snapshot.quantity) ?? this.readNumberValue(snapshot.size),
+                filledQuantity:
+                  this.readNumberValue(snapshot.filledQuantity) ??
+                  this.readNumberValue(snapshot.filledQuantityCamel),
+                remainingQuantity:
+                  this.readNumberValue(snapshot.remainingQuantity) ??
+                  this.readNumberValue(snapshot.remainingQuantityCamel) ??
+                  this.readNumberValue(snapshot.unfilledSize),
               },
             ] as const
         )
-        .filter((entry): entry is [string, { status: string | null; statusRank: number | null }] =>
-          Boolean(entry[0])
+        .filter(
+          (
+            entry
+          ): entry is [
+            string,
+            {
+              status: string | null;
+              statusRank: number | null;
+              quantity: number | null;
+              filledQuantity: number | null;
+              remainingQuantity: number | null;
+            },
+          ] => Boolean(entry[0])
         )
+    );
+
+    const orderDetails = Object.fromEntries(
+      Array.from(snapshotById.entries()).map(([orderId, detail]) => {
+        const remainingQuantity =
+          detail.remainingQuantity ??
+          (detail.quantity !== null && detail.filledQuantity !== null
+            ? Math.max(0, detail.quantity - detail.filledQuantity)
+            : null);
+        return [
+          orderId,
+          {
+            status: detail.status,
+            quantity: detail.quantity,
+            filledQuantity: detail.filledQuantity,
+            remainingQuantity,
+          },
+        ];
+      })
     );
 
     const activeOrderIds = trackedOrderIds.filter((trackedOrderId) => {
@@ -11211,6 +11485,7 @@ export class SuggestedTradesService {
       stopLossStatus,
       takeProfitStatus,
       activeOrderIds,
+      orderDetails,
     };
   }
 

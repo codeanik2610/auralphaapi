@@ -24,6 +24,15 @@ export type LiveProtectionOrderContextLike = {
   stopLossStatus: string | null;
   takeProfitStatus: string | null;
   activeOrderIds: string[];
+  orderDetails?: Record<
+    string,
+    {
+      status?: string | null;
+      quantity?: number | null;
+      filledQuantity?: number | null;
+      remainingQuantity?: number | null;
+    }
+  >;
 };
 
 export type DeltaActiveProtectionOrdersLike = {
@@ -31,6 +40,7 @@ export type DeltaActiveProtectionOrdersLike = {
   takeProfitOrderIds: string[];
   unclassifiedOrderIds: string[];
   activeOrderIds: string[];
+  orderDetails?: LiveProtectionOrderContextLike['orderDetails'];
 };
 
 type SuggestedTradeProtectionTradeLike = {
@@ -393,6 +403,45 @@ function shouldCloseDeltaPositionForManualReason(message: string | null): boolea
   return normalized.includes('already crossed');
 }
 
+export function resolveDeltaProtectionPartialExecutionReason(
+  context: LiveProtectionOrderContextLike
+): string | null {
+  const details = context.orderDetails ?? {};
+  const linkedOrderIds = [
+    { kind: 'stop-loss', id: context.stopLossOrderId },
+    { kind: 'take-profit', id: context.takeProfitOrderId },
+  ].filter((item): item is { kind: string; id: string } => Boolean(item.id));
+
+  const partialOrders = linkedOrderIds.filter((item) => {
+    const detail = details[item.id];
+    if (!detail) {
+      return false;
+    }
+    const normalizedStatus = String(detail.status || '')
+      .trim()
+      .toUpperCase();
+    const quantity = readNumberValue(detail.quantity);
+    const filledQuantity = readNumberValue(detail.filledQuantity);
+    const remainingQuantity = readNumberValue(detail.remainingQuantity);
+    return (
+      normalizedStatus === 'PARTIALLY_FILLED' ||
+      Boolean(
+        filledQuantity &&
+        filledQuantity > 0 &&
+        ((remainingQuantity && remainingQuantity > 0) || (quantity && quantity > filledQuantity))
+      )
+    );
+  });
+
+  if (!partialOrders.length) {
+    return null;
+  }
+
+  return `Delta Exchange reduce-only protection partially executed (${partialOrders
+    .map((item) => `${item.kind} ${item.id}`)
+    .join(', ')}); the remaining position must be closed immediately.`;
+}
+
 function resolveDeltaPositionCloseId(
   position: LivePositionSnapshotLike & { externalId?: unknown }
 ): string | null {
@@ -407,7 +456,7 @@ function resolveDeltaPositionCloseId(
   );
 }
 
-async function closeDeltaPositionForUnsafeProtection(input: {
+export async function closeDeltaPositionForUnsafeProtection(input: {
   positionsAdapter: DeltaProtectionPositionsAdapter | null | undefined;
   position: LivePositionSnapshotLike & { externalId?: unknown };
   userId: string;
@@ -508,6 +557,38 @@ export async function remediateDeltaLiveProtection(
       input.accountId,
       orderId
     );
+    const partialExecutionReason = resolveDeltaProtectionPartialExecutionReason(existingProtection);
+    if (partialExecutionReason) {
+      const closeResult = await closeDeltaPositionForUnsafeProtection({
+        positionsAdapter: input.positionsAdapter,
+        position: input.position,
+        userId: input.userId,
+        brokerKey: input.brokerKey,
+        accountId: input.accountId,
+        issueMessage: partialExecutionReason,
+      });
+      if (closeResult.closed) {
+        return {
+          ...input.execution,
+          executionState: 'closed',
+          positionId: closeResult.positionId ?? readStringValue(input.position.externalId),
+          positionStatus: 'CLOSED',
+          positionClosedAt: input.nowIso,
+          protectionState: 'not_required',
+          protectionCheckedAt: input.nowIso,
+          protectionAttachedAt: null,
+          protectionLastError: null,
+          protectionPlan: {
+            ...(input.execution.protectionPlan ?? {}),
+            positionId: closeResult.positionId ?? readStringValue(input.position.externalId),
+            autoClosedAt: input.nowIso,
+            autoCloseReason: 'partial_protection_execution',
+          },
+          note: appendProtectionNote(input.execution.note, closeResult.note),
+        };
+      }
+      return input.markProtectionFailed(input.execution, input.nowIso, closeResult.note);
+    }
     if (input.hasUsableProtectionContext(existingProtection)) {
       return input.markProtectionAttached(
         input.trade,
@@ -664,6 +745,21 @@ export async function remediateDeltaLiveProtection(
     });
     if (existingSymbolProtection.activeOrderIds.length > 0) {
       if (hasExactlyOneDeltaProtectionPair(existingSymbolProtection)) {
+        const existingSymbolPair = {
+          stopLossOrderId: existingSymbolProtection.stopLossOrderIds[0] ?? null,
+          takeProfitOrderId: existingSymbolProtection.takeProfitOrderIds[0] ?? null,
+          stopLossStatus: null,
+          takeProfitStatus: null,
+          activeOrderIds: existingSymbolProtection.activeOrderIds,
+          orderDetails: existingSymbolProtection.orderDetails,
+        };
+        if (!input.hasUsableProtectionContext(existingSymbolPair)) {
+          return input.markProtectionManualUnlinked(
+            input.execution,
+            input.nowIso,
+            `Delta Exchange active reduce-only SL/TP protection exists for ${route.brokerSymbol}, but it does not match the current open position size; manual cleanup is required before auto repair can safely create replacements.`
+          );
+        }
         return input.markProtectionAttached(
           input.trade,
           input.execution,

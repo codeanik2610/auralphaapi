@@ -4886,6 +4886,77 @@ async function runSuggestedTradeSiblingProtectionAutoCancelAssertions(): Promise
       true
     );
   }
+
+  {
+    const sizeGuardService = new SuggestedTradesService() as any;
+    const execution = {
+      brokerKey: 'delta_exchange',
+      orderId: 'delta-partial-entry',
+      quantity: 118,
+      filledQuantity: 25,
+    };
+    const position = {
+      payload: {
+        quantity_contracts: '25',
+      },
+    };
+    assert.equal(
+      sizeGuardService.hasUsableDeltaProtectionContext(
+        {
+          stopLossOrderId: 'delta-sl-full-size',
+          takeProfitOrderId: 'delta-tp-full-size',
+          stopLossStatus: 'PENDING',
+          takeProfitStatus: 'PENDING',
+          activeOrderIds: ['delta-sl-full-size', 'delta-tp-full-size'],
+          orderDetails: {
+            'delta-sl-full-size': {
+              status: 'PENDING',
+              quantity: 118,
+              filledQuantity: 0,
+              remainingQuantity: 118,
+            },
+            'delta-tp-full-size': {
+              status: 'PENDING',
+              quantity: 118,
+              filledQuantity: 0,
+              remainingQuantity: 118,
+            },
+          },
+        },
+        execution,
+        position
+      ),
+      false
+    );
+    assert.equal(
+      sizeGuardService.hasUsableDeltaProtectionContext(
+        {
+          stopLossOrderId: 'delta-sl-current-size',
+          takeProfitOrderId: 'delta-tp-current-size',
+          stopLossStatus: 'PENDING',
+          takeProfitStatus: 'PENDING',
+          activeOrderIds: ['delta-sl-current-size', 'delta-tp-current-size'],
+          orderDetails: {
+            'delta-sl-current-size': {
+              status: 'PENDING',
+              quantity: 25,
+              filledQuantity: 0,
+              remainingQuantity: 25,
+            },
+            'delta-tp-current-size': {
+              status: 'PENDING',
+              quantity: 25,
+              filledQuantity: 0,
+              remainingQuantity: 25,
+            },
+          },
+        },
+        execution,
+        position
+      ),
+      true
+    );
+  }
 }
 
 async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
@@ -6241,6 +6312,120 @@ async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promi
   }
 
   {
+    const partialProtectionOrders: Array<{
+      assetId: string;
+      body: Record<string, unknown>;
+      context: Record<string, unknown> | undefined;
+    }> = [];
+
+    const partialFillExecution = await remediateDeltaLiveProtection({
+      userId: 'user-1',
+      trade: {
+        id: 'st-delta-partial-entry-handler',
+        symbol: 'GALAUSDT',
+        side: 'BUY',
+        timeframe: '5m',
+      },
+      execution: {
+        orderId: 'delta-partial-entry',
+        orderStatus: 'PARTIALLY_FILLED',
+        entryPrice: '0.0036',
+        quantity: 118,
+        filledQuantity: 25,
+        remainingQuantity: 0,
+        protectionState: 'pending',
+        protectionAttempts: 0,
+      } as any,
+      position: {
+        externalId: 'delta-partial-position',
+        payload: {
+          entry_price: '0.0036',
+          quantity_contracts: '25',
+          mark_price: '0.00361',
+        },
+      },
+      prices: {
+        requestedEntryPrice: 0.0036,
+        stopLossPrice: 0.0035,
+        takeProfitPrice: 0.0038,
+      },
+      nowIso: '2026-05-10T00:02:00.000Z',
+      brokerKey: 'delta_exchange',
+      accountId: 'acc-delta-1',
+      ordersAdapter: {
+        async createLiveAutoProtectiveOrdersForPosition(
+          assetId: string,
+          body: Record<string, unknown>,
+          context?: Record<string, unknown>
+        ) {
+          partialProtectionOrders.push({ assetId, body, context });
+          return {
+            stop_loss_order_id: 'delta-partial-sl',
+            take_profit_order_id: 'delta-partial-tp',
+          };
+        },
+      },
+      protectionRepairEnabled: true,
+      resolveLiveProtectionOrderContext: async () => ({
+        stopLossOrderId: null,
+        takeProfitOrderId: null,
+        stopLossStatus: null,
+        takeProfitStatus: null,
+        activeOrderIds: [],
+      }),
+      hasUsableProtectionContext: () => false,
+      resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
+      resolvePositionCurrentPrice: (payload) => Number(payload.mark_price),
+      deriveScaledProtectionPrice: (
+        _actualEntryPrice,
+        _requestedEntryPrice,
+        requestedTargetPrice
+      ) => String(requestedTargetPrice),
+      resolveLiveAutoAssetRoute: async () => ({
+        assetId: 'delta-gala-asset',
+        brokerSymbol: 'GALAUSD',
+        candidateSymbols: ['GALAUSDT'],
+      }),
+      resolveActiveProtectionOrdersForSymbol: async () => ({
+        stopLossOrderIds: [],
+        takeProfitOrderIds: [],
+        unclassifiedOrderIds: [],
+        activeOrderIds: [],
+        orderDetails: {},
+      }),
+      unwrapOrderPlacementResponse: (response) => response as Record<string, unknown>,
+      markProtectionAttached: () => {
+        throw new Error('Delta partial entry should create protection for filled size');
+      },
+      markProtectionAttaching: (trade, execution, nowIso, note, planUpdate, attempted) =>
+        ({
+          ...execution,
+          protectionState: 'attaching',
+          protectionCheckedAt: nowIso,
+          protectionAttempts: Number(execution.protectionAttempts ?? 0) + (attempted ? 1 : 0),
+          note,
+          protectionPlan: planUpdate,
+        }) as any,
+      markProtectionManualUnlinked: () => {
+        throw new Error(
+          'Delta partial entry should not require manual action when prices are safe'
+        );
+      },
+      markProtectionFailed: () => {
+        throw new Error('Delta partial entry should not fail when position size is usable');
+      },
+    });
+
+    assert.equal(partialProtectionOrders.length, 1);
+    assert.equal(partialProtectionOrders[0]?.body.size, 25);
+    assert.equal(partialFillExecution.protectionState, 'attaching');
+    assert.equal(
+      (partialFillExecution.protectionPlan as Record<string, unknown>).stopLossOrderId,
+      'delta-partial-sl'
+    );
+  }
+
+  {
     const closedPositions: Array<{ positionId: string; context?: Record<string, unknown> }> = [];
 
     const profitLockedProtectionOrders: Array<{
@@ -6434,6 +6619,115 @@ async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promi
     assert.equal(
       (nextExecution.protectionPlan as Record<string, unknown>).autoCloseReason,
       'unsafe_protection_already_crossed'
+    );
+  }
+
+  {
+    const closedPositions: Array<{ positionId: string; context?: Record<string, unknown> }> = [];
+
+    const partialProtectionExecution = await remediateDeltaLiveProtection({
+      userId: 'user-1',
+      trade: {
+        id: 'st-delta-partial-protection',
+        symbol: 'ORDERUSDT',
+        side: 'BUY',
+        timeframe: '5m',
+      },
+      execution: {
+        orderId: 'delta-entry-partial-protection',
+        entryPrice: '0.0534',
+        quantity: 78,
+        filledQuantity: 78,
+        protectionState: 'attached',
+        protectionAttempts: 0,
+      } as any,
+      position: {
+        externalId: '97415',
+        payload: {
+          entry_price: '0.0534',
+          quantity_contracts: '40',
+          mark_price: '0.0536',
+        },
+      },
+      prices: {
+        requestedEntryPrice: 0.0534,
+        stopLossPrice: 0.0531,
+        takeProfitPrice: 0.054,
+      },
+      nowIso: '2026-05-17T13:54:00.000Z',
+      brokerKey: 'delta_exchange',
+      accountId: 'acc-delta-1',
+      ordersAdapter: {
+        async createLiveAutoProtectiveOrdersForPosition() {
+          throw new Error('Delta partial protection should close instead of replacing orders');
+        },
+      },
+      positionsAdapter: {
+        async closePosition(positionId: string, context?: Record<string, unknown>) {
+          closedPositions.push({ positionId, context });
+          return { order_id: 'delta-close-partial-protection', status: 'open' };
+        },
+      },
+      protectionRepairEnabled: true,
+      resolveLiveProtectionOrderContext: async () => ({
+        stopLossOrderId: 'delta-sl-partial',
+        takeProfitOrderId: 'delta-tp-active',
+        stopLossStatus: 'PARTIALLY_FILLED',
+        takeProfitStatus: 'PENDING',
+        activeOrderIds: ['delta-sl-partial', 'delta-tp-active'],
+        orderDetails: {
+          'delta-sl-partial': {
+            status: 'PARTIALLY_FILLED',
+            quantity: 78,
+            filledQuantity: 38,
+            remainingQuantity: 40,
+          },
+          'delta-tp-active': {
+            status: 'PENDING',
+            quantity: 78,
+            filledQuantity: 0,
+            remainingQuantity: 78,
+          },
+        },
+      }),
+      hasUsableProtectionContext: () => {
+        throw new Error('Delta partial protection should be detected before usability check');
+      },
+      resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
+      resolvePositionCurrentPrice: (payload) => Number(payload.mark_price),
+      deriveScaledProtectionPrice: (
+        _actualEntryPrice,
+        _requestedEntryPrice,
+        requestedTargetPrice
+      ) => String(requestedTargetPrice),
+      resolveLiveAutoAssetRoute: async () => {
+        throw new Error('Delta partial protection should not resolve route before closing');
+      },
+      resolveActiveProtectionOrdersForSymbol: async () => {
+        throw new Error('Delta partial protection should not inspect symbol protection');
+      },
+      unwrapOrderPlacementResponse: (response) => response as Record<string, unknown>,
+      markProtectionAttached: () => {
+        throw new Error('Delta partial protection should not be trusted as attached');
+      },
+      markProtectionAttaching: () => {
+        throw new Error('Delta partial protection should not attach replacement orders');
+      },
+      markProtectionManualUnlinked: () => {
+        throw new Error('Delta partial protection should auto-close remaining position');
+      },
+      markProtectionFailed: () => {
+        throw new Error('Delta partial protection should not fail when immediate close succeeds');
+      },
+    });
+
+    assert.equal(closedPositions.length, 1);
+    assert.equal(closedPositions[0]?.positionId, '97415');
+    assert.equal(partialProtectionExecution.executionState, 'closed');
+    assert.equal(partialProtectionExecution.protectionState, 'not_required');
+    assert.equal(
+      (partialProtectionExecution.protectionPlan as Record<string, unknown>).autoCloseReason,
+      'partial_protection_execution'
     );
   }
 }
@@ -8096,6 +8390,7 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
   {
     const service = new SuggestedTradesService() as any;
     let createProtectionCalled = false;
+    const closedPositions: Array<{ positionId: string; context?: Record<string, unknown> }> = [];
     service.resolveLiveProtectionOrderContext = async () => ({
       stopLossOrderId: 'delta-sl-crossed',
       takeProfitOrderId: 'delta-tp-crossed',
@@ -8109,6 +8404,14 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
           async createLiveAutoProtectiveOrdersForPosition() {
             createProtectionCalled = true;
             throw new Error('crossed stop validation must not place replacement orders');
+          },
+        };
+      },
+      getPositionsAdapter() {
+        return {
+          async closePosition(positionId: string, context?: Record<string, unknown>) {
+            closedPositions.push({ positionId, context });
+            return { order_id: 'delta-auto-close-crossed', status: 'open' };
           },
         };
       },
@@ -8166,9 +8469,17 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
     );
 
     assert.equal(createProtectionCalled, false);
-    assert.equal(nextExecution.protectionState, 'manual_unlinked');
+    assert.equal(closedPositions.length, 1);
+    assert.equal(closedPositions[0]?.positionId, 'delta:s-open');
+    assert.equal(nextExecution.executionState, 'closed');
+    assert.equal(nextExecution.positionStatus, 'CLOSED');
+    assert.equal(nextExecution.protectionState, 'not_required');
     assert.equal(nextExecution.protectionAttempts, 0);
-    assert.match(String(nextExecution.protectionLastError || ''), /already crossed/);
+    assert.equal(nextExecution.protectionLastError, null);
+    assert.equal(
+      ((nextExecution.protectionPlan ?? {}) as Record<string, unknown>).autoCloseReason,
+      'unsafe_protection_already_crossed'
+    );
   }
 
   {
