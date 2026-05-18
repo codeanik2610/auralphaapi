@@ -1378,7 +1378,9 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     const quantity = this.toNumber(item.size);
     const unfilled = this.toNumber(item.unfilled_size);
     const filledQuantity = quantity > 0 ? Math.max(quantity - unfilled, 0) : 0;
-    const price = this.toNumber(item.limit_price) || this.toNumber(item.stop_price);
+    const limitPrice = this.toNumber(item.limit_price);
+    const stopPrice = this.toNumber(item.stop_price);
+    const price = limitPrice || stopPrice;
     const filledPrice = this.toNumber(item.average_fill_price) || price;
     const side = item.side ? String(item.side).toLowerCase() : null;
 
@@ -1388,10 +1390,17 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       reason: null,
       actual_amount: price * quantity,
       desired_amount: price * quantity,
+      size: quantity,
+      unfilled_size: unfilled,
       quantity,
       filled_quantity: filledQuantity,
       price,
+      ...(limitPrice ? { limit_price: limitPrice, order_price: limitPrice } : {}),
+      ...(stopPrice ? { stop_price: stopPrice, trigger_price: stopPrice } : {}),
       filled_price: filledPrice,
+      ...(item.average_fill_price !== undefined && item.average_fill_price !== null
+        ? { average_fill_price: filledPrice }
+        : {}),
       leverage: this.toNumber(item.leverage) || 1,
       liquidation_price: undefined,
       hedge_rate: undefined,

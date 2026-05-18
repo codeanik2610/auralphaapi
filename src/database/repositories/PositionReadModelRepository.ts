@@ -309,11 +309,11 @@ export class PositionReadModelRepository {
                          NULLIF(
                            NULLIF(
                              COALESCE(
-                               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.price')),
                                JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_price')),
                                JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stopPrice')),
                                JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.trigger_price')),
                                JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.triggerPrice')),
+                               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.price')),
                                JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.limit_price')),
                                JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.limitPrice'))
                              ),

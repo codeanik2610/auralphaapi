@@ -1134,6 +1134,24 @@ async function runDeltaLookupAssertions(): Promise<void> {
             average_fill_price: '97',
           };
         }
+        if (routePath === '/v2/orders/delta-stop-child') {
+          return {
+            id: 'delta-stop-child',
+            product_id: 45678,
+            product_symbol: 'BTCUSD',
+            side: 'sell',
+            state: 'pending',
+            order_type: 'market_order',
+            time_in_force: 'gtc',
+            limit_price: '107.25',
+            stop_price: '105.50',
+            average_fill_price: '105.75',
+            stop_order_type: 'stop_loss_order',
+            size: '2000',
+            unfilled_size: '500',
+            reduce_only: true,
+          };
+        }
         throw new Error(`Unexpected Delta signedGet ${routePath}`);
       },
     }),
@@ -1322,6 +1340,20 @@ async function runDeltaLookupAssertions(): Promise<void> {
       },
     ]
   );
+  const stopChild = await adapter.getOrder('delta-stop-child', {
+    userId: 'user-1',
+    accountId: 'acct-1',
+  });
+  assert.equal(stopChild.price, 107.25);
+  assert.equal(stopChild.limit_price, 107.25);
+  assert.equal(stopChild.order_price, 107.25);
+  assert.equal(stopChild.stop_price, 105.5);
+  assert.equal(stopChild.trigger_price, 105.5);
+  assert.equal(stopChild.filled_price, 105.75);
+  assert.equal(stopChild.filled_quantity, 1500);
+  assert.equal(stopChild.unfilled_size, 500);
+  assert.equal(stopChild.stop_order_type, 'stop_loss_order');
+  assert.equal(stopChild.reduce_only, true);
 
   await adapter.createOrder(
     'BTCUSDT',

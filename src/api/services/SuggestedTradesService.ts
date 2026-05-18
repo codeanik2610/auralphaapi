@@ -41,6 +41,8 @@ import {
   ExchangeAssetRepository,
   FundsSnapshotRepository,
   OrdersSnapshotSourceRepository,
+  OrderSubmissionLifecycleEvent,
+  OrderSubmissionRequestRepository,
   PaperOrderRepository,
   PositionReadModelRepository,
   RiskPolicyRepository,
@@ -473,6 +475,9 @@ export class SuggestedTradesService {
 
   @Inject(() => OrdersSnapshotSourceRepository)
   private ordersSnapshotSourceRepository!: OrdersSnapshotSourceRepository;
+
+  @Inject(() => OrderSubmissionRequestRepository)
+  private orderSubmissionRequestRepository!: OrderSubmissionRequestRepository;
 
   @Inject(() => ExchangeAssetRepository)
   private exchangeAssetRepository!: ExchangeAssetRepository;
@@ -8209,8 +8214,33 @@ export class SuggestedTradesService {
             adapter,
             nowIso,
           });
+      await this.recordLiveLimitEntryExpirySubmissionEvent({
+        userId,
+        tradeId: trade.id,
+        brokerKey,
+        accountId,
+        brokerOrderId: orderId,
+        event: {
+          type: partialFillEvidence
+            ? 'live_auto_limit_entry_remainder_cancel_requested'
+            : 'live_auto_limit_entry_expiry_cancel_requested',
+          message: expiryMessage,
+          details: this.buildLiveLimitEntryExpiryLifecycleDetails({
+            trade,
+            execution,
+            brokerKey,
+            accountId,
+            orderId,
+            expirySeconds,
+            expiresAt,
+            observedAt: nowIso,
+            partialFill: partialFillEvidence,
+            protectionPlan: protectionCleanup.protectionPlan ?? execution.protectionPlan,
+          }),
+        },
+      });
       if (partialFillEvidence) {
-        return {
+        const nextExecution: SuggestedTradeExecutionLink = {
           ...execution,
           orderStatus: 'PARTIALLY_FILLED',
           executionState: 'filled',
@@ -8218,6 +8248,7 @@ export class SuggestedTradesService {
           remainingQuantity: 0,
           note: this.appendExecutionNote(execution.note, expiryMessage),
         };
+        return this.markDeltaPartialFillProtectionReviewRequired(nextExecution, nowIso);
       }
 
       return {
@@ -8253,8 +8284,35 @@ export class SuggestedTradesService {
               adapter,
               nowIso,
             });
+        await this.recordLiveLimitEntryExpirySubmissionEvent({
+          userId,
+          tradeId: trade.id,
+          brokerKey,
+          accountId,
+          brokerOrderId: orderId,
+          event: {
+            type: partialFillEvidence
+              ? 'live_auto_limit_entry_remainder_already_terminal'
+              : 'live_auto_limit_entry_expiry_already_terminal',
+            message: `${expiryMessage} ${terminalMessage}`,
+            details: this.buildLiveLimitEntryExpiryLifecycleDetails({
+              trade,
+              execution,
+              brokerKey,
+              accountId,
+              orderId,
+              expirySeconds,
+              expiresAt,
+              observedAt: nowIso,
+              partialFill: partialFillEvidence,
+              protectionPlan: protectionCleanup.protectionPlan ?? execution.protectionPlan,
+              brokerMessage: message,
+              alreadyTerminal: true,
+            }),
+          },
+        });
         if (partialFillEvidence) {
-          return {
+          const nextExecution: SuggestedTradeExecutionLink = {
             ...execution,
             orderStatus: 'PARTIALLY_FILLED',
             executionState: 'filled',
@@ -8265,6 +8323,7 @@ export class SuggestedTradesService {
               terminalMessage
             ),
           };
+          return this.markDeltaPartialFillProtectionReviewRequired(nextExecution, nowIso);
         }
 
         return {
@@ -8289,6 +8348,32 @@ export class SuggestedTradesService {
           ),
         };
       }
+      await this.recordLiveLimitEntryExpirySubmissionEvent({
+        userId,
+        tradeId: trade.id,
+        brokerKey,
+        accountId,
+        brokerOrderId: orderId,
+        event: {
+          type: partialFillEvidence
+            ? 'live_auto_limit_entry_remainder_cancel_failed'
+            : 'live_auto_limit_entry_expiry_cancel_failed',
+          message: `${expiryMessage} Broker cancel failed: ${message}`,
+          details: this.buildLiveLimitEntryExpiryLifecycleDetails({
+            trade,
+            execution,
+            brokerKey,
+            accountId,
+            orderId,
+            expirySeconds,
+            expiresAt,
+            observedAt: nowIso,
+            partialFill: partialFillEvidence,
+            protectionPlan: execution.protectionPlan,
+            brokerMessage: message,
+          }),
+        },
+      });
       return {
         ...execution,
         note: this.appendExecutionNote(
@@ -8296,6 +8381,123 @@ export class SuggestedTradesService {
           `${expiryMessage} Broker cancel failed: ${message}`
         ),
       };
+    }
+  }
+
+  private buildLiveLimitEntryExpiryLifecycleDetails(input: {
+    trade: SuggestedTrade;
+    execution: SuggestedTradeExecutionLink;
+    brokerKey: string;
+    accountId: string;
+    orderId: string;
+    expirySeconds: number;
+    expiresAt: Date;
+    observedAt: string;
+    partialFill: boolean;
+    protectionPlan?: Record<string, unknown> | null;
+    brokerMessage?: string | null;
+    alreadyTerminal?: boolean;
+  }): Record<string, unknown> {
+    const protectionPlan = this.readRecordValue(input.protectionPlan) ?? {};
+    const readStringList = (value: unknown): string[] =>
+      (this.readArrayValue(value) ?? [])
+        .map((item) => this.readStringValue(item))
+        .filter((item): item is string => Boolean(item));
+
+    return {
+      suggestedTradeId: input.trade.id,
+      symbol: input.trade.symbol,
+      side: input.trade.side,
+      timeframe: input.trade.timeframe,
+      brokerKey: input.brokerKey,
+      accountId: input.accountId,
+      brokerOrderId: input.orderId,
+      expirySeconds: input.expirySeconds,
+      expiresAt: input.expiresAt.toISOString(),
+      observedAt: input.observedAt,
+      partialFill: input.partialFill,
+      orderStatus: this.normalizeOrderStatus(input.execution.orderStatus),
+      executionState: this.readStringValue(input.execution.executionState) ?? null,
+      filledQuantity: this.readNumberValue(input.execution.filledQuantity),
+      remainingQuantity: this.readNumberValue(input.execution.remainingQuantity),
+      siblingProtectionCancelOrderIds: readStringList(
+        protectionPlan.siblingProtectionCancelOrderIds
+      ),
+      siblingProtectionCancelledOrderIds: readStringList(
+        protectionPlan.siblingProtectionCancelledOrderIds
+      ),
+      siblingProtectionAlreadyTerminalOrderIds: readStringList(
+        protectionPlan.siblingProtectionAlreadyTerminalOrderIds
+      ),
+      siblingProtectionCancelFailures: readStringList(
+        protectionPlan.siblingProtectionCancelFailures
+      ),
+      ...(input.brokerMessage ? { brokerMessage: input.brokerMessage } : {}),
+      ...(input.alreadyTerminal ? { alreadyTerminal: true } : {}),
+    };
+  }
+
+  private markDeltaPartialFillProtectionReviewRequired(
+    execution: SuggestedTradeExecutionLink,
+    nowIso: string
+  ): SuggestedTradeExecutionLink {
+    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
+    if (brokerKey !== 'delta_exchange' || !this.isClearedPartialFillEntryRemainder(execution)) {
+      return execution;
+    }
+
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    return {
+      ...execution,
+      protectionState: 'pending',
+      protectionAttachedAt: null,
+      protectionCheckedAt: nowIso,
+      protectionLastError: null,
+      protectionPlan: {
+        ...plan,
+        partialEntryRemainderCancelledAt: nowIso,
+        partialEntryProtectionReviewRequired: true,
+        partialEntryFilledQuantity: this.readNumberValue(execution.filledQuantity),
+        partialEntryOriginalQuantity: this.readNumberValue(execution.quantity),
+      },
+      note: this.appendExecutionNote(
+        execution.note,
+        'Delta partial entry remainder was cancelled; native SL/TP protection must be revalidated against the filled position size.'
+      ),
+    };
+  }
+
+  private async recordLiveLimitEntryExpirySubmissionEvent(input: {
+    userId: string;
+    tradeId: string;
+    brokerKey: string;
+    accountId: string;
+    brokerOrderId: string;
+    event: OrderSubmissionLifecycleEvent;
+  }): Promise<void> {
+    try {
+      const repository = this.orderSubmissionRequestRepository;
+      if (
+        !repository?.findLatestBySuggestedTradeAndBrokerOrder ||
+        !repository.recordLifecycleEvent
+      ) {
+        return;
+      }
+
+      const submission = await repository.findLatestBySuggestedTradeAndBrokerOrder({
+        userId: input.userId,
+        suggestedTradeId: input.tradeId,
+        brokerKey: input.brokerKey,
+        accountId: input.accountId,
+        brokerOrderId: input.brokerOrderId,
+      });
+      if (!submission) {
+        return;
+      }
+
+      await repository.recordLifecycleEvent(submission, input.event);
+    } catch {
+      // Cancellation state must still persist even if the audit ledger is unavailable.
     }
   }
 
@@ -9870,6 +10072,23 @@ export class SuggestedTradesService {
       position
     );
     if (mismatchReason) {
+      if (this.isClearedPartialFillEntryRemainder(execution) && prices) {
+        return this.remediateDeltaLiveProtection({
+          userId,
+          trade,
+          execution: {
+            ...execution,
+            protectionState: 'pending',
+            protectionAttachedAt: null,
+            protectionLastError: mismatchReason,
+          },
+          position,
+          prices,
+          nowIso,
+          brokerKey,
+          accountId,
+        });
+      }
       return this.markProtectionManualUnlinked(execution, nowIso, mismatchReason);
     }
 

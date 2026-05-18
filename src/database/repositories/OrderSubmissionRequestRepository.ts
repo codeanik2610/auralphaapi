@@ -62,6 +62,14 @@ export interface OrderSubmissionOrderIdCandidatesQuery {
   brokerOrderIds: string[];
 }
 
+export interface OrderSubmissionSuggestedTradeBrokerOrderQuery {
+  userId: string;
+  suggestedTradeId: string;
+  brokerKey: string;
+  accountId: string;
+  brokerOrderId: string;
+}
+
 @Service()
 export class OrderSubmissionRequestRepository {
   private get repository(): Repository<OrderSubmissionRequest> {
@@ -204,6 +212,30 @@ export class OrderSubmissionRequestRepository {
       })
       .orderBy('submission.updatedAt', 'ASC')
       .getMany();
+  }
+
+  async findLatestBySuggestedTradeAndBrokerOrder(
+    query: OrderSubmissionSuggestedTradeBrokerOrderQuery
+  ): Promise<OrderSubmissionRequest | null> {
+    const suggestedTradeId = this.normalizeOptionalString(query.suggestedTradeId);
+    const brokerOrderId = this.normalizeOptionalString(query.brokerOrderId);
+    if (!suggestedTradeId || !brokerOrderId) {
+      return null;
+    }
+
+    return this.repository
+      .createQueryBuilder('submission')
+      .where('submission.userId = :userId', { userId: query.userId })
+      .andWhere('submission.suggestedTradeId = :suggestedTradeId', { suggestedTradeId })
+      .andWhere('LOWER(COALESCE(submission.brokerKey, \'\')) = :brokerKey', {
+        brokerKey: query.brokerKey.toLowerCase(),
+      })
+      .andWhere('submission.accountId = :accountId', { accountId: query.accountId })
+      .andWhere('submission.brokerOrderId = :brokerOrderId', { brokerOrderId })
+      .andWhere('submission.status = :status', { status: 'completed' })
+      .orderBy('submission.createdAt', 'DESC')
+      .addOrderBy('submission.id', 'DESC')
+      .getOne();
   }
 
   async createInProgress(

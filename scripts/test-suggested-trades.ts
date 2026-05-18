@@ -4997,6 +4997,11 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
   let savedExecutionPayload: Record<string, unknown> | null = null;
   const cancelledOrders: Array<{ orderId: string; context: Record<string, unknown> | undefined }> =
     [];
+  const lifecycleEvents: Array<{
+    requestId: string;
+    query: Record<string, unknown>;
+    event: Record<string, unknown>;
+  }> = [];
 
   const trade = {
     id: 'st-limit-expiry',
@@ -5109,6 +5114,21 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
       };
     },
   };
+  service.orderSubmissionRequestRepository = {
+    async findLatestBySuggestedTradeAndBrokerOrder(query: Record<string, unknown>) {
+      return {
+        id: `submission-${String(query.brokerOrderId || '')}`,
+        query,
+      };
+    },
+    async recordLifecycleEvent(
+      request: { id: string; query: Record<string, unknown> },
+      event: Record<string, unknown>
+    ) {
+      lifecycleEvents.push({ requestId: request.id, query: request.query, event });
+      return request;
+    },
+  };
 
   const refreshed = await service.refreshExecutionOutcomes('user-1', [trade]);
 
@@ -5129,9 +5149,16 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     String(savedExecutionPayload?.['note'] || ''),
     /Limit entry order expired after 15m for 5m/
   );
+  assert.equal(lifecycleEvents.length, 1);
+  assert.equal(
+    lifecycleEvents[0]?.event.type,
+    'live_auto_limit_entry_expiry_cancel_requested'
+  );
+  assert.equal(lifecycleEvents[0]?.query.brokerOrderId, 'ord-limit-1');
 
   savedExecutionPayload = null;
   cancelledOrders.length = 0;
+  lifecycleEvents.length = 0;
 
   const deltaLimitTrade = {
     ...trade,
@@ -5207,9 +5234,26 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
       ?.siblingProtectionCancelledOrderIds,
     ['delta-sl-1', 'delta-tp-1']
   );
+  assert.equal(lifecycleEvents.length, 1);
+  assert.equal(
+    lifecycleEvents[0]?.event.type,
+    'live_auto_limit_entry_expiry_cancel_requested'
+  );
+  assert.equal(lifecycleEvents[0]?.requestId, 'submission-delta-entry-1');
+  assert.deepEqual(
+    (lifecycleEvents[0]?.event.details as Record<string, unknown>)
+      ?.siblingProtectionCancelOrderIds,
+    ['delta-sl-1', 'delta-tp-1']
+  );
+  assert.deepEqual(
+    (lifecycleEvents[0]?.event.details as Record<string, unknown>)
+      ?.siblingProtectionCancelledOrderIds,
+    ['delta-sl-1', 'delta-tp-1']
+  );
 
   savedExecutionPayload = null;
   cancelledOrders.length = 0;
+  lifecycleEvents.length = 0;
 
   const terminalDeltaLimitTrade = {
     ...trade,
@@ -5691,6 +5735,213 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     ).length,
     1
   );
+
+  savedExecutionPayload = null;
+  cancelledOrders.length = 0;
+  lifecycleEvents.length = 0;
+  const deltaPartialCancelledOrders: Array<{
+    orderId: string;
+    context: Record<string, unknown> | undefined;
+  }> = [];
+  const deltaPartialReplacementOrders: Array<{
+    assetId: string;
+    body: Record<string, unknown>;
+    context: Record<string, unknown> | undefined;
+  }> = [];
+  const deltaPartialFillTrade = {
+    ...staleClosedPositionTrade,
+    id: 'st-delta-limit-expiry-partial-fill-replacement',
+    symbol: 'BTCUSDT',
+    side: 'BUY',
+    dedupeKey: 'dedupe-delta-limit-expiry-partial-fill-replacement',
+    executionRecord: null,
+    meta: {
+      execution: {
+        executionMode: 'live',
+        orderId: 'delta-partial-entry-remainder',
+        brokerKey: 'delta_exchange',
+        accountId: 'acc-1',
+        executionState: 'filled',
+        orderStatus: 'PARTIAL_FILLED',
+        orderType: 'limit',
+        linkedAt: '2026-04-04T10:01:00.000Z',
+        submittedAt: '2026-04-04T10:01:00.000Z',
+        filledAt: '2026-04-04T10:04:00.000Z',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitPrice: '108',
+        quantity: 118,
+        filledQuantity: 25,
+        remainingQuantity: 93,
+        positionId: 'delta-partial-position',
+        positionStatus: 'OPEN',
+        positionOpenedAt: '2026-04-04T10:04:00.000Z',
+        protectionState: 'attached',
+        protectionPlan: {
+          brokerKey: 'delta_exchange',
+          accountId: 'acc-1',
+          orderId: 'delta-partial-entry-remainder',
+          stopLossOrderId: 'delta-old-sl',
+          takeProfitOrderId: 'delta-old-tp',
+        },
+        note: 'Delta partial fill has full-size native protection before remainder cancel.',
+      },
+    },
+  };
+
+  service.suggestedTradeRepository = {
+    async getLinkedOrderSnapshot() {
+      return {
+        orderStatus: 'PARTIAL_FILLED',
+        statusRank: 2,
+        lastSeenAt: '2026-04-04T10:20:00.000Z',
+        payload: {
+          created_at: '2026-04-04T10:01:00.000Z',
+          updated_at: '2026-04-04T10:20:00.000Z',
+          filled_quantity: 25,
+          remaining_quantity: 93,
+        },
+      };
+    },
+    async getLinkedPositionSnapshots() {
+      return [
+        {
+          externalId: 'delta-partial-position',
+          status: 'OPEN',
+          statusRank: 1,
+          firstSeenAt: '2026-04-04T10:04:00.000Z',
+          lastSeenAt: '2026-04-04T10:20:00.000Z',
+          payload: {
+            status: 'open',
+            side: 'long',
+            product_symbol: 'BTCUSD',
+            created_at: '2026-04-04T10:04:00.000Z',
+            entry_price: 100,
+            mark_price: 100,
+            quantity_contracts: 25,
+          },
+        },
+      ];
+    },
+    async saveSuggestedTrade(item: Record<string, unknown>) {
+      return {
+        ...item,
+        updatedAt: new Date('2026-04-04T10:20:00.000Z'),
+      };
+    },
+    async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+      savedExecutionPayload = { ...payload };
+      return {
+        ...payload,
+        createdAt: new Date('2026-04-04T10:20:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:20:00.000Z'),
+      };
+    },
+  };
+  service.resolveLiveProtectionOrderContext = async () => ({
+    stopLossOrderId: 'delta-old-sl',
+    takeProfitOrderId: 'delta-old-tp',
+    stopLossStatus: 'PENDING',
+    takeProfitStatus: 'PENDING',
+    activeOrderIds: ['delta-old-sl', 'delta-old-tp'],
+    orderDetails: {
+      'delta-old-sl': {
+        status: 'PENDING',
+        quantity: 118,
+        filledQuantity: 0,
+        remainingQuantity: 118,
+      },
+      'delta-old-tp': {
+        status: 'PENDING',
+        quantity: 118,
+        filledQuantity: 0,
+        remainingQuantity: 118,
+      },
+    },
+  });
+  service.resolveLiveAutoAssetRoute = async () => ({
+    assetId: 'delta-btc-asset',
+    requestedSymbol: 'BTCUSDT',
+    brokerSymbol: 'BTCUSD',
+    candidateSymbols: ['BTCUSDT', 'BTCUSD'],
+    resolvedVia: 'catalog_equivalent',
+  });
+  service.resolveActiveDeltaProtectionOrdersForSymbol = async () => ({
+    stopLossOrderIds: ['delta-old-sl'],
+    takeProfitOrderIds: ['delta-old-tp'],
+    unclassifiedOrderIds: [],
+    activeOrderIds: ['delta-old-sl', 'delta-old-tp'],
+    orderDetails: {
+      'delta-old-sl': { status: 'PENDING', quantity: 118 },
+      'delta-old-tp': { status: 'PENDING', quantity: 118 },
+    },
+  });
+  service.brokerRuntimeRegistry = {
+    supportsOrdersAdapter() {
+      return true;
+    },
+    getOrdersAdapter() {
+      return {
+        async cancelOrder(orderId: string, context?: Record<string, unknown>) {
+          deltaPartialCancelledOrders.push({ orderId, context });
+          return { success: true };
+        },
+        async createLiveAutoProtectiveOrdersForPosition(
+          assetId: string,
+          body: Record<string, unknown>,
+          context?: Record<string, unknown>
+        ) {
+          deltaPartialReplacementOrders.push({ assetId, body, context });
+          return {
+            stop_loss_order_id: 'delta-new-sl',
+            take_profit_order_id: 'delta-new-tp',
+          };
+        },
+      };
+    },
+  };
+
+  const refreshedDeltaPartialFillTrade = await service.refreshExecutionOutcomes('user-1', [
+    deltaPartialFillTrade,
+  ]);
+
+  assert.equal(refreshedDeltaPartialFillTrade, 1);
+  assert.deepEqual(
+    deltaPartialCancelledOrders.map((item) => item.orderId),
+    ['delta-partial-entry-remainder', 'delta-old-sl', 'delta-old-tp']
+  );
+  assert.equal(deltaPartialReplacementOrders.length, 1);
+  assert.equal(deltaPartialReplacementOrders[0]?.body.size, 25);
+  assert.equal(savedExecutionPayload?.['executionState'], 'working');
+  assert.equal(savedExecutionPayload?.['orderStatus'], 'PARTIALLY_FILLED');
+  assert.equal(savedExecutionPayload?.['remainingQuantity'], 0);
+  assert.equal(savedExecutionPayload?.['positionId'], 'delta-partial-position');
+  assert.equal(savedExecutionPayload?.['protectionState'], 'attaching');
+  assert.equal(
+    (savedExecutionPayload?.['protectionPlan'] as Record<string, unknown>)?.stopLossOrderId,
+    'delta-new-sl'
+  );
+  assert.deepEqual(
+    (savedExecutionPayload?.['protectionPlan'] as Record<string, unknown>)
+      ?.replacedProtectionCancelledOrderIds,
+    ['delta-old-sl', 'delta-old-tp']
+  );
+  assert.equal(
+    lifecycleEvents[lifecycleEvents.length - 1]?.event.type,
+    'live_auto_limit_entry_remainder_cancel_requested'
+  );
+  assert.equal(
+    (lifecycleEvents[lifecycleEvents.length - 1]?.event.details as Record<string, unknown>)
+      ?.partialFill,
+    true
+  );
+
+  service.resolveLiveProtectionOrderContext = undefined;
+  service.resolveLiveAutoAssetRoute = undefined;
+  service.resolveActiveDeltaProtectionOrdersForSymbol = undefined;
+  savedExecutionPayload = null;
+  cancelledOrders.length = 0;
+  lifecycleEvents.length = 0;
 
   const terminalCancelTrade = {
     ...staleClosedPositionTrade,
@@ -6455,6 +6706,163 @@ async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promi
     assert.equal(
       (partialFillExecution.protectionPlan as Record<string, unknown>).stopLossOrderId,
       'delta-partial-sl'
+    );
+  }
+
+  {
+    const cancelledProtectionOrders: Array<{ orderId: string; context?: Record<string, unknown> }> =
+      [];
+    const replacementOrders: Array<{
+      assetId: string;
+      body: Record<string, unknown>;
+      context: Record<string, unknown> | undefined;
+    }> = [];
+
+    const partialReplacementExecution = await remediateDeltaLiveProtection({
+      userId: 'user-1',
+      trade: {
+        id: 'st-delta-partial-replace-oversized',
+        symbol: 'GALAUSDT',
+        side: 'BUY',
+        timeframe: '5m',
+      },
+      execution: {
+        orderId: 'delta-partial-entry-replace',
+        orderStatus: 'PARTIALLY_FILLED',
+        entryPrice: '0.0036',
+        quantity: 118,
+        filledQuantity: 25,
+        remainingQuantity: 0,
+        canceledAt: '2026-05-10T00:01:00.000Z',
+        protectionState: 'attaching',
+        protectionAttempts: 1,
+        protectionPlan: {
+          stopLossOrderId: 'delta-old-sl',
+          takeProfitOrderId: 'delta-old-tp',
+        },
+      } as any,
+      position: {
+        externalId: 'delta-partial-position-replace',
+        payload: {
+          entry_price: '0.0036',
+          quantity_contracts: '25',
+          mark_price: '0.00361',
+        },
+      },
+      prices: {
+        requestedEntryPrice: 0.0036,
+        stopLossPrice: 0.0035,
+        takeProfitPrice: 0.0038,
+      },
+      nowIso: '2026-05-10T00:02:00.000Z',
+      brokerKey: 'delta_exchange',
+      accountId: 'acc-delta-1',
+      ordersAdapter: {
+        async cancelOrder(orderId: string, context?: Record<string, unknown>) {
+          cancelledProtectionOrders.push({ orderId, context });
+          return { status: 'cancelled' };
+        },
+        async createLiveAutoProtectiveOrdersForPosition(
+          assetId: string,
+          body: Record<string, unknown>,
+          context?: Record<string, unknown>
+        ) {
+          replacementOrders.push({ assetId, body, context });
+          return {
+            stop_loss_order_id: 'delta-new-sl',
+            take_profit_order_id: 'delta-new-tp',
+          };
+        },
+      },
+      protectionRepairEnabled: true,
+      resolveLiveProtectionOrderContext: async () => ({
+        stopLossOrderId: 'delta-old-sl',
+        takeProfitOrderId: 'delta-old-tp',
+        stopLossStatus: 'PENDING',
+        takeProfitStatus: 'PENDING',
+        activeOrderIds: ['delta-old-sl', 'delta-old-tp'],
+        orderDetails: {
+          'delta-old-sl': {
+            status: 'PENDING',
+            quantity: 118,
+            filledQuantity: 0,
+            remainingQuantity: 118,
+          },
+          'delta-old-tp': {
+            status: 'PENDING',
+            quantity: 118,
+            filledQuantity: 0,
+            remainingQuantity: 118,
+          },
+        },
+      }),
+      hasUsableProtectionContext: (context) => {
+        const slSize = context.orderDetails?.[String(context.stopLossOrderId)]?.quantity;
+        const tpSize = context.orderDetails?.[String(context.takeProfitOrderId)]?.quantity;
+        return slSize === 25 && tpSize === 25;
+      },
+      resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
+      resolvePositionCurrentPrice: (payload) => Number(payload.mark_price),
+      deriveScaledProtectionPrice: (
+        _actualEntryPrice,
+        _requestedEntryPrice,
+        requestedTargetPrice
+      ) => String(requestedTargetPrice),
+      resolveLiveAutoAssetRoute: async () => ({
+        assetId: 'delta-gala-asset',
+        brokerSymbol: 'GALAUSD',
+        candidateSymbols: ['GALAUSDT'],
+      }),
+      resolveActiveProtectionOrdersForSymbol: async () => ({
+        stopLossOrderIds: ['delta-old-sl'],
+        takeProfitOrderIds: ['delta-old-tp'],
+        unclassifiedOrderIds: [],
+        activeOrderIds: ['delta-old-sl', 'delta-old-tp'],
+        orderDetails: {
+          'delta-old-sl': { status: 'PENDING', quantity: 118 },
+          'delta-old-tp': { status: 'PENDING', quantity: 118 },
+        },
+      }),
+      unwrapOrderPlacementResponse: (response) => response as Record<string, unknown>,
+      markProtectionAttached: () => {
+        throw new Error('Oversized Delta partial-fill protection should be replaced');
+      },
+      markProtectionAttaching: (trade, execution, nowIso, note, planUpdate, attempted) =>
+        ({
+          ...execution,
+          protectionState: 'attaching',
+          protectionCheckedAt: nowIso,
+          protectionAttempts: Number(execution.protectionAttempts ?? 0) + (attempted ? 1 : 0),
+          note,
+          protectionPlan: {
+            ...(execution.protectionPlan ?? {}),
+            ...planUpdate,
+          },
+        }) as any,
+      markProtectionManualUnlinked: () => {
+        throw new Error('Oversized Delta partial-fill protection should not stay manual');
+      },
+      markProtectionFailed: () => {
+        throw new Error('Oversized Delta partial-fill protection should be replaceable');
+      },
+    });
+
+    assert.deepEqual(
+      cancelledProtectionOrders.map((item) => item.orderId),
+      ['delta-old-sl', 'delta-old-tp']
+    );
+    assert.equal(replacementOrders.length, 1);
+    assert.equal(replacementOrders[0]?.body.size, 25);
+    assert.equal(partialReplacementExecution.protectionState, 'attaching');
+    assert.equal(partialReplacementExecution.protectionAttempts, 2);
+    assert.equal(
+      (partialReplacementExecution.protectionPlan as Record<string, unknown>).stopLossOrderId,
+      'delta-new-sl'
+    );
+    assert.deepEqual(
+      (partialReplacementExecution.protectionPlan as Record<string, unknown>)
+        .replacedProtectionCancelledOrderIds,
+      ['delta-old-sl', 'delta-old-tp']
     );
   }
 
