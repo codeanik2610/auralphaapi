@@ -155,6 +155,7 @@ interface ResolvedTradeSuggestionExecutionPolicy {
   riskPercent: number | null;
   leverage: number | null;
   reduceOnly: boolean;
+  deltaProtectionMode: string | null;
   maxOrdersPerRun: number;
   maxOrdersPerDay: number;
   maxConcurrentOpenTrades: number;
@@ -330,6 +331,7 @@ interface PreparedLiveAutoRoute {
   normalizedStopLossPrice: number;
   normalizedTakeProfitPrice: number;
   normalizedSizingNote: string | null;
+  deltaProtectionMode: string | null;
   policyLeverageNote: string;
   preTradeCheckId: string | null;
 }
@@ -3842,6 +3844,8 @@ export class SuggestedTradesService {
         normalizedStopLossPrice: normalizedSizing.stopLossPrice,
         normalizedTakeProfitPrice: normalizedSizing.takeProfitPrice,
         normalizedSizingNote: normalizedSizing.auditNote,
+        deltaProtectionMode:
+          brokerKey === 'delta_exchange' ? input.executionPolicy.deltaProtectionMode : null,
         policyLeverageNote: `Using broker policy minimum leverage ${
           this.formatNumericString(leverage) || leverage
         }x.`,
@@ -4005,6 +4009,10 @@ export class SuggestedTradesService {
       stoploss_price: prepared.normalizedStopLossPrice,
       takeprofit_price: prepared.normalizedTakeProfitPrice,
       reduce_only: prepared.requestOrder.reduceOnly === true,
+      delta_protection_mode:
+        prepared.brokerKey === 'delta_exchange'
+          ? (prepared.deltaProtectionMode ?? undefined)
+          : undefined,
     };
   }
 
@@ -4026,12 +4034,24 @@ export class SuggestedTradesService {
       this.readStringValue(input.createdOrder.order_status) ??
       null;
     const protectionStatus = this.readStringValue(input.createdOrder.protection_status);
+    const protectionMode =
+      this.readStringValue(input.createdOrder.protection_mode) ??
+      this.readStringValue(input.createdOrder.delta_protection_mode);
+    const bracketStatus = this.readStringValue(input.createdOrder.bracket_status);
     const stopLossOrderId = this.readStringValue(input.createdOrder.stop_loss_order_id);
     const takeProfitOrderId = this.readStringValue(input.createdOrder.take_profit_order_id);
     const deltaLimitProtectionProvisional = this.isDeltaLimitEntryProtectionProvisional(
       input.prepared.brokerKey,
       input.prepared.orderType
     );
+    const deltaNativeBracketPending =
+      input.prepared.brokerKey === 'delta_exchange' &&
+      protectionMode === 'native_bracket' &&
+      ['pending_confirmation', 'attaching', 'submitted'].includes(
+        String(protectionStatus || bracketStatus || '')
+          .trim()
+          .toLowerCase()
+      );
     let protectionAttached = protectionStatus === 'attached' && !deltaLimitProtectionProvisional;
     let protectionClosedPosition = false;
     let protectionAttachmentNote: string | null = null;
@@ -4048,6 +4068,10 @@ export class SuggestedTradesService {
           ? ` (SL ${stopLossOrderId ?? 'unknown'}, TP ${takeProfitOrderId ?? 'unknown'})`
           : ''
       }, awaiting entry fill and active order snapshot verification.`;
+    }
+    if (deltaNativeBracketPending) {
+      protectionNote =
+        ' Delta native bracket submitted; awaiting entry fill and active bracket protection snapshot verification.';
     }
 
     if (!createdOrderId) {
@@ -4087,6 +4111,7 @@ export class SuggestedTradesService {
       brokerKey: input.prepared.brokerKey,
       protectionAttached,
       deltaLimitProtectionProvisional,
+      deltaNativeBracketPending,
       needsPostFillProtection,
       protectionAttachmentNote,
       protectionClosedPosition,
@@ -4152,6 +4177,22 @@ export class SuggestedTradesService {
         brokerKey: input.prepared.brokerKey,
         accountId: input.prepared.accountId,
         orderId: createdOrderId,
+        ...(protectionMode ? { protectionMode } : {}),
+        ...(bracketStatus ? { bracketStatus } : {}),
+        ...(this.readStringValue(input.createdOrder.bracket_stop_loss_price)
+          ? {
+              bracketStopLossPrice: this.readStringValue(
+                input.createdOrder.bracket_stop_loss_price
+              ),
+            }
+          : {}),
+        ...(this.readStringValue(input.createdOrder.bracket_take_profit_price)
+          ? {
+              bracketTakeProfitPrice: this.readStringValue(
+                input.createdOrder.bracket_take_profit_price
+              ),
+            }
+          : {}),
         ...(stopLossOrderId ? { stopLossOrderId } : {}),
         ...(takeProfitOrderId ? { takeProfitOrderId } : {}),
       },
@@ -4214,6 +4255,7 @@ export class SuggestedTradesService {
     brokerKey: string;
     protectionAttached: boolean;
     deltaLimitProtectionProvisional: boolean;
+    deltaNativeBracketPending: boolean;
     needsPostFillProtection: boolean;
     protectionAttachmentNote: string | null;
     protectionClosedPosition?: boolean;
@@ -4247,6 +4289,19 @@ export class SuggestedTradesService {
       return {
         protectionState: input.fallbackProtectionState ?? undefined,
         protectionLastError: input.fallbackProtectionLastError,
+      };
+    }
+
+    if (input.deltaNativeBracketPending) {
+      const note =
+        input.protectionAttachmentNote ??
+        'Delta native bracket was submitted; waiting for entry fill and active bracket protection snapshots.';
+      return {
+        protectionState: 'waiting_for_fill',
+        protectionLastError: note,
+        routeFailureClassification: 'order_created_protection_unresolved',
+        routeFailureMessage: note,
+        routeNote: 'Order created; Delta native bracket protection must be reconciled after fill.',
       };
     }
 
@@ -5428,6 +5483,9 @@ export class SuggestedTradesService {
       stopLossPrice: this.formatNumericString(prepared.normalizedStopLossPrice),
       takeProfitPrice: this.formatNumericString(prepared.normalizedTakeProfitPrice),
       reduceOnly: prepared.requestOrder.reduceOnly === true,
+      ...(prepared.deltaProtectionMode
+        ? { deltaProtectionMode: prepared.deltaProtectionMode }
+        : {}),
     };
   }
 
@@ -5438,6 +5496,10 @@ export class SuggestedTradesService {
       orderId: this.readStringValue(response.order_id) ?? this.readStringValue(response.orderId),
       status: this.readStringValue(response.status) ?? this.readStringValue(response.order_status),
       protectionStatus: this.readStringValue(response.protection_status),
+      protectionMode:
+        this.readStringValue(response.protection_mode) ??
+        this.readStringValue(response.delta_protection_mode),
+      bracketStatus: this.readStringValue(response.bracket_status),
       stopLossOrderId: this.readStringValue(response.stop_loss_order_id),
       takeProfitOrderId: this.readStringValue(response.take_profit_order_id),
     };
@@ -6425,6 +6487,7 @@ export class SuggestedTradesService {
       riskPercent: this.readNumberValue(orderTemplate.riskPercent),
       leverage: this.readNumberValue(orderTemplate.leverage),
       reduceOnly: this.readBooleanValue(orderTemplate.reduceOnly) ?? false,
+      deltaProtectionMode: this.readStringValue(orderTemplate.deltaProtectionMode),
       maxOrdersPerRun: Math.max(
         TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.min,
         Math.floor(
@@ -8808,6 +8871,137 @@ export class SuggestedTradesService {
       );
     }
 
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const protectionMode = this.readStringValue(plan.protectionMode);
+    if (brokerKey === 'delta_exchange' && protectionMode === 'native_bracket') {
+      const ordersAdapter = this.brokerRuntimeRegistry?.getOrdersAdapter?.(brokerKey) as {
+        updateLiveAutoBracketProtection?: (
+          assetId: string,
+          body: Record<string, unknown>,
+          context?: { userId?: string; brokerKey?: string; accountId?: string }
+        ) => Promise<unknown>;
+      };
+      if (!ordersAdapter?.updateLiveAutoBracketProtection) {
+        return this.recordTrailingStopError(
+          trade,
+          execution,
+          nowIso,
+          'Trailing SL update needs Delta native bracket amendment support.'
+        );
+      }
+      const entryOrderId = this.readStringValue(execution.orderId);
+      if (!entryOrderId) {
+        return this.recordTrailingStopError(
+          trade,
+          execution,
+          nowIso,
+          'Trailing SL update needs the Delta entry order id for native bracket amendment.'
+        );
+      }
+
+      try {
+        const route = await this.resolveLiveAutoAssetRoute(brokerKey, trade.symbol);
+        await ordersAdapter.updateLiveAutoBracketProtection(
+          route.assetId,
+          {
+            orderId: entryOrderId,
+            stopLossPrice: Number(stopLossPrice),
+            takeProfitPrice: Number(formattedTakeProfitPrice),
+          },
+          { userId, brokerKey, accountId }
+        );
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return this.recordTrailingStopError(
+          trade,
+          execution,
+          nowIso,
+          `Trailing SL update failed: ${errorMessage}`
+        );
+      }
+
+      const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
+      const history = Array.isArray(existingTrailing.history) ? existingTrailing.history : [];
+      const trailingStop = {
+        ...config,
+        originalStopLossPrice:
+          this.readNumberValue(existingTrailing.originalStopLossPrice) ?? originalStopLossPrice,
+        lastAppliedWhenProfitR: move.rule.whenProfitR,
+        lastMoveStopToR: move.lockedProfitR,
+        lastStopLossPrice: stopLossPrice,
+        lastCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
+        lastProfitR: Number(move.profitR.toFixed(6)),
+        peakProfitR: Number(move.peakProfitR.toFixed(6)),
+        lastCheckedAt: nowIso,
+        lastUpdatedAt: nowIso,
+        lastError: null,
+        history: [
+          ...history.slice(-9),
+          {
+            at: nowIso,
+            whenProfitR: move.rule.whenProfitR,
+            moveStopToR: move.lockedProfitR,
+            ...(move.rule.trailDistanceR
+              ? {
+                  trailDistanceR: move.rule.trailDistanceR,
+                  peakProfitR: Number(move.peakProfitR.toFixed(6)),
+                }
+              : {}),
+            stopLossPrice,
+            currentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
+            profitR: Number(move.profitR.toFixed(6)),
+            positionId: riskOrderPositionId,
+            snapshotPositionId: position.externalId,
+            protectionMode,
+          },
+        ],
+      };
+      const note = move.rule.trailDistanceR
+        ? `Trailing SL moved to ${stopLossPrice} after observed peak ${Number(
+            move.peakProfitR.toFixed(6)
+          )}R; Delta native bracket amendment submitted.`
+        : `Trailing SL moved to ${stopLossPrice} after price crossed ${move.rule.whenProfitR}R; Delta native bracket amendment submitted.`;
+
+      await this.operationalEventService?.logActivity?.(userId, {
+        type: 'Suggested Trade',
+        title: `Trailing SL updated: ${trade.symbol}`,
+        status: 'Success',
+        route: 'Suggested Trades',
+        stream: 'Execution',
+        related: `${brokerKey} · ${accountId}`,
+        referenceId: trade.id,
+        symbol: trade.symbol,
+        description: note,
+      });
+
+      return {
+        ...execution,
+        stopLossPrice,
+        takeProfitPrice: execution.takeProfitPrice ?? formattedTakeProfitPrice,
+        protectionCheckedAt: nowIso,
+        protectionLastError: null,
+        protectionPlan: {
+          ...plan,
+          source: 'suggested_trade_execution',
+          symbol: trade.symbol,
+          side: trade.side,
+          timeframe: trade.timeframe,
+          brokerKey,
+          accountId,
+          positionId: riskOrderPositionId,
+          snapshotPositionId: position.externalId,
+          protectionMode,
+          bracketStatus: 'amendment_submitted',
+          bracketStopLossPrice: stopLossPrice,
+          bracketTakeProfitPrice: formattedTakeProfitPrice,
+          attachedStopLossPrice: stopLossPrice,
+          attachedTakeProfitPrice: formattedTakeProfitPrice,
+          trailingStop,
+        },
+        note: this.appendExecutionNote(execution.note, note),
+      };
+    }
+
     const riskOrderIds = await this.resolveTrailingRiskOrderIdsForLiveUpdate(
       userId,
       trade,
@@ -8885,7 +9079,6 @@ export class SuggestedTradesService {
       );
     }
 
-    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
     const responseRiskOrderIds =
       this.resolveTrailingRiskOrderIdsFromMutationResult(riskOrderMutationResult);
     const appliedStopLossOrderId =

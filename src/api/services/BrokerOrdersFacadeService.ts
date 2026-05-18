@@ -356,9 +356,12 @@ export class BrokerOrdersFacadeService {
     const protectiveOrderCount =
       this.toNumberOrNull(lifecycleDetails?.protectiveOrderCount) ?? protectiveOrders.length;
     const attached = brokerStatus === 'attached' || Boolean(stopLossOrderId && takeProfitOrderId);
+    const pendingProtection = ['pending_confirmation', 'attaching', 'submitted'].includes(
+      brokerStatus
+    );
     const status: OrderSubmissionProtectionState['status'] = attached
       ? 'attached'
-      : brokerStatus
+      : brokerStatus && !pendingProtection
         ? 'missing'
         : 'unknown';
 
@@ -371,7 +374,9 @@ export class BrokerOrdersFacadeService {
           ? 'Native SL/TP protection was reported by the broker response.'
           : status === 'missing'
             ? 'Native SL/TP protection was expected but the broker response did not report both protective legs.'
-            : 'Native SL/TP protection was expected but has not been verified from the broker response yet.',
+            : pendingProtection
+              ? 'Native SL/TP protection was submitted and is waiting for broker snapshot verification.'
+              : 'Native SL/TP protection was expected but has not been verified from the broker response yet.',
       brokerStatus: brokerStatus || null,
       stopLossOrderId,
       takeProfitOrderId,
@@ -3024,9 +3029,12 @@ export class BrokerOrdersFacadeService {
     }
 
     const attached = brokerStatus === 'attached' || Boolean(stopLossOrderId && takeProfitOrderId);
+    const pendingProtection = ['pending_confirmation', 'attaching', 'submitted'].includes(
+      brokerStatus
+    );
     const status: LiveOrderProtectionAudit['status'] = attached
       ? 'attached'
-      : brokerStatus
+      : brokerStatus && !pendingProtection
         ? 'missing'
         : 'unknown';
 
@@ -3043,7 +3051,9 @@ export class BrokerOrdersFacadeService {
           ? 'Broker reported native SL/TP protection for the live order.'
           : status === 'missing'
             ? 'Broker accepted the live order but did not report attached SL/TP protection.'
-            : 'Broker accepted the live order, but native SL/TP protection could not be verified from the response.',
+            : pendingProtection
+              ? 'Broker accepted the live order and submitted SL/TP protection; waiting for broker snapshot verification.'
+              : 'Broker accepted the live order, but native SL/TP protection could not be verified from the response.',
     };
   }
 

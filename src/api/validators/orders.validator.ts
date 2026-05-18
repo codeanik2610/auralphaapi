@@ -70,6 +70,8 @@ export interface CreateOrderBody {
   stoploss_price?: number;
   takeprofit_price?: number;
   reduce_only?: boolean;
+  delta_protection_mode?: string;
+  deltaProtectionMode?: string;
 }
 
 export interface ValidatedCreateOrderBody {
@@ -90,6 +92,7 @@ export interface ValidatedCreateOrderBody {
   stoploss_price: number;
   takeprofit_price: number;
   reduce_only: boolean;
+  delta_protection_mode?: string;
 }
 
 const normalizeOptional = (value?: string): string | undefined => {
@@ -99,7 +102,13 @@ const normalizeOptional = (value?: string): string | undefined => {
 
 export const validateOrdersQuery = (
   query: OrdersQuery
-): { limit: number; brokerKey?: string; accountId?: string; startDate?: string; endDate?: string } => {
+): {
+  limit: number;
+  brokerKey?: string;
+  accountId?: string;
+  startDate?: string;
+  endDate?: string;
+} => {
   const limit = query.limit !== undefined ? Number(query.limit) : 100;
 
   // Some brokers support large page sizes; internal sync paths rely on this.
@@ -189,11 +198,7 @@ export const validateOrderSubmissionAttemptsQuery = (
     limit,
     offset,
     suggestedTradeId: normalizeOptional(query.suggestedTradeId),
-    status: validateEnum(query.status, 'status', [
-      'in_progress',
-      'completed',
-      'failed',
-    ] as const),
+    status: validateEnum(query.status, 'status', ['in_progress', 'completed', 'failed'] as const),
     placementState: validateEnum(query.placementState, 'placementState', [
       'registered',
       'submitting',
@@ -289,10 +294,19 @@ export const validateCreateOrderBody = (body: CreateOrderBody): ValidatedCreateO
 
   const executionModeRaw = normalizeOptional(body.execution_mode)?.toLowerCase();
   const executionMode =
-    executionModeRaw === 'paper' ? 'paper' : executionModeRaw === 'live' || !executionModeRaw ? 'live' : null;
+    executionModeRaw === 'paper'
+      ? 'paper'
+      : executionModeRaw === 'live' || !executionModeRaw
+        ? 'live'
+        : null;
   if (!executionMode) {
     throw new BadRequestAppError('execution_mode must be either live or paper');
   }
+
+  const deltaProtectionMode = normalizeOptional(
+    body.delta_protection_mode ?? body.deltaProtectionMode
+  );
+  const suggestedTradeId = normalizeOptional(body.suggested_trade_id);
 
   return {
     brokerKey: normalizeOptional(body.brokerKey),
@@ -301,7 +315,7 @@ export const validateCreateOrderBody = (body: CreateOrderBody): ValidatedCreateO
     symbol: normalizeOptional(body.symbol)?.toUpperCase(),
     side,
     execution_mode: executionMode,
-    suggested_trade_id: normalizeOptional(body.suggested_trade_id),
+    ...(suggestedTradeId ? { suggested_trade_id: suggestedTradeId } : {}),
     leverage: body.leverage as number,
     quantity: body.quantity as number,
     order_price: body.order_price as number,
@@ -312,5 +326,6 @@ export const validateCreateOrderBody = (body: CreateOrderBody): ValidatedCreateO
     stoploss_price: body.stoploss_price as number,
     takeprofit_price: body.takeprofit_price as number,
     reduce_only: body.reduce_only,
+    ...(deltaProtectionMode ? { delta_protection_mode: deltaProtectionMode } : {}),
   };
 };

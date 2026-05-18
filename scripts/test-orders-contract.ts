@@ -103,6 +103,47 @@ async function runValidatorAssertions(): Promise<void> {
     }
   );
 
+  assert.deepEqual(
+    validateCreateOrderBody({
+      brokerKey: ' delta_exchange ',
+      accountId: ' delta-acct-1 ',
+      idempotency_key: ' live-auto-delta-bracket-1 ',
+      symbol: ' solusdt ',
+      side: 'BUY',
+      execution_mode: ' live ',
+      leverage: 3,
+      quantity: 10,
+      order_price: 155,
+      order_type: 'limit',
+      trigger_type: 'GTC',
+      is_takeprofit: false,
+      is_stoploss: false,
+      stoploss_price: 150,
+      takeprofit_price: 165,
+      reduce_only: false,
+      deltaProtectionMode: ' native_bracket ',
+    }),
+    {
+      brokerKey: 'delta_exchange',
+      accountId: 'delta-acct-1',
+      idempotency_key: 'live-auto-delta-bracket-1',
+      symbol: 'SOLUSDT',
+      side: 'long',
+      execution_mode: 'live',
+      leverage: 3,
+      quantity: 10,
+      order_price: 155,
+      order_type: 'limit',
+      trigger_type: 'GTC',
+      is_takeprofit: false,
+      is_stoploss: false,
+      stoploss_price: 150,
+      takeprofit_price: 165,
+      reduce_only: false,
+      delta_protection_mode: 'native_bracket',
+    }
+  );
+
   expectBadRequestSync(
     () =>
       validateCreateOrderBody({
@@ -494,6 +535,19 @@ async function runOrderSubmissionProtectionStateAssertions(): Promise<void> {
           },
         };
       }
+      if (submissionId === 'pending-bracket') {
+        return {
+          ...baseSubmission,
+          id: 'pending-bracket',
+          responsePayload: {
+            success: true,
+            data: {
+              protection_status: 'pending_confirmation',
+              protection_mode: 'native_bracket',
+            },
+          },
+        };
+      }
       return null;
     },
   };
@@ -515,6 +569,14 @@ async function runOrderSubmissionProtectionStateAssertions(): Promise<void> {
   assert.equal(missing.protectionState.status, 'missing');
   assert.equal(missing.operatorState.label, 'Protection missing');
   assert.equal(missing.operatorState.recommendedAction, 'verify_protection');
+
+  const pendingBracket = await service.getOrderSubmissionAttempt('user-1', 'pending-bracket');
+  assert.equal(pendingBracket.protectionState.status, 'unknown');
+  assert.equal(
+    pendingBracket.protectionState.summary,
+    'Native SL/TP protection was submitted and is waiting for broker snapshot verification.'
+  );
+  assert.equal(pendingBracket.operatorState.label, 'Protection unverified');
 }
 
 async function runOrderSubmissionProactiveSyncAssertions(): Promise<void> {

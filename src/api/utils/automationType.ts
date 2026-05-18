@@ -167,6 +167,7 @@ export const TRADE_SUGGESTION_APPROVAL_MODES = ['manual_review', 'auto_if_safe']
 export const TRADE_SUGGESTION_ROUTE_MODES = ['strategy_default', 'user_default', 'fixed'] as const;
 export const TRADE_SUGGESTION_ORDER_TYPES = ['market', 'limit'] as const;
 export const TRADE_SUGGESTION_QUANTITY_MODES = ['quantity', 'notional', 'risk_percent'] as const;
+export const TRADE_SUGGESTION_DELTA_PROTECTION_MODES = ['reduce_only', 'native_bracket'] as const;
 export const TRADE_SUGGESTION_TIME_IN_FORCE = ['GTC', 'IOC', 'FOK'] as const;
 
 export const TRADE_SUGGESTION_EXECUTION_LIMIT_RULES = {
@@ -269,6 +270,11 @@ export const normalizeTradeSuggestionExecutionPolicy = (
     TRADE_SUGGESTION_ORDER_TYPES,
     'market'
   );
+  const deltaProtectionMode = normalizeEnum(
+    readString(root.deltaProtectionMode, orderTemplate.deltaProtectionMode),
+    TRADE_SUGGESTION_DELTA_PROTECTION_MODES,
+    'reduce_only'
+  );
   const timeInForceInput = readString(orderTemplate.timeInForce);
   const quantityMode = normalizeEnum(
     readString(orderTemplate.quantityMode),
@@ -323,6 +329,7 @@ export const normalizeTradeSuggestionExecutionPolicy = (
       }),
       leverage: liveAutoLeverage,
       reduceOnly: readBoolean(orderTemplate.reduceOnly) ?? false,
+      deltaProtectionMode,
       slippageBps: normalizeNullableNumeric(readNumber(orderTemplate.slippageBps), {
         min: 0,
         integer: true,

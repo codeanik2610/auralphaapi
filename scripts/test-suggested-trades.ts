@@ -43,6 +43,7 @@ import {
   evaluateCustomRLadderTrailingStopMove,
   normalizeCustomRLadderTrailingStopConfig,
 } from '../src/api/utils/trailingStopRLadder';
+import { normalizeTradeSuggestionExecutionPolicy } from '../src/api/utils/automationType';
 import type { SuggestedTradeExecutionLink } from '../src/api/contracts/SuggestedTrade';
 import { AddSuggestedTradeExecutionRouteAttempts1800001800000 } from '../src/database/migrations_baseline/1800001800000-AddSuggestedTradeExecutionRouteAttempts';
 
@@ -86,6 +87,38 @@ function readArrayEnvOverride(name: string): string[] | null {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function runSuggestedTradeDeltaProtectionModePolicyAssertions(): void {
+  const nativeBracketPolicy = normalizeTradeSuggestionExecutionPolicy({
+    executionMode: 'live_trade_auto',
+    deltaProtectionMode: 'native_bracket',
+    liveConsent: { enabled: true },
+    orderTemplate: {
+      orderType: 'limit',
+      quantityMode: 'quantity',
+      quantity: 1,
+      leverage: 3,
+    },
+  });
+  assert.equal(
+    (nativeBracketPolicy.orderTemplate as Record<string, unknown>).deltaProtectionMode,
+    'native_bracket'
+  );
+
+  const defaultPolicy = normalizeTradeSuggestionExecutionPolicy({
+    executionMode: 'live_trade_auto',
+    orderTemplate: {
+      orderType: 'limit',
+      quantityMode: 'quantity',
+      quantity: 1,
+      leverage: 3,
+    },
+  });
+  assert.equal(
+    (defaultPolicy.orderTemplate as Record<string, unknown>).deltaProtectionMode,
+    'reduce_only'
+  );
 }
 
 async function runSuggestedTradesControllerAssertions(): Promise<void> {
@@ -11076,6 +11109,7 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
 
 async function main(): Promise<void> {
   await runCustomRLadderTrailingStopAssertions();
+  runSuggestedTradeDeltaProtectionModePolicyAssertions();
   await runSuggestedTradesControllerAssertions();
   await runSuggestedTradesOverviewControllerAssertions();
   runSuggestedTradeExecutionEntitySchemaAssertions();

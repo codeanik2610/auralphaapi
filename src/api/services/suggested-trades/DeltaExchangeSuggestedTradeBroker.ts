@@ -69,6 +69,7 @@ export interface DeltaProtectionOrdersAdapter {
       stopLossPrice: number;
       takeProfitPrice: number;
       idempotencyKey?: string;
+      deltaProtectionMode?: string | null;
     },
     context?: { userId?: string; brokerKey?: string; accountId?: string }
   ) => Promise<unknown>;
@@ -795,6 +796,9 @@ export async function remediateDeltaLiveProtection(
         entrySide,
         stopLossPrice,
         takeProfitPrice,
+        deltaProtectionMode: readStringValue(
+          readRecordValue(input.execution.protectionPlan)?.protectionMode
+        ),
         idempotencyKey: orderId
           ? `live-auto-protection:${input.trade.id}:${orderId}`
           : `live-auto-protection:${input.trade.id}`,
@@ -806,6 +810,27 @@ export async function remediateDeltaLiveProtection(
       }
     );
     const payload = input.unwrapOrderPlacementResponse(response);
+    const protectionMode =
+      readStringValue(payload.protection_mode) ?? readStringValue(payload.delta_protection_mode);
+    if (protectionMode === 'native_bracket') {
+      return input.markProtectionAttaching(
+        input.trade,
+        input.execution,
+        input.nowIso,
+        'Delta Exchange native bracket protection submitted after fill; waiting for active bracket snapshots before marking attached.',
+        {
+          positionId: input.position.externalId,
+          protectionMode,
+          bracketStatus: readStringValue(payload.bracket_status) ?? 'submitted',
+          attachedStopLossPrice: stopLossPrice,
+          attachedTakeProfitPrice: takeProfitPrice,
+          bracketStopLossPrice: readStringValue(payload.bracket_stop_loss_price) ?? stopLossPrice,
+          bracketTakeProfitPrice:
+            readStringValue(payload.bracket_take_profit_price) ?? takeProfitPrice,
+        },
+        true
+      );
+    }
     const stopLossOrderId = readStringValue(payload.stop_loss_order_id);
     const takeProfitOrderId = readStringValue(payload.take_profit_order_id);
     if (!stopLossOrderId || !takeProfitOrderId) {

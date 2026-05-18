@@ -13,6 +13,8 @@ import { BadRequestAppError } from '../../../api';
 const DELTA_CLIENT_ORDER_ID_MAX_LENGTH = 32;
 const DELTA_CLIENT_ORDER_ID_PREFIX = 'aur_';
 
+type DeltaLiveAutoProtectionMode = 'reduce_only' | 'native_bracket';
+
 interface DeltaOrderPayload {
   id?: number | string;
   product_id?: number | string;
@@ -71,6 +73,10 @@ interface DeltaProtectionPricePlan {
   takeProfitPrice: number;
   referenceEntryPrice: number;
   rebased: boolean;
+}
+
+interface DeltaBracketProtectionPayload {
+  success?: boolean;
 }
 
 interface DeltaOrderLeveragePayload {
@@ -171,12 +177,18 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       ? 'gtc'
       : this.resolveTimeInForce(body.trigger_type, orderType);
     const shouldAttachProtection = this.shouldAttachLiveAutoProtection(body);
+    const protectionMode = shouldAttachProtection
+      ? this.resolveLiveAutoProtectionMode(body.delta_protection_mode)
+      : 'reduce_only';
     if (shouldAttachProtection) {
       this.assertLiveAutoProtectivePrices(side, body);
       await this.assertLiveAutoProtectionCanBeAttached(productId, product, body, context);
     }
     const clientOrderId = this.buildClientOrderId(body.idempotency_key);
     const confirmedLeverage = await this.ensureOrderLeverageConfigured(productId, body, context);
+    const defaultProtectionPlan = shouldAttachProtection
+      ? this.createDefaultProtectionPricePlan(body)
+      : null;
     const requestPayload: Record<string, unknown> = {
       product_id: productId,
       size,
@@ -189,6 +201,12 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
 
     if (orderType === 'limit_order') {
       requestPayload.limit_price = String(body.order_price);
+    }
+    if (shouldAttachProtection && protectionMode === 'native_bracket' && defaultProtectionPlan) {
+      Object.assign(
+        requestPayload,
+        this.buildNativeBracketCreateOrderFields(defaultProtectionPlan)
+      );
     }
 
     const payload = await this.deltaHttpClient.signedPost<DeltaOrderPayload>(
@@ -204,17 +222,19 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       );
     }
     const protectionPlan = shouldAttachProtection
-      ? await this.resolveLiveAutoProtectionPricePlan(
-          primaryOrderId,
-          orderType,
-          payload,
-          side,
-          body,
-          context
-        )
+      ? protectionMode === 'native_bracket'
+        ? defaultProtectionPlan
+        : await this.resolveLiveAutoProtectionPricePlan(
+            primaryOrderId,
+            orderType,
+            payload,
+            side,
+            body,
+            context
+          )
       : null;
     let protectiveOrders: DeltaProtectiveOrderResult[] = [];
-    if (shouldAttachProtection) {
+    if (shouldAttachProtection && protectionMode === 'reduce_only') {
       try {
         protectiveOrders = await this.createLiveAutoProtectiveOrders(
           productId,
@@ -260,7 +280,25 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
         : {}),
       order_id: primaryOrderId,
       status: payload.state ?? 'open',
-      protection_status: protectiveOrders.length ? 'attached' : 'not_requested',
+      protection_status:
+        protectionMode === 'native_bracket'
+          ? 'pending_confirmation'
+          : protectiveOrders.length
+            ? 'attached'
+            : 'not_requested',
+      ...(shouldAttachProtection
+        ? {
+            protection_mode: protectionMode,
+          }
+        : {}),
+      ...(protectionMode === 'native_bracket' && protectionPlan
+        ? {
+            bracket_status: 'submitted',
+            bracket_stop_loss_price: String(protectionPlan.stopLossPrice),
+            bracket_take_profit_price: String(protectionPlan.takeProfitPrice),
+            bracket_stop_trigger_method: 'mark_price',
+          }
+        : {}),
       ...(protectiveOrders.length
         ? {
             protective_orders: protectiveOrders,
@@ -282,6 +320,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       stopLossPrice: number;
       takeProfitPrice: number;
       idempotencyKey?: string;
+      deltaProtectionMode?: string | null;
     },
     context?: BrokerOrderContext
   ): Promise<unknown> {
@@ -303,6 +342,29 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
       throw new BadRequestAppError(
         'Delta Exchange protection remediation requires stop-loss and take-profit prices'
       );
+    }
+    const protectionMode = this.resolveLiveAutoProtectionMode(body.deltaProtectionMode);
+
+    if (protectionMode === 'native_bracket') {
+      await this.createLiveAutoNativeBracketProtection(
+        productId,
+        {
+          stopLossPrice,
+          takeProfitPrice,
+          referenceEntryPrice: 0,
+          rebased: false,
+        },
+        context
+      );
+
+      return {
+        protection_status: 'pending_confirmation',
+        protection_mode: 'native_bracket',
+        bracket_status: 'submitted',
+        bracket_stop_loss_price: String(stopLossPrice),
+        bracket_take_profit_price: String(takeProfitPrice),
+        bracket_stop_trigger_method: 'mark_price',
+      };
     }
 
     const protectiveOrders = await this.createLiveAutoProtectiveOrders(
@@ -427,6 +489,34 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     );
   }
 
+  private resolveLiveAutoProtectionMode(value: unknown): DeltaLiveAutoProtectionMode {
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase();
+    if (!normalized || normalized === 'reduce_only' || normalized === 'post_fill_reduce_only') {
+      return 'reduce_only';
+    }
+    if (normalized === 'native_bracket') {
+      return 'native_bracket';
+    }
+    if (normalized === 'block_live_auto') {
+      throw new BadRequestAppError(
+        'Delta Exchange live-auto is blocked by deltaProtectionMode=block_live_auto'
+      );
+    }
+    throw new BadRequestAppError(`Unsupported Delta Exchange protection mode: ${normalized}`);
+  }
+
+  private buildNativeBracketCreateOrderFields(
+    plan: DeltaProtectionPricePlan
+  ): Record<string, unknown> {
+    return {
+      bracket_stop_loss_price: String(plan.stopLossPrice),
+      bracket_take_profit_price: String(plan.takeProfitPrice),
+      bracket_stop_trigger_method: 'mark_price',
+    };
+  }
+
   private assertLiveAutoProtectionDirection(
     entrySide: 'buy' | 'sell',
     entryPriceValue: unknown,
@@ -488,6 +578,75 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     );
 
     return [stopLoss, takeProfit];
+  }
+
+  async updateLiveAutoBracketProtection(
+    assetId: string,
+    body: {
+      orderId: string;
+      stopLossPrice: number;
+      takeProfitPrice: number;
+    },
+    context?: BrokerOrderContext
+  ): Promise<unknown> {
+    const productId = await this.resolveProductId(assetId);
+    const orderId = Number(body.orderId);
+    if (!Number.isFinite(orderId) || orderId <= 0) {
+      throw new BadRequestAppError('Delta Exchange bracket amendment requires a numeric order id');
+    }
+    const stopLossPrice = this.toNumber(body.stopLossPrice);
+    const takeProfitPrice = this.toNumber(body.takeProfitPrice);
+    if (!(stopLossPrice > 0 && takeProfitPrice > 0)) {
+      throw new BadRequestAppError(
+        'Delta Exchange bracket amendment requires stop-loss and take-profit prices'
+      );
+    }
+
+    await this.deltaHttpClient.signedPut<DeltaBracketProtectionPayload>(
+      context?.accountId,
+      '/v2/orders/bracket',
+      {
+        id: orderId,
+        product_id: productId,
+        bracket_stop_loss_price: String(stopLossPrice),
+        bracket_take_profit_price: String(takeProfitPrice),
+        bracket_stop_trigger_method: 'mark_price',
+      },
+      context?.userId
+    );
+
+    return {
+      protection_status: 'pending_confirmation',
+      protection_mode: 'native_bracket',
+      bracket_status: 'amendment_submitted',
+      bracket_stop_loss_price: String(stopLossPrice),
+      bracket_take_profit_price: String(takeProfitPrice),
+      bracket_stop_trigger_method: 'mark_price',
+    };
+  }
+
+  private async createLiveAutoNativeBracketProtection(
+    productId: number,
+    plan: DeltaProtectionPricePlan,
+    context?: BrokerOrderContext
+  ): Promise<void> {
+    await this.deltaHttpClient.signedPost<DeltaBracketProtectionPayload>(
+      context?.accountId,
+      '/v2/orders/bracket',
+      {
+        product_id: productId,
+        stop_loss_order: {
+          order_type: 'market_order',
+          stop_price: String(plan.stopLossPrice),
+        },
+        take_profit_order: {
+          order_type: 'market_order',
+          stop_price: String(plan.takeProfitPrice),
+        },
+        bracket_stop_trigger_method: 'mark_price',
+      },
+      context?.userId
+    );
   }
 
   private async assertLiveAutoProtectionCanBeAttached(
@@ -813,11 +972,7 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
   }
 
   private isPrimaryEntryOrder(body: ValidatedCreateOrderRouteBody): boolean {
-    return (
-      body.reduce_only !== true &&
-      body.is_stoploss !== true &&
-      body.is_takeprofit !== true
-    );
+    return body.reduce_only !== true && body.is_stoploss !== true && body.is_takeprofit !== true;
   }
 
   private resolveTimeInForce(

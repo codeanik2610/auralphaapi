@@ -95,6 +95,16 @@ export class DeltaExchangeHttpClient {
     return this.request<T>('POST', path, { body, credentials });
   }
 
+  async signedPut<T>(
+    accountId: string | undefined,
+    path: string,
+    body?: unknown,
+    userId?: string
+  ): Promise<T> {
+    const credentials = await this.resolveCredentials(accountId, userId);
+    return this.request<T>('PUT', path, { body, credentials });
+  }
+
   async signedDelete<T>(
     accountId: string | undefined,
     path: string,
@@ -169,7 +179,7 @@ export class DeltaExchangeHttpClient {
   }
 
   private async request<T>(
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     routePath: string,
     options: {
       query?: Record<string, string | number | boolean | undefined>;
