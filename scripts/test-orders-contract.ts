@@ -705,6 +705,43 @@ async function runOrderSubmissionProactiveSyncAssertions(): Promise<void> {
     true
   );
 
+  current = {
+    ...makeSubmission('matched-terminal'),
+    reconciliationState: 'matched',
+    brokerOrderStatus: 'OPEN',
+  };
+  snapshotLookups = 0;
+  service.ordersSnapshotSourceRepository = {
+    async findOrderByExternalId() {
+      snapshotLookups += 1;
+      return {
+        externalId: 'live-matched-terminal',
+        orderStatus: 'CANCELLED',
+        statusRank: 4,
+        firstSeenAt: new Date('2026-04-09T12:00:20.000Z'),
+        lastSeenAt: new Date('2026-04-09T12:15:30.000Z'),
+        payloadJson: {},
+      };
+    },
+  };
+
+  const matchedTerminal = await service.reconcileOrderSubmissionAttempt(
+    'user-1',
+    'matched-terminal'
+  );
+  assert.equal(matchedTerminal.decision, 'matched');
+  assert.equal(current.reconciliationState, 'matched');
+  assert.equal(current.brokerOrderStatus, 'CANCELLED');
+  assert.equal(
+    current.lifecyclePayload.some(
+      (event: Record<string, unknown>) =>
+        event.type === 'broker_order_snapshot_matched' &&
+        (event.details as Record<string, unknown> | undefined)?.orderStatus === 'CANCELLED'
+    ),
+    true
+  );
+  assert.equal(snapshotLookups, 1);
+
   current = makeSubmission('missing');
   snapshotLookups = 0;
   service.ordersSnapshotSourceRepository = {

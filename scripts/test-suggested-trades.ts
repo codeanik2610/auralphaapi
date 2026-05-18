@@ -6029,7 +6029,7 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     getOrdersAdapter() {
       return {
         async cancelOrder() {
-          throw new Error('order not found or too late to cancel');
+          throw new Error('open_order_not_found (route /v2/orders)');
         },
       };
     },
@@ -6048,6 +6048,44 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     String(savedExecutionPayload?.['note'] || ''),
     /Broker reported order already terminal during expiry cancel/
   );
+  assert.equal(lifecycleEvents.length, 1);
+  assert.equal(
+    lifecycleEvents[0]?.event.type,
+    'live_auto_limit_entry_expiry_already_terminal'
+  );
+  assert.equal(
+    (lifecycleEvents[0]?.event.details as Record<string, unknown>)?.alreadyTerminal,
+    true
+  );
+
+  const preservedAfterStaleOpenSnapshot = service.mergeExecutionOutcome(
+    {
+      executionMode: 'live',
+      orderId: 'delta-entry-after-expiry',
+      brokerKey: 'delta_exchange',
+      accountId: 'acc-1',
+      executionState: 'expired',
+      orderStatus: 'EXPIRED',
+      orderType: 'limit',
+      linkedAt: '2026-04-04T10:01:00.000Z',
+      submittedAt: '2026-04-04T10:01:00.000Z',
+      canceledAt: '2026-04-04T10:20:00.000Z',
+      filledQuantity: 0,
+      remainingQuantity: 0,
+    },
+    {
+      orderStatus: 'OPEN',
+      statusRank: 1,
+      lastSeenAt: '2026-04-04T10:21:00.000Z',
+      payload: {
+        created_at: '2026-04-04T10:01:00.000Z',
+        updated_at: '2026-04-04T10:01:00.000Z',
+        filled_quantity: 0,
+      },
+    }
+  );
+  assert.equal(preservedAfterStaleOpenSnapshot.executionState, 'expired');
+  assert.equal(preservedAfterStaleOpenSnapshot.orderStatus, 'EXPIRED');
 }
 
 async function runSuggestedTradeBrokerLiveAutoSizingHandlerAssertions(): Promise<void> {

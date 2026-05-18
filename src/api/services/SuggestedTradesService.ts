@@ -8596,6 +8596,8 @@ export class SuggestedTradesService {
     return (
       normalized.includes('terminal state') ||
       normalized.includes('too late to cancel') ||
+      normalized.includes('open_order_not_found') ||
+      normalized.includes('order_not_found') ||
       normalized.includes('not found') ||
       normalized.includes('does not exist') ||
       normalized.includes('already cancelled') ||
@@ -11418,10 +11420,10 @@ export class SuggestedTradesService {
       this.isUnfilledTerminalEntryExecution(existing) &&
       this.isActiveLimitEntryOrderStatus(normalizedStatus)
     ) {
-      const snapshotSeenMs = this.toTimestamp(snapshot.lastSeenAt);
+      const snapshotObservedMs = this.getOrderSnapshotBrokerObservedTimestamp(snapshot);
       const localTerminalMs =
-        this.toTimestamp(existing.canceledAt) ?? this.toTimestamp(existing.lastSeenAt);
-      if (localTerminalMs && (!snapshotSeenMs || snapshotSeenMs <= localTerminalMs)) {
+        this.toTimestamp(existing.canceledAt) || this.toTimestamp(existing.lastSeenAt);
+      if (localTerminalMs && (!snapshotObservedMs || snapshotObservedMs <= localTerminalMs)) {
         return {
           ...existing,
           lastSeenAt: existing.lastSeenAt ?? this.toIsoString(snapshot.lastSeenAt) ?? null,
@@ -11475,6 +11477,28 @@ export class SuggestedTradesService {
       filledQuantity,
       remainingQuantity,
     };
+  }
+
+  private getOrderSnapshotBrokerObservedTimestamp(snapshot: {
+    lastSeenAt: Date | string | null;
+    payload: Record<string, unknown> | null;
+  }): number {
+    const payload = snapshot.payload ?? {};
+    return (
+      this.toTimestamp(payload.updated_at) ||
+      this.toTimestamp(payload.updatedAt) ||
+      this.toTimestamp(payload.filled_at) ||
+      this.toTimestamp(payload.filledAt) ||
+      this.toTimestamp(payload.closed_at) ||
+      this.toTimestamp(payload.closedAt) ||
+      this.toTimestamp(payload.cancelled_at) ||
+      this.toTimestamp(payload.cancelledAt) ||
+      this.toTimestamp(payload.canceled_at) ||
+      this.toTimestamp(payload.canceledAt) ||
+      this.toTimestamp(payload.created_at) ||
+      this.toTimestamp(payload.createdAt) ||
+      this.toTimestamp(snapshot.lastSeenAt)
+    );
   }
 
   private mergePositionOutcome(

@@ -205,7 +205,7 @@ export class OrderSubmissionRequestRepository {
         placementState: 'placed',
       })
       .andWhere('submission.reconciliationState IN (:...states)', {
-        states: ['pending', 'missing'],
+        states: ['pending', 'missing', 'matched'],
       })
       .andWhere('submission.brokerOrderId IN (:...brokerOrderIds)', {
         brokerOrderIds,

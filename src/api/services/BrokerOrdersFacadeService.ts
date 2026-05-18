@@ -263,6 +263,27 @@ export class BrokerOrdersFacadeService {
     return false;
   }
 
+  private normalizeBrokerOrderStatusForComparison(value: unknown): string {
+    const normalized = String(value || '')
+      .trim()
+      .toUpperCase();
+    if (normalized === 'CANCELED') {
+      return 'CANCELLED';
+    }
+    return normalized;
+  }
+
+  private isSubmissionMatchedWithBrokerOrderStatus(
+    submission: OrderSubmissionRequest,
+    brokerOrderStatus: unknown
+  ): boolean {
+    return (
+      submission.reconciliationState === 'matched' &&
+      this.normalizeBrokerOrderStatusForComparison(submission.brokerOrderStatus) ===
+        this.normalizeBrokerOrderStatusForComparison(brokerOrderStatus)
+    );
+  }
+
   private unwrapSubmissionResponsePayload(value: unknown): Record<string, unknown> {
     const response = this.asRecord(value) || {};
     return this.asRecord(response.data) || response;
@@ -2622,7 +2643,7 @@ export class BrokerOrdersFacadeService {
       );
     }
 
-    if (!['pending', 'missing'].includes(submission.reconciliationState)) {
+    if (!['pending', 'missing', 'matched'].includes(submission.reconciliationState)) {
       return baseResult(
         'skipped',
         `Submission reconciliation state is ${submission.reconciliationState}.`
@@ -2688,7 +2709,7 @@ export class BrokerOrdersFacadeService {
 
     if (snapshot) {
       const updated =
-        currentSubmission.reconciliationState === 'matched'
+        this.isSubmissionMatchedWithBrokerOrderStatus(currentSubmission, snapshot.orderStatus)
           ? currentSubmission
           : await this.orderSubmissionRequestRepository.markReconciliationMatched(
               currentSubmission,
@@ -2740,7 +2761,10 @@ export class BrokerOrdersFacadeService {
 
       if (refreshedSnapshot) {
         const updated =
-          currentSubmission.reconciliationState === 'matched'
+          this.isSubmissionMatchedWithBrokerOrderStatus(
+            currentSubmission,
+            refreshedSnapshot.orderStatus
+          )
             ? currentSubmission
             : await this.orderSubmissionRequestRepository.markReconciliationMatched(
                 currentSubmission,

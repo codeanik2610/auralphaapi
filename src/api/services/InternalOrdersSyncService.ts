@@ -213,17 +213,30 @@ export class InternalOrdersSyncService {
       if (!snapshot) {
         continue;
       }
+      const snapshotOrderStatus = snapshot.orderStatus ?? null;
+      const isAlreadyMatched = candidate.reconciliationState === 'matched';
+      if (
+        isAlreadyMatched &&
+        this.areOrderStatusesEquivalent(candidate.brokerOrderStatus, snapshotOrderStatus)
+      ) {
+        continue;
+      }
 
       await this.orderSubmissionRequestRepository.markReconciliationMatched(candidate, {
-        brokerOrderStatus: snapshot.orderStatus ?? null,
+        brokerOrderStatus: snapshotOrderStatus,
         lifecycleEvent: {
-          type: 'broker_order_snapshot_matched',
-          message: 'Broker order was confirmed automatically after orders sync.',
+          type: isAlreadyMatched
+            ? 'broker_order_snapshot_status_synced'
+            : 'broker_order_snapshot_matched',
+          message: isAlreadyMatched
+            ? 'Broker order status was refreshed automatically after orders sync.'
+            : 'Broker order was confirmed automatically after orders sync.',
           details: {
             brokerKey: brokerKey.toLowerCase(),
             accountId,
             brokerOrderId,
-            orderStatus: snapshot.orderStatus ?? null,
+            previousOrderStatus: candidate.brokerOrderStatus ?? null,
+            orderStatus: snapshotOrderStatus,
             statusRank:
               snapshot.statusRank === undefined || snapshot.statusRank === null
                 ? null
@@ -273,6 +286,16 @@ export class InternalOrdersSyncService {
     if (['FAILED'].includes(normalized)) return 'FAILED';
 
     return normalized;
+  }
+
+  private areOrderStatusesEquivalent(
+    left: string | null | undefined,
+    right: string | null | undefined
+  ): boolean {
+    return (
+      (this.normalizeOrderStatus(left ?? null) ?? '') ===
+      (this.normalizeOrderStatus(right ?? null) ?? '')
+    );
   }
 
   private readOrderExternalId(order: Record<string, unknown>): string {

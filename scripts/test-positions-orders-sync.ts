@@ -4654,6 +4654,16 @@ async function runSourceMarkerAssertions(): Promise<void> {
     path.join(process.cwd(), 'src', 'api', 'services', 'InternalOrdersSyncService.ts'),
     'utf8'
   );
+  const orderSubmissionRequestRepositorySource = await readFile(
+    path.join(
+      process.cwd(),
+      'src',
+      'database',
+      'repositories',
+      'OrderSubmissionRequestRepository.ts'
+    ),
+    'utf8'
+  );
   const internalPositionsSyncServiceSource = await readFile(
     path.join(process.cwd(), 'src', 'api', 'services', 'InternalPositionsSyncService.ts'),
     'utf8'
@@ -4775,6 +4785,16 @@ async function runSourceMarkerAssertions(): Promise<void> {
     internalOrdersSyncServiceSource.includes('markReconciliationMatched'),
     true,
     'InternalOrdersSyncService.ts must mark matched order submissions during orders-sync reconciliation'
+  );
+  assert.equal(
+    internalOrdersSyncServiceSource.includes('broker_order_snapshot_status_synced'),
+    true,
+    'InternalOrdersSyncService.ts must sync terminal broker order status for already-matched submissions'
+  );
+  assert.equal(
+    orderSubmissionRequestRepositorySource.includes("states: ['pending', 'missing', 'matched']"),
+    true,
+    'OrderSubmissionRequestRepository.ts must include matched submissions in broker-order-id status sync candidates'
   );
   assert.equal(
     internalOrdersSyncServiceSource.includes('order submission reconciliation failed'),
