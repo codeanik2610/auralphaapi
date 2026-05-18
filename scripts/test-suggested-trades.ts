@@ -117,7 +117,7 @@ function runSuggestedTradeDeltaProtectionModePolicyAssertions(): void {
   });
   assert.equal(
     (defaultPolicy.orderTemplate as Record<string, unknown>).deltaProtectionMode,
-    'reduce_only'
+    'native_bracket'
   );
 }
 
@@ -5150,10 +5150,7 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     /Limit entry order expired after 15m for 5m/
   );
   assert.equal(lifecycleEvents.length, 1);
-  assert.equal(
-    lifecycleEvents[0]?.event.type,
-    'live_auto_limit_entry_expiry_cancel_requested'
-  );
+  assert.equal(lifecycleEvents[0]?.event.type, 'live_auto_limit_entry_expiry_cancel_requested');
   assert.equal(lifecycleEvents[0]?.query.brokerOrderId, 'ord-limit-1');
 
   savedExecutionPayload = null;
@@ -5235,14 +5232,10 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     ['delta-sl-1', 'delta-tp-1']
   );
   assert.equal(lifecycleEvents.length, 1);
-  assert.equal(
-    lifecycleEvents[0]?.event.type,
-    'live_auto_limit_entry_expiry_cancel_requested'
-  );
+  assert.equal(lifecycleEvents[0]?.event.type, 'live_auto_limit_entry_expiry_cancel_requested');
   assert.equal(lifecycleEvents[0]?.requestId, 'submission-delta-entry-1');
   assert.deepEqual(
-    (lifecycleEvents[0]?.event.details as Record<string, unknown>)
-      ?.siblingProtectionCancelOrderIds,
+    (lifecycleEvents[0]?.event.details as Record<string, unknown>)?.siblingProtectionCancelOrderIds,
     ['delta-sl-1', 'delta-tp-1']
   );
   assert.deepEqual(
@@ -6049,10 +6042,7 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
     /Broker reported order already terminal during expiry cancel/
   );
   assert.equal(lifecycleEvents.length, 1);
-  assert.equal(
-    lifecycleEvents[0]?.event.type,
-    'live_auto_limit_entry_expiry_already_terminal'
-  );
+  assert.equal(lifecycleEvents[0]?.event.type, 'live_auto_limit_entry_expiry_already_terminal');
   assert.equal(
     (lifecycleEvents[0]?.event.details as Record<string, unknown>)?.alreadyTerminal,
     true
@@ -10770,6 +10760,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const coverageManifestSource = read('scripts/_support/system-coverage-manifest.ts');
   const envSource = read('src/env.ts');
   const serviceSource = read('src/api/services/SuggestedTradesService.ts');
+  const deltaOrdersAdapterSource = read(
+    'src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter.ts'
+  );
 
   assert.equal(
     packageScripts['test:suggested-trades'],
@@ -11064,6 +11057,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'resolveTrailingRiskOrderPositionId',
     'resolveTrailingRiskOrderIds',
     'clearTrailingStopErrorWhenNoMoveNeeded',
+    'amendment_pending_confirmation',
+    'reconcilePendingDeltaBracketAmendmentFromContext',
+    'independent reduce-only SL/TP replacement is disabled',
     'positionsAdapter.updateRiskOrder',
     'resolveMudrexRiskOrderPositionId(position, positionPayload)',
   ]) {
@@ -11071,6 +11067,17 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       serviceSource.includes(marker),
       true,
       `SuggestedTradesService must retain ${marker} for live-auto auditability`
+    );
+  }
+  for (const marker of [
+    'deltaProtectionMode=native_bracket',
+    'independent reduce-only SL/TP protection is disabled',
+    '/v2/orders/bracket',
+  ]) {
+    assert.equal(
+      deltaOrdersAdapterSource.includes(marker),
+      true,
+      `DeltaExchangeOrdersAdapter must retain ${marker} for bracket-only live auto`
     );
   }
   for (const marker of [
@@ -11323,6 +11330,90 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
   assert.deepEqual(
     attachedWithTrailing.protectionPlan.trailingStop.rules,
     ema5PullbackConfig.rules
+  );
+
+  const pendingDeltaBracketAmendment = {
+    stopLossPrice: '95',
+    takeProfitPrice: '115',
+    protectionPlan: {
+      protectionMode: 'native_bracket',
+      bracketStatus: 'amendment_pending_confirmation',
+      bracketAmendmentStatus: 'pending_confirmation',
+      attachedStopLossPrice: '95',
+      attachedTakeProfitPrice: '115',
+      pendingBracketStopLossPrice: '105',
+      pendingBracketTakeProfitPrice: '115',
+      trailingStop: {
+        pendingWhenProfitR: 2,
+        pendingMoveStopToR: 1,
+        pendingStopLossPrice: '105',
+        pendingTakeProfitPrice: '115',
+        history: [
+          {
+            status: 'pending_confirmation',
+            whenProfitR: 2,
+            moveStopToR: 1,
+            stopLossPrice: '105',
+          },
+        ],
+      },
+    },
+  };
+  const unconfirmedDeltaBracketAmendment = service.reconcilePendingDeltaBracketAmendmentFromContext(
+    pendingDeltaBracketAmendment,
+    {
+      stopLossOrderId: 'delta-sl-1',
+      takeProfitOrderId: 'delta-tp-1',
+      stopLossStatus: 'OPEN',
+      takeProfitStatus: 'OPEN',
+      activeOrderIds: ['delta-sl-1', 'delta-tp-1'],
+      orderDetails: {
+        'delta-sl-1': { status: 'OPEN', stopPrice: 102, quantity: 1, remainingQuantity: 1 },
+        'delta-tp-1': { status: 'OPEN', stopPrice: 115, quantity: 1, remainingQuantity: 1 },
+      },
+    },
+    '2026-05-17T08:31:00.000Z'
+  );
+  assert.equal(unconfirmedDeltaBracketAmendment.stopLossPrice, '95');
+  assert.equal(
+    (unconfirmedDeltaBracketAmendment.protectionPlan as Record<string, any>).bracketAmendmentStatus,
+    'pending_confirmation'
+  );
+
+  const confirmedDeltaBracketAmendment = service.reconcilePendingDeltaBracketAmendmentFromContext(
+    pendingDeltaBracketAmendment,
+    {
+      stopLossOrderId: 'delta-sl-1',
+      takeProfitOrderId: 'delta-tp-1',
+      stopLossStatus: 'OPEN',
+      takeProfitStatus: 'OPEN',
+      activeOrderIds: ['delta-sl-1', 'delta-tp-1'],
+      orderDetails: {
+        'delta-sl-1': { status: 'OPEN', stopPrice: 105, quantity: 1, remainingQuantity: 1 },
+        'delta-tp-1': { status: 'OPEN', stopPrice: 115, quantity: 1, remainingQuantity: 1 },
+      },
+    },
+    '2026-05-17T08:32:00.000Z'
+  );
+  assert.equal(confirmedDeltaBracketAmendment.stopLossPrice, '105');
+  assert.equal(
+    (confirmedDeltaBracketAmendment.protectionPlan as Record<string, any>).attachedStopLossPrice,
+    '105'
+  );
+  assert.equal(
+    (confirmedDeltaBracketAmendment.protectionPlan as Record<string, any>)
+      .pendingBracketStopLossPrice,
+    null
+  );
+  assert.equal(
+    (confirmedDeltaBracketAmendment.protectionPlan as Record<string, any>).trailingStop
+      .lastAppliedWhenProfitR,
+    2
+  );
+  assert.equal(
+    (confirmedDeltaBracketAmendment.protectionPlan as Record<string, any>).trailingStop.history[0]
+      .status,
+    'confirmed'
   );
 
   const livePositionRiskOrderIds = service.resolveTrailingRiskOrderIds(

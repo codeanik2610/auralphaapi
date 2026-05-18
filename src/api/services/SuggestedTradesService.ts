@@ -420,6 +420,9 @@ interface LiveProtectionOrderContext {
       quantity?: number | null;
       filledQuantity?: number | null;
       remainingQuantity?: number | null;
+      stopPrice?: number | null;
+      limitPrice?: number | null;
+      stopOrderType?: string | null;
     }
   >;
 }
@@ -440,6 +443,8 @@ interface DeltaProtectionOrderCandidate {
   reduceOnly?: unknown;
   stopOrderType?: unknown;
   orderType?: unknown;
+  stopPrice?: unknown;
+  limitPrice?: unknown;
   quantity?: unknown;
   size?: unknown;
   filledQuantity?: unknown;
@@ -9077,6 +9082,10 @@ export class SuggestedTradesService {
 
     const plan = this.readRecordValue(execution.protectionPlan) ?? {};
     const protectionMode = this.readStringValue(plan.protectionMode);
+    if (brokerKey === 'delta_exchange' && this.hasPendingDeltaBracketAmendment(execution)) {
+      return this.touchPendingDeltaBracketAmendment(execution, config, nowIso);
+    }
+
     if (brokerKey === 'delta_exchange' && protectionMode === 'native_bracket') {
       const ordersAdapter = this.brokerRuntimeRegistry?.getOrdersAdapter?.(brokerKey) as {
         updateLiveAutoBracketProtection?: (
@@ -9104,6 +9113,24 @@ export class SuggestedTradesService {
       }
 
       try {
+        const protection = await this.resolveLiveProtectionOrderContext(
+          userId,
+          trade.id,
+          brokerKey,
+          accountId,
+          entryOrderId,
+          payload
+        );
+        if (!this.hasUsableDeltaProtectionContext(protection, execution, position)) {
+          return this.recordTrailingStopError(
+            trade,
+            execution,
+            nowIso,
+            `Trailing SL update needs active Delta native bracket protection before amendment (${describeLiveProtectionOrderContext(
+              protection
+            )}).`
+          );
+        }
         const route = await this.resolveLiveAutoAssetRoute(brokerKey, trade.symbol);
         await ordersAdapter.updateLiveAutoBracketProtection(
           route.assetId,
@@ -9126,23 +9153,31 @@ export class SuggestedTradesService {
 
       const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
       const history = Array.isArray(existingTrailing.history) ? existingTrailing.history : [];
+      const previousStopLossPrice =
+        this.formatNumericString(currentStopLossPrice) ??
+        this.formatNumericString(this.readNumberValue(plan.attachedStopLossPrice)) ??
+        this.readStringValue(plan.attachedStopLossPrice) ??
+        null;
       const trailingStop = {
         ...config,
         originalStopLossPrice:
           this.readNumberValue(existingTrailing.originalStopLossPrice) ?? originalStopLossPrice,
-        lastAppliedWhenProfitR: move.rule.whenProfitR,
-        lastMoveStopToR: move.lockedProfitR,
-        lastStopLossPrice: stopLossPrice,
+        pendingWhenProfitR: move.rule.whenProfitR,
+        pendingMoveStopToR: move.lockedProfitR,
+        pendingStopLossPrice: stopLossPrice,
+        pendingTakeProfitPrice: formattedTakeProfitPrice,
         lastCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
         lastProfitR: Number(move.profitR.toFixed(6)),
         peakProfitR: Number(move.peakProfitR.toFixed(6)),
         lastCheckedAt: nowIso,
-        lastUpdatedAt: nowIso,
+        lastSubmittedAt: nowIso,
+        lastNoopReason: 'bracket_amendment_pending_confirmation',
         lastError: null,
         history: [
           ...history.slice(-9),
           {
             at: nowIso,
+            status: 'pending_confirmation',
             whenProfitR: move.rule.whenProfitR,
             moveStopToR: move.lockedProfitR,
             ...(move.rule.trailDistanceR
@@ -9152,6 +9187,7 @@ export class SuggestedTradesService {
                 }
               : {}),
             stopLossPrice,
+            previousStopLossPrice,
             currentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
             profitR: Number(move.profitR.toFixed(6)),
             positionId: riskOrderPositionId,
@@ -9180,8 +9216,6 @@ export class SuggestedTradesService {
 
       return {
         ...execution,
-        stopLossPrice,
-        takeProfitPrice: execution.takeProfitPrice ?? formattedTakeProfitPrice,
         protectionCheckedAt: nowIso,
         protectionLastError: null,
         protectionPlan: {
@@ -9195,15 +9229,27 @@ export class SuggestedTradesService {
           positionId: riskOrderPositionId,
           snapshotPositionId: position.externalId,
           protectionMode,
-          bracketStatus: 'amendment_submitted',
-          bracketStopLossPrice: stopLossPrice,
-          bracketTakeProfitPrice: formattedTakeProfitPrice,
-          attachedStopLossPrice: stopLossPrice,
-          attachedTakeProfitPrice: formattedTakeProfitPrice,
+          bracketStatus: 'amendment_pending_confirmation',
+          bracketAmendmentStatus: 'pending_confirmation',
+          pendingBracketStopLossPrice: stopLossPrice,
+          pendingBracketTakeProfitPrice: formattedTakeProfitPrice,
+          pendingBracketAmendedAt: nowIso,
+          lastBracketAmendmentSubmittedAt: nowIso,
+          bracketTakeProfitPrice: plan.bracketTakeProfitPrice ?? formattedTakeProfitPrice,
+          attachedTakeProfitPrice: plan.attachedTakeProfitPrice ?? formattedTakeProfitPrice,
           trailingStop,
         },
         note: this.appendExecutionNote(execution.note, note),
       };
+    }
+
+    if (brokerKey === 'delta_exchange') {
+      return this.recordTrailingStopError(
+        trade,
+        execution,
+        nowIso,
+        'Trailing SL update requires Delta native bracket protection; independent reduce-only SL/TP replacement is disabled.'
+      );
     }
 
     const riskOrderIds = await this.resolveTrailingRiskOrderIdsForLiveUpdate(
@@ -9374,6 +9420,213 @@ export class SuggestedTradesService {
       },
       note: this.appendExecutionNote(execution.note, note),
     };
+  }
+
+  private hasPendingDeltaBracketAmendment(execution: SuggestedTradeExecutionLink): boolean {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const protectionMode = this.readStringValue(plan.protectionMode)?.toLowerCase();
+    if (protectionMode !== 'native_bracket') {
+      return false;
+    }
+
+    const bracketStatus = this.readStringValue(plan.bracketStatus)?.toLowerCase();
+    const amendmentStatus = this.readStringValue(plan.bracketAmendmentStatus)?.toLowerCase();
+    return Boolean(
+      bracketStatus === 'amendment_pending_confirmation' ||
+      amendmentStatus === 'pending_confirmation' ||
+      this.readStringValue(plan.pendingBracketStopLossPrice)
+    );
+  }
+
+  private touchPendingDeltaBracketAmendment(
+    execution: SuggestedTradeExecutionLink,
+    config: CustomRLadderTrailingStopConfig,
+    nowIso: string
+  ): SuggestedTradeExecutionLink {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
+    return {
+      ...execution,
+      protectionCheckedAt: nowIso,
+      protectionPlan: {
+        ...plan,
+        bracketStatus: 'amendment_pending_confirmation',
+        bracketAmendmentStatus: 'pending_confirmation',
+        trailingStop: {
+          ...config,
+          ...existingTrailing,
+          lastCheckedAt: nowIso,
+          lastNoopReason: 'bracket_amendment_pending_confirmation',
+          lastError: null,
+        },
+      },
+    };
+  }
+
+  private reconcilePendingDeltaBracketAmendmentFromContext(
+    execution: SuggestedTradeExecutionLink,
+    context: LiveProtectionOrderContext,
+    nowIso: string
+  ): SuggestedTradeExecutionLink {
+    if (!this.hasPendingDeltaBracketAmendment(execution)) {
+      return execution;
+    }
+
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const trailing = this.readRecordValue(plan.trailingStop) ?? {};
+    const pendingStopLossPrice =
+      this.readNumberValue(plan.pendingBracketStopLossPrice) ??
+      this.readNumberValue(trailing.pendingStopLossPrice);
+    if (!(pendingStopLossPrice && pendingStopLossPrice > 0)) {
+      return execution;
+    }
+
+    const pendingTakeProfitPrice =
+      this.readNumberValue(plan.pendingBracketTakeProfitPrice) ??
+      this.readNumberValue(trailing.pendingTakeProfitPrice) ??
+      this.readNumberValue(plan.attachedTakeProfitPrice) ??
+      this.readNumberValue(plan.bracketTakeProfitPrice);
+    const stopLossSnapshotPrice = context.stopLossOrderId
+      ? this.resolveProtectionSnapshotStopPrice(context.orderDetails?.[context.stopLossOrderId])
+      : null;
+    const takeProfitSnapshotPrice = context.takeProfitOrderId
+      ? this.resolveProtectionSnapshotStopPrice(context.orderDetails?.[context.takeProfitOrderId])
+      : null;
+    const stopLossConfirmed =
+      stopLossSnapshotPrice !== null &&
+      this.pricesApproximatelyEqual(stopLossSnapshotPrice, pendingStopLossPrice);
+    const takeProfitMismatch = Boolean(
+      pendingTakeProfitPrice !== null &&
+      takeProfitSnapshotPrice !== null &&
+      !this.pricesApproximatelyEqual(takeProfitSnapshotPrice, pendingTakeProfitPrice)
+    );
+
+    if (!stopLossConfirmed || takeProfitMismatch) {
+      const takeProfitMessage = takeProfitMismatch
+        ? ` Delta take-profit snapshot ${this.formatNumericString(takeProfitSnapshotPrice) ?? takeProfitSnapshotPrice} does not match expected unchanged TP ${
+            this.formatNumericString(pendingTakeProfitPrice) ?? pendingTakeProfitPrice
+          }.`
+        : '';
+      return {
+        ...execution,
+        protectionCheckedAt: nowIso,
+        protectionLastError: takeProfitMismatch
+          ? `Delta bracket amendment is pending broker snapshot confirmation.${takeProfitMessage}`
+          : execution.protectionLastError,
+        protectionPlan: {
+          ...plan,
+          bracketStatus: 'amendment_pending_confirmation',
+          bracketAmendmentStatus: 'pending_confirmation',
+          trailingStop: {
+            ...trailing,
+            lastCheckedAt: nowIso,
+            lastNoopReason: 'bracket_amendment_pending_confirmation',
+            lastError: takeProfitMismatch ? takeProfitMessage.trim() : null,
+          },
+        },
+      };
+    }
+
+    const confirmedStopLossPrice =
+      this.formatNumericString(pendingStopLossPrice) ?? String(pendingStopLossPrice);
+    const confirmedTakeProfitPrice =
+      pendingTakeProfitPrice !== null
+        ? (this.formatNumericString(pendingTakeProfitPrice) ?? String(pendingTakeProfitPrice))
+        : null;
+    const pendingWhenProfitR = this.readNumberValue(trailing.pendingWhenProfitR);
+    const pendingMoveStopToR = this.readNumberValue(trailing.pendingMoveStopToR);
+    const history = Array.isArray(trailing.history) ? trailing.history : [];
+    const pendingHistoryIndex = [...history]
+      .map((item, index) => ({ item: this.readRecordValue(item), index }))
+      .reverse()
+      .find(({ item }) => {
+        if (!item) {
+          return false;
+        }
+        const status = this.readStringValue(item.status)?.toLowerCase();
+        const itemStopLoss = this.readNumberValue(item.stopLossPrice);
+        return (
+          status === 'pending_confirmation' &&
+          itemStopLoss !== null &&
+          this.pricesApproximatelyEqual(itemStopLoss, pendingStopLossPrice)
+        );
+      })?.index;
+    const nextHistory =
+      pendingHistoryIndex === undefined
+        ? history
+        : history.map((item, index) =>
+            index === pendingHistoryIndex
+              ? {
+                  ...(this.readRecordValue(item) ?? {}),
+                  status: 'confirmed',
+                  confirmedAt: nowIso,
+                  snapshotStopLossPrice: confirmedStopLossPrice,
+                  ...(confirmedTakeProfitPrice
+                    ? { snapshotTakeProfitPrice: confirmedTakeProfitPrice }
+                    : {}),
+                }
+              : item
+          );
+
+    return {
+      ...execution,
+      stopLossPrice: confirmedStopLossPrice,
+      takeProfitPrice: execution.takeProfitPrice ?? confirmedTakeProfitPrice,
+      protectionCheckedAt: nowIso,
+      protectionLastError: null,
+      protectionPlan: {
+        ...plan,
+        bracketStatus: 'amendment_confirmed',
+        bracketAmendmentStatus: 'confirmed',
+        bracketStopLossPrice: confirmedStopLossPrice,
+        attachedStopLossPrice: confirmedStopLossPrice,
+        ...(confirmedTakeProfitPrice
+          ? {
+              bracketTakeProfitPrice: confirmedTakeProfitPrice,
+              attachedTakeProfitPrice: confirmedTakeProfitPrice,
+            }
+          : {}),
+        pendingBracketStopLossPrice: null,
+        pendingBracketTakeProfitPrice: null,
+        pendingBracketAmendedAt: null,
+        lastBracketAmendmentConfirmedAt: nowIso,
+        trailingStop: {
+          ...trailing,
+          ...(pendingWhenProfitR !== null ? { lastAppliedWhenProfitR: pendingWhenProfitR } : {}),
+          ...(pendingMoveStopToR !== null ? { lastMoveStopToR: pendingMoveStopToR } : {}),
+          lastStopLossPrice: confirmedStopLossPrice,
+          lastUpdatedAt: nowIso,
+          lastConfirmedAt: nowIso,
+          lastCheckedAt: nowIso,
+          lastNoopReason: null,
+          lastError: null,
+          pendingWhenProfitR: null,
+          pendingMoveStopToR: null,
+          pendingStopLossPrice: null,
+          pendingTakeProfitPrice: null,
+          history: nextHistory,
+        },
+      },
+    };
+  }
+
+  private resolveProtectionSnapshotStopPrice(
+    detail:
+      | {
+          stopPrice?: number | null;
+          limitPrice?: number | null;
+        }
+      | null
+      | undefined
+  ): number | null {
+    return this.readNumberValue(detail?.stopPrice) ?? this.readNumberValue(detail?.limitPrice);
+  }
+
+  private pricesApproximatelyEqual(left: number, right: number): boolean {
+    if (!Number.isFinite(left) || !Number.isFinite(right)) {
+      return false;
+    }
+    return Math.abs(left - right) <= Math.max(1e-8, Math.abs(right) * 1e-8);
   }
 
   private resolveExecutionTrailingStopConfig(
@@ -10038,19 +10291,28 @@ export class SuggestedTradesService {
       position.payload ?? {}
     );
     if (this.hasUsableDeltaProtectionContext(protection, execution, position)) {
+      const reconciledExecution = this.reconcilePendingDeltaBracketAmendmentFromContext(
+        execution,
+        protection,
+        nowIso
+      );
       const duplicateProtectionReason = await this.resolveDeltaLinkedProtectionManualReason({
         userId,
         brokerKey,
         accountId,
         trade,
-        execution,
+        execution: reconciledExecution,
         position,
         protection,
       });
       if (duplicateProtectionReason) {
-        return this.markProtectionManualUnlinked(execution, nowIso, duplicateProtectionReason);
+        return this.markProtectionManualUnlinked(
+          reconciledExecution,
+          nowIso,
+          duplicateProtectionReason
+        );
       }
-      return execution;
+      return reconciledExecution;
     }
 
     const prices = this.resolveExecutionProtectionPrices(trade, execution);
@@ -10619,13 +10881,25 @@ export class SuggestedTradesService {
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.reduce_only')) AS reduceOnly,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_order_type')) AS stopOrderType,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.order_type')) AS orderType,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_price')) AS stopPrice,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.price')) AS price,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.limit_price')) AS limitPrice,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.quantity')) AS quantity,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.size')) AS size,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.filled_quantity')) AS filledQuantity,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.filledQuantity')) AS filledQuantityCamel,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.remaining_quantity')) AS remainingQuantity,
               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.remainingQuantity')) AS remainingQuantityCamel,
-              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.unfilled_size')) AS unfilledSize
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.unfilled_size')) AS unfilledSize,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_price')) AS stopPrice,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stopPrice')) AS stopPriceCamel,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.trigger_price')) AS triggerPrice,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.triggerPrice')) AS triggerPriceCamel,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.price')) AS price,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.limit_price')) AS limitPrice,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.limitPrice')) AS limitPriceCamel,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_order_type')) AS stopOrderType,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stopOrderType')) AS stopOrderTypeCamel
          FROM scheduler_orders_snapshots
         WHERE user_id = ?
           AND account_id = ?
@@ -10709,6 +10983,9 @@ export class SuggestedTradesService {
         reduceOnly: row.reduce_only ?? row.reduceOnly,
         stopOrderType: row.stop_order_type ?? row.stopOrderType,
         orderType: row.order_type ?? row.orderType ?? row.type,
+        stopPrice:
+          row.stop_price ?? row.stopPrice ?? row.trigger_price ?? row.triggerPrice ?? row.price,
+        limitPrice: row.limit_price ?? row.limitPrice,
         quantity: row.quantity ?? row.size,
         size: row.size,
         filledQuantity: row.filled_quantity ?? row.filledQuantity,
@@ -10765,6 +11042,9 @@ export class SuggestedTradesService {
       quantity,
       filledQuantity,
       remainingQuantity,
+      stopPrice: this.readNumberValue(row.stopPrice),
+      limitPrice: this.readNumberValue(row.limitPrice),
+      stopOrderType,
     };
     if (stopOrderType.includes('stop_loss')) {
       if (!context.stopLossOrderIds.includes(orderId)) {
@@ -11826,6 +12106,15 @@ export class SuggestedTradesService {
       remainingQuantity?: string | number | null;
       remainingQuantityCamel?: string | number | null;
       unfilledSize?: string | number | null;
+      stopPrice?: string | number | null;
+      stopPriceCamel?: string | number | null;
+      triggerPrice?: string | number | null;
+      triggerPriceCamel?: string | number | null;
+      price?: string | number | null;
+      limitPrice?: string | number | null;
+      limitPriceCamel?: string | number | null;
+      stopOrderType?: string | null;
+      stopOrderTypeCamel?: string | null;
     }>;
 
     const snapshotById = new Map(
@@ -11849,6 +12138,18 @@ export class SuggestedTradesService {
                   this.readNumberValue(snapshot.remainingQuantity) ??
                   this.readNumberValue(snapshot.remainingQuantityCamel) ??
                   this.readNumberValue(snapshot.unfilledSize),
+                stopPrice:
+                  this.readNumberValue(snapshot.stopPrice) ??
+                  this.readNumberValue(snapshot.stopPriceCamel) ??
+                  this.readNumberValue(snapshot.triggerPrice) ??
+                  this.readNumberValue(snapshot.triggerPriceCamel) ??
+                  this.readNumberValue(snapshot.price),
+                limitPrice:
+                  this.readNumberValue(snapshot.limitPrice) ??
+                  this.readNumberValue(snapshot.limitPriceCamel),
+                stopOrderType:
+                  this.readStringValue(snapshot.stopOrderType) ??
+                  this.readStringValue(snapshot.stopOrderTypeCamel),
               },
             ] as const
         )
@@ -11863,6 +12164,9 @@ export class SuggestedTradesService {
               quantity: number | null;
               filledQuantity: number | null;
               remainingQuantity: number | null;
+              stopPrice: number | null;
+              limitPrice: number | null;
+              stopOrderType: string | null;
             },
           ] => Boolean(entry[0])
         )
@@ -11882,6 +12186,9 @@ export class SuggestedTradesService {
             quantity: detail.quantity,
             filledQuantity: detail.filledQuantity,
             remainingQuantity,
+            stopPrice: detail.stopPrice,
+            limitPrice: detail.limitPrice,
+            stopOrderType: detail.stopOrderType,
           },
         ];
       })

@@ -273,7 +273,7 @@ export const normalizeTradeSuggestionExecutionPolicy = (
   const deltaProtectionMode = normalizeEnum(
     readString(root.deltaProtectionMode, orderTemplate.deltaProtectionMode),
     TRADE_SUGGESTION_DELTA_PROTECTION_MODES,
-    'reduce_only'
+    'native_bracket'
   );
   const timeInForceInput = readString(orderTemplate.timeInForce);
   const quantityMode = normalizeEnum(

@@ -493,8 +493,8 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     const normalized = String(value || '')
       .trim()
       .toLowerCase();
-    if (!normalized || normalized === 'reduce_only' || normalized === 'post_fill_reduce_only') {
-      return 'reduce_only';
+    if (!normalized) {
+      return 'native_bracket';
     }
     if (normalized === 'native_bracket') {
       return 'native_bracket';
@@ -502,6 +502,11 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     if (normalized === 'block_live_auto') {
       throw new BadRequestAppError(
         'Delta Exchange live-auto is blocked by deltaProtectionMode=block_live_auto'
+      );
+    }
+    if (normalized === 'reduce_only' || normalized === 'post_fill_reduce_only') {
+      throw new BadRequestAppError(
+        'Delta Exchange live-auto requires deltaProtectionMode=native_bracket; independent reduce-only SL/TP protection is disabled.'
       );
     }
     throw new BadRequestAppError(`Unsupported Delta Exchange protection mode: ${normalized}`);

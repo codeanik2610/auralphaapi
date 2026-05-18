@@ -31,6 +31,9 @@ export type LiveProtectionOrderContextLike = {
       quantity?: number | null;
       filledQuantity?: number | null;
       remainingQuantity?: number | null;
+      stopPrice?: number | null;
+      limitPrice?: number | null;
+      stopOrderType?: string | null;
     }
   >;
 };
@@ -468,9 +471,9 @@ function isPartialEntryRemainderCleared(execution: SuggestedTradeExecutionLink):
   const remainingQuantity = readNumberValue(execution.remainingQuantity);
   return Boolean(
     (orderStatus === 'PARTIALLY_FILLED' || (filledQuantity && filledQuantity > 0)) &&
-      remainingQuantity !== null &&
-      remainingQuantity <= 0 &&
-      execution.canceledAt
+    remainingQuantity !== null &&
+    remainingQuantity <= 0 &&
+    execution.canceledAt
   );
 }
 
@@ -512,9 +515,7 @@ function resolveDeltaProtectionSizeMismatch(input: {
     }
     const drift = Math.abs(orderSize - positionSize) / Math.max(positionSize, 1e-9);
     if (drift > 0.01) {
-      mismatches.push(
-        `${label} ${orderId} size ${formatNumericString(orderSize) ?? orderSize}`
-      );
+      mismatches.push(`${label} ${orderId} size ${formatNumericString(orderSize) ?? orderSize}`);
     }
   }
 
@@ -522,10 +523,7 @@ function resolveDeltaProtectionSizeMismatch(input: {
     return null;
   }
 
-  const orderIds = [
-    input.context.stopLossOrderId,
-    input.context.takeProfitOrderId,
-  ].filter(
+  const orderIds = [input.context.stopLossOrderId, input.context.takeProfitOrderId].filter(
     (orderId): orderId is string =>
       Boolean(orderId && input.context.activeOrderIds.includes(orderId))
   );
@@ -709,14 +707,12 @@ export async function remediateDeltaLiveProtection(
   input: DeltaLiveProtectionRepairInput
 ): Promise<SuggestedTradeExecutionLink> {
   const orderId = readStringValue(input.execution.orderId);
-  let replacementCleanup:
-    | {
-        reason: string;
-        requestedOrderIds: string[];
-        cancelledOrderIds: string[];
-        alreadyTerminalOrderIds: string[];
-      }
-    | null = null;
+  let replacementCleanup: {
+    reason: string;
+    requestedOrderIds: string[];
+    cancelledOrderIds: string[];
+    alreadyTerminalOrderIds: string[];
+  } | null = null;
   if (orderId) {
     const existingProtection = await input.resolveLiveProtectionOrderContext(
       input.userId,
