@@ -1,4 +1,5 @@
 import { coreDataSource } from '../../src/database/data-source';
+import { strategyDataSource } from '../../src/database/pg-data-source';
 import { env } from '../../src/env';
 
 type Row = Record<string, unknown>;
@@ -32,6 +33,19 @@ interface DeltaProductResolution {
   mappedProduct: Row | null;
   source: 'mapped_product_id' | 'symbol_alias' | 'missing';
   error?: string;
+}
+
+interface CanaryAutomationSnapshot extends Row {
+  id: string;
+  name: string;
+  status: string;
+  scopeSymbol: string | null;
+  scopeTimeframe: string | null;
+  rootSymbol: string | null;
+  tradeSuggestionSymbol: string | null;
+  rootSymbolsJson: string | null;
+  tradeSuggestionSymbolsJson: string | null;
+  setupScopeSymbolsJson: string | null;
 }
 
 const DEFAULT_CANARY_USER_EMAIL = 'admin@auralpha.com';
@@ -91,6 +105,48 @@ function readList(value: string | undefined, fallback: string[]): string[] {
     .map((item) => item.trim())
     .filter(Boolean);
   return Array.from(new Set(items.length ? items : fallback));
+}
+
+function readJsonStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map(readString).filter(Boolean);
+  }
+
+  const raw = readString(value);
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.map(readString).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function resolveCanaryAutomationSymbols(row: CanaryAutomationSnapshot | null): string[] {
+  if (!row) {
+    return [];
+  }
+
+  const candidates = [
+    readJsonStringArray(row.setupScopeSymbolsJson),
+    readJsonStringArray(row.tradeSuggestionSymbolsJson),
+    readJsonStringArray(row.rootSymbolsJson),
+    [readString(row.tradeSuggestionSymbol), readString(row.rootSymbol), readString(row.scopeSymbol)],
+  ];
+
+  for (const values of candidates) {
+    const symbols = Array.from(
+      new Set(values.map((value) => value.trim().toUpperCase()).filter(Boolean))
+    );
+    if (symbols.length) {
+      return symbols;
+    }
+  }
+
+  return [];
 }
 
 function placeholders(values: unknown[]): string {
@@ -240,6 +296,16 @@ function buildNextActions(gates: Gate[]): string[] {
       'Refresh the Delta broker_assets mapping before enabling live execution; stale or expired products are blocked.'
     );
   }
+  if (blockedKeys.has('canary_symbol_universe_delta_mapped')) {
+    actions.push(
+      'Remove unsupported symbols from the Delta canary automation or refresh delta_exchange broker_assets after Delta lists them.'
+    );
+  }
+  if (blockedKeys.has('canary_candles_fresh')) {
+    actions.push(
+      'Wait for the candle sync to finish before running the broker-auto canary; do not execute against stale market data.'
+    );
+  }
 
   return actions.length
     ? actions
@@ -263,6 +329,22 @@ function normalizeDeltaUsdQuoteSymbol(value: unknown): string {
   }
 
   return normalized;
+}
+
+function buildDeltaSymbolAliases(value: unknown): string[] {
+  const normalized = normalizeDeltaSymbol(value);
+  if (!normalized) {
+    return [];
+  }
+
+  const aliases = new Set([normalized, normalizeDeltaUsdQuoteSymbol(normalized)]);
+  const base = resolveDeltaBaseSymbol(normalized);
+  if (base) {
+    aliases.add(`${base}USDT`);
+    aliases.add(`${base}USDC`);
+    aliases.add(`${base}USD`);
+  }
+  return Array.from(aliases).filter(Boolean);
 }
 
 function resolveDeltaBaseSymbol(value: unknown): string {
@@ -368,12 +450,19 @@ async function run(): Promise<void> {
     5,
     Number(process.env.BROKER_AUTO_CANARY_MAX_SNAPSHOT_AGE_MINUTES || 360)
   );
+  const maxCandleLagMinutes = Math.max(
+    5,
+    Number(process.env.BROKER_AUTO_CANARY_MAX_CANDLE_LAG_MINUTES || 10)
+  );
   const strict =
     String(process.env.BROKER_AUTO_CANARY_READINESS_STRICT || 'false')
       .trim()
       .toLowerCase() === 'true';
 
   await coreDataSource.initialize();
+  if (env.pg.enabled && !strategyDataSource.isInitialized) {
+    await strategyDataSource.initialize();
+  }
 
   try {
     const gates: Gate[] = [];
@@ -755,7 +844,12 @@ async function run(): Promise<void> {
              JSON_EXTRACT(config, '$.tradeSuggestion.execution.liveConsent.enabled') AS liveConsent,
              JSON_EXTRACT(config, '$.tradeSuggestion.execution.limits.maxOrdersPerRun') AS maxOrdersPerRun,
              JSON_EXTRACT(config, '$.tradeSuggestion.execution.limits.maxOrdersPerDay') AS maxOrdersPerDay,
-             JSON_EXTRACT(config, '$.tradeSuggestion.execution.limits.maxConcurrentOpenTrades') AS maxConcurrentOpenTrades
+             JSON_EXTRACT(config, '$.tradeSuggestion.execution.limits.maxConcurrentOpenTrades') AS maxConcurrentOpenTrades,
+             JSON_UNQUOTE(JSON_EXTRACT(config, '$.symbol')) AS rootSymbol,
+             JSON_UNQUOTE(JSON_EXTRACT(config, '$.tradeSuggestion.symbol')) AS tradeSuggestionSymbol,
+             JSON_EXTRACT(config, '$.symbols') AS rootSymbolsJson,
+             JSON_EXTRACT(config, '$.tradeSuggestion.symbols') AS tradeSuggestionSymbolsJson,
+             JSON_EXTRACT(config, '$.tradeSuggestion.setupScope.symbols') AS setupScopeSymbolsJson
            FROM automations
            WHERE user_id = ?
              AND (
@@ -766,10 +860,9 @@ async function run(): Promise<void> {
           [targetUserId]
         )
       : [];
-    const liveAutomationCandidates = automationRows.filter((row) => {
+    const configuredLiveAutomationCandidates = automationRows.filter((row) => {
       const accountId = readString(row.accountId);
       return (
-        readString(row.status).toLowerCase() === 'running' &&
         readString(row.executionMode) === 'live_trade_auto' &&
         readString(row.approvalMode) === 'auto_if_safe' &&
         readString(row.routeMode) === 'fixed' &&
@@ -781,20 +874,139 @@ async function run(): Promise<void> {
         readNumber(row.maxConcurrentOpenTrades) >= 1
       );
     });
+    const liveAutomationCandidates = configuredLiveAutomationCandidates.filter(
+      (row) => readString(row.status).toLowerCase() === 'running'
+    );
+    const configuredCanaryAutomation =
+      (liveAutomationCandidates[0] ?? configuredLiveAutomationCandidates[0] ?? null) as
+        | CanaryAutomationSnapshot
+        | null;
+    const configuredCanarySymbols = resolveCanaryAutomationSymbols(configuredCanaryAutomation);
     addGate(gates, {
       key: 'canary_live_automation',
-      status: liveAutomationCandidates.length > 0 ? 'pass' : 'block',
+      status: configuredLiveAutomationCandidates.length > 0 ? 'pass' : 'block',
       summary:
-        liveAutomationCandidates.length > 0
-          ? 'At least one live-auto fixed-route canary automation exists'
-          : 'No live-auto fixed-route canary automation exists',
+        configuredLiveAutomationCandidates.length > 0
+          ? 'At least one live-auto fixed-route canary automation is configured'
+          : 'No live-auto fixed-route canary automation is configured',
       detail: `${automationRows.length} trade-suggestion automation(s) inspected.`,
     });
+    if (configuredCanaryAutomation) {
+      addGate(gates, {
+        key: 'canary_automation_status',
+        status:
+          readString(configuredCanaryAutomation.status).toLowerCase() === 'running'
+            ? 'pass'
+            : 'warn',
+        summary:
+          readString(configuredCanaryAutomation.status).toLowerCase() === 'running'
+            ? 'Canary automation is running'
+            : `Canary automation is ${readString(configuredCanaryAutomation.status) || 'not running'}`,
+        detail:
+          'Paused canaries can still be executed manually by temporarily arming a one-shot run.',
+      });
+    }
 
     const targetCanarySymbol =
       requestedCanarySymbol ||
-      readString(liveAutomationCandidates[0]?.scopeSymbol).toUpperCase() ||
+      configuredCanarySymbols[0] ||
+      readString(configuredCanaryAutomation?.scopeSymbol).toUpperCase() ||
       'BTCUSDT';
+    let canarySymbolMappingReport: Record<string, unknown> | null = null;
+    let canaryCandleFreshnessReport: Record<string, unknown> | null = null;
+    if (targetBroker === 'delta_exchange' && configuredCanarySymbols.length) {
+      const aliasBySymbol = new Map(
+        configuredCanarySymbols.map((symbol) => [symbol, buildDeltaSymbolAliases(symbol)] as const)
+      );
+      const aliases = Array.from(new Set([...aliasBySymbol.values()].flat()));
+      const mappedRows = aliases.length
+        ? await queryRows<Row>(
+            `SELECT symbol, externalId, updatedAt
+             FROM broker_assets
+             WHERE source = ?
+               AND UPPER(symbol) IN (${placeholders(aliases)})`,
+            [targetBroker, ...aliases]
+          )
+        : [];
+      const mappedSymbols = new Set(
+        mappedRows.map((row) => normalizeDeltaSymbol(row.symbol)).filter(Boolean)
+      );
+      const unsupportedSymbols = configuredCanarySymbols.filter((symbol) =>
+        (aliasBySymbol.get(symbol) ?? []).every((alias) => !mappedSymbols.has(alias))
+      );
+      canarySymbolMappingReport = {
+        configuredSymbols: configuredCanarySymbols,
+        mappedSymbols: configuredCanarySymbols.filter(
+          (symbol) => !unsupportedSymbols.includes(symbol)
+        ),
+        unsupportedSymbols,
+      };
+      addGate(gates, {
+        key: 'canary_symbol_universe_delta_mapped',
+        status: unsupportedSymbols.length ? 'block' : 'pass',
+        summary: unsupportedSymbols.length
+          ? `${unsupportedSymbols.length} Delta canary symbol(s) lack broker asset mappings`
+          : 'All Delta canary symbols have broker asset mappings',
+        detail: unsupportedSymbols.length
+          ? `Unsupported: ${unsupportedSymbols.slice(0, 20).join(', ')}${
+              unsupportedSymbols.length > 20 ? ', ...' : ''
+            }.`
+          : `${configuredCanarySymbols.length} configured symbol(s) checked.`,
+      });
+    }
+
+    if (configuredCanarySymbols.length) {
+      if (!env.pg.enabled || !strategyDataSource.isInitialized) {
+        addGate(gates, {
+          key: 'canary_candles_fresh',
+          status: 'block',
+          summary: 'Canary candle freshness could not be checked',
+          detail: 'Postgres market data is not enabled for this runtime.',
+        });
+      } else {
+        const pgParams = configuredCanarySymbols;
+        const pgPlaceholders = pgParams.map((_, index) => `$${index + 1}`).join(', ');
+        const candleRows = (await strategyDataSource.query(
+          `SELECT UPPER(symbol) AS symbol,
+                  MAX(open_time) AS latest_open_time,
+                  MAX(updated_at) AS latest_updated_at
+           FROM public.market_candles_1m
+           WHERE UPPER(symbol) IN (${pgPlaceholders})
+           GROUP BY UPPER(symbol)`,
+          pgParams
+        )) as Row[];
+        const candleBySymbol = new Map(
+          candleRows.map((row) => [readString(row.symbol).toUpperCase(), row] as const)
+        );
+        const staleSymbols = configuredCanarySymbols.filter((symbol) => {
+          const latest = candleBySymbol.get(symbol)?.latest_open_time;
+          const ageMinutes = minutesSince(latest);
+          return ageMinutes === null || ageMinutes > maxCandleLagMinutes;
+        });
+        canaryCandleFreshnessReport = {
+          maxCandleLagMinutes,
+          checkedSymbols: configuredCanarySymbols.length,
+          staleSymbols,
+          latestOpenTimes: configuredCanarySymbols.map((symbol) => ({
+            symbol,
+            latestOpenTime: readDateIso(candleBySymbol.get(symbol)?.latest_open_time),
+            ageMinutes: minutesSince(candleBySymbol.get(symbol)?.latest_open_time),
+          })),
+        };
+        addGate(gates, {
+          key: 'canary_candles_fresh',
+          status: staleSymbols.length ? 'block' : 'pass',
+          summary: staleSymbols.length
+            ? `${staleSymbols.length} canary symbol(s) have stale or missing candles`
+            : 'Canary candles are fresh for all configured symbols',
+          detail: staleSymbols.length
+            ? `Stale/missing: ${staleSymbols.slice(0, 20).join(', ')}${
+                staleSymbols.length > 20 ? ', ...' : ''
+              }; threshold ${maxCandleLagMinutes}m.`
+            : `${configuredCanarySymbols.length} symbol(s) checked; threshold ${maxCandleLagMinutes}m.`,
+        });
+      }
+    }
     const [targetBrokerAsset] = await queryRows<Row>(
       `SELECT id, source, symbol, name, externalId, assetId, updatedAt
        FROM broker_assets
@@ -957,6 +1169,7 @@ async function run(): Promise<void> {
         auditedBrokers,
         maxSnapshotAgeMinutes,
         deltaBaseUrl: targetBroker === 'delta_exchange' ? deltaBaseUrl : undefined,
+        maxCandleLagMinutes,
       },
       runtime,
       foundationReady,
@@ -981,9 +1194,15 @@ async function run(): Promise<void> {
       deltaProductResolution: deltaProductResolutionReport,
       automationSummary: {
         tradeSuggestionAutomations: automationRows.length,
+        configuredLiveAutoCanaryCandidates: configuredLiveAutomationCandidates.length,
         liveAutoCanaryCandidates: liveAutomationCandidates.length,
         latestAutomationUpdatedAt: readDateIso(findLatest(automationRows, 'updatedAt')),
+        configuredCanaryAutomationId: configuredCanaryAutomation?.id ?? null,
+        configuredCanaryStatus: configuredCanaryAutomation?.status ?? null,
+        configuredCanarySymbols,
       },
+      canarySymbolMapping: canarySymbolMappingReport,
+      canaryCandleFreshness: canaryCandleFreshnessReport,
       suggestedTradeSummary: {
         total: readNumber(suggestedTradeSnapshot?.total),
         open: readNumber(suggestedTradeSnapshot?.openCount),
@@ -1005,6 +1224,9 @@ async function run(): Promise<void> {
       process.exitCode = 1;
     }
   } finally {
+    if (strategyDataSource.isInitialized) {
+      await strategyDataSource.destroy();
+    }
     await coreDataSource.destroy();
   }
 }
@@ -1013,6 +1235,9 @@ run().catch(async (error) => {
   console.error(error instanceof Error ? error.message : String(error));
   if (coreDataSource.isInitialized) {
     await coreDataSource.destroy();
+  }
+  if (strategyDataSource.isInitialized) {
+    await strategyDataSource.destroy();
   }
   process.exit(1);
 });
