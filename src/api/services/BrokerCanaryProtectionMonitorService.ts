@@ -866,10 +866,6 @@ export class BrokerCanaryProtectionMonitorService {
     )) as OrderSnapshotRow[];
 
     const context = this.emptyDeltaActiveProtection();
-    const entrySide = this.readString(input.entrySnapshot?.side).toLowerCase();
-    const expectedProtectionSide =
-      entrySide === 'buy' ? 'sell' : entrySide === 'sell' ? 'buy' : null;
-
     for (const row of rows) {
       if (!this.isActiveOrderSnapshot(row)) {
         continue;
@@ -877,10 +873,6 @@ export class BrokerCanaryProtectionMonitorService {
       const reduceOnly =
         this.readBoolean(row.reduceOnly) ?? this.readBoolean(row.reduceOnlyCamel) ?? false;
       if (!reduceOnly) {
-        continue;
-      }
-      const side = this.readString(row.side).toLowerCase();
-      if (expectedProtectionSide && side && side !== expectedProtectionSide) {
         continue;
       }
 

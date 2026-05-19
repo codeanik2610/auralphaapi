@@ -262,7 +262,7 @@ async function testDeltaOpenPositionUsesLiveReduceOnlyProtectionBySymbol(): Prom
             externalId: 'arb-entry-1',
             symbol: 'ARBUSD',
             assetUuid: '17331',
-            side: 'sell',
+            side: 'buy',
           }),
         ];
       }
