@@ -64,6 +64,10 @@ export interface DeltaProtectionOrdersAdapter {
     query: { limit: number },
     context?: { userId?: string; brokerKey?: string; accountId?: string }
   ) => Promise<unknown>;
+  getOrder?: (
+    orderId: string,
+    context?: { userId?: string; brokerKey?: string; accountId?: string }
+  ) => Promise<unknown>;
   cancelOrder?: (
     orderId: string,
     context?: { userId?: string; brokerKey?: string; accountId?: string }
