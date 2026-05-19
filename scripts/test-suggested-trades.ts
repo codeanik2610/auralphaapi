@@ -1812,6 +1812,64 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     };
     guardMarketPrice = null;
 
+    const originalLiveAutoGateForLiquidationGuard = service.runPreTradeGate;
+    service.runPreTradeGate = async () => {
+      preTradeGateCalls += 1;
+      return {
+        result: {
+          checkId: 'check-mudrex-liquidation-guard',
+          decision: {
+            summary: 'All clear',
+          },
+          request: {
+            routing: {
+              brokerKey: 'mudrex',
+              accountId: 'acc-1',
+            },
+            order: {
+              symbol: 'EDENUSDT',
+              side: 'SELL',
+              entryPrice: 0.07826,
+              stopLossPrice: 0.083517892857,
+              takeProfitTargets: [0.046712642857],
+              leverage: 15,
+              reduceOnly: false,
+              orderType: 'limit',
+            },
+          },
+        },
+        execution: {
+          executionMode: 'live',
+          preTradeState: 'passed',
+          brokerKey: 'mudrex',
+          accountId: 'acc-1',
+          orderType: 'limit',
+          leverage: 15,
+          quantity: 1458,
+        },
+        ready: true,
+      };
+    };
+    const originalLiveAutoTradeSide = baseTrade.side;
+    const originalLiveAutoTradeSymbol = baseTrade.symbol;
+    baseTrade.side = 'SELL';
+    baseTrade.symbol = 'EDENUSDT';
+    const mudrexLiquidationUnsafe = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto',
+      {
+        async createOrder() {
+          throw new Error('Mudrex liquidation guard should block before broker placement');
+        },
+      }
+    );
+    assert.equal(mudrexLiquidationUnsafe.outcome, 'blocked');
+    assert.match(mudrexLiquidationUnsafe.message, /Mudrex live entry blocked for EDENUSDT/);
+    assert.match(mudrexLiquidationUnsafe.message, /liquidation safety limit/);
+    baseTrade.side = originalLiveAutoTradeSide;
+    baseTrade.symbol = originalLiveAutoTradeSymbol;
+    service.runPreTradeGate = originalLiveAutoGateForLiquidationGuard;
+
     baseTrade.timeframe = '5m';
     baseTrade.signalTime = new Date('2026-05-11T08:20:00.000Z');
     const currentRunLatencyAllowed = await service.attemptAutoLiveExecutionForAutomation(
@@ -1834,7 +1892,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal(currentRunLatencyAllowed.freshness?.ageAfterCloseSeconds, 300);
     assert.equal(currentRunLatencyAllowed.freshness?.maxAgeAfterCloseSeconds, 300);
     assert.equal(currentRunLatencyAllowed.freshness?.currentRunFreshnessFloorSeconds, 300);
-    assert.equal(preTradeGateCalls, 4);
+    assert.equal(preTradeGateCalls, 5);
     baseTrade.timeframe = '1h';
 
     baseTrade.signalTime = new Date(Date.now() - 3 * 60 * 60 * 1000);
@@ -1847,7 +1905,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal(stale.freshness?.allowed, false);
     assert.match(stale.message, /Skipped live execution/);
     assert.match(stale.message, /freshness window/);
-    assert.equal(preTradeGateCalls, 4);
+    assert.equal(preTradeGateCalls, 5);
     assert.ok(loggedActivities.includes('Live auto stale signal skipped: BTCUSDT'));
     baseTrade.signalTime = freshOneHourSignalTime;
 
