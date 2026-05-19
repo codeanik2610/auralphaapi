@@ -97,6 +97,7 @@ import {
   resolveDeltaProtectionLookupSymbols,
 } from './suggested-trades/DeltaExchangeSuggestedTradeBroker';
 import {
+  MudrexLiveAutoLiquidationRiskBlockedError,
   MudrexLiveAutoProtectionAttachmentResult,
   attachMudrexLiveAutoProtectionIfNeeded as attachMudrexLiveAutoProtectionIfNeededForBroker,
   mudrexPositionHasProtection,
@@ -105,6 +106,7 @@ import {
   resolveMudrexRiskOrderPositionId,
   validateMudrexProtectionAttachability,
 } from './suggested-trades/MudrexSuggestedTradeBroker';
+import type { SuggestedTradeLiquidationRiskEvaluation } from './suggested-trades/SuggestedTradeLiquidationRisk';
 import {
   isSuggestedTradeLiveAutoBrokerEnabled,
   isSuggestedTradeProtectionRepairEnabledForBroker,
@@ -243,6 +245,8 @@ interface SuggestedTradeAutoLiveRolloutResult {
   orderId?: string | null;
   protectionState?: SuggestedTradeProtectionState | null;
   freshness?: SuggestedTradeAutoLiveFreshnessSnapshot | null;
+  blockReasonCode?: string | null;
+  liquidationRisk?: Record<string, unknown> | null;
 }
 
 interface SuggestedTradeAutoLiveFreshnessSnapshot {
@@ -389,6 +393,9 @@ interface LiveAutoRoutePreparationFailure {
   preTradeBlockedReason?: string | null;
   failureClassification: SuggestedTradeRouteAttemptFailureClassification;
   preTradeCheckId: string | null;
+  blockReasonCode?: string | null;
+  liquidationRisk?: Record<string, unknown> | null;
+  requestSummary?: Record<string, unknown> | null;
 }
 
 type LiveAutoRoutePreparationResult =
@@ -3421,8 +3428,9 @@ export class SuggestedTradesService {
             accountId: failure.accountId,
             message: failure.message,
             failureClassification: failure.failureClassification,
-            failureCode: 'LIVE_AUTO_ROUTE_PRECHECK_FAILED',
+            failureCode: failure.blockReasonCode ?? 'LIVE_AUTO_ROUTE_PRECHECK_FAILED',
             status: failure.outcome === 'blocked' ? 'pre_trade_blocked' : 'failed',
+            requestSummary: failure.requestSummary ?? null,
           })
         );
         routeAttempts.splice(0, routeAttempts.length, ...nextAttempts);
@@ -3640,6 +3648,8 @@ export class SuggestedTradesService {
         brokerKey: lastFailure.brokerKey,
         accountId: lastFailure.accountId,
         preTradeCheckId: lastFailure.preTradeCheckId,
+        blockReasonCode: lastFailure.blockReasonCode ?? null,
+        liquidationRisk: lastFailure.liquidationRisk ?? null,
       };
     }
 
@@ -3664,6 +3674,8 @@ export class SuggestedTradesService {
       brokerKey: lastFailure?.brokerKey ?? null,
       accountId: lastFailure?.accountId ?? null,
       preTradeCheckId: lastFailure?.preTradeCheckId ?? null,
+      blockReasonCode: lastFailure?.blockReasonCode ?? null,
+      liquidationRisk: lastFailure?.liquidationRisk ?? null,
     };
   }
 
@@ -3921,12 +3933,25 @@ export class SuggestedTradesService {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Live auto product preflight failed';
+      const liquidationRiskBlock = this.buildLiveAutoLiquidationRiskBlock(error, {
+        brokerKey,
+        accountId,
+        requestedSymbol: input.trade.symbol,
+      });
       return this.buildLiveAutoPreparationFailure(input.gate, brokerKey, accountId, message, {
         outcome: 'blocked',
         executionState: 'rejected',
         preTradeState: 'blocked',
         preTradeBlockedReason: message,
         preTradeCheckId,
+        blockReasonCode: liquidationRiskBlock?.reasonCode ?? null,
+        liquidationRisk: liquidationRiskBlock?.liquidationRisk ?? null,
+        requestSummary: liquidationRiskBlock
+          ? {
+              reasonCode: liquidationRiskBlock.reasonCode,
+              liquidationRisk: liquidationRiskBlock.liquidationRisk,
+            }
+          : null,
       });
     }
 
@@ -4179,6 +4204,62 @@ export class SuggestedTradesService {
       .replace(/\.$/, '');
   }
 
+  private buildLiveAutoLiquidationRiskBlock(
+    error: unknown,
+    context: {
+      brokerKey: string | null;
+      accountId: string | null;
+      requestedSymbol: string;
+    }
+  ): { reasonCode: string; liquidationRisk: Record<string, unknown> } | null {
+    const maybeBlockedError = error as Partial<MudrexLiveAutoLiquidationRiskBlockedError> | null;
+    if (
+      maybeBlockedError?.blockReasonCode !== 'blocked_liquidation_risk' ||
+      !maybeBlockedError.liquidationRisk
+    ) {
+      return null;
+    }
+    return {
+      reasonCode: maybeBlockedError.blockReasonCode,
+      liquidationRisk: this.serializeSuggestedTradeLiquidationRisk(
+        maybeBlockedError.liquidationRisk,
+        context
+      ),
+    };
+  }
+
+  private serializeSuggestedTradeLiquidationRisk(
+    evaluation: SuggestedTradeLiquidationRiskEvaluation,
+    context: {
+      brokerKey: string | null;
+      accountId: string | null;
+      requestedSymbol: string;
+    }
+  ): Record<string, unknown> {
+    return {
+      reasonCode: 'blocked_liquidation_risk',
+      status: evaluation.status,
+      source: evaluation.source,
+      brokerKey: context.brokerKey,
+      accountId: context.accountId,
+      requestedSymbol: context.requestedSymbol,
+      symbol: evaluation.symbol,
+      side: evaluation.side,
+      entryPrice: evaluation.entryPrice,
+      stopLossPrice: evaluation.stopLossPrice,
+      liquidationPrice: evaluation.liquidationPrice,
+      estimatedLiquidationPrice: evaluation.estimatedLiquidationPrice,
+      leverage: evaluation.leverage,
+      stopDistance: evaluation.stopDistance,
+      liquidationDistance: evaluation.liquidationDistance,
+      maxSafeStopDistance: evaluation.maxSafeStopDistance,
+      maxSafeStopDistanceRatio: evaluation.maxSafeStopDistanceRatio,
+      stopDistancePct: evaluation.stopDistancePct,
+      maxSafeStopDistancePct: evaluation.maxSafeStopDistancePct,
+      reason: evaluation.reason,
+    };
+  }
+
   private buildLiveAutoPreparationFailure(
     gate: LiveAutoRouteGate,
     brokerKey: string | null,
@@ -4190,6 +4271,9 @@ export class SuggestedTradesService {
       preTradeState?: SuggestedTradeExecutionLink['preTradeState'];
       preTradeBlockedReason?: string | null;
       preTradeCheckId: string | null;
+      blockReasonCode?: string | null;
+      liquidationRisk?: Record<string, unknown> | null;
+      requestSummary?: Record<string, unknown> | null;
     }
   ): LiveAutoRoutePreparationResult {
     return {
@@ -4205,6 +4289,9 @@ export class SuggestedTradesService {
         preTradeBlockedReason: options.preTradeBlockedReason,
         failureClassification: 'confirmed_no_order',
         preTradeCheckId: options.preTradeCheckId,
+        blockReasonCode: options.blockReasonCode ?? null,
+        liquidationRisk: options.liquidationRisk ?? null,
+        requestSummary: options.requestSummary ?? null,
       },
     };
   }
@@ -9107,8 +9194,7 @@ export class SuggestedTradesService {
           brokerKey,
           accountId,
           {
-            note:
-              'Mudrex attached protection is inactive or missing on broker read-back; automatic SL/TP repair is starting.',
+            note: 'Mudrex attached protection is inactive or missing on broker read-back; automatic SL/TP repair is starting.',
             attachmentTrigger: 'broker_readback_missing_protection',
           }
         );
@@ -11821,20 +11907,14 @@ export class SuggestedTradesService {
     const note =
       options.note ?? 'Live position detected; automatic SL/TP protection attachment started.';
     const attachmentTrigger = options.attachmentTrigger ?? 'position_detected';
-    const nextExecution = this.markProtectionAttachmentStarted(
-      trade,
-      execution,
-      nowIso,
-      note,
-      {
-        brokerKey,
-        accountId,
-        positionId: position.externalId,
-        positionStatus: position.status ?? null,
-        attachmentStartedAt: nowIso,
-        attachmentTrigger,
-      }
-    );
+    const nextExecution = this.markProtectionAttachmentStarted(trade, execution, nowIso, note, {
+      brokerKey,
+      accountId,
+      positionId: position.externalId,
+      positionStatus: position.status ?? null,
+      attachmentStartedAt: nowIso,
+      attachmentTrigger,
+    });
     if (typeof this.suggestedTradeRepository?.saveSuggestedTradeExecution === 'function') {
       await this.persistExecutionState(trade, nextExecution);
     }

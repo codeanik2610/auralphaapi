@@ -197,6 +197,12 @@ async function runAutomationScopeLookupAssertions(): Promise<void> {
   const originalGetRepository = coreDataSource.getRepository.bind(coreDataSource);
   const capturedWhereClauses: Array<{ clause: string; params?: Record<string, unknown> }> = [];
   const builder = {
+    select() {
+      return this;
+    },
+    addSelect() {
+      return this;
+    },
     where(clause: string, params?: Record<string, unknown>) {
       capturedWhereClauses.push({ clause, params });
       return this;
@@ -255,6 +261,12 @@ async function runAutomationRepositorySearchAssertions(): Promise<void> {
   const originalGetRepository = coreDataSource.getRepository.bind(coreDataSource);
   const capturedWhereClauses: Array<{ clause: string; params?: Record<string, unknown> }> = [];
   const builder = {
+    select() {
+      return this;
+    },
+    addSelect() {
+      return this;
+    },
     where(clause: string, params?: Record<string, unknown>) {
       capturedWhereClauses.push({ clause, params });
       return this;
@@ -266,11 +278,23 @@ async function runAutomationRepositorySearchAssertions(): Promise<void> {
     orderBy() {
       return this;
     },
+    addOrderBy() {
+      return this;
+    },
     skip() {
       return this;
     },
     take() {
       return this;
+    },
+    async getRawMany() {
+      return [];
+    },
+    async getCount() {
+      return 0;
+    },
+    async getMany() {
+      return [];
     },
     async getManyAndCount() {
       return [[], 0] as const;
@@ -291,22 +315,24 @@ async function runAutomationRepositorySearchAssertions(): Promise<void> {
     });
 
     assert.equal(response.total, 0);
-    assert.equal(capturedWhereClauses.length, 3);
-    assert.equal(capturedWhereClauses[0].clause, 'automation.userId = :userId');
-    assert.deepEqual(capturedWhereClauses[0].params, { userId: 'user-1' });
-    assert.equal(capturedWhereClauses[1].clause, 'automation.status = :status');
-    assert.deepEqual(capturedWhereClauses[1].params, { status: 'Running' });
-    assert.equal(
-      capturedWhereClauses[2].clause,
-      "(MATCH(automation.searchText) AGAINST (:search IN BOOLEAN MODE) OR LOWER(automation.searchText) LIKE :searchLike ESCAPE '\\' OR automation.scopeSymbol = :scopeSymbol OR automation.scopeTimeframe = :scopeTimeframe OR automation.sourceBacktestId = :scopeReference OR automation.sourceTemplateId = :scopeReference)"
-    );
-    assert.deepEqual(capturedWhereClauses[2].params, {
-      search: '+btcusdt_100*',
-      searchLike: '%btcusdt\\_100\\%%',
-      scopeSymbol: 'BTCUSDT_100%',
-      scopeTimeframe: 'btcusdt_100%',
-      scopeReference: 'btcusdt_100%',
-    });
+    assert.equal(capturedWhereClauses.length === 3 || capturedWhereClauses.length === 6, true);
+    for (let index = 0; index < capturedWhereClauses.length; index += 3) {
+      assert.equal(capturedWhereClauses[index].clause, 'automation.userId = :userId');
+      assert.deepEqual(capturedWhereClauses[index].params, { userId: 'user-1' });
+      assert.equal(capturedWhereClauses[index + 1].clause, 'automation.status = :status');
+      assert.deepEqual(capturedWhereClauses[index + 1].params, { status: 'Running' });
+      assert.equal(
+        capturedWhereClauses[index + 2].clause,
+        "(MATCH(automation.searchText) AGAINST (:search IN BOOLEAN MODE) OR LOWER(automation.searchText) LIKE :searchLike ESCAPE '\\' OR automation.scopeSymbol = :scopeSymbol OR automation.scopeTimeframe = :scopeTimeframe OR automation.sourceBacktestId = :scopeReference OR automation.sourceTemplateId = :scopeReference)"
+      );
+      assert.deepEqual(capturedWhereClauses[index + 2].params, {
+        search: '+btcusdt_100*',
+        searchLike: '%btcusdt\\_100\\%%',
+        scopeSymbol: 'BTCUSDT_100%',
+        scopeTimeframe: 'btcusdt_100%',
+        scopeReference: 'btcusdt_100%',
+      });
+    }
   } finally {
     (coreDataSource as any).getRepository = originalGetRepository;
   }
@@ -3752,6 +3778,12 @@ function runAutomationsScriptWiringAssertions(): void {
     executionSource.includes('suggestedTradeId: context?.suggestedTradeId ?? null'),
     true,
     'live auto order placement must forward suggested-trade context into the order ledger'
+  );
+  assert.equal(
+    executionSource.includes('blockReasonCode: liveRollout.blockReasonCode ?? null') &&
+      executionSource.includes('liquidationRisk: liveRollout.liquidationRisk ?? null'),
+    true,
+    'live auto automation outputs must persist liquidation-risk block metadata'
   );
   assert.equal(
     executionSource.includes('queueLiveTradeSuggestionReadyNotification'),

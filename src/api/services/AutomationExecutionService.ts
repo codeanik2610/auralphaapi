@@ -1269,6 +1269,8 @@ export class AutomationExecutionService {
               brokerKey: liveRollout.brokerKey ?? null,
               accountId: liveRollout.accountId ?? null,
               preTradeCheckId: liveRollout.preTradeCheckId ?? null,
+              blockReasonCode: liveRollout.blockReasonCode ?? null,
+              liquidationRisk: liveRollout.liquidationRisk ?? null,
               protectionState: liveRollout.protectionState ?? null,
               runLimit: maxAutoLiveChecksPerRun,
               freshness: liveRollout.freshness ?? null,
@@ -1837,10 +1839,7 @@ export class AutomationExecutionService {
       const embeddedProfile = buildStrategyTemplateAutomationProfile(embeddedTemplateConfig);
       return {
         profile: embeddedProfile,
-        sourceTemplateId: this.readString(
-          embeddedTemplate?.id,
-          embeddedTemplate?.templateId
-        ),
+        sourceTemplateId: this.readString(embeddedTemplate?.id, embeddedTemplate?.templateId),
         templateConfig: embeddedTemplateConfig,
       };
     }

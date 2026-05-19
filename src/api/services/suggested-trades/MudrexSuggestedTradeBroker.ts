@@ -1,6 +1,13 @@
 import { env } from '../../../env';
 import { SuggestedTradeExecutionLink } from '../../contracts/SuggestedTrade';
 import { BadRequestAppError } from '../../errors/AppError';
+import type { SuggestedTradeLiquidationRiskEvaluation } from './SuggestedTradeLiquidationRisk';
+import {
+  evaluateSuggestedTradeLiquidationRisk,
+  formatLiquidationRiskNumber,
+  formatLiquidationRiskPercent,
+  isSuggestedTradeLiquidationRiskUnsafe,
+} from './SuggestedTradeLiquidationRisk';
 
 const MUDREX_BROKER_KEY = 'mudrex';
 const MUDREX_LIVE_AUTO_ENV = 'SUGGESTED_TRADES_LIVE_AUTO_MUDREX_ENABLED';
@@ -8,6 +15,7 @@ const MUDREX_PROTECTION_REPAIR_ENV = 'SUGGESTED_TRADES_PROTECTION_REPAIR_MUDREX_
 const MUDREX_LIVE_AUTO_LIQUIDATION_STOP_DISTANCE_RATIO_ENV =
   'SUGGESTED_TRADES_MUDREX_LIVE_AUTO_LIQUIDATION_STOP_DISTANCE_RATIO';
 const DEFAULT_MUDREX_LIVE_AUTO_LIQUIDATION_STOP_DISTANCE_RATIO = 0.9;
+export const MUDREX_LIVE_AUTO_LIQUIDATION_RISK_BLOCKED_CODE = 'blocked_liquidation_risk';
 
 type BooleanEnvReader = (name: string) => boolean | null;
 
@@ -57,6 +65,18 @@ type MudrexProtectionAttachabilityIssueReason =
 interface MudrexProtectionAttachabilityIssue {
   reason: MudrexProtectionAttachabilityIssueReason;
   message: string;
+}
+
+export class MudrexLiveAutoLiquidationRiskBlockedError extends BadRequestAppError {
+  readonly blockReasonCode = MUDREX_LIVE_AUTO_LIQUIDATION_RISK_BLOCKED_CODE;
+
+  constructor(
+    message: string,
+    readonly liquidationRisk: SuggestedTradeLiquidationRiskEvaluation
+  ) {
+    super(message, MUDREX_LIVE_AUTO_LIQUIDATION_RISK_BLOCKED_CODE);
+    this.name = 'MudrexLiveAutoLiquidationRiskBlockedError';
+  }
 }
 
 export interface MudrexLiveProtectionRepairInput {
@@ -271,9 +291,30 @@ function inspectMudrexProtectionAttachability(
   const liquidationPrice =
     readNumberValue(positionPayload.liquidation_price) ??
     readNumberValue(positionPayload.liquidationPrice);
+  const entryPrice =
+    readNumberValue(positionPayload.entry_price) ??
+    readNumberValue(positionPayload.entryPrice) ??
+    readNumberValue(positionPayload.avg_price) ??
+    readNumberValue(positionPayload.average_price);
+  const leverage = readNumberValue(positionPayload.leverage);
 
   if (!side || !(stopLoss && stopLoss > 0) || !(takeProfit && takeProfit > 0)) {
     return null;
+  }
+
+  const liquidationRisk = evaluateSuggestedTradeLiquidationRisk({
+    side,
+    entryPrice,
+    stopLossPrice: stopLoss,
+    liquidationPrice,
+    leverage,
+    maxSafeStopDistanceRatio: resolveMudrexLiveAutoLiquidationStopDistanceRatio(),
+  });
+  if (isSuggestedTradeLiquidationRiskUnsafe(liquidationRisk)) {
+    return {
+      reason: 'liquidation_unsafe',
+      message: buildMudrexProtectionLiquidationUnsafeMessage(stopLossPrice, liquidationRisk),
+    };
   }
 
   if (side === 'buy') {
@@ -287,12 +328,6 @@ function inspectMudrexProtectionAttachability(
       return {
         reason: 'take_profit_crossed',
         message: `Mudrex protection needs immediate close: planned take-profit ${takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}.`,
-      };
-    }
-    if (liquidationPrice && stopLoss <= liquidationPrice) {
-      return {
-        reason: 'liquidation_unsafe',
-        message: `Mudrex protection needs manual action: planned stop-loss ${stopLossPrice} is at or beyond liquidation price ${formatNumericString(liquidationPrice) || liquidationPrice}.`,
       };
     }
     return null;
@@ -310,13 +345,29 @@ function inspectMudrexProtectionAttachability(
       message: `Mudrex protection needs immediate close: planned take-profit ${takeProfitPrice} is already crossed for current price ${formatNumericString(currentPrice) || currentPrice}.`,
     };
   }
-  if (liquidationPrice && stopLoss >= liquidationPrice) {
-    return {
-      reason: 'liquidation_unsafe',
-      message: `Mudrex protection needs manual action: planned stop-loss ${stopLossPrice} is at or beyond liquidation price ${formatNumericString(liquidationPrice) || liquidationPrice}.`,
-    };
-  }
   return null;
+}
+
+function buildMudrexProtectionLiquidationUnsafeMessage(
+  stopLossPrice: string,
+  evaluation: SuggestedTradeLiquidationRiskEvaluation
+): string {
+  const liquidationReference =
+    evaluation.liquidationPrice ?? evaluation.estimatedLiquidationPrice ?? null;
+  const referenceLabel =
+    evaluation.source === 'actual_liquidation'
+      ? 'liquidation price'
+      : 'estimated liquidation price';
+  if (evaluation.status === 'beyond_liquidation') {
+    return `Mudrex protection needs immediate close: planned stop-loss ${stopLossPrice} is at or beyond ${referenceLabel} ${formatLiquidationRiskNumber(liquidationReference)}.`;
+  }
+  return `Mudrex protection needs immediate close: planned stop-loss ${stopLossPrice} is ${formatLiquidationRiskPercent(
+    evaluation.stopDistancePct
+  )} from entry ${
+    formatNumericString(evaluation.entryPrice) || evaluation.entryPrice || 'unknown'
+  }, above the liquidation safety limit ${formatLiquidationRiskPercent(
+    evaluation.maxSafeStopDistancePct
+  )}.`;
 }
 
 function shouldCloseMudrexPositionForAttachabilityIssue(
@@ -552,35 +603,27 @@ export function assertMudrexLiveAutoStopLossWithinEstimatedLiquidationBuffer(inp
   stopLossPrice: number;
   leverage?: number | null;
 }): void {
-  const leverage = readNumberValue(input.leverage);
-  if (!(leverage && leverage > 0) || !(input.entryPrice > 0) || !(input.stopLossPrice > 0)) {
+  const evaluation = evaluateSuggestedTradeLiquidationRisk({
+    symbol: input.brokerSymbol,
+    side: input.side,
+    entryPrice: input.entryPrice,
+    stopLossPrice: input.stopLossPrice,
+    leverage: input.leverage,
+    maxSafeStopDistanceRatio: resolveMudrexLiveAutoLiquidationStopDistanceRatio(),
+  });
+  if (!isSuggestedTradeLiquidationRiskUnsafe(evaluation)) {
     return;
   }
 
-  const riskDistance =
-    input.side === 'long'
-      ? input.entryPrice - input.stopLossPrice
-      : input.stopLossPrice - input.entryPrice;
-  if (!(riskDistance > 0)) {
-    return;
-  }
-
-  const ratio = resolveMudrexLiveAutoLiquidationStopDistanceRatio();
-  const maxStopDistance = (input.entryPrice / leverage) * ratio;
-  if (riskDistance < maxStopDistance) {
-    return;
-  }
-
-  const riskPct = riskDistance / input.entryPrice;
-  const maxPct = maxStopDistance / input.entryPrice;
-  throw new BadRequestAppError(
+  throw new MudrexLiveAutoLiquidationRiskBlockedError(
     `Mudrex live entry blocked for ${input.brokerSymbol}: stop-loss ${formatNumericString(
       input.stopLossPrice
-    )} is ${formatPercent(riskPct)} from entry ${
+    )} is ${formatLiquidationRiskPercent(evaluation.stopDistancePct)} from entry ${
       formatNumericString(input.entryPrice) || input.entryPrice
-    } at ${formatNumericString(leverage) || leverage}x leverage, above the liquidation safety limit ${formatPercent(
-      maxPct
-    )}. Use lower leverage or a closer initial stop before routing.`
+    } at ${formatNumericString(evaluation.leverage) || evaluation.leverage || 'unknown'}x leverage, above the liquidation safety limit ${formatLiquidationRiskPercent(
+      evaluation.maxSafeStopDistancePct
+    )}. Use lower leverage or a closer initial stop before routing.`,
+    evaluation
   );
 }
 
@@ -592,13 +635,6 @@ function resolveMudrexLiveAutoLiquidationStopDistanceRatio(): number {
     return configured;
   }
   return DEFAULT_MUDREX_LIVE_AUTO_LIQUIDATION_STOP_DISTANCE_RATIO;
-}
-
-function formatPercent(value: number): string {
-  if (!Number.isFinite(value)) {
-    return 'unknown';
-  }
-  return `${(value * 100).toFixed(2)}%`;
 }
 
 export function assertMudrexLiveAutoLeverageWithinAssetLimits(

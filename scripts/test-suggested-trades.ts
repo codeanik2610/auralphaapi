@@ -40,6 +40,10 @@ import {
   resolveSuggestedTradeLiveAutoRuntimeConfig,
 } from '../src/api/services/suggested-trades/SuggestedTradeBrokerControls';
 import {
+  evaluateSuggestedTradeLiquidationRisk,
+  isSuggestedTradeLiquidationRiskUnsafe,
+} from '../src/api/services/suggested-trades/SuggestedTradeLiquidationRisk';
+import {
   evaluateCustomRLadderTrailingStopMove,
   normalizeCustomRLadderTrailingStopConfig,
 } from '../src/api/utils/trailingStopRLadder';
@@ -1866,6 +1870,27 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal(mudrexLiquidationUnsafe.outcome, 'blocked');
     assert.match(mudrexLiquidationUnsafe.message, /Mudrex live entry blocked for EDENUSDT/);
     assert.match(mudrexLiquidationUnsafe.message, /liquidation safety limit/);
+    assert.equal(mudrexLiquidationUnsafe.blockReasonCode, 'blocked_liquidation_risk');
+    assert.equal(mudrexLiquidationUnsafe.liquidationRisk?.status, 'beyond_liquidation');
+    assert.equal(mudrexLiquidationUnsafe.liquidationRisk?.source, 'estimated_from_leverage');
+    assert.equal(mudrexLiquidationUnsafe.liquidationRisk?.symbol, 'EDENUSDT');
+    assert.equal(mudrexLiquidationUnsafe.liquidationRisk?.side, 'short');
+    assert.equal(mudrexLiquidationUnsafe.liquidationRisk?.leverage, 15);
+    const mudrexLiquidationRouteAttempts =
+      (persistedExecution?.['routeAttempts'] as Array<Record<string, unknown>> | undefined) ?? [];
+    assert.equal(mudrexLiquidationRouteAttempts[0]?.failureCode, 'blocked_liquidation_risk');
+    assert.equal(
+      (mudrexLiquidationRouteAttempts[0]?.requestSummary as Record<string, any> | undefined)
+        ?.reasonCode,
+      'blocked_liquidation_risk'
+    );
+    assert.equal(
+      (
+        (mudrexLiquidationRouteAttempts[0]?.requestSummary as Record<string, any> | undefined)
+          ?.liquidationRisk as Record<string, unknown> | undefined
+      )?.status,
+      'beyond_liquidation'
+    );
     baseTrade.side = originalLiveAutoTradeSide;
     baseTrade.symbol = originalLiveAutoTradeSymbol;
     service.runPreTradeGate = originalLiveAutoGateForLiquidationGuard;
@@ -6231,6 +6256,44 @@ async function runSuggestedTradeBrokerLiveAutoSizingHandlerAssertions(): Promise
         }),
       /Delta Exchange product-rule preflight is unavailable/
     );
+  }
+
+  {
+    const safeRisk = evaluateSuggestedTradeLiquidationRisk({
+      symbol: 'BTCUSDT',
+      side: 'long',
+      entryPrice: 100,
+      stopLossPrice: 95,
+      leverage: 10,
+      maxSafeStopDistanceRatio: 0.9,
+    });
+    assert.equal(safeRisk.status, 'safe');
+    assert.equal(safeRisk.source, 'estimated_from_leverage');
+    assert.equal(isSuggestedTradeLiquidationRiskUnsafe(safeRisk), false);
+
+    const nearActualRisk = evaluateSuggestedTradeLiquidationRisk({
+      symbol: 'BTCUSDT',
+      side: 'long',
+      entryPrice: 100,
+      stopLossPrice: 91,
+      liquidationPrice: 90,
+      maxSafeStopDistanceRatio: 0.9,
+    });
+    assert.equal(nearActualRisk.status, 'near_liquidation');
+    assert.equal(nearActualRisk.source, 'actual_liquidation');
+    assert.equal(isSuggestedTradeLiquidationRiskUnsafe(nearActualRisk), true);
+
+    const edenRisk = evaluateSuggestedTradeLiquidationRisk({
+      symbol: 'EDENUSDT',
+      side: 'short',
+      entryPrice: 0.07826,
+      stopLossPrice: 0.083517892857,
+      leverage: 15,
+      maxSafeStopDistanceRatio: 0.9,
+    });
+    assert.equal(edenRisk.status, 'beyond_liquidation');
+    assert.equal(edenRisk.source, 'estimated_from_leverage');
+    assert.equal(isSuggestedTradeLiquidationRiskUnsafe(edenRisk), true);
   }
 
   {
