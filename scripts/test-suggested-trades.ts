@@ -11652,6 +11652,33 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
       return undefined;
     },
   };
+  type DeltaSnapshotUpsertRecord = {
+    userId: string;
+    accountId: string;
+    brokerKey: string;
+    items: Array<Record<string, unknown>>;
+  };
+  let deltaSnapshotUpsert: DeltaSnapshotUpsertRecord | null = null;
+  deltaTemplateSourceService.ordersSnapshotSourceRepository = {
+    async upsertOrderSnapshots(
+      userId: string,
+      accountId: string,
+      brokerKey: string,
+      items: unknown[]
+    ) {
+      deltaSnapshotUpsert = {
+        userId,
+        accountId,
+        brokerKey,
+        items: items
+          .map((item) =>
+            item && typeof item === 'object' ? (item as Record<string, unknown>) : null
+          )
+          .filter((item): item is Record<string, unknown> => Boolean(item)),
+      };
+      return { inserted: items.length, updated: 0, skipped: 0, orderIds: [] };
+    },
+  };
   let deltaRiskOrderUpdate: Record<string, unknown> | null = null;
   deltaTemplateSourceService.brokerRuntimeRegistry = {
     getPositionsAdapter() {
@@ -11791,6 +11818,23 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
   assert.equal(
     (deltaTemplateDrivenExecution.protectionPlan as Record<string, any>).attachedStopLossPrice,
     '112.5'
+  );
+  const recordedDeltaSnapshotUpsert = deltaSnapshotUpsert as DeltaSnapshotUpsertRecord | null;
+  assert.ok(recordedDeltaSnapshotUpsert, 'Delta trailing mutation should refresh order snapshots.');
+  assert.equal(recordedDeltaSnapshotUpsert.userId, 'user-1');
+  assert.equal(recordedDeltaSnapshotUpsert.accountId, 'delta-account-template');
+  assert.equal(recordedDeltaSnapshotUpsert.brokerKey, 'delta_exchange');
+  assert.deepEqual(
+    recordedDeltaSnapshotUpsert.items.map((item) => String(item.id ?? item.order_id)).sort(),
+    ['delta-sl-replacement', 'delta-sl-template', 'delta-tp-template']
+  );
+  assert.equal(
+    recordedDeltaSnapshotUpsert.items.find((item) => item.id === 'delta-sl-replacement')?.symbol,
+    'TONUSD'
+  );
+  assert.equal(
+    recordedDeltaSnapshotUpsert.items.find((item) => item.id === 'delta-sl-template')?.status,
+    'cancelled'
   );
   assert.notEqual(
     (deltaTemplateDrivenExecution.protectionPlan as Record<string, any>).bracketStatus,

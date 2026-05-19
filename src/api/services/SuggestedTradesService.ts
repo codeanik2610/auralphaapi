@@ -9838,6 +9838,18 @@ export class SuggestedTradesService {
       responseRiskOrderIds.takeProfitOrderId ??
       riskOrderIds.takeProfitOrderId ??
       this.readStringValue(plan.takeProfitOrderId);
+    if (brokerKey === 'delta_exchange') {
+      await this.syncDeltaRiskOrderMutationSnapshots({
+        userId,
+        accountId,
+        trade,
+        position,
+        mutationResult: riskOrderMutationResult,
+        stopLossOrderId: appliedStopLossOrderId,
+        takeProfitOrderId: appliedTakeProfitOrderId,
+        replacedStopLossOrderId: riskOrderIds.stopLossOrderId,
+      });
+    }
     const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
     const history = Array.isArray(existingTrailing.history) ? existingTrailing.history : [];
     const auditPosition = verifiedMudrexPosition ?? position;
@@ -11446,6 +11458,185 @@ export class SuggestedTradesService {
         this.readStringValue(data?.take_profit_order_id) ??
         this.readStringValue(data?.takeProfitOrderId),
     };
+  }
+
+  private async syncDeltaRiskOrderMutationSnapshots(input: {
+    userId: string;
+    accountId: string;
+    trade: SuggestedTrade;
+    position: LivePositionSnapshot;
+    mutationResult: unknown;
+    stopLossOrderId: string | null;
+    takeProfitOrderId: string | null;
+    replacedStopLossOrderId: string | null;
+  }): Promise<void> {
+    const repository = this.ordersSnapshotSourceRepository as
+      | {
+          upsertOrderSnapshots?: (
+            userId: string,
+            accountId: string,
+            brokerKey: string,
+            items: unknown[]
+          ) => Promise<unknown>;
+        }
+      | undefined;
+    if (!repository?.upsertOrderSnapshots) {
+      return;
+    }
+
+    const ids = Array.from(
+      new Set(
+        [
+          input.stopLossOrderId,
+          input.takeProfitOrderId,
+          input.replacedStopLossOrderId,
+          ...this.extractDeltaRiskOrderMutationOrderIds(input.mutationResult),
+        ]
+          .map((value) => this.readStringValue(value))
+          .filter((value): value is string => Boolean(value))
+      )
+    );
+    if (!ids.length) {
+      return;
+    }
+
+    const ordersAdapter = this.brokerRuntimeRegistry?.getOrdersAdapter?.('delta_exchange') as
+      | DeltaProtectionOrdersAdapter
+      | undefined;
+    const context = {
+      userId: input.userId,
+      brokerKey: 'delta_exchange',
+      accountId: input.accountId,
+    };
+    const items: unknown[] = [];
+    const readBackIds = new Set<string>();
+    if (ordersAdapter?.getOrder) {
+      for (const orderId of ids) {
+        try {
+          items.push(await ordersAdapter.getOrder(orderId, context));
+          readBackIds.add(orderId);
+        } catch {
+          // Fall back to the mutation response below; do not fail a completed broker mutation
+          // only because its monitoring snapshot could not be refreshed immediately.
+        }
+      }
+    }
+
+    const fallbackSymbol =
+      this.readStringValue(input.position.payload?.product_symbol) ??
+      this.readStringValue(input.position.payload?.symbol) ??
+      input.trade.symbol;
+    for (const item of this.extractDeltaRiskOrderMutationSnapshotItems(
+      input.mutationResult,
+      fallbackSymbol
+    )) {
+      const record = this.readRecordValue(item);
+      const orderId =
+        this.readStringValue(record?.id) ??
+        this.readStringValue(record?.order_id) ??
+        this.readStringValue(record?.orderId) ??
+        this.readStringValue(record?.external_id) ??
+        this.readStringValue(record?.externalId);
+      if (!orderId || readBackIds.has(orderId)) {
+        continue;
+      }
+      items.push(item);
+    }
+
+    if (input.replacedStopLossOrderId && !readBackIds.has(input.replacedStopLossOrderId)) {
+      items.push({
+        id: input.replacedStopLossOrderId,
+        symbol: fallbackSymbol,
+        status: 'cancelled',
+        stop_order_type: 'stop_loss_order',
+        reduce_only: true,
+      });
+    }
+    if (!items.length) {
+      return;
+    }
+
+    try {
+      await repository.upsertOrderSnapshots(input.userId, input.accountId, 'delta_exchange', items);
+    } catch (error) {
+      await this.operationalEventService?.logActivity?.(input.userId, {
+        type: 'Suggested Trade',
+        title: `Delta protection snapshot refresh failed: ${input.trade.symbol}`,
+        status: 'Warning',
+        route: 'Suggested Trades',
+        stream: 'Execution',
+        related: `delta_exchange · ${input.accountId}`,
+        referenceId: input.trade.id,
+        symbol: input.trade.symbol,
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private extractDeltaRiskOrderMutationOrderIds(value: unknown): string[] {
+    const record = this.readRecordValue(value);
+    if (!record) {
+      return [];
+    }
+    return [
+      record.stop_loss_order_id,
+      record.stopLossOrderId,
+      record.take_profit_order_id,
+      record.takeProfitOrderId,
+      record.replaced_stop_loss_order_id,
+      record.replacedStopLossOrderId,
+      ...this.extractDeltaRiskOrderMutationSnapshotItems(value, null).map((item) => {
+        const itemRecord = this.readRecordValue(item);
+        return (
+          this.readStringValue(itemRecord?.id) ??
+          this.readStringValue(itemRecord?.order_id) ??
+          this.readStringValue(itemRecord?.orderId) ??
+          this.readStringValue(itemRecord?.external_id) ??
+          this.readStringValue(itemRecord?.externalId)
+        );
+      }),
+    ]
+      .map((item) => this.readStringValue(item))
+      .filter((item): item is string => Boolean(item));
+  }
+
+  private extractDeltaRiskOrderMutationSnapshotItems(
+    value: unknown,
+    fallbackSymbol: string | null
+  ): unknown[] {
+    const record = this.readRecordValue(value);
+    if (!record) {
+      return [];
+    }
+    const rawItems = Array.isArray(record.protective_orders)
+      ? record.protective_orders
+      : Array.isArray(record.protectiveOrders)
+        ? record.protectiveOrders
+        : [];
+    return rawItems
+      .map((item) => this.readRecordValue(item))
+      .filter((item): item is Record<string, unknown> => Boolean(item))
+      .map((item) => {
+        const orderId =
+          this.readStringValue(item.id) ??
+          this.readStringValue(item.order_id) ??
+          this.readStringValue(item.orderId);
+        return {
+          ...item,
+          ...(orderId ? { id: orderId } : {}),
+          symbol:
+            this.readStringValue(item.symbol) ??
+            this.readStringValue(item.product_symbol) ??
+            this.readStringValue(item.productSymbol) ??
+            fallbackSymbol ??
+            undefined,
+          status:
+            this.readStringValue(item.status) ??
+            this.readStringValue(item.state) ??
+            this.readStringValue(item.order_status) ??
+            'open',
+        };
+      });
   }
 
   private recordTrailingStopError(

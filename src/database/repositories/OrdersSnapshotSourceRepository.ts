@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto';
 import { Service } from 'typedi';
 import { coreDataSource } from '../data-source';
+
+const ORDER_SNAPSHOT_UPSERT_CHUNK_SIZE = 100;
 
 export interface OpenOrderSnapshotSourceRow {
   accountId: string;
@@ -21,8 +24,177 @@ export interface OrderSnapshotSourceRow {
   lastSeenAt: Date | null;
 }
 
+export interface OrderSnapshotUpsertResult {
+  inserted: number;
+  updated: number;
+  skipped: number;
+  orderIds: string[];
+}
+
 @Service()
 export class OrdersSnapshotSourceRepository {
+  async upsertOrderSnapshots(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    items: unknown[]
+  ): Promise<OrderSnapshotUpsertResult> {
+    const normalizedUserId = String(userId || '').trim();
+    const normalizedAccountId = String(accountId || '').trim();
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (!normalizedUserId || !normalizedAccountId || !normalizedBrokerKey || !items.length) {
+      return { inserted: 0, updated: 0, skipped: 0, orderIds: [] };
+    }
+
+    const rows = items
+      .map((item) =>
+        this.buildOrderSnapshotUpsertRow(
+          normalizedUserId,
+          normalizedAccountId,
+          normalizedBrokerKey,
+          item
+        )
+      )
+      .filter(
+        (
+          row
+        ): row is {
+          userId: string;
+          accountId: string;
+          brokerKey: string;
+          externalId: string;
+          symbol: string | null;
+          orderStatus: string | null;
+          statusRank: number;
+          payloadJson: string;
+          payloadHash: string;
+        } => Boolean(row)
+      );
+    if (!rows.length) {
+      return { inserted: 0, updated: 0, skipped: 0, orderIds: [] };
+    }
+
+    let inserted = 0;
+    let updated = 0;
+    let skipped = 0;
+    for (let i = 0; i < rows.length; i += ORDER_SNAPSHOT_UPSERT_CHUNK_SIZE) {
+      const chunk = rows.slice(i, i + ORDER_SNAPSHOT_UPSERT_CHUNK_SIZE);
+      const externalIds = chunk.map((row) => row.externalId);
+      const existingRows = (await coreDataSource.query(
+        `SELECT external_id AS externalId, order_status AS orderStatus, payload_hash AS payloadHash, status_rank AS statusRank
+           FROM scheduler_orders_snapshots
+          WHERE user_id = ?
+            AND account_id = ?
+            AND external_id IN (${externalIds.map(() => '?').join(', ')})`,
+        [normalizedUserId, normalizedAccountId, ...externalIds]
+      )) as Array<{
+        externalId?: string | null;
+        orderStatus?: string | null;
+        payloadHash?: string | null;
+        statusRank?: number | string | null;
+      }>;
+      const existingEntries = existingRows
+        .map(
+          (
+            row
+          ):
+            | [
+                string,
+                { orderStatus: string | null; payloadHash: string | null; statusRank: number },
+              ]
+            | null => {
+            const externalId = String(row.externalId || '').trim();
+            if (!externalId) {
+              return null;
+            }
+            return [
+              externalId,
+              {
+                orderStatus: row.orderStatus ?? null,
+                payloadHash: row.payloadHash ?? null,
+                statusRank:
+                  row.statusRank === undefined || row.statusRank === null
+                    ? 0
+                    : Number(row.statusRank),
+              },
+            ];
+          }
+        )
+        .filter(
+          (
+            entry
+          ): entry is [
+            string,
+            { orderStatus: string | null; payloadHash: string | null; statusRank: number },
+          ] => Boolean(entry)
+        );
+      const existingById = new Map(existingEntries);
+
+      const placeholders = chunk
+        .map(() => '(UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW(), NOW())')
+        .join(', ');
+      const params: unknown[] = [];
+      chunk.forEach((row) => {
+        params.push(
+          row.userId,
+          row.accountId,
+          row.brokerKey,
+          row.externalId,
+          row.symbol,
+          row.orderStatus,
+          row.statusRank,
+          row.payloadJson,
+          row.payloadHash
+        );
+      });
+
+      await coreDataSource.query(
+        `INSERT INTO scheduler_orders_snapshots
+           (id, user_id, account_id, broker_key, external_id, symbol,
+            order_status, status_rank, payload_json, payload_hash,
+            first_seen_at, last_seen_at, created_at, updated_at)
+         VALUES ${placeholders}
+         ON DUPLICATE KEY UPDATE
+           last_seen_at = NOW(),
+           updated_at = IF(
+             VALUES(status_rank) >= status_rank
+             AND NOT (VALUES(payload_hash) <=> payload_hash),
+             NOW(),
+             updated_at
+           ),
+           broker_key = VALUES(broker_key),
+           symbol = COALESCE(VALUES(symbol), symbol),
+           order_status = IF(VALUES(status_rank) >= status_rank, VALUES(order_status), order_status),
+           status_rank = GREATEST(status_rank, VALUES(status_rank)),
+           payload_json = IF(VALUES(status_rank) >= status_rank, VALUES(payload_json), payload_json),
+           payload_hash = IF(VALUES(status_rank) >= status_rank, VALUES(payload_hash), payload_hash)`,
+        params
+      );
+
+      chunk.forEach((row) => {
+        const existing = existingById.get(row.externalId);
+        if (!existing) {
+          inserted += 1;
+        } else if (row.payloadHash === existing.payloadHash) {
+          skipped += 1;
+        } else if (row.statusRank < existing.statusRank) {
+          skipped += 1;
+        } else {
+          updated += 1;
+        }
+      });
+    }
+
+    return {
+      inserted,
+      updated,
+      skipped,
+      orderIds: Array.from(new Set(rows.map((row) => row.externalId))),
+    };
+  }
+
   async findOrderByExternalId(
     userId: string,
     brokerKey: string,
@@ -171,6 +343,93 @@ export class OrdersSnapshotSourceRepository {
       return value as Record<string, unknown>;
     }
     return null;
+  }
+
+  private buildOrderSnapshotUpsertRow(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    item: unknown
+  ): {
+    userId: string;
+    accountId: string;
+    brokerKey: string;
+    externalId: string;
+    symbol: string | null;
+    orderStatus: string | null;
+    statusRank: number;
+    payloadJson: string;
+    payloadHash: string;
+  } | null {
+    const record = this.parsePayloadRecord(item);
+    if (!record) {
+      return null;
+    }
+    const externalId = this.readString(
+      record.id ?? record.external_id ?? record.externalId ?? record.order_id ?? record.orderId
+    );
+    if (!externalId) {
+      return null;
+    }
+    const symbol =
+      this.readString(record.symbol ?? record.product_symbol ?? record.productSymbol) || null;
+    const orderStatus = this.normalizeOrderStatus(
+      this.readString(record.status ?? record.state ?? record.order_status ?? record.orderStatus) ||
+        null
+    );
+    const statusRank = this.computeOrderStatusRank(orderStatus || '');
+    const payloadJson = JSON.stringify(record);
+    const payloadHash = createHash('sha256').update(payloadJson).digest('hex');
+    return {
+      userId,
+      accountId,
+      brokerKey,
+      externalId,
+      symbol,
+      orderStatus,
+      statusRank,
+      payloadJson,
+      payloadHash,
+    };
+  }
+
+  private readString(value: unknown): string {
+    return String(value ?? '').trim();
+  }
+
+  private normalizeOrderStatus(status: string | null): string | null {
+    const raw = String(status || '').trim();
+    if (!raw) {
+      return null;
+    }
+    const normalized = raw.toUpperCase();
+    if (['OPEN', 'NEW', 'CREATED'].includes(normalized)) return 'OPEN';
+    if (['PENDING', 'TRIGGER_PENDING'].includes(normalized)) return 'PENDING';
+    if (['PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL'].includes(normalized)) {
+      return 'PARTIALLY_FILLED';
+    }
+    if (['FILLED', 'COMPLETED', 'EXECUTED'].includes(normalized)) return 'FILLED';
+    if (['CANCELLED', 'CANCELED'].includes(normalized)) return 'CANCELLED';
+    if (['CLOSED'].includes(normalized)) return 'CLOSED';
+    if (['REJECTED'].includes(normalized)) return 'REJECTED';
+    if (['EXPIRED'].includes(normalized)) return 'EXPIRED';
+    if (['FAILED'].includes(normalized)) return 'FAILED';
+    return normalized;
+  }
+
+  private computeOrderStatusRank(status: string): number {
+    const normalized = String(status || '')
+      .trim()
+      .toUpperCase();
+    if (['OPEN', 'PENDING'].includes(normalized)) return 1;
+    if (['PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL', 'TRIGGER_PENDING'].includes(normalized)) {
+      return 2;
+    }
+    if (['FILLED', 'COMPLETED', 'EXECUTED'].includes(normalized)) return 3;
+    if (['CLOSED', 'CANCELLED', 'CANCELED', 'REJECTED', 'FAILED', 'EXPIRED'].includes(normalized)) {
+      return 4;
+    }
+    return 0;
   }
 
   private toDate(value: Date | string | null | undefined): Date | null {
