@@ -1481,6 +1481,15 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
   let currentAccountId = 'acc-1';
   let currentAssetExternalId = 'mudrex-asset-1';
   let currentRemoteAssetId = 'mudrex-asset-remote';
+  let preEntryGuards: Record<string, unknown> = {
+    minDistanceFromStopR: {
+      enabled: false,
+      minR: 0.5,
+      basis: 'expected_fill',
+      blockOnMissingMarketPrice: false,
+    },
+  };
+  let guardMarketPrice: number | null = null;
 
   service.suggestedTradeRepository = {
     async getSuggestedTradeById() {
@@ -1530,6 +1539,24 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
           id: currentRemoteAssetId,
         },
       };
+    },
+  };
+  service.marketMetricsService = {
+    async getMetricsForSymbols(symbols: string[]) {
+      const metrics = new Map<string, unknown>();
+      for (const symbol of symbols) {
+        metrics.set(String(symbol).trim().toUpperCase(), {
+          symbol: String(symbol).trim().toUpperCase(),
+          lastPrice: guardMarketPrice,
+          changePerc: null,
+          volume24h: null,
+          high24h: null,
+          low24h: null,
+          priceSource: 'test',
+          snapshotAt: new Date('2026-05-11T08:31:00.000Z'),
+        });
+      }
+      return metrics;
     },
   };
   service.brokerRuntimeRegistry = {
@@ -1595,6 +1622,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
         '1h': 600,
       },
     },
+    preEntryGuards,
   });
   service.runPreTradeGate = async () => {
     preTradeGateCalls += 1;
@@ -1753,6 +1781,37 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal((persistedExecution?.['triggerType'] as string | undefined) ?? null, 'GTC');
     service.runPreTradeGate = originalRunPreTradeGate;
 
+    preEntryGuards = {
+      minDistanceFromStopR: {
+        enabled: true,
+        minR: 0.5,
+        basis: 'expected_fill',
+        blockOnMissingMarketPrice: true,
+      },
+    };
+    guardMarketPrice = 97;
+    const tooCloseToStop = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto',
+      {
+        async createOrder() {
+          throw new Error('min-distance guard should block before broker placement');
+        },
+      }
+    );
+    assert.equal(tooCloseToStop.outcome, 'blocked');
+    assert.match(tooCloseToStop.message, /expected fill 97 is 0\.4R from stop-loss 95/);
+    assert.match(tooCloseToStop.message, /below required 0\.5R/);
+    preEntryGuards = {
+      minDistanceFromStopR: {
+        enabled: false,
+        minR: 0.5,
+        basis: 'expected_fill',
+        blockOnMissingMarketPrice: false,
+      },
+    };
+    guardMarketPrice = null;
+
     baseTrade.timeframe = '5m';
     baseTrade.signalTime = new Date('2026-05-11T08:20:00.000Z');
     const currentRunLatencyAllowed = await service.attemptAutoLiveExecutionForAutomation(
@@ -1775,7 +1834,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal(currentRunLatencyAllowed.freshness?.ageAfterCloseSeconds, 300);
     assert.equal(currentRunLatencyAllowed.freshness?.maxAgeAfterCloseSeconds, 300);
     assert.equal(currentRunLatencyAllowed.freshness?.currentRunFreshnessFloorSeconds, 300);
-    assert.equal(preTradeGateCalls, 3);
+    assert.equal(preTradeGateCalls, 4);
     baseTrade.timeframe = '1h';
 
     baseTrade.signalTime = new Date(Date.now() - 3 * 60 * 60 * 1000);
@@ -1788,7 +1847,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     assert.equal(stale.freshness?.allowed, false);
     assert.match(stale.message, /Skipped live execution/);
     assert.match(stale.message, /freshness window/);
-    assert.equal(preTradeGateCalls, 3);
+    assert.equal(preTradeGateCalls, 4);
     assert.ok(loggedActivities.includes('Live auto stale signal skipped: BTCUSDT'));
     baseTrade.signalTime = freshOneHourSignalTime;
 

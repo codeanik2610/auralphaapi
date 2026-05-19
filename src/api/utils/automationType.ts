@@ -169,6 +169,11 @@ export const TRADE_SUGGESTION_ORDER_TYPES = ['market', 'limit'] as const;
 export const TRADE_SUGGESTION_QUANTITY_MODES = ['quantity', 'notional', 'risk_percent'] as const;
 export const TRADE_SUGGESTION_DELTA_PROTECTION_MODES = ['reduce_only', 'native_bracket'] as const;
 export const TRADE_SUGGESTION_TIME_IN_FORCE = ['GTC', 'IOC', 'FOK'] as const;
+export const TRADE_SUGGESTION_PRE_ENTRY_MIN_DISTANCE_BASIS = [
+  'expected_fill',
+  'order_entry',
+  'market_price',
+] as const;
 
 export const TRADE_SUGGESTION_EXECUTION_LIMIT_RULES = {
   maxOrdersPerRun: {
@@ -232,6 +237,43 @@ export const normalizeTradeSuggestionExecutionLimits = (
   };
 };
 
+export const normalizeTradeSuggestionPreEntryGuards = (value: unknown): Record<string, unknown> => {
+  const guards = parseRecord(value) ?? {};
+  const minDistanceFromStopR =
+    parseRecord(guards.minDistanceFromStopR) ??
+    parseRecord(guards.minDistanceFromStop) ??
+    parseRecord(guards.stopDistanceR) ??
+    {};
+
+  return {
+    minDistanceFromStopR: {
+      enabled: readBoolean(minDistanceFromStopR.enabled) ?? false,
+      minR: normalizeClampedNumeric(
+        readNumber(
+          minDistanceFromStopR.minR,
+          minDistanceFromStopR.minimumR,
+          minDistanceFromStopR.requiredR
+        ),
+        0.5,
+        {
+          min: 0,
+          max: 10,
+        }
+      ),
+      basis: normalizeEnum(
+        readString(minDistanceFromStopR.basis),
+        TRADE_SUGGESTION_PRE_ENTRY_MIN_DISTANCE_BASIS,
+        'expected_fill'
+      ),
+      blockOnMissingMarketPrice:
+        readBoolean(
+          minDistanceFromStopR.blockOnMissingMarketPrice,
+          minDistanceFromStopR.blockOnMissingPrice
+        ) ?? false,
+    },
+  };
+};
+
 export const normalizeTradeSuggestionExecutionPolicy = (
   value: unknown
 ): Record<string, unknown> => {
@@ -245,6 +287,11 @@ export const normalizeTradeSuggestionExecutionPolicy = (
     parseRecord(root.limitOrderExpiry) ??
     parseRecord(root.orderExpiry) ??
     parseRecord(root.limitOrderTtl) ??
+    {};
+  const preEntryGuards =
+    parseRecord(root.preEntryGuards) ??
+    readNestedRecord(root, 'guards', 'preEntry') ??
+    parseRecord(root.entryGuards) ??
     {};
 
   const executionMode = normalizeEnum(
@@ -336,6 +383,7 @@ export const normalizeTradeSuggestionExecutionPolicy = (
       }),
     },
     limits: normalizeTradeSuggestionExecutionLimits(root.limits),
+    preEntryGuards: normalizeTradeSuggestionPreEntryGuards(preEntryGuards),
     liveConsent: {
       enabled: liveConsentEnabled,
       confirmedByUserId: readString(liveConsent.confirmedByUserId),

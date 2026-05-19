@@ -459,6 +459,24 @@ function runExecutionPolicyNormalizationTests(): void {
   assert.equal(staleEvaluation.maxAgeAfterCloseSeconds, 600);
   console.log('  ✓ Normalizes configurable timeframe-aware signal freshness guard');
 
+  const preEntryGuardPolicy = normalizeTradeSuggestionExecutionPolicy({
+    preEntryGuards: {
+      minDistanceFromStopR: {
+        enabled: true,
+        minR: 0.5,
+        basis: 'expected_fill',
+        blockOnMissingMarketPrice: true,
+      },
+    },
+  });
+  const preEntryGuards = (preEntryGuardPolicy.preEntryGuards as Record<string, unknown>) || {};
+  const minDistanceGuard = (preEntryGuards.minDistanceFromStopR as Record<string, unknown>) || {};
+  assert.equal(minDistanceGuard.enabled, true);
+  assert.equal(minDistanceGuard.minR, 0.5);
+  assert.equal(minDistanceGuard.basis, 'expected_fill');
+  assert.equal(minDistanceGuard.blockOnMissingMarketPrice, true);
+  console.log('  ✓ Normalizes pre-entry min-distance-from-stop guard');
+
   const limitOrderExpiry = (normalizedLimits.limitOrderExpiry as Record<string, unknown>) || {};
   const timeframeExpirySeconds =
     (limitOrderExpiry.timeframeExpirySeconds as Record<string, unknown>) || {};

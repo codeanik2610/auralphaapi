@@ -79,6 +79,7 @@ import {
 import { OperationalEventService } from './OperationalEventService';
 import { PaperOrderExecutionService } from './PaperOrderExecutionService';
 import { BrokerReferenceDataService } from './BrokerReferenceDataService';
+import { MarketMetric, MarketMetricsService } from './MarketMetricsService';
 import { RiskPreTradeService } from './RiskPreTradeService';
 import { RiskKillSwitchService } from './RiskKillSwitchService';
 import {
@@ -118,6 +119,7 @@ type TradeSuggestionApprovalMode = 'manual_review' | 'auto_if_safe';
 type TradeSuggestionRouteMode = 'strategy_default' | 'user_default' | 'fixed';
 type TradeSuggestionOrderType = 'market' | 'limit';
 type TradeSuggestionQuantityMode = 'quantity' | 'notional' | 'risk_percent';
+type LiveAutoMinDistanceFromStopBasis = 'expected_fill' | 'order_entry' | 'market_price';
 type SuggestedTradePreTradeState = NonNullable<SuggestedTradeExecutionLink['preTradeState']>;
 const SUGGESTED_TRADES_FRESHNESS_AUDIT_LOOKBACK_DAYS = 7;
 const SUGGESTED_TRADES_FRESHNESS_AUDIT_LIMIT = 5000;
@@ -166,6 +168,14 @@ interface ResolvedTradeSuggestionExecutionPolicy {
   dedupeWindowSeconds: number;
   freshness: TradeSuggestionFreshnessPolicy;
   limitOrderExpiry?: TradeSuggestionLimitOrderExpiryPolicy;
+  preEntryGuards: {
+    minDistanceFromStopR: {
+      enabled: boolean;
+      minR: number;
+      basis: LiveAutoMinDistanceFromStopBasis;
+      blockOnMissingMarketPrice: boolean;
+    };
+  };
 }
 
 interface SuggestedTradePreTradeGate {
@@ -307,6 +317,15 @@ interface NormalizedLiveAutoOrderSizing {
   stopLossPrice: number;
   takeProfitPrice: number;
   auditNote: string | null;
+}
+
+interface LiveAutoGuardExpectedFillPrice {
+  price: number | null;
+  source: string;
+  marketPrice: number | null;
+  marketSymbol: string | null;
+  marketSource: string | null;
+  marketSnapshotAt: Date | null;
 }
 
 interface LiveAutoRouteGate {
@@ -495,6 +514,9 @@ export class SuggestedTradesService {
 
   @Inject(() => BrokerReferenceDataService)
   private brokerReferenceDataService!: BrokerReferenceDataService;
+
+  @Inject(() => MarketMetricsService)
+  private marketMetricsService!: MarketMetricsService;
 
   @Inject(() => BrokerRuntimeRegistry)
   private brokerRuntimeRegistry!: BrokerRuntimeRegistry;
@@ -3836,6 +3858,31 @@ export class SuggestedTradesService {
       });
     }
 
+    const minDistanceGuardFailure = await this.evaluateLiveAutoMinDistanceFromStopRGuard({
+      executionPolicy: input.executionPolicy,
+      symbol: input.trade.symbol,
+      brokerSymbol: resolvedAssetRoute.brokerSymbol,
+      side,
+      orderType,
+      entryPrice: normalizedSizing.entryPrice,
+      stopLossPrice: normalizedSizing.stopLossPrice,
+    });
+    if (minDistanceGuardFailure) {
+      return this.buildLiveAutoPreparationFailure(
+        input.gate,
+        brokerKey,
+        accountId,
+        minDistanceGuardFailure,
+        {
+          outcome: 'blocked',
+          executionState: 'rejected',
+          preTradeState: 'blocked',
+          preTradeBlockedReason: minDistanceGuardFailure,
+          preTradeCheckId,
+        }
+      );
+    }
+
     return {
       ok: true,
       prepared: {
@@ -3862,6 +3909,202 @@ export class SuggestedTradesService {
         preTradeCheckId,
       },
     };
+  }
+
+  private async evaluateLiveAutoMinDistanceFromStopRGuard(input: {
+    executionPolicy: ResolvedTradeSuggestionExecutionPolicy;
+    symbol: string;
+    brokerSymbol: string;
+    side: 'long' | 'short';
+    orderType: 'market' | 'limit';
+    entryPrice: number;
+    stopLossPrice: number;
+  }): Promise<string | null> {
+    const guard = input.executionPolicy.preEntryGuards?.minDistanceFromStopR ?? {
+      enabled: false,
+      minR: 0.5,
+      basis: 'expected_fill' as LiveAutoMinDistanceFromStopBasis,
+      blockOnMissingMarketPrice: false,
+    };
+    if (!guard.enabled) {
+      return null;
+    }
+
+    const riskDistance =
+      input.side === 'long'
+        ? input.entryPrice - input.stopLossPrice
+        : input.stopLossPrice - input.entryPrice;
+    if (!(riskDistance > 0)) {
+      return `Skipped live entry: stop-loss ${this.formatNumericString(
+        input.stopLossPrice
+      )} does not create a valid R distance from entry ${this.formatNumericString(
+        input.entryPrice
+      )}.`;
+    }
+
+    const expectedFill = await this.resolveLiveAutoGuardExpectedFillPrice({
+      symbol: input.symbol,
+      brokerSymbol: input.brokerSymbol,
+      side: input.side,
+      orderType: input.orderType,
+      entryPrice: input.entryPrice,
+      basis: guard.basis,
+      blockOnMissingMarketPrice: guard.blockOnMissingMarketPrice,
+    });
+    if (expectedFill.price === null) {
+      return `Skipped live entry: ${expectedFill.source}.`;
+    }
+
+    const distanceFromStop =
+      input.side === 'long'
+        ? expectedFill.price - input.stopLossPrice
+        : input.stopLossPrice - expectedFill.price;
+    const distanceR = distanceFromStop / riskDistance;
+    if (Number.isFinite(distanceR) && distanceR >= guard.minR) {
+      return null;
+    }
+
+    const fillPrice = this.formatNumericString(expectedFill.price) ?? String(expectedFill.price);
+    const stopLossPrice =
+      this.formatNumericString(input.stopLossPrice) ?? String(input.stopLossPrice);
+    const entryPrice = this.formatNumericString(input.entryPrice) ?? String(input.entryPrice);
+    const marketContext = expectedFill.marketPrice
+      ? ` market=${this.formatNumericString(expectedFill.marketPrice)}${
+          expectedFill.marketSymbol ? ` ${expectedFill.marketSymbol}` : ''
+        }${expectedFill.marketSource ? ` via ${expectedFill.marketSource}` : ''}${
+          expectedFill.marketSnapshotAt ? ` at ${expectedFill.marketSnapshotAt.toISOString()}` : ''
+        }.`
+      : '';
+
+    return `Skipped live entry: expected fill ${fillPrice} is ${this.formatRMultiple(
+      distanceR
+    )}R from stop-loss ${stopLossPrice}, below required ${this.formatRMultiple(
+      guard.minR
+    )}R. Entry ${entryPrice}, R distance ${
+      this.formatNumericString(riskDistance) ?? String(riskDistance)
+    }, basis ${guard.basis} (${expectedFill.source}).${marketContext}`;
+  }
+
+  private async resolveLiveAutoGuardExpectedFillPrice(input: {
+    symbol: string;
+    brokerSymbol: string;
+    side: 'long' | 'short';
+    orderType: 'market' | 'limit';
+    entryPrice: number;
+    basis: LiveAutoMinDistanceFromStopBasis;
+    blockOnMissingMarketPrice: boolean;
+  }): Promise<LiveAutoGuardExpectedFillPrice> {
+    if (input.basis === 'order_entry') {
+      return {
+        price: input.entryPrice,
+        source: 'order entry',
+        marketPrice: null,
+        marketSymbol: null,
+        marketSource: null,
+        marketSnapshotAt: null,
+      };
+    }
+
+    const market = await this.resolveLiveAutoGuardMarketPrice([input.symbol, input.brokerSymbol]);
+    if (!market) {
+      if (input.blockOnMissingMarketPrice) {
+        return {
+          price: null,
+          source: 'market price was unavailable for the min-distance-from-stop guard',
+          marketPrice: null,
+          marketSymbol: null,
+          marketSource: null,
+          marketSnapshotAt: null,
+        };
+      }
+
+      return {
+        price: input.entryPrice,
+        source: 'order entry fallback because market price was unavailable',
+        marketPrice: null,
+        marketSymbol: null,
+        marketSource: null,
+        marketSnapshotAt: null,
+      };
+    }
+    const marketPrice = market.lastPrice;
+    if (!(marketPrice && marketPrice > 0)) {
+      return {
+        price: input.entryPrice,
+        source: 'order entry fallback because market price was unavailable',
+        marketPrice: null,
+        marketSymbol: null,
+        marketSource: null,
+        marketSnapshotAt: null,
+      };
+    }
+
+    if (input.basis === 'market_price') {
+      return {
+        price: marketPrice,
+        source: 'market price',
+        marketPrice,
+        marketSymbol: market.symbol,
+        marketSource: market.priceSource,
+        marketSnapshotAt: market.snapshotAt,
+      };
+    }
+
+    const limitImmediatelyFillable =
+      input.orderType === 'market' ||
+      (input.side === 'long' && marketPrice <= input.entryPrice) ||
+      (input.side === 'short' && marketPrice >= input.entryPrice);
+
+    return {
+      price: limitImmediatelyFillable ? marketPrice : input.entryPrice,
+      source: limitImmediatelyFillable ? 'marketable expected fill' : 'resting limit entry',
+      marketPrice,
+      marketSymbol: market.symbol,
+      marketSource: market.priceSource,
+      marketSnapshotAt: market.snapshotAt,
+    };
+  }
+
+  private async resolveLiveAutoGuardMarketPrice(symbols: string[]): Promise<MarketMetric | null> {
+    const normalizedSymbols = Array.from(
+      new Set(
+        symbols
+          .map((symbol) =>
+            String(symbol || '')
+              .trim()
+              .toUpperCase()
+          )
+          .filter(Boolean)
+      )
+    );
+    if (!normalizedSymbols.length || !this.marketMetricsService) {
+      return null;
+    }
+
+    try {
+      const metricsBySymbol =
+        await this.marketMetricsService.getMetricsForSymbols(normalizedSymbols);
+      for (const symbol of normalizedSymbols) {
+        const metric = metricsBySymbol.get(symbol);
+        if (metric?.lastPrice && metric.lastPrice > 0) {
+          return metric;
+        }
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
+  }
+
+  private formatRMultiple(value: number): string {
+    if (!Number.isFinite(value)) {
+      return 'unknown';
+    }
+    return value
+      .toFixed(2)
+      .replace(/(\.\d*?)0+$/, '$1')
+      .replace(/\.$/, '');
   }
 
   private buildLiveAutoPreparationFailure(
@@ -6457,12 +6700,15 @@ export class SuggestedTradesService {
     const liveConsent = this.readRecordValue(normalizedPolicy.liveConsent) ?? {};
     const freshness = this.readRecordValue(normalizedPolicy.freshness) ?? {};
     const limitOrderExpiry = this.readRecordValue(normalizedPolicy.limitOrderExpiry) ?? {};
+    const preEntryGuards = this.readRecordValue(normalizedPolicy.preEntryGuards) ?? {};
+    const minDistanceFromStopR = this.readRecordValue(preEntryGuards.minDistanceFromStopR) ?? {};
     const executionModeRaw = this.readStringValue(normalizedPolicy.executionMode)?.toLowerCase();
     const approvalModeRaw = this.readStringValue(normalizedPolicy.approvalMode)?.toLowerCase();
     const routeModeRaw = this.readStringValue(routing.routeMode)?.toLowerCase();
     const orderTypeRaw = this.readStringValue(orderTemplate.orderType)?.toLowerCase();
     const quantityModeRaw = this.readStringValue(orderTemplate.quantityMode)?.toLowerCase();
     const brokerKey = this.readStringValue(routing.brokerKey)?.toLowerCase() ?? null;
+    const minDistanceBasis = this.readStringValue(minDistanceFromStopR.basis)?.toLowerCase();
 
     return {
       executionMode:
@@ -6530,6 +6776,18 @@ export class SuggestedTradesService {
       ),
       freshness: normalizeTradeSuggestionFreshnessPolicy(freshness),
       limitOrderExpiry: normalizeTradeSuggestionLimitOrderExpiryPolicy(limitOrderExpiry),
+      preEntryGuards: {
+        minDistanceFromStopR: {
+          enabled: this.readBooleanValue(minDistanceFromStopR.enabled) ?? false,
+          minR: Math.max(0, this.readNumberValue(minDistanceFromStopR.minR) ?? 0.5),
+          basis:
+            minDistanceBasis === 'order_entry' || minDistanceBasis === 'market_price'
+              ? minDistanceBasis
+              : 'expected_fill',
+          blockOnMissingMarketPrice:
+            this.readBooleanValue(minDistanceFromStopR.blockOnMissingMarketPrice) ?? false,
+        },
+      },
     };
   }
 
