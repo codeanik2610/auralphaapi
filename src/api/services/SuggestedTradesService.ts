@@ -46,6 +46,7 @@ import {
   PaperOrderRepository,
   PositionReadModelRepository,
   RiskPolicyRepository,
+  StrategyTemplateRepository,
   SuggestedTradeExecutionUpsertPayload,
   SuggestedTradeRepository,
 } from '../../database';
@@ -121,11 +122,18 @@ type TradeSuggestionOrderType = 'market' | 'limit';
 type TradeSuggestionQuantityMode = 'quantity' | 'notional' | 'risk_percent';
 type LiveAutoMinDistanceFromStopBasis = 'expected_fill' | 'order_entry' | 'market_price';
 type SuggestedTradePreTradeState = NonNullable<SuggestedTradeExecutionLink['preTradeState']>;
+type TrailingStopConfigSource =
+  | 'strategy_template'
+  | 'execution_protection_plan'
+  | 'trade_management_snapshot'
+  | 'trade_meta'
+  | null;
 const SUGGESTED_TRADES_FRESHNESS_AUDIT_LOOKBACK_DAYS = 7;
 const SUGGESTED_TRADES_FRESHNESS_AUDIT_LIMIT = 5000;
 const LIVE_AUTO_LIFECYCLE_MONITOR_INTERVAL_MS = 1500;
 const LIVE_AUTO_LIFECYCLE_MONITOR_DEFAULT_DURATION_MS = 5 * 60 * 1000;
 const LIVE_AUTO_LIFECYCLE_MONITOR_MAX_DURATION_MS = 15 * 60 * 1000;
+const MUDREX_TRAILING_STOP_VERIFICATION_RECHECK_DELAY_MS = 750;
 const SUGGESTED_TRADE_PROTECTION_STATES = new Set<SuggestedTradeProtectionState>([
   'pending',
   'waiting_for_fill',
@@ -201,6 +209,18 @@ interface SuggestedTradeProtectionPersistence {
   protectionLastError: string | null;
   protectionCheckedAt: string | null;
   protectionAttachedAt: string | null;
+}
+
+interface ResolvedTrailingStopConfig {
+  config: CustomRLadderTrailingStopConfig | null;
+  source: TrailingStopConfigSource;
+  sourceTemplateId: string | null;
+  sourceTemplateName: string | null;
+  sourceTemplateVersion: number | null;
+  sourceTemplateStatus: string | null;
+  sourceTemplateUpdatedAt: string | null;
+  snapshotCapturedAt: string | null;
+  unavailableReason: string | null;
 }
 
 type SuggestedTradeAutoLiveRolloutOutcome =
@@ -426,6 +446,38 @@ interface LivePositionSnapshot {
   payload: Record<string, unknown> | null;
 }
 
+type MudrexTrailingStopRiskOrderVerificationResult =
+  | {
+      verified: true;
+      position: LivePositionSnapshot;
+      stopLossPrice: number;
+      takeProfitPrice: number;
+    }
+  | {
+      verified: false;
+      reason: string;
+      position: LivePositionSnapshot | null;
+      stopLossPrice: number | null;
+      takeProfitPrice: number | null;
+    };
+
+type MudrexTrailingStopRiskOrderRemediationResult =
+  | {
+      verified: true;
+      verification: Extract<MudrexTrailingStopRiskOrderVerificationResult, { verified: true }>;
+      mutationResult: unknown;
+      successReason: string;
+      brokerResponse: Record<string, unknown>;
+    }
+  | {
+      verified: false;
+      verification: Extract<MudrexTrailingStopRiskOrderVerificationResult, { verified: false }>;
+      mutationResult: unknown;
+      errorMessage: string;
+      auditReason: string;
+      brokerResponse: Record<string, unknown>;
+    };
+
 interface LiveProtectionOrderContext {
   stopLossOrderId: string | null;
   takeProfitOrderId: string | null;
@@ -511,6 +563,9 @@ export class SuggestedTradesService {
 
   @Inject(() => RiskPolicyRepository)
   private riskPolicyRepository!: RiskPolicyRepository;
+
+  @Inject(() => StrategyTemplateRepository)
+  private strategyTemplateRepository!: StrategyTemplateRepository;
 
   @Inject(() => BrokerReferenceDataService)
   private brokerReferenceDataService!: BrokerReferenceDataService;
@@ -9200,19 +9255,48 @@ export class SuggestedTradesService {
       return execution;
     }
 
-    const config = this.resolveExecutionTrailingStopConfig(trade, execution);
+    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
+    const resolvedTrailingConfig =
+      brokerKey === 'mudrex'
+        ? await this.resolveMudrexTemplateTrailingStopConfig(userId, trade, execution)
+        : this.resolveExecutionTrailingStopConfigWithSource(trade, execution);
+    const config = resolvedTrailingConfig.config;
     if (!config) {
+      if (brokerKey === 'mudrex') {
+        const nowIso = new Date().toISOString();
+        return this.recordMudrexTrailingStopAudit(
+          execution,
+          this.buildMudrexTrailingStopAudit({
+            nowIso,
+            trade,
+            execution,
+            resolvedConfig: resolvedTrailingConfig,
+            action: 'skipped',
+            reason: resolvedTrailingConfig.unavailableReason ?? 'template_ladder_unavailable',
+          })
+        );
+      }
       return execution;
     }
 
-    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
     const accountId = this.readStringValue(execution.accountId);
     if (!brokerKey || !accountId) {
+      const nowIso = new Date().toISOString();
       return this.recordTrailingStopError(
         trade,
         execution,
-        new Date().toISOString(),
-        'Trailing SL update needs broker/account routing on the execution row.'
+        nowIso,
+        'Trailing SL update needs broker/account routing on the execution row.',
+        brokerKey === 'mudrex'
+          ? this.buildMudrexTrailingStopAudit({
+              nowIso,
+              trade,
+              execution,
+              resolvedConfig: resolvedTrailingConfig,
+              action: 'error',
+              reason: 'missing_broker_or_account',
+            })
+          : undefined
       );
     }
 
@@ -9250,6 +9334,28 @@ export class SuggestedTradesService {
     const lastAppliedMoveStopToR = this.readNumberValue(trailingState?.lastMoveStopToR);
 
     if (!(entryPrice && originalStopLossPrice && currentPrice && takeProfitPrice)) {
+      if (brokerKey === 'mudrex') {
+        const nowIso = new Date().toISOString();
+        return this.recordMudrexTrailingStopAudit(
+          execution,
+          this.buildMudrexTrailingStopAudit({
+            nowIso,
+            trade,
+            execution,
+            resolvedConfig: resolvedTrailingConfig,
+            action: 'skipped',
+            reason: 'missing_ladder_inputs',
+            side,
+            position,
+            entryPrice,
+            originalStopLossPrice,
+            currentStopLossPrice,
+            takeProfitPrice,
+            currentPrice,
+          }),
+          config
+        );
+      }
       return execution;
     }
 
@@ -9265,28 +9371,100 @@ export class SuggestedTradesService {
       lastAppliedMoveStopToR,
     });
     if (move.action !== 'move') {
+      const nowIso = new Date().toISOString();
       return this.clearTrailingStopErrorWhenNoMoveNeeded(
         execution,
         config,
-        new Date().toISOString(),
+        nowIso,
         move.reason,
         move.profitR,
         currentPrice,
-        currentStopLossPrice
+        currentStopLossPrice,
+        brokerKey === 'mudrex'
+          ? this.buildMudrexTrailingStopAudit({
+              nowIso,
+              trade,
+              execution,
+              resolvedConfig: resolvedTrailingConfig,
+              action: 'no_move',
+              reason: move.reason,
+              side,
+              position,
+              entryPrice,
+              originalStopLossPrice,
+              currentStopLossPrice,
+              takeProfitPrice,
+              currentPrice,
+              profitR: move.profitR,
+              peakProfitR:
+                typeof peakProfitR === 'number' && Number.isFinite(peakProfitR)
+                  ? Math.max(move.profitR ?? peakProfitR, peakProfitR)
+                  : move.profitR,
+            })
+          : undefined,
+        brokerKey === 'mudrex'
       );
     }
 
     if (!this.isTrailingStopMoveSafeAgainstCurrentPrice(move, currentPrice)) {
+      if (brokerKey === 'mudrex') {
+        const nowIso = new Date().toISOString();
+        return this.recordMudrexTrailingStopAudit(
+          execution,
+          this.buildMudrexTrailingStopAudit({
+            nowIso,
+            trade,
+            execution,
+            resolvedConfig: resolvedTrailingConfig,
+            action: 'skipped',
+            reason: 'target_stop_not_safe_against_current_price',
+            side,
+            position,
+            entryPrice,
+            originalStopLossPrice,
+            currentStopLossPrice,
+            takeProfitPrice,
+            currentPrice,
+            profitR: move.profitR,
+            peakProfitR: move.peakProfitR,
+            targetStopLossPrice: move.targetStopLossPrice,
+            rule: move.rule,
+          }),
+          config
+        );
+      }
       return execution;
     }
 
     const brokerSupport = this.resolveCustomRLadderTrailingStopBrokerSupport(brokerKey);
     if (!brokerSupport.supported) {
+      const nowIso = new Date().toISOString();
       return this.recordTrailingStopError(
         trade,
         execution,
-        new Date().toISOString(),
-        brokerSupport.reason
+        nowIso,
+        brokerSupport.reason,
+        brokerKey === 'mudrex'
+          ? this.buildMudrexTrailingStopAudit({
+              nowIso,
+              trade,
+              execution,
+              resolvedConfig: resolvedTrailingConfig,
+              action: 'error',
+              reason: 'broker_not_supported',
+              side,
+              position,
+              entryPrice,
+              originalStopLossPrice,
+              currentStopLossPrice,
+              takeProfitPrice,
+              currentPrice,
+              profitR: move.profitR,
+              peakProfitR: move.peakProfitR,
+              targetStopLossPrice: move.targetStopLossPrice,
+              rule: move.rule,
+            })
+          : undefined
       );
     }
 
@@ -9303,11 +9481,33 @@ export class SuggestedTradesService {
       ) => Promise<unknown>;
     };
     if (!positionsAdapter?.createRiskOrder && !positionsAdapter?.updateRiskOrder) {
+      const nowIso = new Date().toISOString();
       return this.recordTrailingStopError(
         trade,
         execution,
-        new Date().toISOString(),
-        'Trailing SL update needs a broker positions adapter that can create or update risk orders.'
+        nowIso,
+        'Trailing SL update needs a broker positions adapter that can create or update risk orders.',
+        brokerKey === 'mudrex'
+          ? this.buildMudrexTrailingStopAudit({
+              nowIso,
+              trade,
+              execution,
+              resolvedConfig: resolvedTrailingConfig,
+              action: 'error',
+              reason: 'positions_adapter_missing',
+              side,
+              position,
+              entryPrice,
+              originalStopLossPrice,
+              currentStopLossPrice,
+              takeProfitPrice,
+              currentPrice,
+              profitR: move.profitR,
+              peakProfitR: move.peakProfitR,
+              targetStopLossPrice: move.targetStopLossPrice,
+              rule: move.rule,
+            })
+          : undefined
       );
     }
 
@@ -9318,11 +9518,33 @@ export class SuggestedTradesService {
       payload
     );
     if (!riskOrderPositionId) {
+      const nowIso = new Date().toISOString();
       return this.recordTrailingStopError(
         trade,
         execution,
-        new Date().toISOString(),
-        'Trailing SL update could not resolve the broker position id for risk-order replacement.'
+        nowIso,
+        'Trailing SL update could not resolve the broker position id for risk-order replacement.',
+        brokerKey === 'mudrex'
+          ? this.buildMudrexTrailingStopAudit({
+              nowIso,
+              trade,
+              execution,
+              resolvedConfig: resolvedTrailingConfig,
+              action: 'error',
+              reason: 'risk_order_position_id_missing',
+              side,
+              position,
+              entryPrice,
+              originalStopLossPrice,
+              currentStopLossPrice,
+              takeProfitPrice,
+              currentPrice,
+              profitR: move.profitR,
+              peakProfitR: move.peakProfitR,
+              targetStopLossPrice: move.targetStopLossPrice,
+              rule: move.rule,
+            })
+          : undefined
       );
     }
 
@@ -9334,7 +9556,29 @@ export class SuggestedTradesService {
         trade,
         execution,
         nowIso,
-        'Trailing SL update could not format the replacement SL/TP prices.'
+        'Trailing SL update could not format the replacement SL/TP prices.',
+        brokerKey === 'mudrex'
+          ? this.buildMudrexTrailingStopAudit({
+              nowIso,
+              trade,
+              execution,
+              resolvedConfig: resolvedTrailingConfig,
+              action: 'error',
+              reason: 'replacement_price_format_failed',
+              side,
+              position,
+              entryPrice,
+              originalStopLossPrice,
+              currentStopLossPrice,
+              takeProfitPrice,
+              currentPrice,
+              profitR: move.profitR,
+              peakProfitR: move.peakProfitR,
+              targetStopLossPrice: move.targetStopLossPrice,
+              rule: move.rule,
+              riskOrderPositionId,
+            })
+          : undefined
       );
     }
 
@@ -9518,14 +9762,13 @@ export class SuggestedTradesService {
       accountId,
       payload
     );
-    let riskOrderMutationResult: unknown = null;
-    try {
+    const executeRiskOrderMutation = async (): Promise<unknown> => {
       if (
         positionsAdapter.updateRiskOrder &&
         riskOrderIds.stopLossOrderId &&
         riskOrderIds.takeProfitOrderId
       ) {
-        riskOrderMutationResult = await positionsAdapter.updateRiskOrder(
+        return positionsAdapter.updateRiskOrder(
           riskOrderPositionId,
           {
             order_price: entryPrice,
@@ -9543,8 +9786,9 @@ export class SuggestedTradesService {
             accountId,
           }
         );
-      } else if (positionsAdapter.createRiskOrder) {
-        riskOrderMutationResult = await positionsAdapter.createRiskOrder(
+      }
+      if (positionsAdapter.createRiskOrder) {
+        return positionsAdapter.createRiskOrder(
           riskOrderPositionId,
           {
             stoploss_price: stopLossPrice,
@@ -9559,14 +9803,14 @@ export class SuggestedTradesService {
             accountId,
           }
         );
-      } else {
-        return this.recordTrailingStopError(
-          trade,
-          execution,
-          nowIso,
-          'Trailing SL update found broker risk-order IDs, but the positions adapter cannot update risk orders.'
-        );
       }
+      throw new Error(
+        'Trailing SL update found broker risk-order IDs, but the positions adapter cannot update risk orders.'
+      );
+    };
+    let riskOrderMutationResult: unknown = null;
+    try {
+      riskOrderMutationResult = await executeRiskOrderMutation();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       if (this.isTrailingStopPositionGoneError(brokerKey, errorMessage)) {
@@ -9583,10 +9827,103 @@ export class SuggestedTradesService {
         trade,
         execution,
         nowIso,
-        `Trailing SL update failed: ${errorMessage}`
+        `Trailing SL update failed: ${errorMessage}`,
+        brokerKey === 'mudrex'
+          ? this.buildMudrexTrailingStopAudit({
+              nowIso,
+              trade,
+              execution,
+              resolvedConfig: resolvedTrailingConfig,
+              action: 'error',
+              reason: 'risk_order_mutation_failed',
+              side,
+              position,
+              entryPrice,
+              originalStopLossPrice,
+              currentStopLossPrice,
+              takeProfitPrice,
+              currentPrice,
+              profitR: move.profitR,
+              peakProfitR: move.peakProfitR,
+              targetStopLossPrice: move.targetStopLossPrice,
+              rule: move.rule,
+              riskOrderPositionId,
+              stopLossOrderId: riskOrderIds.stopLossOrderId,
+              takeProfitOrderId: riskOrderIds.takeProfitOrderId,
+              brokerResponse: errorMessage,
+            })
+          : undefined
       );
     }
 
+    let verifiedMudrexPosition: LivePositionSnapshot | null = null;
+    let appliedStopLossPrice = stopLossPrice;
+    let appliedTakeProfitPrice = formattedTakeProfitPrice;
+    let mudrexAuditReason = 'risk_order_mutation_verified';
+    let mudrexAuditBrokerResponse: unknown = riskOrderMutationResult;
+    if (brokerKey === 'mudrex') {
+      const remediation = await this.verifyMudrexTrailingStopRiskOrderWithRemediation({
+        userId,
+        trade,
+        execution,
+        accountId,
+        requestedStopLossPrice: Number(stopLossPrice),
+        requestedTakeProfitPrice: Number(formattedTakeProfitPrice),
+        initialMutationResult: riskOrderMutationResult,
+        retryRiskOrderMutation: executeRiskOrderMutation,
+      });
+      if (!remediation.verified) {
+        const verification = remediation.verification;
+        const verificationPosition = verification.position ?? position;
+        const remediationRiskOrderIds = this.resolveTrailingRiskOrderIdsFromMutationResult(
+          remediation.mutationResult
+        );
+        return this.recordTrailingStopError(
+          trade,
+          execution,
+          nowIso,
+          remediation.errorMessage,
+          this.buildMudrexTrailingStopAudit({
+            nowIso,
+            trade,
+            execution,
+            resolvedConfig: resolvedTrailingConfig,
+            action: 'error',
+            reason: remediation.auditReason,
+            side,
+            position: verificationPosition,
+            entryPrice,
+            originalStopLossPrice,
+            currentStopLossPrice: verification.stopLossPrice ?? currentStopLossPrice,
+            takeProfitPrice: verification.takeProfitPrice ?? takeProfitPrice,
+            currentPrice,
+            profitR: move.profitR,
+            peakProfitR: move.peakProfitR,
+            targetStopLossPrice: move.targetStopLossPrice,
+            rule: move.rule,
+            riskOrderPositionId,
+            stopLossOrderId:
+              remediationRiskOrderIds.stopLossOrderId ??
+              riskOrderIds.stopLossOrderId ??
+              this.readStringValue(plan.stopLossOrderId),
+            takeProfitOrderId:
+              remediationRiskOrderIds.takeProfitOrderId ??
+              riskOrderIds.takeProfitOrderId ??
+              this.readStringValue(plan.takeProfitOrderId),
+            brokerResponse: remediation.brokerResponse,
+          })
+        );
+      }
+      riskOrderMutationResult = remediation.mutationResult;
+      verifiedMudrexPosition = remediation.verification.position;
+      appliedStopLossPrice =
+        this.formatNumericString(remediation.verification.stopLossPrice) ?? stopLossPrice;
+      appliedTakeProfitPrice =
+        this.formatNumericString(remediation.verification.takeProfitPrice) ??
+        formattedTakeProfitPrice;
+      mudrexAuditReason = remediation.successReason;
+      mudrexAuditBrokerResponse = remediation.brokerResponse;
+    }
     const responseRiskOrderIds =
       this.resolveTrailingRiskOrderIdsFromMutationResult(riskOrderMutationResult);
     const appliedStopLossOrderId =
@@ -9599,19 +9936,47 @@ export class SuggestedTradesService {
       this.readStringValue(plan.takeProfitOrderId);
     const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
     const history = Array.isArray(existingTrailing.history) ? existingTrailing.history : [];
+    const auditPosition = verifiedMudrexPosition ?? position;
+    const mudrexAudit =
+      brokerKey === 'mudrex'
+        ? this.buildMudrexTrailingStopAudit({
+            nowIso,
+            trade,
+            execution,
+            resolvedConfig: resolvedTrailingConfig,
+            action: 'move_verified',
+            reason: mudrexAuditReason,
+            side,
+            position: auditPosition,
+            entryPrice,
+            originalStopLossPrice,
+            currentStopLossPrice,
+            takeProfitPrice,
+            currentPrice,
+            profitR: move.profitR,
+            peakProfitR: move.peakProfitR,
+            targetStopLossPrice: move.targetStopLossPrice,
+            rule: move.rule,
+            riskOrderPositionId,
+            stopLossOrderId: appliedStopLossOrderId,
+            takeProfitOrderId: appliedTakeProfitOrderId,
+            brokerResponse: mudrexAuditBrokerResponse,
+          })
+        : null;
     const trailingStop = {
       ...config,
       originalStopLossPrice:
         this.readNumberValue(existingTrailing.originalStopLossPrice) ?? originalStopLossPrice,
       lastAppliedWhenProfitR: move.rule.whenProfitR,
       lastMoveStopToR: move.lockedProfitR,
-      lastStopLossPrice: stopLossPrice,
+      lastStopLossPrice: appliedStopLossPrice,
       lastCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
       lastProfitR: Number(move.profitR.toFixed(6)),
       peakProfitR: Number(move.peakProfitR.toFixed(6)),
       lastCheckedAt: nowIso,
       lastUpdatedAt: nowIso,
       lastError: null,
+      ...(mudrexAudit ? this.appendTrailingStopAudit(existingTrailing, mudrexAudit) : {}),
       history: [
         ...history.slice(-9),
         {
@@ -9624,23 +9989,23 @@ export class SuggestedTradesService {
                 peakProfitR: Number(move.peakProfitR.toFixed(6)),
               }
             : {}),
-          stopLossPrice,
+          stopLossPrice: appliedStopLossPrice,
           currentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
           profitR: Number(move.profitR.toFixed(6)),
           positionId: riskOrderPositionId,
           stopLossOrderId: appliedStopLossOrderId,
           takeProfitOrderId: appliedTakeProfitOrderId,
-          snapshotPositionId: position.externalId,
+          snapshotPositionId: auditPosition.externalId,
         },
       ],
     };
     const note = move.rule.trailDistanceR
-      ? `Trailing SL moved to ${stopLossPrice} after observed peak ${Number(
+      ? `Trailing SL moved to ${appliedStopLossPrice} after observed peak ${Number(
           move.peakProfitR.toFixed(6)
         )}R; stop now trails by ${move.rule.trailDistanceR}R and locks ${Number(
           move.lockedProfitR.toFixed(6)
         )}R.`
-      : `Trailing SL moved to ${stopLossPrice} after price crossed ${move.rule.whenProfitR}R; stop now locks ${move.lockedProfitR}R.`;
+      : `Trailing SL moved to ${appliedStopLossPrice} after price crossed ${move.rule.whenProfitR}R; stop now locks ${move.lockedProfitR}R.`;
 
     await this.operationalEventService?.logActivity?.(userId, {
       type: 'Suggested Trade',
@@ -9656,8 +10021,8 @@ export class SuggestedTradesService {
 
     return {
       ...execution,
-      stopLossPrice,
-      takeProfitPrice: execution.takeProfitPrice ?? formattedTakeProfitPrice,
+      stopLossPrice: appliedStopLossPrice,
+      takeProfitPrice: execution.takeProfitPrice ?? appliedTakeProfitPrice,
       protectionCheckedAt: nowIso,
       protectionLastError: null,
       protectionPlan: {
@@ -9669,11 +10034,11 @@ export class SuggestedTradesService {
         brokerKey,
         accountId,
         positionId: riskOrderPositionId,
-        snapshotPositionId: position.externalId,
+        snapshotPositionId: auditPosition.externalId,
         stopLossOrderId: appliedStopLossOrderId ?? plan.stopLossOrderId,
         takeProfitOrderId: appliedTakeProfitOrderId ?? plan.takeProfitOrderId,
-        attachedStopLossPrice: stopLossPrice,
-        attachedTakeProfitPrice: formattedTakeProfitPrice,
+        attachedStopLossPrice: appliedStopLossPrice,
+        attachedTakeProfitPrice: appliedTakeProfitPrice,
         trailingStop,
       },
       note: this.appendExecutionNote(execution.note, note),
@@ -9887,14 +10252,360 @@ export class SuggestedTradesService {
     return Math.abs(left - right) <= Math.max(1e-8, Math.abs(right) * 1e-8);
   }
 
+  private async verifyMudrexTrailingStopRiskOrder(input: {
+    userId: string;
+    trade: SuggestedTrade;
+    execution: SuggestedTradeExecutionLink;
+    accountId: string;
+    requestedStopLossPrice: number;
+    requestedTakeProfitPrice: number;
+  }): Promise<MudrexTrailingStopRiskOrderVerificationResult> {
+    const brokerKey = this.readStringValue(input.execution.brokerKey)?.toLowerCase() ?? 'mudrex';
+    const snapshots = await this.fetchLiveAutoBrokerPositionSnapshots(
+      {
+        userId: input.userId,
+        suggestedTradeId: input.trade.id,
+        brokerKey,
+        accountId: input.accountId,
+        orderId: this.readStringValue(input.execution.orderId),
+      },
+      input.trade,
+      input.execution
+    );
+    const selectedPosition = this.selectBestPositionCandidate(
+      input.trade,
+      input.execution,
+      snapshots,
+      { allowPositionEvidenceFill: true }
+    );
+    const position = selectedPosition ?? snapshots[0] ?? null;
+    const payload = position?.payload ?? {};
+    const stopLossPrice = position ? this.resolvePositionStopLossPrice(payload) : null;
+    const takeProfitPrice = position ? this.resolvePositionTakeProfitPrice(payload) : null;
+
+    const failed = (reason: string): MudrexTrailingStopRiskOrderVerificationResult => ({
+      verified: false,
+      reason,
+      position,
+      stopLossPrice,
+      takeProfitPrice,
+    });
+
+    if (!this.isActivePositionSnapshot(position)) {
+      return failed('position_not_open_after_risk_order_mutation');
+    }
+    if (stopLossPrice === null) {
+      return failed('stop_loss_missing_after_risk_order_mutation');
+    }
+    if (takeProfitPrice === null) {
+      return failed('take_profit_missing_after_risk_order_mutation');
+    }
+    if (!this.pricesApproximatelyEqual(stopLossPrice, input.requestedStopLossPrice)) {
+      const expected =
+        this.formatNumericString(input.requestedStopLossPrice) ?? input.requestedStopLossPrice;
+      const observed = this.formatNumericString(stopLossPrice) ?? stopLossPrice;
+      return failed(
+        `stop_loss_mismatch_after_risk_order_mutation: expected ${expected} got ${observed}`
+      );
+    }
+    if (!this.pricesApproximatelyEqual(takeProfitPrice, input.requestedTakeProfitPrice)) {
+      const expected =
+        this.formatNumericString(input.requestedTakeProfitPrice) ?? input.requestedTakeProfitPrice;
+      const observed = this.formatNumericString(takeProfitPrice) ?? takeProfitPrice;
+      return failed(
+        `take_profit_mismatch_after_risk_order_mutation: expected ${expected} got ${observed}`
+      );
+    }
+
+    return {
+      verified: true,
+      position,
+      stopLossPrice,
+      takeProfitPrice,
+    };
+  }
+
+  private async verifyMudrexTrailingStopRiskOrderWithRemediation(input: {
+    userId: string;
+    trade: SuggestedTrade;
+    execution: SuggestedTradeExecutionLink;
+    accountId: string;
+    requestedStopLossPrice: number;
+    requestedTakeProfitPrice: number;
+    initialMutationResult: unknown;
+    retryRiskOrderMutation: () => Promise<unknown>;
+  }): Promise<MudrexTrailingStopRiskOrderRemediationResult> {
+    const attempts: Record<string, unknown>[] = [];
+    const verify = async (
+      stage: string
+    ): Promise<MudrexTrailingStopRiskOrderVerificationResult> => {
+      const verification = await this.verifyMudrexTrailingStopRiskOrder(input);
+      attempts.push(this.summarizeMudrexTrailingStopVerification(stage, verification));
+      return verification;
+    };
+
+    const initialVerification = await verify('initial');
+    if (initialVerification.verified) {
+      return {
+        verified: true,
+        verification: initialVerification,
+        mutationResult: input.initialMutationResult,
+        successReason: 'risk_order_mutation_verified',
+        brokerResponse: {
+          mutationResult: input.initialMutationResult,
+          verification: {
+            ...this.summarizeMudrexTrailingStopVerification('initial', initialVerification),
+            remediation: 'none',
+            attempts,
+          },
+        },
+      };
+    }
+
+    await this.waitForLiveAutoLifecycleMonitorPoll(
+      MUDREX_TRAILING_STOP_VERIFICATION_RECHECK_DELAY_MS
+    );
+    const recheckVerification = await verify('delayed_recheck');
+    if (recheckVerification.verified) {
+      return {
+        verified: true,
+        verification: recheckVerification,
+        mutationResult: input.initialMutationResult,
+        successReason: 'risk_order_mutation_verified_after_recheck',
+        brokerResponse: {
+          mutationResult: input.initialMutationResult,
+          verification: {
+            ...this.summarizeMudrexTrailingStopVerification('delayed_recheck', recheckVerification),
+            remediation: 'delayed_recheck',
+            attempts,
+          },
+        },
+      };
+    }
+
+    let retryMutationResult: unknown = input.initialMutationResult;
+    try {
+      retryMutationResult = await input.retryRiskOrderMutation();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        verified: false,
+        verification: recheckVerification,
+        mutationResult: input.initialMutationResult,
+        errorMessage: `Mudrex risk order remediation failed: ${errorMessage}`,
+        auditReason: 'mudrex_risk_order_remediation_failed',
+        brokerResponse: {
+          mutationResult: input.initialMutationResult,
+          verification: {
+            ...this.summarizeMudrexTrailingStopVerification('delayed_recheck', recheckVerification),
+            remediation: 'retry_mutation_failed',
+            attempts,
+          },
+          retryError: errorMessage,
+        },
+      };
+    }
+
+    await this.waitForLiveAutoLifecycleMonitorPoll(
+      MUDREX_TRAILING_STOP_VERIFICATION_RECHECK_DELAY_MS
+    );
+    const retryVerification = await verify('risk_order_retry');
+    if (retryVerification.verified) {
+      return {
+        verified: true,
+        verification: retryVerification,
+        mutationResult: retryMutationResult,
+        successReason: 'risk_order_mutation_verified_after_retry',
+        brokerResponse: {
+          mutationResult: input.initialMutationResult,
+          retryMutationResult,
+          verification: {
+            ...this.summarizeMudrexTrailingStopVerification('risk_order_retry', retryVerification),
+            remediation: 'risk_order_retry',
+            attempts,
+          },
+        },
+      };
+    }
+
+    return {
+      verified: false,
+      verification: retryVerification,
+      mutationResult: retryMutationResult,
+      errorMessage: `Mudrex risk order verification failed: ${retryVerification.reason}`,
+      auditReason: 'mudrex_risk_order_verification_failed',
+      brokerResponse: {
+        mutationResult: input.initialMutationResult,
+        retryMutationResult,
+        verification: {
+          ...this.summarizeMudrexTrailingStopVerification('risk_order_retry', retryVerification),
+          remediation: 'risk_order_retry_failed',
+          attempts,
+        },
+      },
+    };
+  }
+
+  private summarizeMudrexTrailingStopVerification(
+    stage: string,
+    verification: MudrexTrailingStopRiskOrderVerificationResult
+  ): Record<string, unknown> {
+    return {
+      stage,
+      verified: verification.verified,
+      reason: verification.verified ? null : verification.reason,
+      stopLossPrice:
+        this.formatNumericString(verification.stopLossPrice) ?? verification.stopLossPrice ?? null,
+      takeProfitPrice:
+        this.formatNumericString(verification.takeProfitPrice) ??
+        verification.takeProfitPrice ??
+        null,
+      positionSnapshotId: this.readStringValue(verification.position?.externalId),
+      positionStatus: this.readStringValue(verification.position?.status),
+    };
+  }
+
+  private async resolveMudrexTemplateTrailingStopConfig(
+    userId: string,
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink
+  ): Promise<ResolvedTrailingStopConfig> {
+    const snapshotResolution = this.resolveExecutionTrailingStopConfigWithSource(trade, execution);
+    const meta = this.readRecordValue(trade.meta);
+    const tradeManagementSnapshot = this.readRecordValue(meta?.tradeManagementSnapshot);
+    const sourceTemplateId =
+      this.readStringValue(trade.sourceTemplateId) ??
+      this.readStringValue(tradeManagementSnapshot?.sourceTemplateId) ??
+      this.readStringValue(meta?.sourceTemplateId);
+
+    const unavailable = (
+      reason: string,
+      overrides?: Partial<ResolvedTrailingStopConfig>
+    ): ResolvedTrailingStopConfig => ({
+      config: null,
+      source: 'strategy_template',
+      sourceTemplateId,
+      sourceTemplateName: snapshotResolution.sourceTemplateName,
+      sourceTemplateVersion: snapshotResolution.sourceTemplateVersion,
+      sourceTemplateStatus: null,
+      sourceTemplateUpdatedAt: null,
+      snapshotCapturedAt: snapshotResolution.snapshotCapturedAt,
+      unavailableReason: reason,
+      ...overrides,
+    });
+
+    if (!sourceTemplateId) {
+      return unavailable('template_ladder_unavailable:missing_source_template_id');
+    }
+
+    if (!this.strategyTemplateRepository?.getStrategyTemplateById) {
+      return unavailable('template_ladder_unavailable:strategy_template_repository_unavailable');
+    }
+
+    let template: Awaited<ReturnType<StrategyTemplateRepository['getStrategyTemplateById']>>;
+    try {
+      template = await this.strategyTemplateRepository.getStrategyTemplateById(
+        userId,
+        sourceTemplateId
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return unavailable(`template_ladder_unavailable:lookup_failed:${message}`);
+    }
+
+    if (!template) {
+      return unavailable('template_ladder_unavailable:template_not_found');
+    }
+
+    const config = resolveCustomRLadderTrailingStopConfigFromRecords(template.config);
+    const sourceTemplateVersion = Number(template.templateVersion || 0) || null;
+    const sourceTemplateUpdatedAt = this.toIsoString(template.updatedAt);
+
+    if (!config) {
+      return unavailable('template_ladder_unavailable:invalid_or_missing_trailing_stop', {
+        sourceTemplateName: template.name ?? snapshotResolution.sourceTemplateName,
+        sourceTemplateVersion,
+        sourceTemplateStatus: this.readStringValue(template.status),
+        sourceTemplateUpdatedAt,
+      });
+    }
+
+    return {
+      config,
+      source: 'strategy_template',
+      sourceTemplateId: template.id,
+      sourceTemplateName: template.name ?? null,
+      sourceTemplateVersion,
+      sourceTemplateStatus: this.readStringValue(template.status),
+      sourceTemplateUpdatedAt,
+      snapshotCapturedAt: snapshotResolution.snapshotCapturedAt,
+      unavailableReason: null,
+    };
+  }
+
   private resolveExecutionTrailingStopConfig(
     trade: SuggestedTrade,
     execution: SuggestedTradeExecutionLink
   ): CustomRLadderTrailingStopConfig | null {
+    return this.resolveExecutionTrailingStopConfigWithSource(trade, execution).config;
+  }
+
+  private resolveExecutionTrailingStopConfigWithSource(
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink
+  ): ResolvedTrailingStopConfig {
     const plan = this.readRecordValue(execution.protectionPlan);
     const meta = this.readRecordValue(trade.meta);
     const tradeManagementSnapshot = this.readRecordValue(meta?.tradeManagementSnapshot);
-    return resolveCustomRLadderTrailingStopConfigFromRecords(plan, tradeManagementSnapshot, meta);
+    const sourceTemplateId =
+      this.readStringValue(trade.sourceTemplateId) ??
+      this.readStringValue(tradeManagementSnapshot?.sourceTemplateId) ??
+      this.readStringValue(meta?.sourceTemplateId);
+    const sourceTemplateName =
+      this.readStringValue(tradeManagementSnapshot?.sourceTemplateName) ??
+      this.readStringValue(meta?.sourceTemplateName);
+    const sourceTemplateVersion =
+      this.readNumberValue(tradeManagementSnapshot?.sourceTemplateVersion) ??
+      this.readNumberValue(meta?.sourceTemplateVersion) ??
+      this.readNumberValue(meta?.templateVersion);
+    const snapshotCapturedAt =
+      this.toIsoString(tradeManagementSnapshot?.capturedAt) ??
+      this.readStringValue(tradeManagementSnapshot?.capturedAt);
+    const candidates: Array<{ source: Exclude<TrailingStopConfigSource, null>; record: unknown }> =
+      [
+        { source: 'execution_protection_plan', record: plan },
+        { source: 'trade_management_snapshot', record: tradeManagementSnapshot },
+        { source: 'trade_meta', record: meta },
+      ];
+
+    for (const candidate of candidates) {
+      const config = resolveCustomRLadderTrailingStopConfigFromRecords(candidate.record);
+      if (config) {
+        return {
+          config,
+          source: candidate.source,
+          sourceTemplateId,
+          sourceTemplateName,
+          sourceTemplateVersion,
+          sourceTemplateStatus: null,
+          sourceTemplateUpdatedAt: null,
+          snapshotCapturedAt,
+          unavailableReason: null,
+        };
+      }
+    }
+
+    return {
+      config: null,
+      source: null,
+      sourceTemplateId,
+      sourceTemplateName,
+      sourceTemplateVersion,
+      sourceTemplateStatus: null,
+      sourceTemplateUpdatedAt: null,
+      snapshotCapturedAt,
+      unavailableReason: 'trailing_stop_config_unavailable',
+    };
   }
 
   private resolveProtectionPlanTrailingStop(
@@ -10270,11 +10981,257 @@ export class SuggestedTradesService {
       : move.targetStopLossPrice < currentPrice;
   }
 
+  private buildMudrexTrailingStopAudit(input: {
+    nowIso: string;
+    trade: SuggestedTrade;
+    execution: SuggestedTradeExecutionLink;
+    resolvedConfig: ResolvedTrailingStopConfig;
+    action: string;
+    reason: string;
+    side?: 'long' | 'short';
+    position?: LivePositionSnapshot | null;
+    entryPrice?: number | null;
+    originalStopLossPrice?: number | null;
+    currentStopLossPrice?: number | null;
+    takeProfitPrice?: number | null;
+    currentPrice?: number | null;
+    profitR?: number | null;
+    peakProfitR?: number | null;
+    targetStopLossPrice?: number | null;
+    rule?: CustomRLadderTrailingStopMove['rule'] | null;
+    riskOrderPositionId?: string | null;
+    stopLossOrderId?: string | null;
+    takeProfitOrderId?: string | null;
+    brokerResponse?: unknown;
+  }): Record<string, unknown> {
+    const positionPayload = this.readRecordValue(input.position?.payload) ?? {};
+    const config = input.resolvedConfig.config;
+    return {
+      schemaVersion: 'mudrex-sl-ladder-audit.v1',
+      at: input.nowIso,
+      brokerKey: 'mudrex',
+      action: input.action,
+      reason: input.reason,
+      symbol: input.trade.symbol,
+      side:
+        input.side ?? (String(input.trade.side || '').toUpperCase() === 'SELL' ? 'short' : 'long'),
+      timeframe: input.trade.timeframe,
+      suggestedTradeId: input.trade.id,
+      executionOrderId: this.readStringValue(input.execution.orderId),
+      executionPositionId: this.readStringValue(input.execution.positionId),
+      brokerPositionId:
+        input.riskOrderPositionId ??
+        this.readStringValue(positionPayload.id) ??
+        this.readStringValue(positionPayload.position_id) ??
+        this.readStringValue(input.position?.externalId),
+      sourceTemplateId: input.resolvedConfig.sourceTemplateId,
+      sourceTemplateName: input.resolvedConfig.sourceTemplateName,
+      sourceTemplateVersion: input.resolvedConfig.sourceTemplateVersion,
+      sourceTemplateStatus: input.resolvedConfig.sourceTemplateStatus,
+      sourceTemplateUpdatedAt: input.resolvedConfig.sourceTemplateUpdatedAt,
+      tradeManagementSnapshotCapturedAt: input.resolvedConfig.snapshotCapturedAt,
+      configSource: input.resolvedConfig.source,
+      unavailableReason: input.resolvedConfig.unavailableReason,
+      configSnapshot: config
+        ? {
+            mode: config.mode,
+            basis: config.basis,
+            updateOnlyInProfitDirection: config.updateOnlyInProfitDirection,
+            rules: config.rules.map((rule) => ({ ...rule })),
+          }
+        : null,
+      inputs: {
+        entryPrice: this.formatTrailingStopAuditNumber(input.entryPrice),
+        originalStopLossPrice: this.formatTrailingStopAuditNumber(input.originalStopLossPrice),
+        currentBrokerStopLossPrice: this.formatTrailingStopAuditNumber(input.currentStopLossPrice),
+        takeProfitPrice: this.formatTrailingStopAuditNumber(input.takeProfitPrice),
+        currentPrice: this.formatTrailingStopAuditNumber(input.currentPrice),
+        profitR: this.roundTrailingStopAuditRatio(input.profitR),
+        peakProfitR: this.roundTrailingStopAuditRatio(input.peakProfitR),
+      },
+      decision: {
+        ruleMatched: input.rule ? { ...input.rule } : null,
+        targetStopLossPrice: this.formatTrailingStopAuditNumber(input.targetStopLossPrice),
+        stopLossOrderId: input.stopLossOrderId ?? null,
+        takeProfitOrderId: input.takeProfitOrderId ?? null,
+      },
+      brokerState: {
+        positionSnapshotId: this.readStringValue(input.position?.externalId),
+        positionStatus: this.readStringValue(input.position?.status),
+        positionSize:
+          this.readNumberValue(positionPayload.size) ??
+          this.readNumberValue(positionPayload.quantity) ??
+          this.readNumberValue(positionPayload.qty),
+        positionEntryPrice: this.formatTrailingStopAuditNumber(
+          this.resolvePositionEntryPrice(positionPayload, input.execution)
+        ),
+        positionStopLossPrice: this.formatTrailingStopAuditNumber(
+          this.resolvePositionStopLossPrice(positionPayload)
+        ),
+        positionTakeProfitPrice: this.formatTrailingStopAuditNumber(
+          this.resolvePositionTakeProfitPrice(positionPayload)
+        ),
+      },
+      ...(input.brokerResponse !== undefined
+        ? { brokerResponse: this.summarizeTrailingStopBrokerResponse(input.brokerResponse) }
+        : {}),
+    };
+  }
+
+  private recordMudrexTrailingStopAudit(
+    execution: SuggestedTradeExecutionLink,
+    audit: Record<string, unknown>,
+    config?: CustomRLadderTrailingStopConfig | null
+  ): SuggestedTradeExecutionLink {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
+    return {
+      ...execution,
+      protectionCheckedAt: this.readStringValue(audit.at) ?? new Date().toISOString(),
+      protectionPlan: {
+        ...plan,
+        trailingStop: {
+          ...(config ?? {}),
+          ...existingTrailing,
+          lastCheckedAt: this.readStringValue(audit.at) ?? new Date().toISOString(),
+          ...this.appendTrailingStopAudit(existingTrailing, audit),
+        },
+      },
+    };
+  }
+
+  private appendTrailingStopAudit(
+    existingTrailing: Record<string, unknown>,
+    audit: Record<string, unknown>
+  ): { lastAudit: Record<string, unknown>; auditHistory: Record<string, unknown>[] } {
+    const existingHistory = Array.isArray(existingTrailing.auditHistory)
+      ? existingTrailing.auditHistory
+          .map((item) => this.readRecordValue(item))
+          .filter((item): item is Record<string, unknown> => Boolean(item))
+      : [];
+    return {
+      lastAudit: audit,
+      auditHistory: [...existingHistory.slice(-19), audit],
+    };
+  }
+
+  private formatTrailingStopAuditNumber(value: number | null | undefined): string | null {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return null;
+    }
+    return this.formatNumericString(value) ?? String(value);
+  }
+
+  private roundTrailingStopAuditRatio(value: number | null | undefined): number | null {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return null;
+    }
+    return Number(value.toFixed(6));
+  }
+
+  private summarizeTrailingStopBrokerResponse(value: unknown): unknown {
+    if (typeof value === 'string') {
+      return value.slice(0, 500);
+    }
+    if (!value || typeof value !== 'object') {
+      return value ?? null;
+    }
+    const record = this.readRecordValue(value);
+    if (!record) {
+      return null;
+    }
+    const verification = this.readRecordValue(record.verification);
+    if (
+      record.mutationResult !== undefined ||
+      record.retryMutationResult !== undefined ||
+      verification
+    ) {
+      const summarizeVerification = (
+        rawVerification: Record<string, unknown> | null
+      ): Record<string, unknown> | undefined => {
+        if (!rawVerification) {
+          return undefined;
+        }
+        const attempts = Array.isArray(rawVerification.attempts)
+          ? rawVerification.attempts
+              .map((item) => this.readRecordValue(item))
+              .filter((item): item is Record<string, unknown> => Boolean(item))
+              .map((item) => ({
+                stage: this.readStringValue(item.stage),
+                verified: Boolean(item.verified),
+                reason: this.readStringValue(item.reason),
+                stopLossPrice:
+                  this.formatNumericString(this.readNumberValue(item.stopLossPrice)) ??
+                  item.stopLossPrice ??
+                  null,
+                takeProfitPrice:
+                  this.formatNumericString(this.readNumberValue(item.takeProfitPrice)) ??
+                  item.takeProfitPrice ??
+                  null,
+                positionSnapshotId: this.readStringValue(item.positionSnapshotId),
+                positionStatus: this.readStringValue(item.positionStatus),
+              }))
+          : undefined;
+        return {
+          stage: this.readStringValue(rawVerification.stage),
+          verified: Boolean(rawVerification.verified),
+          reason: this.readStringValue(rawVerification.reason),
+          remediation: this.readStringValue(rawVerification.remediation),
+          stopLossPrice:
+            this.formatNumericString(this.readNumberValue(rawVerification.stopLossPrice)) ??
+            rawVerification.stopLossPrice ??
+            null,
+          takeProfitPrice:
+            this.formatNumericString(this.readNumberValue(rawVerification.takeProfitPrice)) ??
+            rawVerification.takeProfitPrice ??
+            null,
+          positionSnapshotId: this.readStringValue(rawVerification.positionSnapshotId),
+          positionStatus: this.readStringValue(rawVerification.positionStatus),
+          ...(attempts ? { attempts } : {}),
+        };
+      };
+      return {
+        mutationResult:
+          record.mutationResult !== undefined
+            ? this.summarizeTrailingStopBrokerResponse(record.mutationResult)
+            : undefined,
+        retryMutationResult:
+          record.retryMutationResult !== undefined
+            ? this.summarizeTrailingStopBrokerResponse(record.retryMutationResult)
+            : undefined,
+        retryError: this.readStringValue(record.retryError),
+        verification: summarizeVerification(verification),
+      };
+    }
+    const data = this.readRecordValue(record.data);
+    return {
+      status:
+        this.readStringValue(record.status) ??
+        this.readStringValue(data?.status) ??
+        this.readStringValue(record.protection_status),
+      message:
+        this.readStringValue(record.message) ??
+        this.readStringValue(data?.message) ??
+        this.readStringValue(record.error),
+      stopLossOrderId:
+        this.readStringValue(record.stop_loss_order_id) ??
+        this.readStringValue(record.stopLossOrderId) ??
+        this.readStringValue(data?.stop_loss_order_id) ??
+        this.readStringValue(data?.stopLossOrderId),
+      takeProfitOrderId:
+        this.readStringValue(record.take_profit_order_id) ??
+        this.readStringValue(record.takeProfitOrderId) ??
+        this.readStringValue(data?.take_profit_order_id) ??
+        this.readStringValue(data?.takeProfitOrderId),
+    };
+  }
+
   private recordTrailingStopError(
     trade: SuggestedTrade,
     execution: SuggestedTradeExecutionLink,
     nowIso: string,
-    message: string
+    message: string,
+    audit?: Record<string, unknown>
   ): SuggestedTradeExecutionLink {
     const plan = this.readRecordValue(execution.protectionPlan) ?? {};
     const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
@@ -10290,6 +11247,7 @@ export class SuggestedTradesService {
           ...existingTrailing,
           lastCheckedAt: nowIso,
           lastError: message,
+          ...(audit ? this.appendTrailingStopAudit(existingTrailing, audit) : {}),
         },
       },
       note: this.appendExecutionNote(execution.note, message),
@@ -10303,13 +11261,15 @@ export class SuggestedTradesService {
     reason: string,
     profitR: number | null | undefined,
     currentPrice: number,
-    currentStopLossPrice: number | null
+    currentStopLossPrice: number | null,
+    audit?: Record<string, unknown>,
+    forcePersist = false
   ): SuggestedTradeExecutionLink {
     const priorError = String(execution.protectionLastError || '').trim();
-    if (
-      !priorError.toLowerCase().startsWith('trailing sl update failed') ||
-      !['already_applied', 'would_move_backward', 'no_rule_crossed'].includes(reason)
-    ) {
+    const canClearPriorError =
+      priorError.toLowerCase().startsWith('trailing sl update failed') &&
+      ['already_applied', 'would_move_backward', 'no_rule_crossed'].includes(reason);
+    if (!canClearPriorError && !forcePersist) {
       return execution;
     }
 
@@ -10318,7 +11278,7 @@ export class SuggestedTradesService {
     return {
       ...execution,
       protectionCheckedAt: nowIso,
-      protectionLastError: null,
+      protectionLastError: canClearPriorError ? null : execution.protectionLastError,
       protectionPlan: {
         ...plan,
         trailingStop: {
@@ -10331,6 +11291,7 @@ export class SuggestedTradesService {
           lastProfitR: typeof profitR === 'number' ? Number(profitR.toFixed(6)) : null,
           lastNoopReason: reason,
           lastError: null,
+          ...(audit ? this.appendTrailingStopAudit(existingTrailing, audit) : {}),
         },
       },
     };

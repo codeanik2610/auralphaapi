@@ -11391,6 +11391,405 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
     ema5PullbackConfig.rules
   );
 
+  const templateOnlyLadderConfig = normalizeCustomRLadderTrailingStopConfig({
+    enabled: true,
+    mode: 'custom_r_ladder',
+    basis: 'actual_fill',
+    updateOnlyInProfitDirection: true,
+    rules: [
+      { whenProfitR: 0.5, moveStopToR: 0.2 },
+      { whenProfitR: 3, moveStopToR: 2.5 },
+      { whenProfitR: 5, moveStopToR: 4.5 },
+    ],
+  });
+  assert.ok(templateOnlyLadderConfig);
+  service.strategyTemplateRepository = {
+    async getStrategyTemplateById(userId: string, strategyId: string) {
+      assert.equal(userId, 'user-1');
+      assert.equal(strategyId, 'template-ema5');
+      return {
+        id: 'template-ema5',
+        userId,
+        name: 'EMA5 Cross Pullback 1:6',
+        description: null,
+        status: 'Active',
+        templateVersion: 7,
+        config: {
+          tradeManagement: {
+            trailingStop: templateOnlyLadderConfig,
+          },
+        },
+        createdAt: new Date('2026-05-18T00:00:00.000Z'),
+        updatedAt: new Date('2026-05-19T06:30:00.000Z'),
+      };
+    },
+  };
+  const mudrexTemplateConfig = await service.resolveMudrexTemplateTrailingStopConfig(
+    'user-1',
+    {
+      id: 'trade-template-1',
+      sourceTemplateId: 'template-ema5',
+      symbol: 'TONUSDT',
+      side: 'BUY',
+      timeframe: '15m',
+      meta: {
+        tradeManagementSnapshot: {
+          source: 'strategy-template',
+          sourceTemplateId: 'template-ema5',
+          capturedAt: '2026-05-19T06:00:00.000Z',
+          trailingStop: ema5PullbackConfig,
+        },
+      },
+    },
+    {
+      brokerKey: 'mudrex',
+      protectionPlan: {
+        trailingStop: {
+          ...ema5PullbackConfig,
+          rules: [{ whenProfitR: 0.5, moveStopToR: 0.1 }],
+        },
+      },
+    }
+  );
+  assert.equal(mudrexTemplateConfig.source, 'strategy_template');
+  assert.equal(mudrexTemplateConfig.sourceTemplateVersion, 7);
+  assert.equal(mudrexTemplateConfig.sourceTemplateUpdatedAt, '2026-05-19T06:30:00.000Z');
+  assert.deepEqual(mudrexTemplateConfig.config?.rules, templateOnlyLadderConfig.rules);
+
+  const missingTemplateConfig = await service.resolveMudrexTemplateTrailingStopConfig(
+    'user-1',
+    {
+      id: 'trade-template-missing',
+      symbol: 'TONUSDT',
+      side: 'BUY',
+      timeframe: '15m',
+      meta: {},
+    },
+    {
+      brokerKey: 'mudrex',
+      protectionPlan: {
+        trailingStop: ema5PullbackConfig,
+      },
+    }
+  );
+  assert.equal(missingTemplateConfig.config, null);
+  assert.equal(
+    missingTemplateConfig.unavailableReason,
+    'template_ladder_unavailable:missing_source_template_id'
+  );
+
+  const mudrexVerificationService = new SuggestedTradesService() as any;
+  const mudrexVerifiedSnapshot = {
+    externalId: 'mudrex-position-verify-1',
+    status: 'OPEN',
+    statusRank: 1,
+    firstSeenAt: '2026-05-19T07:00:00.000Z',
+    lastSeenAt: '2026-05-19T07:01:00.000Z',
+    payload: {
+      id: 'mudrex-position-verify-1',
+      symbol: 'TONUSDT',
+      side: 'long',
+      status: 'OPEN',
+      entry_price: '100',
+      quantity: '10',
+      stoploss_price: '102',
+      takeprofit_price: '130',
+      created_at: '2026-05-19T07:00:00.000Z',
+      updated_at: '2026-05-19T07:01:00.000Z',
+    },
+  };
+  const mudrexMismatchedSnapshot = {
+    ...mudrexVerifiedSnapshot,
+    payload: {
+      ...mudrexVerifiedSnapshot.payload,
+      stoploss_price: '101',
+    },
+  };
+  let mudrexVerificationSnapshots = [mudrexVerifiedSnapshot];
+  let mudrexVerificationSnapshotQueue: Array<typeof mudrexVerificationSnapshots> = [];
+  const mudrexVerificationWaitCalls: number[] = [];
+  mudrexVerificationService.fetchLiveAutoBrokerPositionSnapshots = async (
+    input: Record<string, unknown>
+  ) => {
+    assert.equal(input.userId, 'user-1');
+    assert.equal(input.brokerKey, 'mudrex');
+    assert.equal(input.accountId, 'mudrex-account-1');
+    return mudrexVerificationSnapshotQueue.shift() ?? mudrexVerificationSnapshots;
+  };
+  mudrexVerificationService.waitForLiveAutoLifecycleMonitorPoll = async (ms: number) => {
+    mudrexVerificationWaitCalls.push(ms);
+  };
+  const mudrexVerificationTrade = {
+    id: 'trade-verification-1',
+    symbol: 'TONUSDT',
+    side: 'BUY',
+    timeframe: '5m',
+    signalTime: new Date('2026-05-19T07:00:00.000Z'),
+  };
+  const mudrexVerificationExecution = {
+    brokerKey: 'mudrex',
+    accountId: 'mudrex-account-1',
+    orderId: 'mudrex-order-1',
+    positionId: 'mudrex-position-verify-1',
+    orderStatus: 'FILLED',
+    executionState: 'filled',
+    entryPrice: '100',
+    quantity: 10,
+    filledAt: '2026-05-19T07:00:30.000Z',
+  };
+  const mudrexVerificationPassed =
+    await mudrexVerificationService.verifyMudrexTrailingStopRiskOrder({
+      userId: 'user-1',
+      trade: mudrexVerificationTrade,
+      execution: mudrexVerificationExecution,
+      accountId: 'mudrex-account-1',
+      requestedStopLossPrice: 102,
+      requestedTakeProfitPrice: 130,
+    });
+  assert.equal(mudrexVerificationPassed.verified, true);
+  assert.equal(mudrexVerificationPassed.stopLossPrice, 102);
+  assert.equal(mudrexVerificationPassed.takeProfitPrice, 130);
+
+  mudrexVerificationSnapshots = [mudrexMismatchedSnapshot];
+  const mudrexVerificationFailed =
+    await mudrexVerificationService.verifyMudrexTrailingStopRiskOrder({
+      userId: 'user-1',
+      trade: mudrexVerificationTrade,
+      execution: mudrexVerificationExecution,
+      accountId: 'mudrex-account-1',
+      requestedStopLossPrice: 102,
+      requestedTakeProfitPrice: 130,
+    });
+  assert.equal(mudrexVerificationFailed.verified, false);
+  assert.match(mudrexVerificationFailed.reason, /^stop_loss_mismatch_after_risk_order_mutation/);
+
+  mudrexVerificationSnapshots = [mudrexMismatchedSnapshot];
+  mudrexVerificationSnapshotQueue = [[mudrexMismatchedSnapshot], [mudrexVerifiedSnapshot]];
+  mudrexVerificationWaitCalls.length = 0;
+  let mudrexRetryCalls = 0;
+  const mudrexVerificationRecoveredByRecheck =
+    await mudrexVerificationService.verifyMudrexTrailingStopRiskOrderWithRemediation({
+      userId: 'user-1',
+      trade: mudrexVerificationTrade,
+      execution: mudrexVerificationExecution,
+      accountId: 'mudrex-account-1',
+      requestedStopLossPrice: 102,
+      requestedTakeProfitPrice: 130,
+      initialMutationResult: {
+        status: 'success',
+        stop_loss_order_id: 'mudrex-sl-initial',
+        take_profit_order_id: 'mudrex-tp-initial',
+      },
+      retryRiskOrderMutation: async () => {
+        mudrexRetryCalls += 1;
+        return { status: 'retry-should-not-run' };
+      },
+    });
+  assert.equal(mudrexVerificationRecoveredByRecheck.verified, true);
+  assert.equal(
+    mudrexVerificationRecoveredByRecheck.successReason,
+    'risk_order_mutation_verified_after_recheck'
+  );
+  assert.equal(mudrexRetryCalls, 0);
+  assert.equal(mudrexVerificationWaitCalls.length, 1);
+  assert.equal(
+    (mudrexVerificationRecoveredByRecheck.brokerResponse.verification as Record<string, any>)
+      .remediation,
+    'delayed_recheck'
+  );
+  assert.equal(
+    (
+      (mudrexVerificationRecoveredByRecheck.brokerResponse.verification as Record<string, any>)
+        .attempts as unknown[]
+    ).length,
+    2
+  );
+
+  mudrexVerificationSnapshotQueue = [
+    [mudrexMismatchedSnapshot],
+    [mudrexMismatchedSnapshot],
+    [mudrexVerifiedSnapshot],
+  ];
+  mudrexVerificationWaitCalls.length = 0;
+  mudrexRetryCalls = 0;
+  const mudrexVerificationRecoveredByRetry =
+    await mudrexVerificationService.verifyMudrexTrailingStopRiskOrderWithRemediation({
+      userId: 'user-1',
+      trade: mudrexVerificationTrade,
+      execution: mudrexVerificationExecution,
+      accountId: 'mudrex-account-1',
+      requestedStopLossPrice: 102,
+      requestedTakeProfitPrice: 130,
+      initialMutationResult: { status: 'success' },
+      retryRiskOrderMutation: async () => {
+        mudrexRetryCalls += 1;
+        return {
+          status: 'success',
+          stop_loss_order_id: 'mudrex-sl-retry',
+          take_profit_order_id: 'mudrex-tp-retry',
+        };
+      },
+    });
+  assert.equal(mudrexVerificationRecoveredByRetry.verified, true);
+  assert.equal(
+    mudrexVerificationRecoveredByRetry.successReason,
+    'risk_order_mutation_verified_after_retry'
+  );
+  assert.equal(mudrexRetryCalls, 1);
+  assert.equal(mudrexVerificationWaitCalls.length, 2);
+  assert.deepEqual(mudrexVerificationRecoveredByRetry.mutationResult, {
+    status: 'success',
+    stop_loss_order_id: 'mudrex-sl-retry',
+    take_profit_order_id: 'mudrex-tp-retry',
+  });
+
+  mudrexVerificationSnapshotQueue = [
+    [mudrexMismatchedSnapshot],
+    [mudrexMismatchedSnapshot],
+    [mudrexMismatchedSnapshot],
+  ];
+  mudrexVerificationWaitCalls.length = 0;
+  mudrexRetryCalls = 0;
+  const mudrexVerificationStillFailed =
+    await mudrexVerificationService.verifyMudrexTrailingStopRiskOrderWithRemediation({
+      userId: 'user-1',
+      trade: mudrexVerificationTrade,
+      execution: mudrexVerificationExecution,
+      accountId: 'mudrex-account-1',
+      requestedStopLossPrice: 102,
+      requestedTakeProfitPrice: 130,
+      initialMutationResult: { status: 'success' },
+      retryRiskOrderMutation: async () => {
+        mudrexRetryCalls += 1;
+        return { status: 'success-after-retry' };
+      },
+    });
+  assert.equal(mudrexVerificationStillFailed.verified, false);
+  assert.equal(mudrexVerificationStillFailed.auditReason, 'mudrex_risk_order_verification_failed');
+  assert.match(
+    mudrexVerificationStillFailed.errorMessage,
+    /^Mudrex risk order verification failed: stop_loss_mismatch_after_risk_order_mutation/
+  );
+  assert.equal(mudrexRetryCalls, 1);
+  assert.equal(mudrexVerificationWaitCalls.length, 2);
+  assert.equal(
+    (mudrexVerificationStillFailed.brokerResponse.verification as Record<string, any>).remediation,
+    'risk_order_retry_failed'
+  );
+
+  const resolvedMudrexAuditConfig = service.resolveExecutionTrailingStopConfigWithSource(
+    {
+      id: 'trade-audit-1',
+      sourceTemplateId: 'template-ema5',
+      symbol: 'TONUSDT',
+      side: 'BUY',
+      timeframe: '15m',
+      meta: {
+        tradeManagementSnapshot: {
+          source: 'strategy-template',
+          sourceTemplateId: 'template-ema5',
+          capturedAt: '2026-05-19T06:00:00.000Z',
+          trailingStop: ema5PullbackConfig,
+        },
+      },
+    },
+    {
+      brokerKey: 'mudrex',
+      protectionPlan: {},
+    }
+  );
+  assert.equal(resolvedMudrexAuditConfig.source, 'trade_management_snapshot');
+  assert.equal(resolvedMudrexAuditConfig.sourceTemplateId, 'template-ema5');
+  assert.equal(resolvedMudrexAuditConfig.snapshotCapturedAt, '2026-05-19T06:00:00.000Z');
+
+  const mudrexAudit = service.buildMudrexTrailingStopAudit({
+    nowIso: '2026-05-19T06:05:00.000Z',
+    trade: {
+      id: 'trade-audit-1',
+      sourceTemplateId: 'template-ema5',
+      symbol: 'TONUSDT',
+      side: 'BUY',
+      timeframe: '15m',
+    },
+    execution: {
+      brokerKey: 'mudrex',
+      orderId: 'mudrex-order-1',
+      positionId: 'position-1',
+    },
+    resolvedConfig: resolvedMudrexAuditConfig,
+    action: 'no_move',
+    reason: 'no_rule_crossed',
+    side: 'long',
+    position: {
+      externalId: 'position-1',
+      status: 'open',
+      statusRank: 1,
+      firstSeenAt: '2026-05-19T06:01:00.000Z',
+      lastSeenAt: '2026-05-19T06:05:00.000Z',
+      payload: {
+        id: 'position-1',
+        size: '10',
+        entry_price: '100',
+        current_price: '101',
+        stoploss_price: '95',
+        takeprofit_price: '130',
+      },
+    },
+    entryPrice: 100,
+    originalStopLossPrice: 95,
+    currentStopLossPrice: 95,
+    takeProfitPrice: 130,
+    currentPrice: 101,
+    profitR: 0.2,
+    peakProfitR: 0.2,
+  });
+  assert.equal(mudrexAudit.configSource, 'trade_management_snapshot');
+  assert.equal((mudrexAudit.inputs as Record<string, unknown>).profitR, 0.2);
+
+  const mudrexAuditExecution = service.recordMudrexTrailingStopAudit(
+    {
+      protectionPlan: {
+        trailingStop: {
+          auditHistory: [{ reason: 'previous_check' }],
+        },
+      },
+    },
+    mudrexAudit,
+    ema5PullbackConfig
+  );
+  assert.equal(
+    (mudrexAuditExecution.protectionPlan as Record<string, any>).trailingStop.lastAudit.reason,
+    'no_rule_crossed'
+  );
+  assert.equal(
+    (mudrexAuditExecution.protectionPlan as Record<string, any>).trailingStop.auditHistory.length,
+    2
+  );
+
+  const forcedNoMoveAudit = service.clearTrailingStopErrorWhenNoMoveNeeded(
+    {
+      protectionLastError: 'non-trailing warning',
+      protectionPlan: {
+        trailingStop: {
+          lastNoopReason: 'previous',
+        },
+      },
+    },
+    ema5PullbackConfig,
+    '2026-05-19T06:06:00.000Z',
+    'would_move_backward',
+    0.6,
+    103,
+    104,
+    mudrexAudit,
+    true
+  );
+  assert.equal(forcedNoMoveAudit.protectionLastError, 'non-trailing warning');
+  assert.equal(
+    (forcedNoMoveAudit.protectionPlan as Record<string, any>).trailingStop.lastAudit.reason,
+    'no_rule_crossed'
+  );
+
   const pendingDeltaBracketAmendment = {
     stopLossPrice: '95',
     takeProfitPrice: '115',
