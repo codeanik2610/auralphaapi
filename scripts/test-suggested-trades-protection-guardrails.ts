@@ -97,10 +97,15 @@ async function runGuardrailScenario(input: {
   orders?: Record<string, unknown>[];
   positions?: Record<string, unknown>[];
   alerts?: Array<Record<string, unknown>>;
+  updates?: Array<{ sql: string; params?: unknown[] }>;
 }) {
   const service = createService(input.alerts);
   return withMockedQuery(
-    async (sql) => {
+    async (sql, params) => {
+      if (sql.includes('UPDATE suggested_trade_executions')) {
+        input.updates?.push({ sql, params });
+        return [];
+      }
       if (sql.includes('FROM suggested_trade_executions')) {
         return [input.execution];
       }
@@ -180,6 +185,7 @@ async function testDeltaFilledWaitingForPositionStaleAlerts(): Promise<void> {
 
 async function testAttachedMudrexWithPositionProtectionPasses(): Promise<void> {
   const alerts: Array<Record<string, unknown>> = [];
+  const updates: Array<{ sql: string; params?: unknown[] }> = [];
   const response = await runGuardrailScenario({
     execution: createExecution({
       brokerKey: 'mudrex',
@@ -194,11 +200,15 @@ async function testAttachedMudrexWithPositionProtectionPasses(): Promise<void> {
       }),
     ],
     alerts,
+    updates,
   });
 
   assert.equal(response.status, 'ok');
   assert.equal(response.issueTrades, 0);
+  assert.equal(response.readBackReconciliations, 1);
+  assert.equal(response.items[0]?.readBackReason, 'broker_verified_state_reconciled');
   assert.equal(alerts.length, 0);
+  assert.equal(updates.length, 1);
 }
 
 async function testAttachedMudrexMissingTakeProfitAlerts(): Promise<void> {
@@ -221,8 +231,70 @@ async function testAttachedMudrexMissingTakeProfitAlerts(): Promise<void> {
 
   assert.equal(response.status, 'degraded');
   assert.equal(response.items[0]?.issues[0]?.code, 'attached_protection_inactive');
+  assert.equal(response.recoveriesTriggered, 0);
+  assert.equal(response.items[0]?.watchdogStatus, 'needs_repair');
+  assert.match(String(response.items[0]?.watchdogReason || ''), /missing take profit/);
   assert.equal(alerts.length, 1);
   assert.match(String(alerts[0]?.message || ''), /mudrex ETHUSDT/);
+}
+
+async function testFailedMudrexReadBackClearsFalseError(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const updates: Array<{ sql: string; params?: unknown[] }> = [];
+  const response = await runGuardrailScenario({
+    execution: createExecution({
+      brokerKey: 'mudrex',
+      symbol: 'XRPUSDT',
+      orderStatus: 'PARTIALLY_FILLED',
+      quantity: 100,
+      filledQuantity: 40,
+      remainingQuantity: 60,
+      protectionState: 'failed',
+      protectionLastError: 'Trailing SL update failed: Risk order amendment failed',
+      protectionPlanJson: {
+        trailingStop: {
+          enabled: true,
+          lastError: 'Trailing SL update failed: Risk order amendment failed',
+        },
+      },
+      protectionAttachedAt: null,
+    }),
+    positions: [
+      createPosition({
+        externalId: 'mudrex-xrp-position',
+        symbol: 'XRPUSDT',
+        stopLossOrderId: 'mudrex-sl-1',
+        stopLossPrice: '1.23',
+        takeProfitOrderId: 'mudrex-tp-1',
+        takeProfitPrice: '1.11',
+        positionSize: '40',
+      }),
+    ],
+    alerts,
+    updates,
+  });
+
+  assert.equal(response.status, 'ok');
+  assert.equal(response.issueTrades, 0);
+  assert.equal(response.readBackReconciliations, 1);
+  assert.equal(response.recoveryFailures, 0);
+  assert.equal(response.items[0]?.protectionState, 'attached');
+  assert.equal(response.items[0]?.protectionLastError, null);
+  assert.equal(response.items[0]?.partialFill, true);
+  assert.equal(response.items[0]?.positionSize, '40');
+  assert.equal(response.items[0]?.watchdogStatus, 'broker_verified_after_error');
+  assert.equal(response.items[0]?.readBackReason, 'broker_verified_after_error');
+  assert.equal(alerts.length, 0);
+  assert.equal(updates.length, 1);
+  const plan = JSON.parse(String(updates[0]?.params?.[6] || '{}')) as Record<string, unknown>;
+  assert.equal(plan.mudrexReadBackReason, 'broker_verified_after_error');
+  assert.equal(plan.stopLossOrderId, 'mudrex-sl-1');
+  assert.equal(plan.takeProfitOrderId, 'mudrex-tp-1');
+  assert.equal((plan.mudrexProtectionWatchdog as Record<string, unknown>)?.positionSize, '40');
+  assert.equal(
+    ((plan.trailingStop as Record<string, unknown>)?.lastAudit as Record<string, unknown>)?.reason,
+    'broker_verified_after_error'
+  );
 }
 
 async function main(): Promise<void> {
@@ -231,6 +303,7 @@ async function main(): Promise<void> {
   await testDeltaFilledWaitingForPositionStaleAlerts();
   await testAttachedMudrexWithPositionProtectionPasses();
   await testAttachedMudrexMissingTakeProfitAlerts();
+  await testFailedMudrexReadBackClearsFalseError();
   console.log('Suggested trades protection guardrail assertions passed.');
 }
 

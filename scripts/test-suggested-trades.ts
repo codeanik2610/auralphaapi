@@ -7538,10 +7538,13 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
     assert.equal(savedExecutionPayload?.['filledAt'], '2026-05-10T00:20:25.000Z');
     assert.equal(savedExecutionPayload?.['protectionState'], 'attached');
     assert.equal(savedExecutionPayload?.['protectionAttempts'], 1);
-    assert.ok(Number.isFinite(Date.parse(String(savedExecutionPayload?.['protectionCheckedAt']))));
+    const protectionCheckedAt = String(savedExecutionPayload?.['protectionCheckedAt']);
+    const protectionAttachedAt = String(savedExecutionPayload?.['protectionAttachedAt']);
+    assert.ok(Number.isFinite(Date.parse(protectionCheckedAt)));
+    assert.ok(Number.isFinite(Date.parse(protectionAttachedAt)));
     assert.equal(
-      savedExecutionPayload?.['protectionAttachedAt'],
-      savedExecutionPayload?.['protectionCheckedAt']
+      Math.abs(Date.parse(protectionAttachedAt) - Date.parse(protectionCheckedAt)) <= 1000,
+      true
     );
     const mudrexProtectionPlan = savedExecutionPayload?.['protectionPlan'] as
       | Record<string, unknown>
@@ -7550,7 +7553,7 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
       mudrexProtectionPlan?.snapshotPositionId,
       'mudrex:asset-1:2026-05-10T00:06:34Z:SHORT'
     );
-    assert.equal(mudrexProtectionPlan?.attachedAt, savedExecutionPayload?.['protectionCheckedAt']);
+    assert.equal(String(mudrexProtectionPlan?.attachedAt), protectionAttachedAt);
     assert.equal(mudrexProtectionPlan?.attachedStopLossPrice, '0.074490');
     assert.equal(mudrexProtectionPlan?.attachedTakeProfitPrice, '0.074120');
   }
@@ -10244,6 +10247,7 @@ async function runSuggestedTradesProtectionGuardrailAssertions(): Promise<void> 
     accountId: string;
     symbols: string[];
   }> = [];
+  const readBackUpdates: Array<Record<string, unknown>> = [];
 
   service.listExecutionCandidates = async () => [
     {
@@ -10276,9 +10280,18 @@ async function runSuggestedTradesProtectionGuardrailAssertions(): Promise<void> 
       stopLossPrice: null,
       takeProfitOrderId: null,
       takeProfitPrice: null,
+      positionSize: '2',
       lastSeenAt: '2026-05-11T14:01:45.000Z',
     },
   ];
+  service.maybeReconcileMudrexReadBack = async (
+    _row: Record<string, unknown>,
+    _positions: Record<string, unknown>[],
+    item: Record<string, unknown>
+  ) => {
+    readBackUpdates.push({ symbol: item.symbol, watchdogStatus: item.watchdogStatus });
+    return { reconciled: false, error: null };
+  };
   service.alertRepository = {
     async findOpenAlertBySource() {
       return null;
@@ -10317,23 +10330,23 @@ async function runSuggestedTradesProtectionGuardrailAssertions(): Promise<void> 
     assert.equal(response.issueTrades, 1);
     assert.equal(response.criticalIssues, 1);
     assert.equal(response.alertsEmitted, 1);
-    assert.equal(response.recoveriesTriggered, 1);
+    assert.equal(response.recoveriesTriggered, 0);
     assert.equal(response.recoveryFailures, 0);
+    assert.equal(response.readBackReconciliations, 0);
     assert.equal(response.items[0]?.issues[0]?.code, 'open_position_unprotected');
-    assert.equal(response.items[0]?.recoveryTriggered, true);
-    assert.equal(response.items[0]?.recoveryRefreshed, 1);
+    assert.equal(response.items[0]?.watchdogStatus, 'needs_repair');
+    assert.match(
+      String(response.items[0]?.watchdogReason || ''),
+      /missing stop loss and take profit/
+    );
+    assert.equal(response.items[0]?.recoveryTriggered, false);
+    assert.equal(response.items[0]?.recoveryRefreshed, null);
     assert.match(
       String(createdAlerts[0]?.message || ''),
       /mudrex ETHUSDT protection guardrail open_position_unprotected/
     );
-    assert.deepEqual(recoveryCalls, [
-      {
-        userId: 'user-1',
-        brokerKey: 'mudrex',
-        accountId: 'acc-1',
-        symbols: ['ETHUSDT'],
-      },
-    ]);
+    assert.deepEqual(recoveryCalls, []);
+    assert.deepEqual(readBackUpdates, [{ symbol: 'ETHUSDT', watchdogStatus: 'needs_repair' }]);
   } finally {
     env.suggestedTradesProtectionGuardrails.enabled = originalEnabled;
   }
