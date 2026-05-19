@@ -9074,6 +9074,56 @@ export class SuggestedTradesService {
       if (brokerKey === 'delta_exchange' && hasActivePosition && position) {
         return this.validateAttachedDeltaLiveProtection(userId, trade, execution, position, nowIso);
       }
+      if (brokerKey === 'mudrex' && hasActivePosition && position) {
+        const positionPayload = position.payload ?? {};
+        if (mudrexPositionHasProtection(positionPayload)) {
+          return execution;
+        }
+
+        const prices = this.resolveExecutionProtectionPrices(trade, execution);
+        if (!prices) {
+          return this.markProtectionFailed(
+            execution,
+            nowIso,
+            'Mudrex attached protection is inactive or missing for an open position, and no stored SL/TP plan is available for automatic repair.'
+          );
+        }
+
+        const accountId = this.readStringValue(execution.accountId);
+        if (!accountId) {
+          return this.markProtectionFailed(
+            execution,
+            nowIso,
+            'Mudrex attached protection repair needs broker account routing on the execution row.'
+          );
+        }
+
+        const attachingExecution = await this.persistLiveProtectionAttachmentStarted(
+          userId,
+          trade,
+          execution,
+          position,
+          nowIso,
+          brokerKey,
+          accountId,
+          {
+            note:
+              'Mudrex attached protection is inactive or missing on broker read-back; automatic SL/TP repair is starting.',
+            attachmentTrigger: 'broker_readback_missing_protection',
+          }
+        );
+
+        return this.remediateMudrexLiveProtection({
+          userId,
+          trade,
+          execution: attachingExecution,
+          position,
+          prices,
+          nowIso,
+          brokerKey,
+          accountId,
+        });
+      }
       if (!hasActivePosition && terminalForProtection) {
         return {
           ...execution,
@@ -11758,24 +11808,31 @@ export class SuggestedTradesService {
     position: LivePositionSnapshot,
     nowIso: string,
     brokerKey: string,
-    accountId: string
+    accountId: string,
+    options: {
+      note?: string;
+      attachmentTrigger?: string;
+    } = {}
   ): Promise<SuggestedTradeExecutionLink> {
     if (this.normalizeProtectionState(execution.protectionState) === 'attaching') {
       return execution;
     }
 
+    const note =
+      options.note ?? 'Live position detected; automatic SL/TP protection attachment started.';
+    const attachmentTrigger = options.attachmentTrigger ?? 'position_detected';
     const nextExecution = this.markProtectionAttachmentStarted(
       trade,
       execution,
       nowIso,
-      'Live position detected; automatic SL/TP protection attachment started.',
+      note,
       {
         brokerKey,
         accountId,
         positionId: position.externalId,
         positionStatus: position.status ?? null,
         attachmentStartedAt: nowIso,
-        attachmentTrigger: 'position_detected',
+        attachmentTrigger,
       }
     );
     if (typeof this.suggestedTradeRepository?.saveSuggestedTradeExecution === 'function') {
@@ -11790,7 +11847,7 @@ export class SuggestedTradesService {
       related: `${brokerKey} · ${accountId}`,
       referenceId: trade.id,
       symbol: trade.symbol,
-      description: `Live position ${position.externalId} was detected; automatic SL/TP protection attachment is starting now.`,
+      description: note,
     });
     return nextExecution;
   }

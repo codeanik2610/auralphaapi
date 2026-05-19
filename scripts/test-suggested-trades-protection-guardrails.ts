@@ -72,7 +72,10 @@ async function withMockedQuery<T>(handler: QueryHandler, run: () => Promise<T>):
   }
 }
 
-function createService(alerts: Array<Record<string, unknown>> = []) {
+function createService(
+  alerts: Array<Record<string, unknown>> = [],
+  recoveryCalls: Array<Record<string, unknown>> = []
+) {
   const service = new SuggestedTradesProtectionGuardrailService() as any;
   service.alertRepository = {
     async findOpenAlertBySource() {
@@ -89,6 +92,17 @@ function createService(alerts: Array<Record<string, unknown>> = []) {
       throw new Error('updateOpenAlertDetails should not run without an existing alert');
     },
   };
+  service.suggestedTradesService = {
+    async syncExecutionForPositionUpdates(
+      userId: string,
+      brokerKey: string,
+      accountId: string,
+      symbols: string[]
+    ) {
+      recoveryCalls.push({ userId, brokerKey, accountId, symbols: [...symbols] });
+      return 1;
+    },
+  };
   return service as SuggestedTradesProtectionGuardrailService;
 }
 
@@ -97,9 +111,10 @@ async function runGuardrailScenario(input: {
   orders?: Record<string, unknown>[];
   positions?: Record<string, unknown>[];
   alerts?: Array<Record<string, unknown>>;
+  recoveryCalls?: Array<Record<string, unknown>>;
   updates?: Array<{ sql: string; params?: unknown[] }>;
 }) {
-  const service = createService(input.alerts);
+  const service = createService(input.alerts, input.recoveryCalls);
   return withMockedQuery(
     async (sql, params) => {
       if (sql.includes('UPDATE suggested_trade_executions')) {
@@ -215,6 +230,7 @@ async function testAttachedMudrexWithPositionProtectionPasses(): Promise<void> {
 
 async function testAttachedMudrexMissingTakeProfitAlerts(): Promise<void> {
   const alerts: Array<Record<string, unknown>> = [];
+  const recoveryCalls: Array<Record<string, unknown>> = [];
   const response = await runGuardrailScenario({
     execution: createExecution({
       brokerKey: 'mudrex',
@@ -229,19 +245,31 @@ async function testAttachedMudrexMissingTakeProfitAlerts(): Promise<void> {
       }),
     ],
     alerts,
+    recoveryCalls,
   });
 
   assert.equal(response.status, 'degraded');
   assert.equal(response.items[0]?.issues[0]?.code, 'attached_protection_inactive');
-  assert.equal(response.recoveriesTriggered, 0);
+  assert.equal(response.recoveriesTriggered, 1);
   assert.equal(response.items[0]?.watchdogStatus, 'needs_repair');
   assert.match(String(response.items[0]?.watchdogReason || ''), /missing take profit/);
+  assert.equal(response.items[0]?.recoveryTriggered, true);
+  assert.equal(response.items[0]?.recoveryRefreshed, 1);
   assert.equal(alerts.length, 1);
   assert.match(String(alerts[0]?.message || ''), /mudrex ETHUSDT/);
+  assert.deepEqual(recoveryCalls, [
+    {
+      userId: 'user-1',
+      brokerKey: 'mudrex',
+      accountId: 'acct-1',
+      symbols: ['ETHUSDT'],
+    },
+  ]);
 }
 
 async function testAttachedMudrexZeroProtectionPricesAlert(): Promise<void> {
   const alerts: Array<Record<string, unknown>> = [];
+  const recoveryCalls: Array<Record<string, unknown>> = [];
   const response = await runGuardrailScenario({
     execution: createExecution({
       brokerKey: 'mudrex',
@@ -256,6 +284,7 @@ async function testAttachedMudrexZeroProtectionPricesAlert(): Promise<void> {
       }),
     ],
     alerts,
+    recoveryCalls,
   });
 
   assert.equal(response.status, 'degraded');
@@ -266,7 +295,18 @@ async function testAttachedMudrexZeroProtectionPricesAlert(): Promise<void> {
     /missing stop loss and take profit/
   );
   assert.equal(response.readBackReconciliations, 0);
+  assert.equal(response.recoveriesTriggered, 1);
+  assert.equal(response.items[0]?.recoveryTriggered, true);
+  assert.equal(response.items[0]?.recoveryRefreshed, 1);
   assert.equal(alerts.length, 1);
+  assert.deepEqual(recoveryCalls, [
+    {
+      userId: 'user-1',
+      brokerKey: 'mudrex',
+      accountId: 'acct-1',
+      symbols: ['SOLUSDT'],
+    },
+  ]);
 }
 
 async function testFailedMudrexReadBackClearsFalseError(): Promise<void> {
@@ -330,6 +370,37 @@ async function testFailedMudrexReadBackClearsFalseError(): Promise<void> {
   );
 }
 
+async function testMudrexStalePositionIdDoesNotBindSameSymbolPosition(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const updates: Array<{ sql: string; params?: unknown[] }> = [];
+  const response = await runGuardrailScenario({
+    execution: createExecution({
+      brokerKey: 'mudrex',
+      symbol: 'SOLUSDT',
+      positionId: 'older-sol-position',
+      protectionPlanJson: {},
+    }),
+    positions: [
+      createPosition({
+        externalId: 'newer-sol-position',
+        symbol: 'SOLUSDT',
+        stopLossPrice: '0',
+        takeProfitPrice: '0',
+      }),
+    ],
+    alerts,
+    updates,
+  });
+
+  assert.equal(response.status, 'ok');
+  assert.equal(response.issueTrades, 0);
+  assert.equal(response.items[0]?.positionSymbol, null);
+  assert.equal(response.items[0]?.watchdogStatus, 'unknown');
+  assert.equal(response.readBackReconciliations, 0);
+  assert.equal(alerts.length, 0);
+  assert.equal(updates.length, 0);
+}
+
 async function main(): Promise<void> {
   await testAttachedDeltaWithActiveOrdersPasses();
   await testAttachedDeltaWithCancelledProtectionAlerts();
@@ -338,6 +409,7 @@ async function main(): Promise<void> {
   await testAttachedMudrexMissingTakeProfitAlerts();
   await testAttachedMudrexZeroProtectionPricesAlert();
   await testFailedMudrexReadBackClearsFalseError();
+  await testMudrexStalePositionIdDoesNotBindSameSymbolPosition();
   console.log('Suggested trades protection guardrail assertions passed.');
 }
 

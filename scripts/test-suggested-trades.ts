@@ -7548,6 +7548,131 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
 
   {
     const service = new SuggestedTradesService() as any;
+    let savedAttachmentPayload: Record<string, unknown> | null = null;
+    const riskOrders: Array<{
+      positionId: string;
+      body: Record<string, unknown>;
+      context: Record<string, unknown> | undefined;
+    }> = [];
+    service.suggestedTradeRepository = {
+      async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+        savedAttachmentPayload = { ...payload };
+        return {
+          ...payload,
+          createdAt: new Date('2026-05-19T18:42:40.000Z'),
+          updatedAt: new Date('2026-05-19T18:42:40.000Z'),
+        };
+      },
+    };
+    service.brokerRuntimeRegistry = {
+      getPositionsAdapter() {
+        return {
+          async createRiskOrder(
+            positionId: string,
+            body: Record<string, unknown>,
+            context?: Record<string, unknown>
+          ) {
+            riskOrders.push({ positionId, body, context });
+            return { success: true };
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-mudrex-attached-readback-missing-protection',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'BTCUSDT',
+        timeframe: '5m',
+        side: 'BUY',
+        signalTime: new Date('2026-05-19T18:40:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitTargets: ['110'],
+        dedupeKey: 'dedupe-mudrex-attached-readback-missing-protection',
+        meta: null,
+        createdAt: new Date('2026-05-19T18:40:00.000Z'),
+        updatedAt: new Date('2026-05-19T18:42:10.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+        orderId: 'mudrex-order-attached-readback-missing-protection',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitPrice: '110',
+        protectionState: 'attached',
+        protectionAttempts: 1,
+        protectionAttachedAt: '2026-05-19T18:42:10.000Z',
+        protectionCheckedAt: '2026-05-19T18:42:39.000Z',
+      },
+      [
+        {
+          externalId: 'mudrex:asset-1:2026-05-19T18:42:07Z:LONG',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-05-19T18:42:07.000Z',
+          lastSeenAt: '2026-05-19T18:43:06.000Z',
+          payload: {
+            id: 'mudrex-native-position-attached-readback-missing-protection',
+            status: 'open',
+            side: 'Long',
+            entry_price: '100',
+            current_price: '100',
+            quantity: '1',
+            stoploss_price: '0',
+            takeprofit_price: '0',
+            created_at: '2026-05-19T18:42:07.000Z',
+            updated_at: '2026-05-19T18:43:06.000Z',
+          },
+        },
+      ]
+    );
+
+    assert.equal(savedAttachmentPayload?.['protectionState'], 'attaching');
+    const savedAttachmentPlan = savedAttachmentPayload?.['protectionPlan'] as
+      | Record<string, unknown>
+      | undefined;
+    assert.equal(savedAttachmentPlan?.attachmentTrigger, 'broker_readback_missing_protection');
+    assert.match(
+      String(savedAttachmentPayload?.['note'] || ''),
+      /automatic SL\/TP repair is starting/
+    );
+    assert.equal(riskOrders.length, 1);
+    assert.equal(
+      riskOrders[0]?.positionId,
+      'mudrex-native-position-attached-readback-missing-protection'
+    );
+    assert.equal(riskOrders[0]?.body.stoploss_price, '95.000000');
+    assert.equal(riskOrders[0]?.body.takeprofit_price, '110.000000');
+    assert.deepEqual(riskOrders[0]?.context, {
+      userId: 'user-1',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+    });
+    assert.equal(nextExecution.protectionState, 'attached');
+    assert.equal(nextExecution.protectionAttempts, 2);
+    assert.equal(nextExecution.protectionLastError, null);
+    const repairedPlan = nextExecution.protectionPlan as Record<string, unknown> | undefined;
+    assert.equal(
+      repairedPlan?.positionId,
+      'mudrex-native-position-attached-readback-missing-protection'
+    );
+    assert.equal(repairedPlan?.attachedStopLossPrice, '95.000000');
+    assert.equal(repairedPlan?.attachedTakeProfitPrice, '110.000000');
+    assert.match(String(nextExecution.note || ''), /Derived Mudrex SL\/TP attached/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
     let riskOrderPositionId: string | null = null;
     service.brokerRuntimeRegistry = {
       getPositionsAdapter() {
@@ -10432,7 +10557,7 @@ async function runSuggestedTradesProtectionGuardrailAssertions(): Promise<void> 
     assert.equal(response.issueTrades, 1);
     assert.equal(response.criticalIssues, 1);
     assert.equal(response.alertsEmitted, 1);
-    assert.equal(response.recoveriesTriggered, 0);
+    assert.equal(response.recoveriesTriggered, 1);
     assert.equal(response.recoveryFailures, 0);
     assert.equal(response.readBackReconciliations, 0);
     assert.equal(response.items[0]?.issues[0]?.code, 'open_position_unprotected');
@@ -10441,13 +10566,20 @@ async function runSuggestedTradesProtectionGuardrailAssertions(): Promise<void> 
       String(response.items[0]?.watchdogReason || ''),
       /missing stop loss and take profit/
     );
-    assert.equal(response.items[0]?.recoveryTriggered, false);
-    assert.equal(response.items[0]?.recoveryRefreshed, null);
+    assert.equal(response.items[0]?.recoveryTriggered, true);
+    assert.equal(response.items[0]?.recoveryRefreshed, 1);
     assert.match(
       String(createdAlerts[0]?.message || ''),
       /mudrex ETHUSDT protection guardrail open_position_unprotected/
     );
-    assert.deepEqual(recoveryCalls, []);
+    assert.deepEqual(recoveryCalls, [
+      {
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        accountId: 'acct-1',
+        symbols: ['ETHUSDT'],
+      },
+    ]);
     assert.deepEqual(readBackUpdates, [{ symbol: 'ETHUSDT', watchdogStatus: 'needs_repair' }]);
   } finally {
     env.suggestedTradesProtectionGuardrails.enabled = originalEnabled;

@@ -525,6 +525,9 @@ export class SuggestedTradesProtectionGuardrailService {
       if (positionId && externalId === positionId) {
         return true;
       }
+      if (positionId) {
+        return false;
+      }
       return Boolean(
         symbolBase && this.normalizeSymbolBase(this.readString(position.symbol)) === symbolBase
       );
@@ -610,7 +613,7 @@ export class SuggestedTradesProtectionGuardrailService {
         severity: 'High',
         message:
           brokerKey === 'mudrex'
-            ? `Mudrex open position needs protection repair: ${missingProtectionReason}; watchdog is audit-only and did not submit a broker mutation.`
+            ? `Mudrex open position needs protection repair: ${missingProtectionReason}; automatic repair will be attempted when recovery is enabled.`
             : `Open live position has missing SL/TP protection while protection state is ${protectionState}.`,
       });
     }
@@ -677,9 +680,6 @@ export class SuggestedTradesProtectionGuardrailService {
 
   private shouldTriggerRecovery(item: SuggestedTradesProtectionGuardrailItem): boolean {
     if (!item.issues.length || !item.userId || !item.brokerKey || !item.accountId || !item.symbol) {
-      return false;
-    }
-    if (item.brokerKey === 'mudrex') {
       return false;
     }
     return item.issues.some((issue) =>
