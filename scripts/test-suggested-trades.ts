@@ -9902,6 +9902,120 @@ async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void>
 
   {
     const service = new SuggestedTradesService() as any;
+    let deltaAttachBody: Record<string, unknown> | null = null;
+    service.resolveLiveProtectionOrderContext = async () => ({
+      stopLossOrderId: 'delta-old-sl',
+      takeProfitOrderId: 'delta-old-tp',
+      stopLossStatus: 'CANCELLED',
+      takeProfitStatus: 'CANCELLED',
+      activeOrderIds: [],
+    });
+    service.resolveLiveAutoAssetRoute = async () => ({
+      assetId: '45678',
+      requestedSymbol: 'BTCUSDT',
+      brokerSymbol: 'BTCUSD',
+      candidateSymbols: ['BTCUSDT', 'BTCUSD'],
+      resolvedVia: 'catalog_equivalent',
+    });
+    service.resolveActiveDeltaProtectionOrdersForSymbol = async () => ({
+      stopLossOrderIds: [],
+      takeProfitOrderIds: [],
+      unclassifiedOrderIds: [],
+      activeOrderIds: [],
+    });
+    service.brokerRuntimeRegistry = {
+      getOrdersAdapter() {
+        return {
+          async createLiveAutoProtectiveOrdersForPosition(
+            _assetId: string,
+            body: Record<string, unknown>
+          ) {
+            deltaAttachBody = body;
+            return {
+              protection_status: 'attached',
+              stop_loss_order_id: 'delta-repair-sl',
+              take_profit_order_id: 'delta-repair-tp',
+            };
+          },
+        };
+      },
+    };
+
+    const nextExecution = await service.maybeRemediateLiveProtection(
+      'user-1',
+      {
+        id: 'st-delta-max-attempt-repair',
+        automationId: 'auto-1',
+        automationRunId: 'run-1',
+        userId: 'user-1',
+        symbol: 'BTCUSDT',
+        timeframe: '5m',
+        side: 'BUY',
+        signalTime: new Date('2026-04-04T10:00:00.000Z'),
+        status: 'Accepted',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitTargets: ['110'],
+        dedupeKey: 'dedupe-delta-max-attempt-repair',
+        meta: null,
+        createdAt: new Date('2026-04-04T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-acc-1',
+        orderId: 'delta-order-max-attempt',
+        executionState: 'filled',
+        orderStatus: 'FILLED',
+        entryPrice: '100',
+        stopLossPrice: '95',
+        takeProfitPrice: '110',
+        filledPrice: '102',
+        protectionState: 'failed',
+        protectionAttempts: 3,
+        protectionLastError:
+          'Delta Exchange replacement protection is inactive after submission (SL delta-old-sl CANCELLED, TP delta-old-tp CANCELLED); replacement protection still needs operator review.',
+      },
+      [
+        {
+          externalId: '45678',
+          status: 'OPEN',
+          statusRank: 2,
+          firstSeenAt: '2026-04-04T10:03:05.000Z',
+          lastSeenAt: '2026-04-04T10:03:05.000Z',
+          payload: {
+            id: '45678',
+            status: 'open',
+            side: 'Long',
+            entry_price: '102',
+            mark_price: '103',
+            quantity_contracts: '3',
+          },
+        },
+      ]
+    );
+
+    assert.equal(nextExecution.protectionState, 'attaching');
+    assert.equal(nextExecution.protectionAttempts, 4);
+    const repairAttachBody = deltaAttachBody as unknown as Record<string, unknown>;
+    assert.equal(
+      repairAttachBody.idempotencyKey,
+      'live-auto-protection:st-delta-max-attempt-repair:delta-order-max-attempt:repair-4'
+    );
+    assert.equal(repairAttachBody.size, 3);
+    const plan = nextExecution.protectionPlan as Record<string, unknown>;
+    assert.equal(plan.stopLossOrderId, 'delta-repair-sl');
+    assert.equal(plan.takeProfitOrderId, 'delta-repair-tp');
+    assert.deepEqual(plan.replacedProtectionAlreadyTerminalOrderIds, [
+      'delta-old-sl',
+      'delta-old-tp',
+    ]);
+    assert.equal(plan.forcedReplacementRetry, true);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
     let savedExecutionPayload: Record<string, unknown> | null = null;
     const trade = {
       id: 'st-live-blocked-no-order-protection',

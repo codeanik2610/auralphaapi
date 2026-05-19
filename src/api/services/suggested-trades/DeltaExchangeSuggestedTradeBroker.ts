@@ -175,6 +175,9 @@ export interface DeltaLiveProtectionRepairInput {
     includeLiveBroker?: boolean;
   }) => Promise<DeltaActiveProtectionOrdersLike>;
   unwrapOrderPlacementResponse: (response: unknown) => Record<string, unknown>;
+  allowTerminalReplacementRetry?: boolean;
+  replacementRetryReason?: string | null;
+  replacementIdempotencySuffix?: string | null;
   markProtectionAttached: (
     trade: SuggestedTradeProtectionTradeLike,
     execution: SuggestedTradeExecutionLink,
@@ -223,6 +226,26 @@ const readNumberValue = (value: unknown): number | null => {
 
 const formatNumericString = (value: number | null | undefined): string | null =>
   value !== null && value !== undefined && Number.isFinite(value) ? String(value) : null;
+
+const sanitizeIdempotencySegment = (value: unknown): string | null => {
+  const normalized = readStringValue(value);
+  if (!normalized) {
+    return null;
+  }
+  return normalized.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || null;
+};
+
+const buildDeltaProtectionIdempotencyKey = (
+  tradeId: string,
+  orderId: string | null,
+  suffix: string | null | undefined
+): string => {
+  const base = orderId
+    ? `live-auto-protection:${tradeId}:${orderId}`
+    : `live-auto-protection:${tradeId}`;
+  const normalizedSuffix = sanitizeIdempotencySegment(suffix);
+  return normalizedSuffix ? `${base}:${normalizedSuffix}` : base;
+};
 
 const countNumericDecimals = (value: unknown): number => {
   const raw = String(value ?? '').trim();
@@ -827,14 +850,66 @@ export async function remediateDeltaLiveProtection(
         .filter((status): status is string => Boolean(status))
         .some((status) => ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(status));
       if (hasTerminalSnapshot) {
-        return input.markProtectionFailed(
-          input.execution,
-          input.nowIso,
-          `Delta Exchange replacement protection is inactive after submission (${describeLiveProtectionOrderContext(
-            existingProtection
-          )}); replacement protection still needs operator review.`
-        );
+        if (!input.allowTerminalReplacementRetry) {
+          return input.markProtectionFailed(
+            input.execution,
+            input.nowIso,
+            `Delta Exchange replacement protection is inactive after submission (${describeLiveProtectionOrderContext(
+              existingProtection
+            )}); replacement protection still needs operator review.`
+          );
+        }
+        const alreadyTerminalOrderIds = [
+          existingProtection.stopLossOrderId,
+          existingProtection.takeProfitOrderId,
+        ].filter((value): value is string => Boolean(value));
+        replacementCleanup = {
+          reason:
+            input.replacementRetryReason ??
+            `Delta Exchange terminal replacement protection is being retried after read-back (${describeLiveProtectionOrderContext(
+              existingProtection
+            )}).`,
+          requestedOrderIds: alreadyTerminalOrderIds,
+          cancelledOrderIds: [],
+          alreadyTerminalOrderIds,
+        };
       }
+      if (!replacementCleanup) {
+        return {
+          ...input.execution,
+          protectionCheckedAt: input.nowIso,
+          protectionLastError: `Delta Exchange replacement protection submitted; waiting for active SL/TP snapshots (${describeLiveProtectionOrderContext(
+            existingProtection
+          )}).`,
+        };
+      }
+    } else if (
+      input.allowTerminalReplacementRetry &&
+      !replacementCleanup &&
+      (existingProtection.stopLossOrderId || existingProtection.takeProfitOrderId)
+    ) {
+      replacementCleanup = {
+        reason:
+          input.replacementRetryReason ??
+          `Delta Exchange replacement protection is being retried after stale read-back (${describeLiveProtectionOrderContext(
+            existingProtection
+          )}).`,
+        requestedOrderIds: [
+          existingProtection.stopLossOrderId,
+          existingProtection.takeProfitOrderId,
+        ].filter((value): value is string => Boolean(value)),
+        cancelledOrderIds: [],
+        alreadyTerminalOrderIds: [
+          existingProtection.stopLossOrderId,
+          existingProtection.takeProfitOrderId,
+        ].filter((value): value is string => Boolean(value)),
+      };
+    }
+    if (
+      !replacementCleanup &&
+      input.execution.protectionState === 'attaching' &&
+      (existingProtection.stopLossOrderId || existingProtection.takeProfitOrderId)
+    ) {
       return {
         ...input.execution,
         protectionCheckedAt: input.nowIso,
@@ -1019,9 +1094,11 @@ export async function remediateDeltaLiveProtection(
         deltaProtectionMode: readStringValue(
           readRecordValue(input.execution.protectionPlan)?.protectionMode
         ),
-        idempotencyKey: orderId
-          ? `live-auto-protection:${input.trade.id}:${orderId}`
-          : `live-auto-protection:${input.trade.id}`,
+        idempotencyKey: buildDeltaProtectionIdempotencyKey(
+          input.trade.id,
+          orderId,
+          input.replacementIdempotencySuffix
+        ),
       },
       {
         userId: input.userId,
@@ -1039,6 +1116,14 @@ export async function remediateDeltaLiveProtection(
           replacedProtectionCancelledOrderIds: replacementCleanup.cancelledOrderIds,
           replacedProtectionAlreadyTerminalOrderIds: replacementCleanup.alreadyTerminalOrderIds,
           replacedProtectionAt: input.nowIso,
+          ...(input.allowTerminalReplacementRetry
+            ? {
+                forcedReplacementRetry: true,
+                forcedReplacementRetryReason: input.replacementRetryReason ?? null,
+                forcedReplacementRetryIdempotencySuffix:
+                  sanitizeIdempotencySegment(input.replacementIdempotencySuffix) ?? null,
+              }
+            : {}),
         }
       : {};
     if (protectionMode === 'native_bracket') {

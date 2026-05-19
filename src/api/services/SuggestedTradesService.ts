@@ -4808,7 +4808,8 @@ export class SuggestedTradesService {
     return (
       protectionState === 'failed' &&
       (this.isRetriableProtectionFailure(execution) ||
-        this.isDeltaReplacementProtectionFailure(execution))
+        this.isDeltaReplacementProtectionFailure(execution) ||
+        this.isDeltaMaxAttemptReplacementProtectionFailure(execution))
     );
   }
 
@@ -5193,7 +5194,8 @@ export class SuggestedTradesService {
     if (protectionState === 'failed') {
       return (
         !this.isRetriableProtectionFailure(execution) &&
-        !this.isDeltaReplacementProtectionFailure(execution)
+        !this.isDeltaReplacementProtectionFailure(execution) &&
+        !this.isDeltaMaxAttemptReplacementProtectionFailure(execution)
       );
     }
     return (
@@ -9048,6 +9050,8 @@ export class SuggestedTradesService {
     const hasActivePosition = this.isActivePositionSnapshot(position);
     const terminalForProtection = this.isTerminalExecutionForProtection(execution);
     const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
+    const forceDeltaTerminalReplacementRetry =
+      this.isDeltaMaxAttemptReplacementProtectionFailure(execution);
     if (
       terminalForProtection &&
       !hasActivePosition &&
@@ -9096,7 +9100,8 @@ export class SuggestedTradesService {
     if (
       protectionState === 'failed' &&
       !this.isRetriableProtectionFailure(execution) &&
-      !this.isDeltaReplacementProtectionFailure(execution)
+      !this.isDeltaReplacementProtectionFailure(execution) &&
+      !forceDeltaTerminalReplacementRetry
     ) {
       if (brokerKey === 'delta_exchange' && hasActivePosition && position) {
         const accountId = this.readStringValue(execution.accountId);
@@ -9249,6 +9254,7 @@ export class SuggestedTradesService {
         nowIso,
         brokerKey,
         accountId,
+        forceTerminalReplacementRetry: forceDeltaTerminalReplacementRetry,
       });
     }
 
@@ -12171,6 +12177,7 @@ export class SuggestedTradesService {
     nowIso: string;
     brokerKey: string;
     accountId: string;
+    forceTerminalReplacementRetry?: boolean;
   }): Promise<SuggestedTradeExecutionLink> {
     const ordersAdapter = this.brokerRuntimeRegistry?.getOrdersAdapter?.(
       'delta_exchange'
@@ -12212,6 +12219,15 @@ export class SuggestedTradesService {
       resolveActiveProtectionOrdersForSymbol: (args) =>
         this.resolveActiveDeltaProtectionOrdersForSymbol(args),
       unwrapOrderPlacementResponse: (response) => this.unwrapOrderPlacementResponse(response),
+      allowTerminalReplacementRetry: input.forceTerminalReplacementRetry === true,
+      replacementRetryReason:
+        input.forceTerminalReplacementRetry === true
+          ? 'Delta Exchange max-attempt remediation is replacing a previously cancelled SL/TP pair after confirming no active protection exists.'
+          : null,
+      replacementIdempotencySuffix:
+        input.forceTerminalReplacementRetry === true
+          ? `repair-${Math.max(0, Math.floor(input.execution.protectionAttempts ?? 0)) + 1}`
+          : null,
       markProtectionAttached: (trade, execution, nowIso, note, planUpdate, attempted) =>
         this.markProtectionAttached(
           trade as SuggestedTrade,
@@ -12723,15 +12739,31 @@ export class SuggestedTradesService {
   }
 
   private isDeltaReplacementProtectionFailure(execution: SuggestedTradeExecutionLink): boolean {
-    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase();
-    if (brokerKey !== 'delta_exchange') {
-      return false;
-    }
     const attempts = Math.max(
       0,
       Math.floor(this.readNumberValue(execution.protectionAttempts) ?? 0)
     );
     if (attempts >= 3) {
+      return false;
+    }
+    return this.isDeltaReplacementProtectionFailureReason(execution);
+  }
+
+  private isDeltaMaxAttemptReplacementProtectionFailure(
+    execution: SuggestedTradeExecutionLink
+  ): boolean {
+    const attempts = Math.max(
+      0,
+      Math.floor(this.readNumberValue(execution.protectionAttempts) ?? 0)
+    );
+    return attempts === 3 && this.isDeltaReplacementProtectionFailureReason(execution);
+  }
+
+  private isDeltaReplacementProtectionFailureReason(
+    execution: SuggestedTradeExecutionLink
+  ): boolean {
+    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase();
+    if (brokerKey !== 'delta_exchange') {
       return false;
     }
     const error = String(execution.protectionLastError || '')
