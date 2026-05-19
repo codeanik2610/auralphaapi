@@ -206,6 +206,97 @@ async function testHealthyProtectedCanaryDoesNotAlert(): Promise<void> {
   assert.equal(response.items[0]?.lifecycle, 'OPEN_WITH_SL_TP');
 }
 
+async function testDeltaOpenPositionUsesLiveReduceOnlyProtectionBySymbol(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const service = createService(alerts);
+  let sawDeltaProtectionReadBack = false;
+
+  const response = await withMockedQuery(
+    async (sql, params) => {
+      if (sql.includes('FROM order_submission_requests')) {
+        return [
+          createCandidate({
+            id: 'arb-submission-1',
+            requestSymbol: 'ARBUSDT',
+            brokerOrderId: 'arb-entry-1',
+            stopLossOrderId: null,
+            takeProfitOrderId: null,
+            requestStopLossPrice: '0.1169275',
+            requestTakeProfitPrice: '0.109735',
+          }),
+        ];
+      }
+      if (sql.includes('broker-canary-delta-active-protection')) {
+        sawDeltaProtectionReadBack = true;
+        assert.deepEqual(params, [
+          'user-1',
+          'acct-1',
+          'ARBUSDT',
+          'ARBUSD',
+          'ARBUSDC',
+        ]);
+        return [
+          createOrderSnapshot({
+            externalId: 'arb-sl-live',
+            symbol: 'ARBUSD',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'buy',
+            reduceOnly: 'true',
+            stopOrderType: 'stop_loss_order',
+          }),
+          createOrderSnapshot({
+            externalId: 'arb-tp-live',
+            symbol: 'ARBUSD',
+            orderStatus: 'PENDING',
+            statusRank: 1,
+            side: 'buy',
+            reduceOnly: 'true',
+            stopOrderType: 'take_profit_order',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_orders_snapshots')) {
+        return [
+          createOrderSnapshot({
+            externalId: 'arb-entry-1',
+            symbol: 'ARBUSD',
+            assetUuid: '17331',
+            side: 'sell',
+          }),
+        ];
+      }
+      if (sql.includes('FROM scheduler_positions_snapshots')) {
+        return [
+          createPositionSnapshot({
+            externalId: '17331',
+            symbol: 'ARBUSD',
+            stopLossOrderId: null,
+            stopLossPrice: null,
+            takeProfitOrderId: null,
+            takeProfitPrice: null,
+          }),
+        ];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    () =>
+      service.runMonitor({
+        emitAlerts: true,
+        now: new Date('2026-04-20T07:01:00.000Z'),
+      })
+  );
+
+  assert.equal(sawDeltaProtectionReadBack, true);
+  assert.equal(response.status, 'ok');
+  assert.equal(response.issueSubmissions, 0);
+  assert.equal(response.criticalIssues, 0);
+  assert.equal(response.items[0]?.lifecycle, 'OPEN_WITH_SL_TP');
+  assert.equal(response.items[0]?.stopLossOrderId, 'arb-sl-live');
+  assert.equal(response.items[0]?.takeProfitOrderId, 'arb-tp-live');
+  assert.equal(alerts.length, 0);
+}
+
 async function testMudrexOpenPositionProtectionCanComeFromPositionSnapshot(): Promise<void> {
   const alerts: Array<Record<string, unknown>> = [];
   const service = createService(alerts);
@@ -994,6 +1085,7 @@ async function testSuggestedTradeSubmissionsAreExcludedByDefault(): Promise<void
 
 async function main(): Promise<void> {
   await testHealthyProtectedCanaryDoesNotAlert();
+  await testDeltaOpenPositionUsesLiveReduceOnlyProtectionBySymbol();
   await testMudrexOpenPositionProtectionCanComeFromPositionSnapshot();
   await testMudrexOpenPositionMissingTakeProfitAlerts();
   await testOpenCanaryMissingProtectionEmitsAlert();

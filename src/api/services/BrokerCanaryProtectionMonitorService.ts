@@ -48,8 +48,11 @@ interface OrderSnapshotRow {
   statusRank?: number | string | null;
   assetUuid?: string | null;
   side?: string | null;
+  reduceOnly?: string | number | boolean | null;
+  reduceOnlyCamel?: string | number | boolean | null;
   orderType?: string | null;
   stopOrderType?: string | null;
+  stopOrderTypeCamel?: string | null;
   stopPrice?: string | null;
   lastSeenAt?: Date | string | null;
   updatedAt?: Date | string | null;
@@ -69,6 +72,14 @@ interface PositionSnapshotRow {
   takeProfitPrice?: string | null;
   lastSeenAt?: Date | string | null;
   updatedAt?: Date | string | null;
+}
+
+interface DeltaActiveProtectionReadBack {
+  stopLossActive: boolean;
+  takeProfitActive: boolean;
+  stopLossOrderId: string | null;
+  takeProfitOrderId: string | null;
+  orders: OrderSnapshotRow[];
 }
 
 export interface BrokerCanaryProtectionIssue {
@@ -398,18 +409,33 @@ export class BrokerCanaryProtectionMonitorService {
       })
     ).filter((position) => this.isOpenPositionSnapshot(position));
     const positionProtection = this.resolvePositionProtection(positions);
-    const resolvedStopLossOrderId = stopLossOrderId ?? positionProtection.stopLossOrderId;
-    const resolvedTakeProfitOrderId = takeProfitOrderId ?? positionProtection.takeProfitOrderId;
+    let resolvedStopLossOrderId = stopLossOrderId ?? positionProtection.stopLossOrderId;
+    let resolvedTakeProfitOrderId = takeProfitOrderId ?? positionProtection.takeProfitOrderId;
     const positionClosedByProtection =
       this.isClosedOrderSnapshot(stopLossSnapshot) ||
       this.isClosedOrderSnapshot(takeProfitSnapshot);
     const positionOpen = positions.length > 0 && !positionClosedByProtection;
-    const stopLossActive =
+    let stopLossActive =
       (stopLossSnapshot ? this.isActiveOrderSnapshot(stopLossSnapshot) : false) ||
       positionProtection.stopLossActive;
-    const takeProfitActive =
+    let takeProfitActive =
       (takeProfitSnapshot ? this.isActiveOrderSnapshot(takeProfitSnapshot) : false) ||
       positionProtection.takeProfitActive;
+    let deltaActiveProtection: DeltaActiveProtectionReadBack = this.emptyDeltaActiveProtection();
+    if (brokerKey === 'delta_exchange' && positionOpen && (!stopLossActive || !takeProfitActive)) {
+      deltaActiveProtection = await this.listDeltaActiveProtectionReadBack({
+        userId,
+        accountId,
+        symbol,
+        positions,
+        orderSnapshots,
+        entrySnapshot,
+      });
+      stopLossActive ||= deltaActiveProtection.stopLossActive;
+      takeProfitActive ||= deltaActiveProtection.takeProfitActive;
+      resolvedStopLossOrderId ??= deltaActiveProtection.stopLossOrderId;
+      resolvedTakeProfitOrderId ??= deltaActiveProtection.takeProfitOrderId;
+    }
     const activeProtectionCount = [stopLossActive, takeProfitActive].filter(Boolean).length;
     const issues: BrokerCanaryProtectionIssue[] = [];
 
@@ -462,7 +488,12 @@ export class BrokerCanaryProtectionMonitorService {
       });
     }
 
-    for (const snapshot of [entrySnapshot, stopLossSnapshot, takeProfitSnapshot]) {
+    for (const snapshot of this.uniqueOrderSnapshots([
+      entrySnapshot,
+      stopLossSnapshot,
+      takeProfitSnapshot,
+      ...deltaActiveProtection.orders,
+    ])) {
       if (snapshot && this.isSnapshotStale(snapshot.lastSeenAt, now)) {
         issues.push({
           code: 'snapshot_stale',
@@ -510,7 +541,11 @@ export class BrokerCanaryProtectionMonitorService {
       stopLossStatus: this.readNullableString(stopLossSnapshot?.orderStatus),
       takeProfitStatus: this.readNullableString(takeProfitSnapshot?.orderStatus),
       reconciliationState: this.readNullableString(candidate.reconciliationState),
-      latestSnapshotAt: this.pickLatestSnapshotAt([...orderSnapshots, ...positions]),
+      latestSnapshotAt: this.pickLatestSnapshotAt([
+        ...orderSnapshots,
+        ...deltaActiveProtection.orders,
+        ...positions,
+      ]),
       issues,
       autoCancelledOrderIds,
       alertEmitted: false,
@@ -783,6 +818,96 @@ export class BrokerCanaryProtectionMonitorService {
     ) as Promise<PositionSnapshotRow[]>;
   }
 
+  private async listDeltaActiveProtectionReadBack(input: {
+    userId: string;
+    accountId: string;
+    symbol: string | null;
+    positions: PositionSnapshotRow[];
+    orderSnapshots: OrderSnapshotRow[];
+    entrySnapshot: OrderSnapshotRow | null;
+  }): Promise<DeltaActiveProtectionReadBack> {
+    const symbols = this.resolveDeltaProtectionSymbols(
+      input.symbol,
+      input.positions,
+      input.orderSnapshots
+    );
+    if (!input.userId || !input.accountId || !symbols.length) {
+      return this.emptyDeltaActiveProtection();
+    }
+
+    const rows = (await coreDataSource.query(
+      `/* broker-canary-delta-active-protection */
+       SELECT external_id AS externalId,
+              symbol,
+              order_status AS orderStatus,
+              status_rank AS statusRank,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.asset_uuid')) AS assetUuid,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.side')) AS side,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.reduce_only')) AS reduceOnly,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.reduceOnly')) AS reduceOnlyCamel,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.order_type')) AS orderType,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_order_type')) AS stopOrderType,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stopOrderType')) AS stopOrderTypeCamel,
+              JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.stop_price')) AS stopPrice,
+              last_seen_at AS lastSeenAt,
+              updated_at AS updatedAt
+         FROM scheduler_orders_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = 'delta_exchange'
+          AND UPPER(symbol) IN (${symbols.map(() => '?').join(', ')})
+          AND (
+            status_rank BETWEEN 1 AND 2
+            OR UPPER(COALESCE(order_status, '')) IN ('OPEN', 'PENDING', 'PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL', 'TRIGGER_PENDING')
+          )
+        ORDER BY updated_at DESC
+        LIMIT 100`,
+      [input.userId, input.accountId, ...symbols]
+    )) as OrderSnapshotRow[];
+
+    const context = this.emptyDeltaActiveProtection();
+    const entrySide = this.readString(input.entrySnapshot?.side).toLowerCase();
+    const expectedProtectionSide =
+      entrySide === 'buy' ? 'sell' : entrySide === 'sell' ? 'buy' : null;
+
+    for (const row of rows) {
+      if (!this.isActiveOrderSnapshot(row)) {
+        continue;
+      }
+      const reduceOnly =
+        this.readBoolean(row.reduceOnly) ?? this.readBoolean(row.reduceOnlyCamel) ?? false;
+      if (!reduceOnly) {
+        continue;
+      }
+      const side = this.readString(row.side).toLowerCase();
+      if (expectedProtectionSide && side && side !== expectedProtectionSide) {
+        continue;
+      }
+
+      const stopOrderType = this.readString(
+        row.stopOrderType || row.stopOrderTypeCamel || row.orderType
+      )
+        .trim()
+        .toLowerCase();
+      if (!stopOrderType.includes('stop_loss') && !stopOrderType.includes('take_profit')) {
+        continue;
+      }
+
+      context.orders.push(row);
+      const orderId = this.readNullableString(row.externalId);
+      if (stopOrderType.includes('stop_loss')) {
+        context.stopLossActive = true;
+        context.stopLossOrderId ??= orderId;
+      }
+      if (stopOrderType.includes('take_profit')) {
+        context.takeProfitActive = true;
+        context.takeProfitOrderId ??= orderId;
+      }
+    }
+
+    return context;
+  }
+
   private async emitIssueAlert(item: BrokerCanaryProtectionItem): Promise<boolean> {
     if (!item.userId || !item.issues.length) {
       return false;
@@ -936,6 +1061,70 @@ export class BrokerCanaryProtectionMonitorService {
     return Number.isFinite(rank) && rank >= 4 && status === 'CLOSED';
   }
 
+  private emptyDeltaActiveProtection(): DeltaActiveProtectionReadBack {
+    return {
+      stopLossActive: false,
+      takeProfitActive: false,
+      stopLossOrderId: null,
+      takeProfitOrderId: null,
+      orders: [],
+    };
+  }
+
+  private resolveDeltaProtectionSymbols(
+    symbol: string | null,
+    positions: PositionSnapshotRow[],
+    orderSnapshots: OrderSnapshotRow[]
+  ): string[] {
+    const values = [
+      symbol,
+      ...positions.map((position) => position.symbol),
+      ...orderSnapshots.map((snapshot) => snapshot.symbol),
+    ];
+    const symbols = new Set<string>();
+    for (const value of values) {
+      const normalized = this.readString(value).toUpperCase();
+      if (!normalized) {
+        continue;
+      }
+      symbols.add(normalized);
+      const base = this.normalizeSymbolBase(normalized);
+      if (base) {
+        symbols.add(`${base}USD`);
+        symbols.add(`${base}USDT`);
+        symbols.add(`${base}USDC`);
+      }
+    }
+    return Array.from(symbols);
+  }
+
+  private normalizeSymbolBase(symbol: string): string {
+    const normalized = symbol.trim().toUpperCase();
+    for (const suffix of ['USDT', 'USDC', 'USD']) {
+      if (normalized.endsWith(suffix) && normalized.length > suffix.length) {
+        return normalized.slice(0, -suffix.length);
+      }
+    }
+    return normalized;
+  }
+
+  private uniqueOrderSnapshots(
+    snapshots: Array<OrderSnapshotRow | null | undefined>
+  ): OrderSnapshotRow[] {
+    const unique = new Map<string, OrderSnapshotRow>();
+    for (const snapshot of snapshots) {
+      if (!snapshot) {
+        continue;
+      }
+      const orderId = this.readString(snapshot.externalId);
+      if (!orderId) {
+        continue;
+      }
+      unique.set(orderId, snapshot);
+    }
+    return Array.from(unique.values());
+  }
+
   private resolvePositionProtection(positions: PositionSnapshotRow[]): {
     stopLossActive: boolean;
     takeProfitActive: boolean;
@@ -1019,6 +1208,26 @@ export class BrokerCanaryProtectionMonitorService {
   private readNullableString(value: unknown): string | null {
     const normalized = this.readString(value);
     return normalized || null;
+  }
+
+  private readBoolean(value: unknown): boolean | null {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return value === 1 ? true : value === 0 ? false : null;
+    }
+    const normalized = this.readString(value).toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    if (['true', '1', 'yes', 'y'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no', 'n'].includes(normalized)) {
+      return false;
+    }
+    return null;
   }
 
   private normalizePositiveInteger(
