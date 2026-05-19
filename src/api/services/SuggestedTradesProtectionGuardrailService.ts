@@ -809,14 +809,25 @@ export class SuggestedTradesProtectionGuardrailService {
     }
 
     return {
-      stopLossActive: Boolean(stopLossOrderId || stopLossPrice),
-      takeProfitActive: Boolean(takeProfitOrderId || takeProfitPrice),
+      stopLossActive: Boolean(stopLossOrderId || this.isPositiveProtectionPrice(stopLossPrice)),
+      takeProfitActive: Boolean(
+        takeProfitOrderId || this.isPositiveProtectionPrice(takeProfitPrice)
+      ),
       stopLossOrderId,
       takeProfitOrderId,
       stopLossPrice,
       takeProfitPrice,
       positionSize,
     };
+  }
+
+  private isPositiveProtectionPrice(value: string | null): boolean {
+    const normalized = this.readString(value);
+    if (!normalized) {
+      return false;
+    }
+    const numeric = Number(normalized);
+    return Number.isFinite(numeric) && numeric > 0;
   }
 
   private async maybeReconcileMudrexReadBack(

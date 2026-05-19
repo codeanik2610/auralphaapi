@@ -240,6 +240,35 @@ async function testAttachedMudrexMissingTakeProfitAlerts(): Promise<void> {
   assert.match(String(alerts[0]?.message || ''), /mudrex ETHUSDT/);
 }
 
+async function testAttachedMudrexZeroProtectionPricesAlert(): Promise<void> {
+  const alerts: Array<Record<string, unknown>> = [];
+  const response = await runGuardrailScenario({
+    execution: createExecution({
+      brokerKey: 'mudrex',
+      symbol: 'SOLUSDT',
+      protectionPlanJson: {},
+    }),
+    positions: [
+      createPosition({
+        symbol: 'SOLUSDT',
+        stopLossPrice: '0',
+        takeProfitPrice: '0',
+      }),
+    ],
+    alerts,
+  });
+
+  assert.equal(response.status, 'degraded');
+  assert.equal(response.items[0]?.issues[0]?.code, 'attached_protection_inactive');
+  assert.equal(response.items[0]?.watchdogStatus, 'needs_repair');
+  assert.match(
+    String(response.items[0]?.watchdogReason || ''),
+    /missing stop loss and take profit/
+  );
+  assert.equal(response.readBackReconciliations, 0);
+  assert.equal(alerts.length, 1);
+}
+
 async function testFailedMudrexReadBackClearsFalseError(): Promise<void> {
   const alerts: Array<Record<string, unknown>> = [];
   const updates: Array<{ sql: string; params?: unknown[] }> = [];
@@ -307,6 +336,7 @@ async function main(): Promise<void> {
   await testDeltaFilledWaitingForPositionStaleAlerts();
   await testAttachedMudrexWithPositionProtectionPasses();
   await testAttachedMudrexMissingTakeProfitAlerts();
+  await testAttachedMudrexZeroProtectionPricesAlert();
   await testFailedMudrexReadBackClearsFalseError();
   console.log('Suggested trades protection guardrail assertions passed.');
 }
