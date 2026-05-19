@@ -893,8 +893,8 @@ export class SuggestedTradesProtectionGuardrailService {
             AND user_id = ?
             AND LOWER(COALESCE(broker_key, '')) = 'mudrex'`,
         [
-          nowIso,
-          nowIso,
+          now,
+          now,
           this.readNullableString(position?.externalId),
           this.readNullableString(position?.status),
           positionProtection.stopLossPrice,

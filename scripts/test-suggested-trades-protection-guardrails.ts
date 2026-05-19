@@ -209,6 +209,8 @@ async function testAttachedMudrexWithPositionProtectionPasses(): Promise<void> {
   assert.equal(response.items[0]?.readBackReason, 'broker_verified_state_reconciled');
   assert.equal(alerts.length, 0);
   assert.equal(updates.length, 1);
+  assert.ok(updates[0]?.params?.[0] instanceof Date);
+  assert.ok(updates[0]?.params?.[1] instanceof Date);
 }
 
 async function testAttachedMudrexMissingTakeProfitAlerts(): Promise<void> {
@@ -286,6 +288,8 @@ async function testFailedMudrexReadBackClearsFalseError(): Promise<void> {
   assert.equal(response.items[0]?.readBackReason, 'broker_verified_after_error');
   assert.equal(alerts.length, 0);
   assert.equal(updates.length, 1);
+  assert.ok(updates[0]?.params?.[0] instanceof Date);
+  assert.ok(updates[0]?.params?.[1] instanceof Date);
   const plan = JSON.parse(String(updates[0]?.params?.[6] || '{}')) as Record<string, unknown>;
   assert.equal(plan.mudrexReadBackReason, 'broker_verified_after_error');
   assert.equal(plan.stopLossOrderId, 'mudrex-sl-1');
