@@ -11677,6 +11677,70 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
     'risk_order_retry_failed'
   );
 
+  mudrexVerificationSnapshotQueue = [[mudrexVerifiedSnapshot]];
+  mudrexVerificationWaitCalls.length = 0;
+  const mudrexVerificationRecoveredAfterMutationError =
+    await mudrexVerificationService.verifyMudrexTrailingStopRiskOrderAfterMutationError({
+      userId: 'user-1',
+      trade: mudrexVerificationTrade,
+      execution: mudrexVerificationExecution,
+      accountId: 'mudrex-account-1',
+      requestedStopLossPrice: 102,
+      requestedTakeProfitPrice: 130,
+      mutationError: 'Risk order amendment failed',
+    });
+  assert.equal(mudrexVerificationRecoveredAfterMutationError.verified, true);
+  assert.equal(
+    mudrexVerificationRecoveredAfterMutationError.successReason,
+    'risk_order_mutation_verified_after_error_recheck'
+  );
+  assert.equal(mudrexVerificationWaitCalls.length, 1);
+  assert.deepEqual(mudrexVerificationRecoveredAfterMutationError.mutationResult, {
+    mutationError: 'Risk order amendment failed',
+    recoveredBy: 'mutation_error_recheck',
+  });
+  assert.equal(
+    (
+      mudrexVerificationRecoveredAfterMutationError.brokerResponse.verification as Record<
+        string,
+        any
+      >
+    ).remediation,
+    'mutation_error_recheck'
+  );
+
+  mudrexVerificationSnapshotQueue = [[mudrexMismatchedSnapshot]];
+  mudrexVerificationWaitCalls.length = 0;
+  const mudrexVerificationStillFailedAfterMutationError =
+    await mudrexVerificationService.verifyMudrexTrailingStopRiskOrderAfterMutationError({
+      userId: 'user-1',
+      trade: mudrexVerificationTrade,
+      execution: mudrexVerificationExecution,
+      accountId: 'mudrex-account-1',
+      requestedStopLossPrice: 102,
+      requestedTakeProfitPrice: 130,
+      mutationError: 'Risk order amendment failed',
+    });
+  assert.equal(mudrexVerificationStillFailedAfterMutationError.verified, false);
+  assert.equal(
+    mudrexVerificationStillFailedAfterMutationError.auditReason,
+    'risk_order_mutation_failed'
+  );
+  assert.equal(
+    mudrexVerificationStillFailedAfterMutationError.errorMessage,
+    'Trailing SL update failed: Risk order amendment failed'
+  );
+  assert.equal(mudrexVerificationWaitCalls.length, 1);
+  assert.equal(
+    (
+      mudrexVerificationStillFailedAfterMutationError.brokerResponse.verification as Record<
+        string,
+        any
+      >
+    ).remediation,
+    'mutation_error_recheck_failed'
+  );
+
   const resolvedMudrexAuditConfig = service.resolveExecutionTrailingStopConfigWithSource(
     {
       id: 'trade-audit-1',

@@ -9809,6 +9809,8 @@ export class SuggestedTradesService {
       );
     };
     let riskOrderMutationResult: unknown = null;
+    let mudrexVerifiedAfterMutationError: MudrexTrailingStopRiskOrderRemediationResult | null =
+      null;
     try {
       riskOrderMutationResult = await executeRiskOrderMutation();
     } catch (error) {
@@ -9823,25 +9825,40 @@ export class SuggestedTradesService {
           currentStopLossPrice
         );
       }
-      return this.recordTrailingStopError(
-        trade,
-        execution,
-        nowIso,
-        `Trailing SL update failed: ${errorMessage}`,
-        brokerKey === 'mudrex'
-          ? this.buildMudrexTrailingStopAudit({
+      if (brokerKey === 'mudrex') {
+        const errorReadback = await this.verifyMudrexTrailingStopRiskOrderAfterMutationError({
+          userId,
+          trade,
+          execution,
+          accountId,
+          requestedStopLossPrice: Number(stopLossPrice),
+          requestedTakeProfitPrice: Number(formattedTakeProfitPrice),
+          mutationError: errorMessage,
+        });
+        if (errorReadback.verified) {
+          mudrexVerifiedAfterMutationError = errorReadback;
+          riskOrderMutationResult = errorReadback.mutationResult;
+        } else {
+          const verification = errorReadback.verification;
+          const verificationPosition = verification.position ?? position;
+          return this.recordTrailingStopError(
+            trade,
+            execution,
+            nowIso,
+            errorReadback.errorMessage,
+            this.buildMudrexTrailingStopAudit({
               nowIso,
               trade,
               execution,
               resolvedConfig: resolvedTrailingConfig,
               action: 'error',
-              reason: 'risk_order_mutation_failed',
+              reason: errorReadback.auditReason,
               side,
-              position,
+              position: verificationPosition,
               entryPrice,
               originalStopLossPrice,
-              currentStopLossPrice,
-              takeProfitPrice,
+              currentStopLossPrice: verification.stopLossPrice ?? currentStopLossPrice,
+              takeProfitPrice: verification.takeProfitPrice ?? takeProfitPrice,
               currentPrice,
               profitR: move.profitR,
               peakProfitR: move.peakProfitR,
@@ -9850,10 +9867,18 @@ export class SuggestedTradesService {
               riskOrderPositionId,
               stopLossOrderId: riskOrderIds.stopLossOrderId,
               takeProfitOrderId: riskOrderIds.takeProfitOrderId,
-              brokerResponse: errorMessage,
+              brokerResponse: errorReadback.brokerResponse,
             })
-          : undefined
-      );
+          );
+        }
+      } else {
+        return this.recordTrailingStopError(
+          trade,
+          execution,
+          nowIso,
+          `Trailing SL update failed: ${errorMessage}`
+        );
+      }
     }
 
     let verifiedMudrexPosition: LivePositionSnapshot | null = null;
@@ -9862,16 +9887,18 @@ export class SuggestedTradesService {
     let mudrexAuditReason = 'risk_order_mutation_verified';
     let mudrexAuditBrokerResponse: unknown = riskOrderMutationResult;
     if (brokerKey === 'mudrex') {
-      const remediation = await this.verifyMudrexTrailingStopRiskOrderWithRemediation({
-        userId,
-        trade,
-        execution,
-        accountId,
-        requestedStopLossPrice: Number(stopLossPrice),
-        requestedTakeProfitPrice: Number(formattedTakeProfitPrice),
-        initialMutationResult: riskOrderMutationResult,
-        retryRiskOrderMutation: executeRiskOrderMutation,
-      });
+      const remediation =
+        mudrexVerifiedAfterMutationError ??
+        (await this.verifyMudrexTrailingStopRiskOrderWithRemediation({
+          userId,
+          trade,
+          execution,
+          accountId,
+          requestedStopLossPrice: Number(stopLossPrice),
+          requestedTakeProfitPrice: Number(formattedTakeProfitPrice),
+          initialMutationResult: riskOrderMutationResult,
+          retryRiskOrderMutation: executeRiskOrderMutation,
+        }));
       if (!remediation.verified) {
         const verification = remediation.verification;
         const verificationPosition = verification.position ?? position;
@@ -10322,6 +10349,62 @@ export class SuggestedTradesService {
       position,
       stopLossPrice,
       takeProfitPrice,
+    };
+  }
+
+  private async verifyMudrexTrailingStopRiskOrderAfterMutationError(input: {
+    userId: string;
+    trade: SuggestedTrade;
+    execution: SuggestedTradeExecutionLink;
+    accountId: string;
+    requestedStopLossPrice: number;
+    requestedTakeProfitPrice: number;
+    mutationError: string;
+  }): Promise<MudrexTrailingStopRiskOrderRemediationResult> {
+    await this.waitForLiveAutoLifecycleMonitorPoll(
+      MUDREX_TRAILING_STOP_VERIFICATION_RECHECK_DELAY_MS
+    );
+    const verification = await this.verifyMudrexTrailingStopRiskOrder(input);
+    const verificationSummary = this.summarizeMudrexTrailingStopVerification(
+      'mutation_error_recheck',
+      verification
+    );
+    const mutationResult = {
+      mutationError: input.mutationError,
+      recoveredBy: 'mutation_error_recheck',
+    };
+
+    if (verification.verified) {
+      return {
+        verified: true,
+        verification,
+        mutationResult,
+        successReason: 'risk_order_mutation_verified_after_error_recheck',
+        brokerResponse: {
+          mutationError: input.mutationError,
+          verification: {
+            ...verificationSummary,
+            remediation: 'mutation_error_recheck',
+            attempts: [verificationSummary],
+          },
+        },
+      };
+    }
+
+    return {
+      verified: false,
+      verification,
+      mutationResult,
+      errorMessage: `Trailing SL update failed: ${input.mutationError}`,
+      auditReason: 'risk_order_mutation_failed',
+      brokerResponse: {
+        mutationError: input.mutationError,
+        verification: {
+          ...verificationSummary,
+          remediation: 'mutation_error_recheck_failed',
+          attempts: [verificationSummary],
+        },
+      },
     };
   }
 
@@ -11144,6 +11227,7 @@ export class SuggestedTradesService {
     if (
       record.mutationResult !== undefined ||
       record.retryMutationResult !== undefined ||
+      record.mutationError !== undefined ||
       verification
     ) {
       const summarizeVerification = (
@@ -11199,6 +11283,7 @@ export class SuggestedTradesService {
           record.retryMutationResult !== undefined
             ? this.summarizeTrailingStopBrokerResponse(record.retryMutationResult)
             : undefined,
+        mutationError: this.readStringValue(record.mutationError),
         retryError: this.readStringValue(record.retryError),
         verification: summarizeVerification(verification),
       };
