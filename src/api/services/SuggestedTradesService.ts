@@ -9280,10 +9280,9 @@ export class SuggestedTradesService {
 
     const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
     const useTemplateTrailingConfig = brokerKey === 'mudrex' || brokerKey === 'delta_exchange';
-    const resolvedTrailingConfig =
-      useTemplateTrailingConfig
-        ? await this.resolveTemplateTrailingStopConfig(userId, trade, execution)
-        : this.resolveExecutionTrailingStopConfigWithSource(trade, execution);
+    const resolvedTrailingConfig = useTemplateTrailingConfig
+      ? await this.resolveTemplateTrailingStopConfig(userId, trade, execution)
+      : this.resolveExecutionTrailingStopConfigWithSource(trade, execution);
     const config = resolvedTrailingConfig.config;
     if (!config) {
       if (brokerKey === 'mudrex') {
@@ -9607,234 +9606,8 @@ export class SuggestedTradesService {
     }
 
     const plan = this.readRecordValue(execution.protectionPlan) ?? {};
-    const protectionMode = this.readStringValue(plan.protectionMode);
     if (brokerKey === 'delta_exchange' && this.hasPendingDeltaBracketAmendment(execution)) {
       return this.touchPendingDeltaBracketAmendment(execution, config, nowIso);
-    }
-
-    if (brokerKey === 'delta_exchange' && protectionMode === 'native_bracket') {
-      const ordersAdapter = this.brokerRuntimeRegistry?.getOrdersAdapter?.(brokerKey) as {
-        getOrder?: (
-          orderId: string,
-          context?: { userId?: string; brokerKey?: string; accountId?: string }
-        ) => Promise<unknown>;
-        updateLiveAutoBracketProtection?: (
-          assetId: string,
-          body: Record<string, unknown>,
-          context?: { userId?: string; brokerKey?: string; accountId?: string }
-        ) => Promise<unknown>;
-      };
-      if (!ordersAdapter?.updateLiveAutoBracketProtection) {
-        return this.recordTrailingStopError(
-          trade,
-          execution,
-          nowIso,
-          'Trailing SL update needs Delta native bracket amendment support.'
-        );
-      }
-      const entryOrderId = this.readStringValue(execution.orderId);
-      if (!entryOrderId) {
-        return this.recordTrailingStopError(
-          trade,
-          execution,
-          nowIso,
-          'Trailing SL update needs the Delta entry order id for native bracket amendment.'
-        );
-      }
-
-      let submittedProtection: LiveProtectionOrderContext | null = null;
-      try {
-        const protection = await this.resolveLiveProtectionOrderContext(
-          userId,
-          trade.id,
-          brokerKey,
-          accountId,
-          entryOrderId,
-          payload
-        );
-        if (!this.hasUsableDeltaProtectionContext(protection, execution, position)) {
-          return this.recordTrailingStopError(
-            trade,
-            execution,
-            nowIso,
-            `Trailing SL update needs active Delta native bracket protection before amendment (${describeLiveProtectionOrderContext(
-              protection
-            )}).`
-          );
-        }
-        submittedProtection = protection;
-        const route = await this.resolveLiveAutoAssetRoute(brokerKey, trade.symbol);
-        await ordersAdapter.updateLiveAutoBracketProtection(
-          route.assetId,
-          {
-            orderId: entryOrderId,
-            stopLossPrice: Number(stopLossPrice),
-            takeProfitPrice: Number(formattedTakeProfitPrice),
-          },
-          { userId, brokerKey, accountId }
-        );
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return this.recordTrailingStopError(
-          trade,
-          execution,
-          nowIso,
-          `Trailing SL update failed: ${errorMessage}`
-        );
-      }
-
-      const existingTrailing = this.readRecordValue(plan.trailingStop) ?? {};
-      const history = Array.isArray(existingTrailing.history) ? existingTrailing.history : [];
-      const previousStopLossPrice =
-        this.formatNumericString(currentStopLossPrice) ??
-        this.formatNumericString(this.readNumberValue(plan.attachedStopLossPrice)) ??
-        this.readStringValue(plan.attachedStopLossPrice) ??
-        null;
-      const trailingStop = {
-        ...config,
-        originalStopLossPrice:
-          this.readNumberValue(existingTrailing.originalStopLossPrice) ?? originalStopLossPrice,
-        pendingWhenProfitR: move.rule.whenProfitR,
-        pendingMoveStopToR: move.lockedProfitR,
-        pendingStopLossPrice: stopLossPrice,
-        pendingTakeProfitPrice: formattedTakeProfitPrice,
-        lastCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
-        lastProfitR: Number(move.profitR.toFixed(6)),
-        peakProfitR: Number(move.peakProfitR.toFixed(6)),
-        lastCheckedAt: nowIso,
-        lastSubmittedAt: nowIso,
-        lastNoopReason: 'bracket_amendment_pending_confirmation',
-        lastError: null,
-        configSource: resolvedTrailingConfig.source,
-        sourceTemplateId: resolvedTrailingConfig.sourceTemplateId,
-        sourceTemplateName: resolvedTrailingConfig.sourceTemplateName,
-        sourceTemplateVersion: resolvedTrailingConfig.sourceTemplateVersion,
-        sourceTemplateStatus: resolvedTrailingConfig.sourceTemplateStatus,
-        sourceTemplateUpdatedAt: resolvedTrailingConfig.sourceTemplateUpdatedAt,
-        tradeManagementSnapshotCapturedAt: resolvedTrailingConfig.snapshotCapturedAt,
-        templateUnavailableReason: resolvedTrailingConfig.unavailableReason,
-        history: [
-          ...history.slice(-9),
-          {
-            at: nowIso,
-            status: 'pending_confirmation',
-            whenProfitR: move.rule.whenProfitR,
-            moveStopToR: move.lockedProfitR,
-            ...(move.rule.trailDistanceR
-              ? {
-                  trailDistanceR: move.rule.trailDistanceR,
-                  peakProfitR: Number(move.peakProfitR.toFixed(6)),
-                }
-              : {}),
-            stopLossPrice,
-            previousStopLossPrice,
-            currentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
-            profitR: Number(move.profitR.toFixed(6)),
-            positionId: riskOrderPositionId,
-            snapshotPositionId: position.externalId,
-            protectionMode,
-          },
-        ],
-      };
-      const note = move.rule.trailDistanceR
-        ? `Trailing SL moved to ${stopLossPrice} after observed peak ${Number(
-            move.peakProfitR.toFixed(6)
-          )}R; Delta native bracket amendment submitted.`
-        : `Trailing SL moved to ${stopLossPrice} after price crossed ${move.rule.whenProfitR}R; Delta native bracket amendment submitted.`;
-
-	      const pendingExecution: SuggestedTradeExecutionLink = {
-	        ...execution,
-	        protectionCheckedAt: nowIso,
-	        protectionLastError: null,
-        protectionPlan: {
-          ...plan,
-          source: 'suggested_trade_execution',
-          symbol: trade.symbol,
-          side: trade.side,
-          timeframe: trade.timeframe,
-          brokerKey,
-          accountId,
-          positionId: riskOrderPositionId,
-          snapshotPositionId: position.externalId,
-          protectionMode,
-          bracketStatus: 'amendment_pending_confirmation',
-          bracketAmendmentStatus: 'pending_confirmation',
-          pendingBracketStopLossPrice: stopLossPrice,
-          pendingBracketTakeProfitPrice: formattedTakeProfitPrice,
-          pendingBracketAmendedAt: nowIso,
-          lastBracketAmendmentSubmittedAt: nowIso,
-          bracketTakeProfitPrice: plan.bracketTakeProfitPrice ?? formattedTakeProfitPrice,
-          attachedTakeProfitPrice: plan.attachedTakeProfitPrice ?? formattedTakeProfitPrice,
-          trailingStop,
-	        },
-	        note: this.appendExecutionNote(execution.note, note),
-	      };
-	      const verification = submittedProtection
-	        ? await this.verifyDeltaBracketAmendment({
-	            userId,
-	            trade,
-	            execution: pendingExecution,
-	            position,
-	            accountId,
-	            ordersAdapter,
-	            submittedProtection,
-	            requestedStopLossPrice: Number(stopLossPrice),
-	            requestedTakeProfitPrice: Number(formattedTakeProfitPrice),
-	          })
-	        : null;
-	      if (verification && !verification.verified && verification.autoCloseReason) {
-	        return this.closeDeltaPositionForProtectionIssue({
-	          userId,
-	          brokerKey,
-	          accountId,
-	          execution: pendingExecution,
-	          position,
-	          nowIso,
-	          issueMessage: verification.reason,
-	          autoCloseReason: verification.autoCloseReason,
-	        });
-	      }
-	      const nextExecution = verification
-	        ? verification.verified
-	          ? this.reconcilePendingDeltaBracketAmendmentFromContext(
-	              pendingExecution,
-	              verification.context,
-	              nowIso
-	            )
-	          : this.markDeltaBracketAmendmentVerificationPending(
-	              pendingExecution,
-	              verification,
-	              nowIso
-	            )
-	        : pendingExecution;
-	      const verificationDescription = verification
-	        ? verification.verified
-	          ? `${note} Broker read-back verified.`
-	          : `${note} Broker read-back pending: ${verification.reason}`
-	        : note;
-
-	      await this.operationalEventService?.logActivity?.(userId, {
-	        type: 'Suggested Trade',
-	        title: `Trailing SL updated: ${trade.symbol}`,
-	        status: verification && !verification.verified ? 'Warning' : 'Success',
-	        route: 'Suggested Trades',
-	        stream: 'Execution',
-	        related: `${brokerKey} · ${accountId}`,
-	        referenceId: trade.id,
-	        symbol: trade.symbol,
-	        description: verificationDescription,
-	      });
-
-	      return nextExecution;
-	    }
-
-    if (brokerKey === 'delta_exchange') {
-      return this.recordTrailingStopError(
-        trade,
-        execution,
-        nowIso,
-        'Trailing SL update requires Delta native bracket protection; independent reduce-only SL/TP replacement is disabled.'
-      );
     }
 
     const riskOrderIds = await this.resolveTrailingRiskOrderIdsForLiveUpdate(
@@ -9845,6 +9618,27 @@ export class SuggestedTradesService {
       accountId,
       payload
     );
+    if (brokerKey === 'delta_exchange') {
+      if (!positionsAdapter.updateRiskOrder) {
+        return this.recordTrailingStopError(
+          trade,
+          execution,
+          nowIso,
+          'Trailing SL update needs Delta reduce-only stop-loss replacement support.'
+        );
+      }
+      if (!riskOrderIds.stopLossOrderId || !riskOrderIds.takeProfitOrderId) {
+        const contextReason = riskOrderIds.unavailableReason
+          ? ` ${riskOrderIds.unavailableReason}`
+          : '';
+        return this.recordTrailingStopError(
+          trade,
+          execution,
+          nowIso,
+          `Trailing SL update needs active Delta SL/TP order snapshots before replacement.${contextReason}`
+        );
+      }
+    }
     const executeRiskOrderMutation = async (): Promise<unknown> => {
       if (
         positionsAdapter.updateRiskOrder &&
@@ -10086,6 +9880,14 @@ export class SuggestedTradesService {
       lastCheckedAt: nowIso,
       lastUpdatedAt: nowIso,
       lastError: null,
+      configSource: resolvedTrailingConfig.source,
+      sourceTemplateId: resolvedTrailingConfig.sourceTemplateId,
+      sourceTemplateName: resolvedTrailingConfig.sourceTemplateName,
+      sourceTemplateVersion: resolvedTrailingConfig.sourceTemplateVersion,
+      sourceTemplateStatus: resolvedTrailingConfig.sourceTemplateStatus,
+      sourceTemplateUpdatedAt: resolvedTrailingConfig.sourceTemplateUpdatedAt,
+      tradeManagementSnapshotCapturedAt: resolvedTrailingConfig.snapshotCapturedAt,
+      templateUnavailableReason: resolvedTrailingConfig.unavailableReason,
       ...(mudrexAudit ? this.appendTrailingStopAudit(existingTrailing, mudrexAudit) : {}),
       history: [
         ...history.slice(-9),
@@ -10196,11 +9998,11 @@ export class SuggestedTradesService {
     };
   }
 
-	  private reconcilePendingDeltaBracketAmendmentFromContext(
-	    execution: SuggestedTradeExecutionLink,
-	    context: LiveProtectionOrderContext,
-	    nowIso: string
-	  ): SuggestedTradeExecutionLink {
+  private reconcilePendingDeltaBracketAmendmentFromContext(
+    execution: SuggestedTradeExecutionLink,
+    context: LiveProtectionOrderContext,
+    nowIso: string
+  ): SuggestedTradeExecutionLink {
     if (!this.hasPendingDeltaBracketAmendment(execution)) {
       return execution;
     }
@@ -10339,249 +10141,244 @@ export class SuggestedTradesService {
           pendingTakeProfitPrice: null,
           history: nextHistory,
         },
-	      },
-	    };
-	  }
+      },
+    };
+  }
 
-	  private async verifyDeltaBracketAmendment(input: {
-	    userId: string;
-	    trade: SuggestedTrade;
-	    execution: SuggestedTradeExecutionLink;
-	    position: LivePositionSnapshot;
-	    accountId: string;
-	    ordersAdapter: Pick<DeltaProtectionOrdersAdapter, 'getOrder'> | null | undefined;
-	    submittedProtection: LiveProtectionOrderContext;
-	    requestedStopLossPrice: number;
-	    requestedTakeProfitPrice: number;
-	  }): Promise<DeltaBracketAmendmentVerificationResult> {
-	    const failed = (
-	      reason: string,
-	      context: LiveProtectionOrderContext,
-	      autoCloseReason?: 'partial_protection_execution'
-	    ): DeltaBracketAmendmentVerificationResult => {
-	      const stopLossPrice = context.stopLossOrderId
-	        ? this.resolveProtectionSnapshotStopPrice(context.orderDetails?.[context.stopLossOrderId])
-	        : null;
-	      const takeProfitPrice = context.takeProfitOrderId
-	        ? this.resolveProtectionSnapshotStopPrice(context.orderDetails?.[context.takeProfitOrderId])
-	        : null;
-	      return { verified: false, reason, context, stopLossPrice, takeProfitPrice, autoCloseReason };
-	    };
+  private async verifyDeltaBracketAmendment(input: {
+    userId: string;
+    trade: SuggestedTrade;
+    execution: SuggestedTradeExecutionLink;
+    position: LivePositionSnapshot;
+    accountId: string;
+    ordersAdapter: Pick<DeltaProtectionOrdersAdapter, 'getOrder'> | null | undefined;
+    submittedProtection: LiveProtectionOrderContext;
+    requestedStopLossPrice: number;
+    requestedTakeProfitPrice: number;
+  }): Promise<DeltaBracketAmendmentVerificationResult> {
+    const failed = (
+      reason: string,
+      context: LiveProtectionOrderContext,
+      autoCloseReason?: 'partial_protection_execution'
+    ): DeltaBracketAmendmentVerificationResult => {
+      const stopLossPrice = context.stopLossOrderId
+        ? this.resolveProtectionSnapshotStopPrice(context.orderDetails?.[context.stopLossOrderId])
+        : null;
+      const takeProfitPrice = context.takeProfitOrderId
+        ? this.resolveProtectionSnapshotStopPrice(context.orderDetails?.[context.takeProfitOrderId])
+        : null;
+      return { verified: false, reason, context, stopLossPrice, takeProfitPrice, autoCloseReason };
+    };
 
-	    if (!input.ordersAdapter?.getOrder) {
-	      return failed(
-	        'delta_bracket_amendment_readback_unavailable:get_order_adapter_missing',
-	        input.submittedProtection
-	      );
-	    }
+    if (!input.ordersAdapter?.getOrder) {
+      return failed(
+        'delta_bracket_amendment_readback_unavailable:get_order_adapter_missing',
+        input.submittedProtection
+      );
+    }
 
-	    await this.waitForLiveAutoLifecycleMonitorPoll(
-	      DELTA_TRAILING_STOP_VERIFICATION_RECHECK_DELAY_MS
-	    );
+    await this.waitForLiveAutoLifecycleMonitorPoll(
+      DELTA_TRAILING_STOP_VERIFICATION_RECHECK_DELAY_MS
+    );
 
-	    let context: LiveProtectionOrderContext;
-	    try {
-	      context = await this.readDeltaProtectionContextFromOrderReadback({
-	        userId: input.userId,
-	        brokerKey: 'delta_exchange',
-	        accountId: input.accountId,
-	        ordersAdapter: input.ordersAdapter,
-	        submittedProtection: input.submittedProtection,
-	      });
-	    } catch (error) {
-	      const message = error instanceof Error ? error.message : String(error);
-	      return failed(
-	        `delta_bracket_amendment_readback_failed:${message}`,
-	        input.submittedProtection
-	      );
-	    }
+    let context: LiveProtectionOrderContext;
+    try {
+      context = await this.readDeltaProtectionContextFromOrderReadback({
+        userId: input.userId,
+        brokerKey: 'delta_exchange',
+        accountId: input.accountId,
+        ordersAdapter: input.ordersAdapter,
+        submittedProtection: input.submittedProtection,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return failed(
+        `delta_bracket_amendment_readback_failed:${message}`,
+        input.submittedProtection
+      );
+    }
 
-	    const partialReason = resolveDeltaProtectionPartialExecutionReason(context);
-	    if (partialReason) {
-	      return failed(partialReason, context, 'partial_protection_execution');
-	    }
-	    if (!this.hasUsableProtectionContext(context)) {
-	      return failed(
-	        `delta_bracket_amendment_readback_inactive:${describeLiveProtectionOrderContext(context)}`,
-	        context
-	      );
-	    }
-	    const mismatchReason = this.resolveDeltaProtectionContextMismatchReason(
-	      context,
-	      input.execution,
-	      input.position
-	    );
-	    if (mismatchReason) {
-	      return failed(mismatchReason, context);
-	    }
+    const partialReason = resolveDeltaProtectionPartialExecutionReason(context);
+    if (partialReason) {
+      return failed(partialReason, context, 'partial_protection_execution');
+    }
+    if (!this.hasUsableProtectionContext(context)) {
+      return failed(
+        `delta_bracket_amendment_readback_inactive:${describeLiveProtectionOrderContext(context)}`,
+        context
+      );
+    }
+    const mismatchReason = this.resolveDeltaProtectionContextMismatchReason(
+      context,
+      input.execution,
+      input.position
+    );
+    if (mismatchReason) {
+      return failed(mismatchReason, context);
+    }
 
-	    const stopLossPrice = context.stopLossOrderId
-	      ? this.resolveProtectionSnapshotStopPrice(context.orderDetails?.[context.stopLossOrderId])
-	      : null;
-	    const takeProfitPrice = context.takeProfitOrderId
-	      ? this.resolveProtectionSnapshotStopPrice(context.orderDetails?.[context.takeProfitOrderId])
-	      : null;
-	    if (stopLossPrice === null) {
-	      return failed('delta_bracket_stop_loss_missing_after_amendment', context);
-	    }
-	    if (takeProfitPrice === null) {
-	      return failed('delta_bracket_take_profit_missing_after_amendment', context);
-	    }
-	    if (!this.pricesApproximatelyEqual(stopLossPrice, input.requestedStopLossPrice)) {
-	      const expected =
-	        this.formatNumericString(input.requestedStopLossPrice) ?? input.requestedStopLossPrice;
-	      const observed = this.formatNumericString(stopLossPrice) ?? stopLossPrice;
-	      return failed(
-	        `delta_bracket_stop_loss_mismatch_after_amendment: expected ${expected} got ${observed}`,
-	        context
-	      );
-	    }
-	    if (!this.pricesApproximatelyEqual(takeProfitPrice, input.requestedTakeProfitPrice)) {
-	      const expected =
-	        this.formatNumericString(input.requestedTakeProfitPrice) ??
-	        input.requestedTakeProfitPrice;
-	      const observed = this.formatNumericString(takeProfitPrice) ?? takeProfitPrice;
-	      return failed(
-	        `delta_bracket_take_profit_mismatch_after_amendment: expected ${expected} got ${observed}`,
-	        context
-	      );
-	    }
+    const stopLossPrice = context.stopLossOrderId
+      ? this.resolveProtectionSnapshotStopPrice(context.orderDetails?.[context.stopLossOrderId])
+      : null;
+    const takeProfitPrice = context.takeProfitOrderId
+      ? this.resolveProtectionSnapshotStopPrice(context.orderDetails?.[context.takeProfitOrderId])
+      : null;
+    if (stopLossPrice === null) {
+      return failed('delta_bracket_stop_loss_missing_after_amendment', context);
+    }
+    if (takeProfitPrice === null) {
+      return failed('delta_bracket_take_profit_missing_after_amendment', context);
+    }
+    if (!this.pricesApproximatelyEqual(stopLossPrice, input.requestedStopLossPrice)) {
+      const expected =
+        this.formatNumericString(input.requestedStopLossPrice) ?? input.requestedStopLossPrice;
+      const observed = this.formatNumericString(stopLossPrice) ?? stopLossPrice;
+      return failed(
+        `delta_bracket_stop_loss_mismatch_after_amendment: expected ${expected} got ${observed}`,
+        context
+      );
+    }
+    if (!this.pricesApproximatelyEqual(takeProfitPrice, input.requestedTakeProfitPrice)) {
+      const expected =
+        this.formatNumericString(input.requestedTakeProfitPrice) ?? input.requestedTakeProfitPrice;
+      const observed = this.formatNumericString(takeProfitPrice) ?? takeProfitPrice;
+      return failed(
+        `delta_bracket_take_profit_mismatch_after_amendment: expected ${expected} got ${observed}`,
+        context
+      );
+    }
 
-	    return { verified: true, context, stopLossPrice, takeProfitPrice };
-	  }
+    return { verified: true, context, stopLossPrice, takeProfitPrice };
+  }
 
-	  private async readDeltaProtectionContextFromOrderReadback(input: {
-	    userId: string;
-	    brokerKey: string;
-	    accountId: string;
-	    ordersAdapter: Pick<DeltaProtectionOrdersAdapter, 'getOrder'>;
-	    submittedProtection: LiveProtectionOrderContext;
-	  }): Promise<LiveProtectionOrderContext> {
-	    const orderDetails: NonNullable<LiveProtectionOrderContext['orderDetails']> = {
-	      ...(input.submittedProtection.orderDetails ?? {}),
-	    };
-	    const activeOrderIds = new Set(input.submittedProtection.activeOrderIds);
-	    const readOrder = async (orderId: string | null): Promise<string | null> => {
-	      if (!orderId || !input.ordersAdapter.getOrder) {
-	        return null;
-	      }
-	      const raw = await input.ordersAdapter.getOrder(orderId, {
-	        userId: input.userId,
-	        brokerKey: input.brokerKey,
-	        accountId: input.accountId,
-	      });
-	      const detail = this.resolveDeltaProtectionOrderDetailFromReadback(raw);
-	      orderDetails[orderId] = detail;
-	      if (this.isActiveLiveProtectionOrder(detail.status ?? null, null)) {
-	        activeOrderIds.add(orderId);
-	      } else {
-	        activeOrderIds.delete(orderId);
-	      }
-	      return detail.status ?? null;
-	    };
+  private async readDeltaProtectionContextFromOrderReadback(input: {
+    userId: string;
+    brokerKey: string;
+    accountId: string;
+    ordersAdapter: Pick<DeltaProtectionOrdersAdapter, 'getOrder'>;
+    submittedProtection: LiveProtectionOrderContext;
+  }): Promise<LiveProtectionOrderContext> {
+    const orderDetails: NonNullable<LiveProtectionOrderContext['orderDetails']> = {
+      ...(input.submittedProtection.orderDetails ?? {}),
+    };
+    const activeOrderIds = new Set(input.submittedProtection.activeOrderIds);
+    const readOrder = async (orderId: string | null): Promise<string | null> => {
+      if (!orderId || !input.ordersAdapter.getOrder) {
+        return null;
+      }
+      const raw = await input.ordersAdapter.getOrder(orderId, {
+        userId: input.userId,
+        brokerKey: input.brokerKey,
+        accountId: input.accountId,
+      });
+      const detail = this.resolveDeltaProtectionOrderDetailFromReadback(raw);
+      orderDetails[orderId] = detail;
+      if (this.isActiveLiveProtectionOrder(detail.status ?? null, null)) {
+        activeOrderIds.add(orderId);
+      } else {
+        activeOrderIds.delete(orderId);
+      }
+      return detail.status ?? null;
+    };
 
-	    const stopLossStatus = await readOrder(input.submittedProtection.stopLossOrderId);
-	    const takeProfitStatus = await readOrder(input.submittedProtection.takeProfitOrderId);
-	    return {
-	      stopLossOrderId: input.submittedProtection.stopLossOrderId,
-	      takeProfitOrderId: input.submittedProtection.takeProfitOrderId,
-	      stopLossStatus: stopLossStatus ?? input.submittedProtection.stopLossStatus,
-	      takeProfitStatus: takeProfitStatus ?? input.submittedProtection.takeProfitStatus,
-	      activeOrderIds: Array.from(activeOrderIds),
-	      orderDetails,
-	    };
-	  }
+    const stopLossStatus = await readOrder(input.submittedProtection.stopLossOrderId);
+    const takeProfitStatus = await readOrder(input.submittedProtection.takeProfitOrderId);
+    return {
+      stopLossOrderId: input.submittedProtection.stopLossOrderId,
+      takeProfitOrderId: input.submittedProtection.takeProfitOrderId,
+      stopLossStatus: stopLossStatus ?? input.submittedProtection.stopLossStatus,
+      takeProfitStatus: takeProfitStatus ?? input.submittedProtection.takeProfitStatus,
+      activeOrderIds: Array.from(activeOrderIds),
+      orderDetails,
+    };
+  }
 
-	  private resolveDeltaProtectionOrderDetailFromReadback(
-	    value: unknown
-	  ): NonNullable<LiveProtectionOrderContext['orderDetails']>[string] {
-	    const list = this.extractUnknownList(value);
-	    const rawRecord = this.readRecordValue(list[0] ?? value) ?? {};
-	    const record =
-	      this.readRecordValue(rawRecord.data) ??
-	      this.readRecordValue(rawRecord.result) ??
-	      rawRecord;
-	    const quantity =
-	      this.readNumberValue(record.quantity) ??
-	      this.readNumberValue(record.size) ??
-	      this.readNumberValue(record.contracts);
-	    const filledQuantity =
-	      this.readNumberValue(record.filled_quantity) ??
-	      this.readNumberValue(record.filledQuantity) ??
-	      this.readNumberValue(record.filled_size) ??
-	      this.readNumberValue(record.filledSize);
-	    const remainingQuantity =
-	      this.readNumberValue(record.remaining_quantity) ??
-	      this.readNumberValue(record.remainingQuantity) ??
-	      this.readNumberValue(record.unfilled_size) ??
-	      this.readNumberValue(record.unfilledSize) ??
-	      (quantity !== null && filledQuantity !== null
-	        ? Math.max(0, quantity - filledQuantity)
-	        : null);
-	    return {
-	      status: this.normalizeOrderStatus(
-	        this.readStringValue(record.status) ??
-	          this.readStringValue(record.state) ??
-	          this.readStringValue(record.order_status) ??
-	          this.readStringValue(record.orderStatus)
-	      ),
-	      quantity,
-	      filledQuantity,
-	      remainingQuantity,
-	      stopPrice:
-	        this.readNumberValue(record.stop_price) ??
-	        this.readNumberValue(record.stopPrice) ??
-	        this.readNumberValue(record.trigger_price) ??
-	        this.readNumberValue(record.triggerPrice) ??
-	        this.readNumberValue(record.price),
-	      limitPrice:
-	        this.readNumberValue(record.limit_price) ?? this.readNumberValue(record.limitPrice),
-	      stopOrderType:
-	        this.readStringValue(record.stop_order_type) ??
-	        this.readStringValue(record.stopOrderType),
-	    };
-	  }
+  private resolveDeltaProtectionOrderDetailFromReadback(
+    value: unknown
+  ): NonNullable<LiveProtectionOrderContext['orderDetails']>[string] {
+    const list = this.extractUnknownList(value);
+    const rawRecord = this.readRecordValue(list[0] ?? value) ?? {};
+    const record =
+      this.readRecordValue(rawRecord.data) ?? this.readRecordValue(rawRecord.result) ?? rawRecord;
+    const quantity =
+      this.readNumberValue(record.quantity) ??
+      this.readNumberValue(record.size) ??
+      this.readNumberValue(record.contracts);
+    const filledQuantity =
+      this.readNumberValue(record.filled_quantity) ??
+      this.readNumberValue(record.filledQuantity) ??
+      this.readNumberValue(record.filled_size) ??
+      this.readNumberValue(record.filledSize);
+    const remainingQuantity =
+      this.readNumberValue(record.remaining_quantity) ??
+      this.readNumberValue(record.remainingQuantity) ??
+      this.readNumberValue(record.unfilled_size) ??
+      this.readNumberValue(record.unfilledSize) ??
+      (quantity !== null && filledQuantity !== null
+        ? Math.max(0, quantity - filledQuantity)
+        : null);
+    return {
+      status: this.normalizeOrderStatus(
+        this.readStringValue(record.status) ??
+          this.readStringValue(record.state) ??
+          this.readStringValue(record.order_status) ??
+          this.readStringValue(record.orderStatus)
+      ),
+      quantity,
+      filledQuantity,
+      remainingQuantity,
+      stopPrice:
+        this.readNumberValue(record.stop_price) ??
+        this.readNumberValue(record.stopPrice) ??
+        this.readNumberValue(record.trigger_price) ??
+        this.readNumberValue(record.triggerPrice) ??
+        this.readNumberValue(record.price),
+      limitPrice:
+        this.readNumberValue(record.limit_price) ?? this.readNumberValue(record.limitPrice),
+      stopOrderType:
+        this.readStringValue(record.stop_order_type) ?? this.readStringValue(record.stopOrderType),
+    };
+  }
 
-	  private markDeltaBracketAmendmentVerificationPending(
-	    execution: SuggestedTradeExecutionLink,
-	    verification: Extract<DeltaBracketAmendmentVerificationResult, { verified: false }>,
-	    nowIso: string
-	  ): SuggestedTradeExecutionLink {
-	    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
-	    const trailing = this.readRecordValue(plan.trailingStop) ?? {};
-	    const message = `Delta bracket amendment is pending broker read-back confirmation: ${verification.reason}`;
-	    return {
-	      ...execution,
-	      protectionCheckedAt: nowIso,
-	      protectionLastError: message,
-	      protectionPlan: {
-	        ...plan,
-	        bracketStatus: 'amendment_pending_confirmation',
-	        bracketAmendmentStatus: 'pending_confirmation',
-	        lastBracketAmendmentVerificationAt: nowIso,
-	        trailingStop: {
-	          ...trailing,
-	          lastCheckedAt: nowIso,
-	          lastNoopReason: 'bracket_amendment_pending_confirmation',
-	          lastError: verification.reason,
-	          lastVerificationAttemptAt: nowIso,
-	          lastVerification: {
-	            stage: 'delta_bracket_amendment_readback',
-	            verified: false,
-	            reason: verification.reason,
-	            stopLossPrice:
-	              this.formatNumericString(verification.stopLossPrice) ??
-	              verification.stopLossPrice,
-	            takeProfitPrice:
-	              this.formatNumericString(verification.takeProfitPrice) ??
-	              verification.takeProfitPrice,
-	          },
-	        },
-	      },
-	    };
-	  }
+  private markDeltaBracketAmendmentVerificationPending(
+    execution: SuggestedTradeExecutionLink,
+    verification: Extract<DeltaBracketAmendmentVerificationResult, { verified: false }>,
+    nowIso: string
+  ): SuggestedTradeExecutionLink {
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const trailing = this.readRecordValue(plan.trailingStop) ?? {};
+    const message = `Delta bracket amendment is pending broker read-back confirmation: ${verification.reason}`;
+    return {
+      ...execution,
+      protectionCheckedAt: nowIso,
+      protectionLastError: message,
+      protectionPlan: {
+        ...plan,
+        bracketStatus: 'amendment_pending_confirmation',
+        bracketAmendmentStatus: 'pending_confirmation',
+        lastBracketAmendmentVerificationAt: nowIso,
+        trailingStop: {
+          ...trailing,
+          lastCheckedAt: nowIso,
+          lastNoopReason: 'bracket_amendment_pending_confirmation',
+          lastError: verification.reason,
+          lastVerificationAttemptAt: nowIso,
+          lastVerification: {
+            stage: 'delta_bracket_amendment_readback',
+            verified: false,
+            reason: verification.reason,
+            stopLossPrice:
+              this.formatNumericString(verification.stopLossPrice) ?? verification.stopLossPrice,
+            takeProfitPrice:
+              this.formatNumericString(verification.takeProfitPrice) ??
+              verification.takeProfitPrice,
+          },
+        },
+      },
+    };
+  }
 
-	  private resolveProtectionSnapshotStopPrice(
+  private resolveProtectionSnapshotStopPrice(
     detail:
       | {
           stopPrice?: number | null;
@@ -11138,6 +10935,7 @@ export class SuggestedTradesService {
     stopLossOrderId: string | null;
     takeProfitOrderId: string | null;
     triggerType: string | null;
+    unavailableReason?: string | null;
   }> {
     const fallback = this.resolveTrailingRiskOrderIds(execution, positionPayload);
     if (brokerKey !== 'delta_exchange') {
@@ -11146,7 +10944,12 @@ export class SuggestedTradesService {
 
     const orderId = this.readStringValue(execution.orderId);
     if (!orderId) {
-      return fallback;
+      return {
+        stopLossOrderId: null,
+        takeProfitOrderId: null,
+        triggerType: fallback.triggerType,
+        unavailableReason: 'Delta entry order id is missing.',
+      };
     }
 
     const protection = await this.resolveLiveProtectionOrderContext(
@@ -11157,12 +10960,20 @@ export class SuggestedTradesService {
       orderId,
       positionPayload
     );
-    if (
-      !this.hasUsableDeltaProtectionContext(protection, execution, {
-        payload: positionPayload,
-      })
-    ) {
-      return fallback;
+    const mismatchReason = this.resolveDeltaProtectionContextMismatchReason(protection, execution, {
+      payload: positionPayload,
+    });
+    if (!this.hasUsableProtectionContext(protection) || mismatchReason) {
+      return {
+        stopLossOrderId: null,
+        takeProfitOrderId: null,
+        triggerType: fallback.triggerType,
+        unavailableReason:
+          mismatchReason ??
+          `Delta linked protection is not active or complete (${describeLiveProtectionOrderContext(
+            protection
+          )}).`,
+      };
     }
 
     return {

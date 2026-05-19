@@ -11233,7 +11233,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'clearTrailingStopErrorWhenNoMoveNeeded',
     'amendment_pending_confirmation',
     'reconcilePendingDeltaBracketAmendmentFromContext',
-    'independent reduce-only SL/TP replacement is disabled',
+    'Trailing SL update needs active Delta SL/TP order snapshots before replacement',
     'positionsAdapter.updateRiskOrder',
     'resolveMudrexRiskOrderPositionId(position, positionPayload)',
   ]) {
@@ -11652,120 +11652,150 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
       return undefined;
     },
   };
-  let deltaBracketAmendment: Record<string, unknown> | null = null;
+  let deltaRiskOrderUpdate: Record<string, unknown> | null = null;
   deltaTemplateSourceService.brokerRuntimeRegistry = {
     getPositionsAdapter() {
       return {
-        async updateRiskOrder() {
-          throw new Error('Delta native bracket path should use the orders adapter.');
+        async updateRiskOrder(
+          positionId: string,
+          body: Record<string, unknown>,
+          context?: Record<string, unknown>
+        ) {
+          deltaRiskOrderUpdate = { positionId, body, context };
+          return {
+            status: 'updated',
+            stop_loss_order_id: 'delta-sl-replacement',
+            take_profit_order_id: 'delta-tp-template',
+            stoploss_price: '112.5',
+            takeprofit_price: '130',
+            protective_orders: [
+              {
+                kind: 'stop_loss',
+                order_id: 'delta-sl-replacement',
+                status: 'open',
+                stop_price: '112.5',
+                stop_order_type: 'stop_loss_order',
+                reduce_only: true,
+              },
+              {
+                kind: 'take_profit',
+                order_id: 'delta-tp-template',
+                status: 'open',
+                stop_price: '130',
+                stop_order_type: 'take_profit_order',
+                reduce_only: true,
+              },
+            ],
+          };
         },
       };
     },
     getOrdersAdapter() {
       return {
-        async getOrder(orderId: string) {
-          return orderId === 'delta-sl-template'
-            ? {
-                id: orderId,
-                status: 'open',
-                quantity: 10,
-                unfilled_size: 10,
-                stop_price: 112.5,
-                stop_order_type: 'stop_loss_order',
-              }
-            : {
-                id: orderId,
-                status: 'open',
-                quantity: 10,
-                unfilled_size: 10,
-                stop_price: 130,
-                stop_order_type: 'take_profit_order',
-              };
-        },
-        async updateLiveAutoBracketProtection(
-          assetId: string,
-          body: Record<string, unknown>,
-          context?: Record<string, unknown>
-        ) {
-          deltaBracketAmendment = { assetId, body, context };
-          return { status: 'ok' };
+        async updateLiveAutoBracketProtection() {
+          throw new Error('Delta trailing ladder should use reduce-only SL replacement.');
         },
       };
     },
   };
-  const deltaTemplateDrivenExecution =
-    await deltaTemplateSourceService.maybeApplyLiveTrailingStop(
-      'user-1',
-      {
-        id: 'trade-delta-template-1',
-        sourceTemplateId: 'template-ema5',
-        symbol: 'TONUSDT',
-        side: 'BUY',
-        timeframe: '15m',
-        stopLossPrice: '95',
-        takeProfitTargets: ['130'],
-        signalTime: new Date('2026-05-19T07:00:00.000Z'),
-        meta: {
-          tradeManagementSnapshot: {
-            source: 'strategy-template',
-            sourceTemplateId: 'template-ema5',
-            capturedAt: '2026-05-19T06:00:00.000Z',
-            trailingStop: ema5PullbackConfig,
-          },
+  const deltaTemplateDrivenExecution = await deltaTemplateSourceService.maybeApplyLiveTrailingStop(
+    'user-1',
+    {
+      id: 'trade-delta-template-1',
+      sourceTemplateId: 'template-ema5',
+      symbol: 'TONUSDT',
+      side: 'BUY',
+      timeframe: '15m',
+      stopLossPrice: '95',
+      takeProfitTargets: ['130'],
+      signalTime: new Date('2026-05-19T07:00:00.000Z'),
+      meta: {
+        tradeManagementSnapshot: {
+          source: 'strategy-template',
+          sourceTemplateId: 'template-ema5',
+          capturedAt: '2026-05-19T06:00:00.000Z',
+          trailingStop: ema5PullbackConfig,
         },
       },
-      {
-        executionMode: 'live',
-        brokerKey: 'delta_exchange',
-        accountId: 'delta-account-template',
-        orderId: 'delta-entry-template',
-        orderStatus: 'FILLED',
-        executionState: 'filled',
-        protectionState: 'attached',
-        entryPrice: '100',
+    },
+    {
+      executionMode: 'live',
+      brokerKey: 'delta_exchange',
+      accountId: 'delta-account-template',
+      orderId: 'delta-entry-template',
+      orderStatus: 'FILLED',
+      executionState: 'filled',
+      protectionState: 'attached',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitPrice: '130',
+      quantity: 10,
+      filledAt: '2026-05-19T07:00:30.000Z',
+      protectionPlan: {
+        protectionMode: 'native_bracket',
         stopLossPrice: '95',
-        takeProfitPrice: '130',
-        quantity: 10,
-        filledAt: '2026-05-19T07:00:30.000Z',
-        protectionPlan: {
-          protectionMode: 'native_bracket',
-          stopLossPrice: '95',
-          attachedStopLossPrice: '96',
-          attachedTakeProfitPrice: '130',
-          trailingStop: {
-            ...ema5PullbackConfig,
-            originalStopLossPrice: 95,
-            rules: [{ whenProfitR: 0.5, moveStopToR: 0.1 }],
-          },
+        attachedStopLossPrice: '96',
+        attachedTakeProfitPrice: '130',
+        trailingStop: {
+          ...ema5PullbackConfig,
+          originalStopLossPrice: 95,
+          rules: [{ whenProfitR: 0.5, moveStopToR: 0.1 }],
         },
       },
-      [
-        {
-          externalId: 'delta-position-template',
-          status: 'OPEN',
-          statusRank: 1,
-          firstSeenAt: '2026-05-19T07:00:30.000Z',
-          lastSeenAt: '2026-05-19T07:05:00.000Z',
-          payload: {
-            id: 'delta-position-template',
-            symbol: 'TONUSD',
-            side: 'long',
-            status: 'open',
-            entry_price: '100',
-            current_price: '116',
-            stoploss_price: '96',
-            takeprofit_price: '130',
-            quantity: '10',
-            created_at: '2026-05-19T07:00:30.000Z',
-            updated_at: '2026-05-19T07:05:00.000Z',
-          },
+    },
+    [
+      {
+        externalId: 'delta-position-template',
+        status: 'OPEN',
+        statusRank: 1,
+        firstSeenAt: '2026-05-19T07:00:30.000Z',
+        lastSeenAt: '2026-05-19T07:05:00.000Z',
+        payload: {
+          id: 'delta-position-template',
+          symbol: 'TONUSD',
+          side: 'long',
+          status: 'open',
+          entry_price: '100',
+          current_price: '116',
+          stoploss_price: '96',
+          takeprofit_price: '130',
+          quantity: '10',
+          created_at: '2026-05-19T07:00:30.000Z',
+          updated_at: '2026-05-19T07:05:00.000Z',
         },
-      ]
-    );
-  assert.ok(deltaBracketAmendment, 'Delta native bracket amendment should be submitted.');
-  const deltaBracketAmendmentBody = (deltaBracketAmendment as { body: Record<string, unknown> })
-    .body;
-  assert.equal(deltaBracketAmendmentBody.stopLossPrice, 112.5);
+      },
+    ]
+  );
+  assert.ok(deltaRiskOrderUpdate, 'Delta trailing ladder should update the risk order.');
+  const deltaRiskOrderBody = (deltaRiskOrderUpdate as { body: Record<string, unknown> }).body;
+  const deltaRiskOrderContext = (deltaRiskOrderUpdate as { context: Record<string, unknown> })
+    .context;
+  assert.equal(
+    (deltaRiskOrderUpdate as { positionId: string }).positionId,
+    'delta-position-template'
+  );
+  assert.equal(deltaRiskOrderBody.stoploss_price, 112.5);
+  assert.equal(deltaRiskOrderBody.takeprofit_price, 130);
+  assert.equal(deltaRiskOrderBody.stoploss_order_id, 'delta-sl-template');
+  assert.equal(deltaRiskOrderBody.takeprofit_order_id, 'delta-tp-template');
+  assert.equal(deltaRiskOrderContext.brokerKey, 'delta_exchange');
+  assert.equal(deltaRiskOrderContext.accountId, 'delta-account-template');
+  assert.equal(
+    (deltaTemplateDrivenExecution.protectionPlan as Record<string, any>).stopLossOrderId,
+    'delta-sl-replacement'
+  );
+  assert.equal(
+    (deltaTemplateDrivenExecution.protectionPlan as Record<string, any>).takeProfitOrderId,
+    'delta-tp-template'
+  );
+  assert.equal(
+    (deltaTemplateDrivenExecution.protectionPlan as Record<string, any>).attachedStopLossPrice,
+    '112.5'
+  );
+  assert.notEqual(
+    (deltaTemplateDrivenExecution.protectionPlan as Record<string, any>).bracketStatus,
+    'amendment_pending_confirmation'
+  );
   assert.equal(
     (deltaTemplateDrivenExecution.protectionPlan as Record<string, any>).trailingStop.configSource,
     'strategy_template'
@@ -11774,6 +11804,110 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
     (deltaTemplateDrivenExecution.protectionPlan as Record<string, any>).trailingStop.rules,
     templateOnlyLadderConfig.rules
   );
+
+  const deltaPartialProtectionService = new SuggestedTradesService() as any;
+  deltaPartialProtectionService.strategyTemplateRepository = service.strategyTemplateRepository;
+  deltaPartialProtectionService.isProtectionRepairEnabledForBroker = () => true;
+  deltaPartialProtectionService.resolveLiveProtectionOrderContext = async () => ({
+    stopLossOrderId: 'delta-sl-stale-fallback',
+    takeProfitOrderId: 'delta-tp-stale-fallback',
+    stopLossStatus: 'PARTIALLY_FILLED',
+    takeProfitStatus: 'OPEN',
+    activeOrderIds: ['delta-sl-stale-fallback', 'delta-tp-stale-fallback'],
+    orderDetails: {
+      'delta-sl-stale-fallback': {
+        status: 'PARTIALLY_FILLED',
+        quantity: 10,
+        filledQuantity: 3,
+        remainingQuantity: 7,
+        stopPrice: 96,
+        stopOrderType: 'stop_loss_order',
+      },
+      'delta-tp-stale-fallback': {
+        status: 'OPEN',
+        quantity: 10,
+        remainingQuantity: 10,
+        stopPrice: 130,
+        stopOrderType: 'take_profit_order',
+      },
+    },
+  });
+  let deltaPartialRiskOrderCalled = false;
+  deltaPartialProtectionService.brokerRuntimeRegistry = {
+    getPositionsAdapter() {
+      return {
+        async updateRiskOrder() {
+          deltaPartialRiskOrderCalled = true;
+          throw new Error('partial protection should block Delta trailing mutation');
+        },
+      };
+    },
+  };
+  const deltaPartialResult = await deltaPartialProtectionService.maybeApplyLiveTrailingStop(
+    'user-1',
+    {
+      id: 'trade-delta-partial-1',
+      sourceTemplateId: 'template-ema5',
+      symbol: 'TONUSDT',
+      side: 'BUY',
+      timeframe: '15m',
+      stopLossPrice: '95',
+      takeProfitTargets: ['130'],
+      signalTime: new Date('2026-05-19T07:00:00.000Z'),
+      meta: {},
+    },
+    {
+      executionMode: 'live',
+      brokerKey: 'delta_exchange',
+      accountId: 'delta-account-template',
+      orderId: 'delta-entry-template',
+      orderStatus: 'FILLED',
+      executionState: 'filled',
+      protectionState: 'attached',
+      entryPrice: '100',
+      stopLossPrice: '95',
+      takeProfitPrice: '130',
+      quantity: 10,
+      filledAt: '2026-05-19T07:00:30.000Z',
+      protectionPlan: {
+        protectionMode: 'native_bracket',
+        sourceTemplateId: 'template-ema5',
+        stopLossOrderId: 'delta-sl-stale-fallback',
+        takeProfitOrderId: 'delta-tp-stale-fallback',
+        stopLossPrice: '95',
+        attachedStopLossPrice: '96',
+        attachedTakeProfitPrice: '130',
+        trailingStop: {
+          ...ema5PullbackConfig,
+          originalStopLossPrice: 95,
+        },
+      },
+    },
+    [
+      {
+        externalId: 'delta-position-template',
+        status: 'OPEN',
+        statusRank: 1,
+        firstSeenAt: '2026-05-19T07:00:30.000Z',
+        lastSeenAt: '2026-05-19T07:05:00.000Z',
+        payload: {
+          id: 'delta-position-template',
+          symbol: 'TONUSD',
+          side: 'long',
+          status: 'open',
+          entry_price: '100',
+          current_price: '116',
+          stoploss_price: '96',
+          takeprofit_price: '130',
+          quantity: '10',
+          created_at: '2026-05-19T07:00:30.000Z',
+          updated_at: '2026-05-19T07:05:00.000Z',
+        },
+      },
+    ]
+  );
+  assert.equal(deltaPartialRiskOrderCalled, false);
+  assert.match(String(deltaPartialResult.protectionLastError || ''), /partially executed/);
 
   const mudrexVerificationService = new SuggestedTradesService() as any;
   const mudrexVerifiedSnapshot = {
