@@ -12651,18 +12651,9 @@ export class SuggestedTradesService {
       accountId,
       orderId
     );
-    const deltaLiveProtectionOrderIds =
-      brokerKey === 'delta_exchange'
-        ? await this.resolveDeltaLiveSiblingProtectionOrderIds({
-            userId,
-            brokerKey,
-            accountId,
-            trade,
-          })
-        : [];
-    const activeProtectionOrderIds = Array.from(
-      new Set([...protection.activeOrderIds, ...deltaLiveProtectionOrderIds])
-    );
+    // Only cancel protection already linked to this execution. A symbol-wide live sweep can race
+    // with a newer same-symbol Delta position before the position snapshot is visible.
+    const activeProtectionOrderIds = Array.from(new Set(protection.activeOrderIds));
     if (!activeProtectionOrderIds.length) {
       return execution;
     }
@@ -12701,53 +12692,6 @@ export class SuggestedTradesService {
         `Sibling protection cancel requested after position close: ${cancelledOrderIds.join(', ')}`
       ),
     };
-  }
-
-  private async resolveDeltaLiveSiblingProtectionOrderIds(input: {
-    userId: string;
-    brokerKey: string;
-    accountId: string;
-    trade: SuggestedTrade;
-  }): Promise<string[]> {
-    if (input.brokerKey !== 'delta_exchange') {
-      return [];
-    }
-
-    const side = String(input.trade.side || '')
-      .trim()
-      .toLowerCase();
-    const entrySide =
-      side === 'buy' || side === 'long'
-        ? 'buy'
-        : side === 'sell' || side === 'short'
-          ? 'sell'
-          : null;
-    if (!entrySide) {
-      return [];
-    }
-
-    try {
-      const rows = await this.listLiveDeltaProtectionOrderCandidates({
-        userId: input.userId,
-        brokerKey: input.brokerKey,
-        accountId: input.accountId,
-        symbols: this.buildEquivalentLiveAutoSymbols(input.trade.symbol, input.brokerKey),
-      });
-      const context: DeltaActiveProtectionOrders = {
-        stopLossOrderIds: [],
-        takeProfitOrderIds: [],
-        unclassifiedOrderIds: [],
-        activeOrderIds: [],
-        orderDetails: {},
-      };
-      const protectionSide = entrySide === 'buy' ? 'sell' : 'buy';
-      for (const row of rows) {
-        this.addDeltaActiveProtectionOrder(context, row, protectionSide);
-      }
-      return context.activeOrderIds;
-    } catch {
-      return [];
-    }
   }
 
   private mergePaperExecutionOutcome(

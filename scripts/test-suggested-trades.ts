@@ -4685,10 +4685,8 @@ async function runSuggestedTradeSiblingProtectionAutoCancelAssertions(): Promise
 
   {
     const liveDeltaService = new SuggestedTradesService() as any;
-    const liveCancelledOrders: Array<{
-      orderId: string;
-      context: Record<string, unknown> | undefined;
-    }> = [];
+    let liveListCalled = false;
+    let liveCancelCalled = false;
     liveDeltaService.resolveLiveProtectionOrderContext = async () => ({
       stopLossOrderId: 'stale-sl-1',
       takeProfitOrderId: 'stale-tp-1',
@@ -4703,6 +4701,7 @@ async function runSuggestedTradeSiblingProtectionAutoCancelAssertions(): Promise
       getOrdersAdapter() {
         return {
           async listOpenOrders() {
+            liveListCalled = true;
             return [
               {
                 id: 'live-tp-1',
@@ -4714,9 +4713,9 @@ async function runSuggestedTradeSiblingProtectionAutoCancelAssertions(): Promise
               },
             ];
           },
-          async cancelOrder(orderId: string, context?: Record<string, unknown>) {
-            liveCancelledOrders.push({ orderId, context });
-            return { success: true };
+          async cancelOrder() {
+            liveCancelCalled = true;
+            throw new Error('closed Delta execution must not cancel symbol-wide live protection');
           },
         };
       },
@@ -4752,20 +4751,9 @@ async function runSuggestedTradeSiblingProtectionAutoCancelAssertions(): Promise
       ]
     );
 
-    assert.deepEqual(liveCancelledOrders, [
-      {
-        orderId: 'live-tp-1',
-        context: {
-          userId: 'user-1',
-          brokerKey: 'delta_exchange',
-          accountId: 'acc-1',
-        },
-      },
-    ]);
-    assert.match(
-      String(nextExecution.note || ''),
-      /Sibling protection cancel requested after position close: live-tp-1/
-    );
+    assert.equal(liveListCalled, false);
+    assert.equal(liveCancelCalled, false);
+    assert.equal(nextExecution.note, undefined);
   }
 
   {
