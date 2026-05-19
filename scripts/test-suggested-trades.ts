@@ -5675,6 +5675,10 @@ async function runSuggestedTradeLimitOrderExpiryAssertions(): Promise<void> {
             created_at: '2026-04-04T10:04:00.000Z',
             entry_price: 100,
             quantity: 300,
+            stoploss_order_id: 'mudrex-partial-sl-1',
+            takeprofit_order_id: 'mudrex-partial-tp-1',
+            stoploss_price: '95',
+            takeprofit_price: '108',
           },
         },
       ];
@@ -10576,7 +10580,7 @@ async function runSuggestedTradesProtectionGuardrailAssertions(): Promise<void> 
       {
         userId: 'user-1',
         brokerKey: 'mudrex',
-        accountId: 'acct-1',
+        accountId: 'acc-1',
         symbols: ['ETHUSDT'],
       },
     ]);
@@ -11060,6 +11064,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const terminalProtectionRepairSource = read(
     'scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
+  const staleMudrexOpenExecutionsCleanupSource = read(
+    'scripts/maintenance/cleanup-stale-mudrex-open-executions.ts'
+  );
   const releaseGateSource = read('scripts/release-gates/release-gate-suggested-trades.ts');
   const signoffSource = read('scripts/signoffs/signoff-suggested-trades.ts');
   const canaryReadinessSource = read('scripts/checks/check-broker-auto-canary-readiness.ts');
@@ -11101,6 +11108,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   assert.equal(
     packageScripts['repair:suggested-trades-terminal-protection'],
     'node --import tsx scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
+  );
+  assert.equal(
+    packageScripts['cleanup:stale-mudrex-open-executions'],
+    'node --import tsx scripts/maintenance/cleanup-stale-mudrex-open-executions.ts'
   );
   assert.equal(
     runPackageSuiteSource.includes("'suggested-trades': ['test:suggested-trades']"),
@@ -11252,6 +11263,22 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       terminalProtectionRepairSource.includes(marker),
       true,
       `suggested trades terminal protection repair must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-stale-mudrex-open-executions',
+    'SUGGESTED_TRADES_STALE_MUDREX_OPEN_EXECUTIONS_APPLY',
+    'dry_run',
+    'scheduler_positions_snapshots',
+    'scheduler_orders_snapshots',
+    'not_required',
+    'position_status',
+    'exact live position is no longer open',
+  ]) {
+    assert.equal(
+      staleMudrexOpenExecutionsCleanupSource.includes(marker),
+      true,
+      `suggested trades stale Mudrex open-execution cleanup must retain ${marker}`
     );
   }
   assert.equal(

@@ -233,6 +233,7 @@
     "deploy:platform:update": "bash scripts/deploy/platform-update.sh",
     "deploy:platform:post-bootstrap": "bash scripts/deploy/platform-post-bootstrap.sh",
     "repair:suggested-trades-terminal-protection": "node --import tsx scripts/maintenance/repair-suggested-trade-terminal-protection.ts",
+    "cleanup:stale-mudrex-open-executions": "node --import tsx scripts/maintenance/cleanup-stale-mudrex-open-executions.ts",
     "rebuild:positions-read-model": "node --import tsx scripts/rebuild/rebuild-positions-read-model.ts",
     "rebuild:risk-normalized-storage": "node --import tsx scripts/rebuild/rebuild-risk-normalized-storage.ts"
   },
