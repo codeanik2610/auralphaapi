@@ -5,6 +5,10 @@ import {
   resolveExpectedDeltaProtectionQuantity,
 } from './checks/check-suggested-trades-delta-protection-guardrail';
 import { buildDeltaProtectionRepairPreview } from './checks/check-suggested-trades-delta-protection-repair-preview';
+import {
+  isDeltaProtectionRepairApplyActionSupported,
+  selectDeltaProtectionRepairApplyCandidates,
+} from './maintenance/repair-suggested-trades-delta-protection';
 
 function buildGuardrailItem(overrides: Partial<DeltaGuardrailItem>): DeltaGuardrailItem {
   return {
@@ -210,6 +214,43 @@ function testDeltaRepairPreviewPlansPartialFillReplacement(): void {
   assert.deepEqual(preview.expectedMutation.replaceOrderIds, ['old-sl', 'old-tp']);
 }
 
+function testDeltaRepairApplySelectionIsSafeByDefault(): void {
+  const missingProtectionItem = {
+    ...buildGuardrailItem({ suggestedTradeId: 'repair-ready-1' }),
+    remediation: buildDeltaProtectionRepairPreview(buildGuardrailItem({})),
+  };
+  const staleProtectionItem = {
+    ...buildGuardrailItem({
+      suggestedTradeId: 'stale-unsupported-1',
+      issues: ['stale_protection_for_closed_position'],
+      stopLossOrderId: 'old-sl',
+      takeProfitOrderId: 'old-tp',
+    }),
+    remediation: buildDeltaProtectionRepairPreview(
+      buildGuardrailItem({
+        issues: ['stale_protection_for_closed_position'],
+        stopLossOrderId: 'old-sl',
+        takeProfitOrderId: 'old-tp',
+      })
+    ),
+  };
+
+  assert.equal(
+    isDeltaProtectionRepairApplyActionSupported('would_attach_missing_protection'),
+    true
+  );
+  assert.equal(
+    isDeltaProtectionRepairApplyActionSupported('would_cancel_stale_protection_orders'),
+    false
+  );
+  assert.deepEqual(
+    selectDeltaProtectionRepairApplyCandidates([staleProtectionItem, missingProtectionItem]).map(
+      (item) => item.suggestedTradeId
+    ),
+    ['repair-ready-1']
+  );
+}
+
 testDeltaContractsArePreferredOverBaseQuantity();
 testDeltaBaseQuantityCanConvertToContracts();
 testPartialFillProtectionMismatchStillFlags();
@@ -218,5 +259,6 @@ testDeltaRepairPreviewCanAttachMissingProtection();
 testDeltaRepairPreviewBlocksUnsafeBinding();
 testDeltaRepairPreviewUsesNativeBracketPath();
 testDeltaRepairPreviewPlansPartialFillReplacement();
+testDeltaRepairApplySelectionIsSafeByDefault();
 
 console.log('Suggested trades Delta protection guardrail tests passed.');

@@ -709,6 +709,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts'
       ),
       script(
+        'repair:suggested-trades-delta-protection',
+        'scripts/maintenance/repair-suggested-trades-delta-protection.ts'
+      ),
+      script(
         'check:broker-auto-canary-readiness',
         'scripts/checks/check-broker-auto-canary-readiness.ts'
       ),

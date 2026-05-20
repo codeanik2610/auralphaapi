@@ -11628,6 +11628,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const deltaProtectionRepairPreviewSource = read(
     'scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts'
   );
+  const deltaProtectionRepairApplySource = read(
+    'scripts/maintenance/repair-suggested-trades-delta-protection.ts'
+  );
   const terminalProtectionRepairSource = read(
     'scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
@@ -11693,6 +11696,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
   assert.equal(
+    packageScripts['repair:suggested-trades-delta-protection'],
+    'node --import tsx scripts/maintenance/repair-suggested-trades-delta-protection.ts'
+  );
+  assert.equal(
     packageScripts['cleanup:stale-mudrex-open-executions'],
     'node --import tsx scripts/maintenance/cleanup-stale-mudrex-open-executions.ts'
   );
@@ -11742,6 +11749,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     coverageManifestSource.includes('check:suggested-trades-delta-protection-repair-preview'),
     true,
     'system coverage manifest must include the Delta protection repair preview check'
+  );
+  assert.equal(
+    coverageManifestSource.includes('repair:suggested-trades-delta-protection'),
+    true,
+    'system coverage manifest must include the Delta protection repair apply script'
   );
   assert.equal(
     coverageManifestSource.includes('test:suggested-trades-delta-protection-guardrail'),
@@ -11931,6 +11943,23 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       deltaProtectionRepairPreviewSource.includes(marker),
       true,
       `suggested trades Delta protection repair preview must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-delta-protection-repair',
+    'SUGGESTED_TRADES_DELTA_PROTECTION_REPAIR_APPLY',
+    'SUGGESTED_TRADES_PROTECTION_REPAIR_DELTA_EXCHANGE_ENABLED',
+    'not_applied_apply_disabled',
+    'blocked_broker_repair_disabled',
+    'buildDeltaProtectionRepairPreviewReport',
+    'maybeRemediateLiveProtection',
+    'persistExecutionState',
+    'would_replace_mismatched_partial_fill_protection',
+  ]) {
+    assert.equal(
+      deltaProtectionRepairApplySource.includes(marker),
+      true,
+      `suggested trades Delta protection repair apply script must retain ${marker}`
     );
   }
   for (const marker of [
