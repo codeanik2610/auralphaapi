@@ -8411,7 +8411,8 @@ export class SuggestedTradesService {
             accountId,
             trade.symbol,
             positionAnchor,
-            20
+            20,
+            this.readStringValue(execution?.positionId)
           );
           let nextExecution = this.mergePositionOutcome(trade, execution ?? {}, positionSnapshots, {
             allowPositionEvidenceFill: true,
@@ -8475,7 +8476,8 @@ export class SuggestedTradesService {
         accountId,
         trade.symbol,
         positionAnchor,
-        20
+        20,
+        this.readStringValue(nextExecution.positionId ?? execution?.positionId)
       );
       nextExecution = this.mergePositionOutcome(trade, nextExecution, positionSnapshots, {
         allowPositionEvidenceFill: options.allowPositionEvidenceFill === true,

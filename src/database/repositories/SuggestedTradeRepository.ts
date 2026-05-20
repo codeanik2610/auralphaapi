@@ -135,6 +135,29 @@ export interface LinkedPositionSnapshot {
   payload: Record<string, unknown> | null;
 }
 
+interface LinkedPositionSnapshotRow {
+  externalId?: string;
+  status?: string | null;
+  statusRank?: number | null;
+  firstSeenAt?: Date | string | null;
+  lastSeenAt?: Date | string | null;
+  payload?: unknown;
+  readModelStatus?: unknown;
+  readModelStatusKey?: unknown;
+  readModelQuantity?: unknown;
+  readModelEntryPrice?: unknown;
+  readModelCurrentPrice?: unknown;
+  readModelClosedPrice?: unknown;
+  readModelRealizedPnl?: unknown;
+  readModelStopLossPrice?: unknown;
+  readModelTakeProfitPrice?: unknown;
+  readModelStopLossOrderId?: unknown;
+  readModelTakeProfitOrderId?: unknown;
+  readModelPositionCreatedAt?: unknown;
+  readModelPositionUpdatedAt?: unknown;
+  readModelPositionClosedAt?: unknown;
+}
+
 export interface SuggestedTradeExecutionUpsertPayload {
   suggestedTradeId: string;
   userId: string;
@@ -648,27 +671,37 @@ export class SuggestedTradeRepository {
     accountId: string,
     symbol: string,
     since: Date,
-    limit = 20
+    limit = 20,
+    preferredExternalId?: string | null
   ): Promise<LinkedPositionSnapshot[]> {
     const normalizedBrokerKey = brokerKey.toLowerCase();
     const symbolLookupValues = this.buildSymbolLookupValues(normalizedBrokerKey, [symbol]);
     if (!symbolLookupValues.length) {
       return [];
     }
+    const normalizedPreferredExternalId = normalizeOptionalString(preferredExternalId);
 
     const rows = (await coreDataSource.query(
       `SELECT scheduler_position.external_id AS externalId,
-              scheduler_position.status,
-              scheduler_position.status_rank AS statusRank,
-              scheduler_position.first_seen_at AS firstSeenAt,
-              scheduler_position.last_seen_at AS lastSeenAt,
+              COALESCE(position_model.status, scheduler_position.status) AS status,
+              COALESCE(position_model.status_rank, scheduler_position.status_rank) AS statusRank,
+              COALESCE(position_model.position_created_at, scheduler_position.first_seen_at) AS firstSeenAt,
+              COALESCE(position_model.last_seen_at, scheduler_position.last_seen_at) AS lastSeenAt,
               scheduler_position.payload_json AS payload,
+              position_model.status AS readModelStatus,
+              position_model.status_key AS readModelStatusKey,
+              position_model.quantity AS readModelQuantity,
               position_model.entry_price AS readModelEntryPrice,
               position_model.current_price AS readModelCurrentPrice,
+              position_model.closed_price AS readModelClosedPrice,
+              position_model.realized_pnl AS readModelRealizedPnl,
               position_model.stoploss_price AS readModelStopLossPrice,
               position_model.takeprofit_price AS readModelTakeProfitPrice,
               position_model.stoploss_order_id AS readModelStopLossOrderId,
-              position_model.takeprofit_order_id AS readModelTakeProfitOrderId
+              position_model.takeprofit_order_id AS readModelTakeProfitOrderId,
+              position_model.position_created_at AS readModelPositionCreatedAt,
+              position_model.position_updated_at AS readModelPositionUpdatedAt,
+              position_model.position_closed_at AS readModelPositionClosedAt
          FROM scheduler_positions_snapshots scheduler_position
          LEFT JOIN position_read_models position_model
                 ON position_model.user_id = scheduler_position.user_id
@@ -680,7 +713,12 @@ export class SuggestedTradeRepository {
           AND LOWER(scheduler_position.broker_key) = ?
           AND LOWER(scheduler_position.symbol) IN (${symbolLookupValues.map(() => '?').join(',')})
           AND scheduler_position.last_seen_at >= ?
-        ORDER BY scheduler_position.status_rank DESC, scheduler_position.last_seen_at DESC
+        ORDER BY CASE
+                   WHEN ? <> '' AND scheduler_position.external_id = ? THEN 0
+                   ELSE 1
+                 END,
+                 scheduler_position.status_rank DESC,
+                 scheduler_position.last_seen_at DESC
         LIMIT ?`,
       [
         userId,
@@ -688,32 +726,64 @@ export class SuggestedTradeRepository {
         normalizedBrokerKey,
         ...symbolLookupValues,
         since,
+        normalizedPreferredExternalId ?? '',
+        normalizedPreferredExternalId ?? '',
         Math.max(1, Math.floor(limit)),
       ]
-    )) as Array<{
-      externalId?: string;
-      status?: string | null;
-      statusRank?: number | null;
-      firstSeenAt?: Date | string | null;
-      lastSeenAt?: Date | string | null;
-      payload?: unknown;
-      readModelEntryPrice?: unknown;
-      readModelCurrentPrice?: unknown;
-      readModelStopLossPrice?: unknown;
-      readModelTakeProfitPrice?: unknown;
-      readModelStopLossOrderId?: unknown;
-      readModelTakeProfitOrderId?: unknown;
-    }>;
+    )) as LinkedPositionSnapshotRow[];
 
-    return rows.map((row) => ({
-      externalId: String(row.externalId || '').trim(),
-      status: row.status ?? null,
-      statusRank:
-        row.statusRank === undefined || row.statusRank === null ? null : Number(row.statusRank),
-      firstSeenAt: row.firstSeenAt ?? null,
-      lastSeenAt: row.lastSeenAt ?? null,
-      payload: this.mergeReadModelProtectionIntoPositionPayload(row),
-    }));
+    const preferredRows = normalizedPreferredExternalId
+      ? ((await coreDataSource.query(
+          `SELECT position_model.external_id AS externalId,
+                  position_model.status,
+                  position_model.status_rank AS statusRank,
+                  position_model.position_created_at AS firstSeenAt,
+                  position_model.last_seen_at AS lastSeenAt,
+                  position_model.payload_json AS payload,
+                  position_model.status AS readModelStatus,
+                  position_model.status_key AS readModelStatusKey,
+                  position_model.quantity AS readModelQuantity,
+                  position_model.entry_price AS readModelEntryPrice,
+                  position_model.current_price AS readModelCurrentPrice,
+                  position_model.closed_price AS readModelClosedPrice,
+                  position_model.realized_pnl AS readModelRealizedPnl,
+                  position_model.stoploss_price AS readModelStopLossPrice,
+                  position_model.takeprofit_price AS readModelTakeProfitPrice,
+                  position_model.stoploss_order_id AS readModelStopLossOrderId,
+                  position_model.takeprofit_order_id AS readModelTakeProfitOrderId,
+                  position_model.position_created_at AS readModelPositionCreatedAt,
+                  position_model.position_updated_at AS readModelPositionUpdatedAt,
+                  position_model.position_closed_at AS readModelPositionClosedAt
+             FROM position_read_models position_model
+            WHERE position_model.user_id = ?
+              AND position_model.account_id = ?
+              AND LOWER(position_model.broker_key) = ?
+              AND position_model.external_id = ?
+            LIMIT 1`,
+          [userId, accountId, normalizedBrokerKey, normalizedPreferredExternalId]
+        )) as LinkedPositionSnapshotRow[])
+      : [];
+
+    const snapshots: LinkedPositionSnapshot[] = [];
+    const seenExternalIds = new Set<string>();
+    for (const row of [...preferredRows, ...rows]) {
+      const externalId = String(row.externalId || '').trim();
+      if (!externalId || seenExternalIds.has(externalId)) {
+        continue;
+      }
+      seenExternalIds.add(externalId);
+      snapshots.push({
+        externalId,
+        status: row.status ?? null,
+        statusRank:
+          row.statusRank === undefined || row.statusRank === null ? null : Number(row.statusRank),
+        firstSeenAt: row.firstSeenAt ?? null,
+        lastSeenAt: row.lastSeenAt ?? null,
+        payload: this.mergeReadModelProtectionIntoPositionPayload(row),
+      });
+    }
+
+    return snapshots;
   }
 
   async findLinkedTradesByOrderIds(
@@ -1061,12 +1131,20 @@ export class SuggestedTradeRepository {
 
   private mergeReadModelProtectionIntoPositionPayload(row: {
     payload?: unknown;
+    readModelStatus?: unknown;
+    readModelStatusKey?: unknown;
+    readModelQuantity?: unknown;
     readModelEntryPrice?: unknown;
     readModelCurrentPrice?: unknown;
+    readModelClosedPrice?: unknown;
+    readModelRealizedPnl?: unknown;
     readModelStopLossPrice?: unknown;
     readModelTakeProfitPrice?: unknown;
     readModelStopLossOrderId?: unknown;
     readModelTakeProfitOrderId?: unknown;
+    readModelPositionCreatedAt?: unknown;
+    readModelPositionUpdatedAt?: unknown;
+    readModelPositionClosedAt?: unknown;
   }): Record<string, unknown> | null {
     const parsedPayload = this.parsePayloadObject(row.payload);
     const payload: Record<string, unknown> = parsedPayload ? { ...parsedPayload } : {};
@@ -1076,19 +1154,50 @@ export class SuggestedTradeRepository {
       if (!normalized) {
         return;
       }
-      if (!overwrite && payload[key] !== undefined && payload[key] !== null && payload[key] !== '') {
+      if (
+        !overwrite &&
+        payload[key] !== undefined &&
+        payload[key] !== null &&
+        payload[key] !== ''
+      ) {
+        return;
+      }
+      payload[key] = normalized;
+      hasPayload = true;
+    };
+    const putTimestamp = (key: string, value: unknown, overwrite = false) => {
+      if (
+        !overwrite &&
+        payload[key] !== undefined &&
+        payload[key] !== null &&
+        payload[key] !== ''
+      ) {
+        return;
+      }
+      const normalizedDate = normalizeOptionalDate(value as Date | string | null | undefined);
+      const normalized = normalizedDate?.toISOString() ?? normalizeOptionalString(value);
+      if (!normalized) {
         return;
       }
       payload[key] = normalized;
       hasPayload = true;
     };
 
+    put('status', row.readModelStatus, true);
+    put('status_key', row.readModelStatusKey, true);
+    put('quantity', row.readModelQuantity);
     put('entry_price', row.readModelEntryPrice);
     put('current_price', row.readModelCurrentPrice);
+    put('closed_price', row.readModelClosedPrice, true);
+    put('pnl', row.readModelRealizedPnl, true);
+    put('realized_pnl', row.readModelRealizedPnl, true);
     put('stoploss_price', row.readModelStopLossPrice, true);
     put('takeprofit_price', row.readModelTakeProfitPrice, true);
     put('stoploss_order_id', row.readModelStopLossOrderId, true);
     put('takeprofit_order_id', row.readModelTakeProfitOrderId, true);
+    putTimestamp('created_at', row.readModelPositionCreatedAt);
+    putTimestamp('updated_at', row.readModelPositionUpdatedAt, true);
+    putTimestamp('closed_at', row.readModelPositionClosedAt, true);
 
     return hasPayload ? payload : null;
   }

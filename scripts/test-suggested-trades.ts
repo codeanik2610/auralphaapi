@@ -4369,6 +4369,166 @@ async function runSuggestedTradeReconcileAssertions(): Promise<void> {
   assert.equal(failureAlertCount, 0);
 }
 
+async function runSuggestedTradeExactPositionReconcileAssertions(): Promise<void> {
+  const service = new SuggestedTradesService() as any;
+  const exactPositionId = 'mudrex:01903bcb-29e5-765e-b282-2483da5007b3:2026-05-20T01:41:36Z:SHORT';
+  let preferredPositionId: unknown = null;
+  let savedExecutionPayload: Record<string, unknown> | null = null;
+  const trade = {
+    id: 'st-sol-reconcile',
+    automationId: 'auto-1',
+    automationRunId: 'run-1',
+    userId: 'user-1',
+    sourceBacktestId: null,
+    sourceTemplateId: null,
+    sourceSetupKey: null,
+    symbol: 'SOLUSDT',
+    timeframe: '15m',
+    side: 'SELL',
+    signalTime: new Date('2026-05-20T01:30:00.000Z'),
+    status: 'Accepted',
+    confidence: 0.88,
+    score: 90,
+    entryPrice: '83.92',
+    stopLossPrice: '84.15',
+    takeProfitTargets: ['82.03'],
+    entryRule: 'breakout',
+    exitRule: 'target',
+    rationale: 'Momentum continuation',
+    dedupeKey: 'dedupe-sol-reconcile',
+    meta: null,
+    executionRecord: {
+      executionMode: 'live',
+      orderId: '019e430b-a192-7cea-be13-f0b3739bb597',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+      orderStatus: 'FILLED',
+      executionState: 'filled',
+      linkedAt: '2026-05-20T01:41:36.000Z',
+      filledAt: '2026-05-20T01:41:36.000Z',
+      filledPrice: '83.92',
+      filledQuantity: 1.2,
+      remainingQuantity: 0,
+      entryPrice: '83.92',
+      stopLossPrice: '84.15',
+      takeProfitPrice: '82.03',
+      protectionState: 'attached',
+      protectionCheckedAt: '2026-05-20T01:45:04.000Z',
+      protectionAttachedAt: '2026-05-20T01:41:39.000Z',
+      positionId: exactPositionId,
+      positionStatus: 'OPEN',
+      positionOpenedAt: '2026-05-20T01:41:36.000Z',
+    },
+    createdAt: new Date('2026-05-20T01:30:00.000Z'),
+    updatedAt: new Date('2026-05-20T01:45:04.000Z'),
+  };
+
+  service.suggestedTradeRepository = {
+    async getLinkedOrderSnapshot() {
+      return {
+        orderStatus: 'FILLED',
+        statusRank: 3,
+        lastSeenAt: '2026-05-20T01:41:36.000Z',
+        payload: {
+          status: 'FILLED',
+          updated_at: '2026-05-20T01:41:36.000Z',
+          filled_at: '2026-05-20T01:41:36.000Z',
+          filled_price: '83.92',
+          filled_quantity: '1.2',
+        },
+      };
+    },
+    async getLinkedPositionSnapshots(
+      _userId: string,
+      _brokerKey: string,
+      _accountId: string,
+      _symbol: string,
+      _since: Date,
+      _limit: number,
+      preferredExternalId?: string | null
+    ) {
+      preferredPositionId = preferredExternalId;
+      return [
+        {
+          externalId: 'old-sol-liquidation',
+          status: 'LIQUIDATED',
+          statusRank: 4,
+          firstSeenAt: '2026-04-19T09:53:33.000Z',
+          lastSeenAt: '2026-05-20T05:57:41.000Z',
+          payload: {
+            status: 'LIQUIDATED',
+            position_type: 'SHORT',
+            created_at: '2025-09-04T14:10:08.000Z',
+            updated_at: '2025-09-04T14:23:56.000Z',
+            entry_price: '205.1',
+            closed_price: '207.15',
+            pnl: '-25.01',
+          },
+        },
+        {
+          externalId: exactPositionId,
+          status: 'Closed',
+          statusRank: 3,
+          firstSeenAt: '2026-05-20T01:41:36.000Z',
+          lastSeenAt: '2026-05-20T05:54:23.000Z',
+          payload: {
+            status: 'CLOSED',
+            position_type: 'SHORT',
+            created_at: '2026-05-20T01:41:36.000Z',
+            updated_at: '2026-05-20T05:44:23.000Z',
+            closed_at: '2026-05-20T05:44:23.000Z',
+            entry_price: '83.92',
+            closed_price: '84.79',
+            quantity: '1.2',
+            pnl: '-1.044',
+          },
+        },
+      ];
+    },
+    async saveSuggestedTrade(item: Record<string, unknown>) {
+      return {
+        ...item,
+        updatedAt: new Date('2026-05-20T05:44:23.000Z'),
+      };
+    },
+    async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+      savedExecutionPayload = { ...payload };
+      return {
+        ...payload,
+        createdAt: new Date('2026-05-20T01:41:36.000Z'),
+        updatedAt: new Date('2026-05-20T05:44:23.000Z'),
+      };
+    },
+  };
+  service.paperOrderExecutionService = {
+    async simulateUserPaperOrders() {
+      return undefined;
+    },
+  };
+  service.paperOrderRepository = {
+    async getPaperOrderById() {
+      return null;
+    },
+  };
+
+  const refreshed = await service.refreshExecutionOutcomes('user-1', [
+    trade as unknown as SuggestedTrade,
+  ]);
+
+  assert.equal(refreshed, 1);
+  assert.equal(preferredPositionId, exactPositionId);
+  assert.ok(savedExecutionPayload);
+  const savedExecution = savedExecutionPayload as Record<string, unknown>;
+  assert.equal(savedExecution.executionState, 'closed');
+  assert.equal(savedExecution.positionStatus, 'CLOSED');
+  assert.equal(savedExecution.positionClosedAt, '2026-05-20T05:44:23.000Z');
+  assert.equal(savedExecution.exitPrice, '84.79');
+  assert.equal(savedExecution.realizedPnl, '-1.044');
+  assert.equal(savedExecution.outcome, 'loss');
+  assert.equal(savedExecution.protectionState, 'not_required');
+  assert.equal(savedExecution.protectionLastError, null);
+}
+
 async function runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions(): Promise<void> {
   const repository = new SuggestedTradeRepository() as any;
   const originalQuery = coreDataSource.query;
@@ -4431,7 +4591,7 @@ async function runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions(): Pr
     assert.equal(snapshots[0]?.payload?.symbol, 'BTCUSD');
     assert.deepEqual(calls[0]?.params.slice(0, 3), ['user-1', 'acc-1', 'delta_exchange']);
     assert.deepEqual(
-      new Set(calls[0]?.params.slice(3, -2)),
+      new Set(calls[0]?.params.slice(3, -4)),
       new Set(['btcusdt', 'btcusdc', 'btcusd'])
     );
 
@@ -4446,6 +4606,89 @@ async function runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions(): Pr
     await repository.findLinkedTradesBySymbols('user-1', 'mudrex', 'acc-1', ['BTCUSD']);
     assert.deepEqual(calls[0]?.params.slice(0, 3), ['user-1', 'mudrex', 'acc-1']);
     assert.deepEqual(calls[0]?.params.slice(3), ['btcusd']);
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
+async function runSuggestedTradeExactPositionSnapshotRepositoryAssertions(): Promise<void> {
+  const repository = new SuggestedTradeRepository() as any;
+  const originalQuery = coreDataSource.query;
+  const exactPositionId = 'mudrex:01903bcb-29e5-765e-b282-2483da5007b3:2026-05-20T01:41:36Z:SHORT';
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+
+  (coreDataSource as any).query = async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('FROM scheduler_positions_snapshots')) {
+      return Array.from({ length: 20 }, (_, index) => ({
+        externalId: `old-sol-liquidation-${index}`,
+        status: 'LIQUIDATED',
+        statusRank: 4,
+        firstSeenAt: '2026-04-19T09:53:33.000Z',
+        lastSeenAt: '2026-05-20T05:57:41.000Z',
+        payload: JSON.stringify({
+          status: 'LIQUIDATED',
+          symbol: 'SOLUSDT',
+          position_type: 'SHORT',
+          created_at: '2025-09-04T14:10:08.000Z',
+          updated_at: '2025-09-04T14:23:56.000Z',
+          entry_price: '205.1',
+          closed_price: '207.15',
+          pnl: '-25.01',
+        }),
+      }));
+    }
+    if (sql.includes('FROM position_read_models')) {
+      return [
+        {
+          externalId: exactPositionId,
+          status: 'Closed',
+          statusRank: 3,
+          firstSeenAt: '2026-05-20T01:44:36.000Z',
+          lastSeenAt: '2026-05-20T05:54:23.000Z',
+          payload: JSON.stringify({
+            status: 'CLOSED',
+            symbol: 'SOLUSDT',
+            position_type: 'SHORT',
+            created_at: '2026-05-20T01:41:36.000Z',
+            updated_at: '2026-05-20T05:44:23.000Z',
+            entry_price: '83.92',
+          }),
+          readModelStatus: 'Closed',
+          readModelStatusKey: 'closed',
+          readModelQuantity: '1.2',
+          readModelEntryPrice: '83.92',
+          readModelClosedPrice: '84.79',
+          readModelRealizedPnl: '-1.044',
+          readModelPositionCreatedAt: '2026-05-20T01:41:36.000Z',
+          readModelPositionUpdatedAt: '2026-05-20T05:44:23.000Z',
+          readModelPositionClosedAt: '2026-05-20T05:44:23.000Z',
+        },
+      ];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  try {
+    const snapshots = await repository.getLinkedPositionSnapshots(
+      'user-1',
+      'mudrex',
+      'acc-1',
+      'SOLUSDT',
+      new Date('2026-05-19T01:41:36.000Z'),
+      20,
+      exactPositionId
+    );
+
+    assert.equal(snapshots[0]?.externalId, exactPositionId);
+    assert.equal(snapshots[0]?.status, 'Closed');
+    assert.equal(snapshots[0]?.payload?.status, 'Closed');
+    assert.equal(snapshots[0]?.payload?.status_key, 'closed');
+    assert.equal(snapshots[0]?.payload?.closed_price, '84.79');
+    assert.equal(snapshots[0]?.payload?.pnl, '-1.044');
+    assert.equal(snapshots[0]?.payload?.closed_at, '2026-05-20T05:44:23.000Z');
+    assert.match(calls[0]?.sql || '', /scheduler_position\.external_id = \?/);
+    assert.deepEqual(calls[1]?.params, ['user-1', 'acc-1', 'mudrex', exactPositionId]);
   } finally {
     (coreDataSource as any).query = originalQuery;
   }
@@ -13071,7 +13314,9 @@ async function main(): Promise<void> {
   await runSuggestedTradeLiveAutoLifecycleMonitorAssertions();
   await runSuggestedTradeDeltaProductPreflightAssertions();
   await runSuggestedTradeReconcileAssertions();
+  await runSuggestedTradeExactPositionReconcileAssertions();
   await runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions();
+  await runSuggestedTradeExactPositionSnapshotRepositoryAssertions();
   await runSuggestedTradeExecutionLinkPreservationAssertions();
   runSuggestedTradeDeltaClosedFilledTimestampAssertions();
   await runSuggestedTradeLimitOrderExpiryAssertions();
