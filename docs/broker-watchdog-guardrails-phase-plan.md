@@ -41,8 +41,8 @@ Coverage:
 Acceptance:
 
 - [x] Cron file exists in the repo.
-- [ ] Cron is installed on production.
-- [ ] Latest production artifact proves scheduled execution.
+- [x] Cron is installed on production.
+- [x] Latest production artifact proves scheduled execution.
 - [x] Unsafe and unresolved thresholds default to zero.
 
 ### Mudrex Phase 2: Protection-Health Watchdog Verification
