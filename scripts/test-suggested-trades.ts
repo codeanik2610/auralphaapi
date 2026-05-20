@@ -11622,6 +11622,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const deltaProtectionGuardrailSource = read(
     'scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
   );
+  const deltaProtectionGuardrailWatchdogSource = read(
+    'scripts/checks/run-suggested-trades-delta-protection-guardrail-watchdog.sh'
+  );
   const terminalProtectionRepairSource = read(
     'scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
@@ -11720,6 +11723,13 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     coverageManifestSource.includes('check:suggested-trades-delta-protection-guardrail'),
     true,
     'system coverage manifest must include the Delta protection guardrail check'
+  );
+  assert.equal(
+    coverageManifestSource.includes(
+      'scripts/checks/run-suggested-trades-delta-protection-guardrail-watchdog.sh'
+    ),
+    true,
+    'system coverage manifest must include the Delta protection guardrail watchdog'
   );
   assert.equal(
     coverageManifestSource.includes('test:suggested-trades-delta-protection-guardrail'),
@@ -11882,6 +11892,19 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       deltaProtectionGuardrailSource.includes(marker),
       true,
       `suggested trades Delta protection guardrail check must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'AURALPHA_DELTA_PROTECTION_GUARDRAIL_ARTIFACT_DIR',
+    'SUGGESTED_TRADES_DELTA_PROTECTION_LOOKBACK_DAYS',
+    'SUGGESTED_TRADES_MAX_DELTA_PARTIAL_FILL_PROTECTION_MISMATCH',
+    'suggested-trades-delta-protection-guardrail:',
+    'check-suggested-trades-delta-protection-guardrail.js',
+  ]) {
+    assert.equal(
+      deltaProtectionGuardrailWatchdogSource.includes(marker),
+      true,
+      `suggested trades Delta protection guardrail watchdog must retain ${marker}`
     );
   }
   for (const marker of [
