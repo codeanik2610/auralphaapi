@@ -45,6 +45,10 @@ async function run(): Promise<void> {
     'protection guardrail gate',
     'scripts/checks/check-suggested-trades-protection-guardrails.ts'
   );
+  await runStep(
+    'Mudrex position resolution gate',
+    'scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
+  );
 }
 
 run().catch((error) => {

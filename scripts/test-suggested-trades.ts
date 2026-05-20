@@ -11616,6 +11616,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const protectionGuardrailsSource = read(
     'scripts/checks/check-suggested-trades-protection-guardrails.ts'
   );
+  const mudrexPositionResolutionSource = read(
+    'scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
+  );
   const terminalProtectionRepairSource = read(
     'scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
@@ -11661,6 +11664,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/checks/check-suggested-trades-protection-guardrails.ts'
   );
   assert.equal(
+    packageScripts['check:suggested-trades-mudrex-position-resolution'],
+    'node --import tsx scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
+  );
+  assert.equal(
     packageScripts['repair:suggested-trades-terminal-protection'],
     'node --import tsx scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
@@ -11693,6 +11700,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     true,
     'system coverage manifest must include the suggested-trades protection recovery check'
   );
+  assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-mudrex-position-resolution'),
+    true,
+    'system coverage manifest must include the Mudrex position resolution check'
+  );
 
   assert.equal(
     proofSource.includes('scripts/smokes/smoke-suggested-trades-lifecycle.ts'),
@@ -11723,6 +11735,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     proofSource.includes('scripts/checks/check-suggested-trades-protection-guardrails.ts'),
     true,
     'suggested trades live proof must run protection guardrail gate'
+  );
+  assert.equal(
+    proofSource.includes('scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'),
+    true,
+    'suggested trades live proof must run Mudrex position resolution gate'
   );
   assert.equal(
     smokeSource.includes('/suggested-trades/overview') &&
@@ -11805,6 +11822,24 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       protectionGuardrailsSource.includes(marker),
       true,
       `suggested trades protection guardrail check must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-mudrex-position-resolution',
+    'SUGGESTED_TRADES_MUDREX_POSITION_LOOKBACK_DAYS',
+    'SUGGESTED_TRADES_MAX_MUDREX_POSITION_UNSAFE_MISMATCHES',
+    'SUGGESTED_TRADES_MAX_MUDREX_POSITION_UNRESOLVED',
+    'direct_raw_payload',
+    'strict_open_time',
+    'unresolved_preferred',
+    'unsafe_mismatch',
+    'preferredPositionOpenedAt',
+    'preferredSide',
+  ]) {
+    assert.equal(
+      mudrexPositionResolutionSource.includes(marker),
+      true,
+      `suggested trades Mudrex position resolution check must retain ${marker}`
     );
   }
   for (const marker of [

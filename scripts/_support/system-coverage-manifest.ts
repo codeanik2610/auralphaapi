@@ -691,6 +691,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'scripts/checks/check-suggested-trades-protection-guardrails.ts'
       ),
       script(
+        'check:suggested-trades-mudrex-position-resolution',
+        'scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
+      ),
+      script(
         'check:broker-auto-canary-readiness',
         'scripts/checks/check-broker-auto-canary-readiness.ts'
       ),
