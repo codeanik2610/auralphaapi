@@ -11646,6 +11646,12 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const deltaPositionResolutionTestSource = read(
     'scripts/test-suggested-trades-delta-position-resolution.ts'
   );
+  const deltaPositionResolutionWatchdogSource = read(
+    'scripts/checks/run-suggested-trades-delta-position-resolution-watchdog.sh'
+  );
+  const deltaPositionResolutionWatchdogCronSource = read(
+    'deploy/cron/auralpha-delta-position-resolution-watchdog'
+  );
   const deltaProtectionGuardrailWatchdogSource = read(
     'scripts/checks/run-suggested-trades-delta-protection-guardrail-watchdog.sh'
   );
@@ -11835,6 +11841,18 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     coverageManifestSource.includes('check:suggested-trades-delta-position-resolution'),
     true,
     'system coverage manifest must include the Delta position resolution check'
+  );
+  assert.equal(
+    coverageManifestSource.includes(
+      'scripts/checks/run-suggested-trades-delta-position-resolution-watchdog.sh'
+    ),
+    true,
+    'system coverage manifest must include the Delta position resolution watchdog'
+  );
+  assert.equal(
+    coverageManifestSource.includes('deploy/cron/auralpha-delta-position-resolution-watchdog'),
+    true,
+    'system coverage manifest must include the Delta position resolution watchdog cron'
   );
   assert.equal(
     coverageManifestSource.includes(
@@ -12173,6 +12191,34 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       deltaPositionResolutionTestSource.includes(marker),
       true,
       `suggested trades Delta position resolution test must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'AURALPHA_DELTA_POSITION_RESOLUTION_ARTIFACT_DIR',
+    'SUGGESTED_TRADES_DELTA_POSITION_LOOKBACK_DAYS',
+    'SUGGESTED_TRADES_MAX_DELTA_POSITION_UNSAFE_MISMATCHES',
+    'SUGGESTED_TRADES_MAX_DELTA_POSITION_UNRESOLVED',
+    'SUGGESTED_TRADES_DELTA_POSITION_RESOLUTION_OUTPUT_FILE=""',
+    'suggested-trades-delta-position-resolution:',
+    'check-suggested-trades-delta-position-resolution.js',
+    'Delta position-resolution guardrail passed',
+  ]) {
+    assert.equal(
+      deltaPositionResolutionWatchdogSource.includes(marker),
+      true,
+      `suggested trades Delta position resolution watchdog must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    '*/30 * * * * root',
+    'auralpha-delta-position-resolution-watchdog.lock',
+    './scripts/checks/run-suggested-trades-delta-position-resolution-watchdog.sh',
+    '/var/log/auralpha-delta-position-resolution-watchdog.log',
+  ]) {
+    assert.equal(
+      deltaPositionResolutionWatchdogCronSource.includes(marker),
+      true,
+      `suggested trades Delta position resolution watchdog cron must retain ${marker}`
     );
   }
   for (const marker of [

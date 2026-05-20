@@ -22,7 +22,7 @@ Delta currently has broader protection-health coverage than Mudrex, plus a separ
 ## Missing Coverage
 
 - [x] Mudrex-style position-resolution detail report.
-- [ ] Separate position identity watchdog focused only on Delta mapping quality.
+- [x] Separate position identity watchdog focused only on Delta mapping quality.
 - [ ] Deeper "why this position id was chosen" artifact.
 - [ ] Production canary apply for repair path when a real safe candidate appears.
 - [ ] Operator runbook for single-candidate Delta repair.
@@ -53,15 +53,15 @@ Add a Docker runner and cron entry for the Phase 1 position-resolution report.
 
 Coverage:
 
-- [ ] Runs every 30 minutes.
-- [ ] Writes JSON and log artifacts.
-- [ ] Thresholds default to zero unsafe mappings.
+- [x] Runs every 30 minutes.
+- [x] Writes JSON and log artifacts.
+- [x] Thresholds default to zero unsafe mappings.
 
 Acceptance:
 
-- [ ] Cron installed under `/etc/cron.d`.
+- [x] Cron definition added under `deploy/cron`.
 - [ ] Latest artifact proves scheduled execution.
-- [ ] No broker mutation is possible.
+- [x] No broker mutation is possible.
 
 ## Phase 3: Partial-Fill Repair Preview Hardening
 

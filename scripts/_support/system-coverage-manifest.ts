@@ -733,6 +733,8 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'check:suggested-trades-delta-position-resolution',
         'scripts/checks/check-suggested-trades-delta-position-resolution.ts'
       ),
+      fileOnly('scripts/checks/run-suggested-trades-delta-position-resolution-watchdog.sh'),
+      fileOnly('deploy/cron/auralpha-delta-position-resolution-watchdog'),
       fileOnly('scripts/checks/run-suggested-trades-delta-protection-guardrail-watchdog.sh'),
       script(
         'check:suggested-trades-delta-protection-repair-preview',
