@@ -9,6 +9,7 @@ import {
 } from './check-suggested-trades-delta-protection-guardrail';
 
 type JsonRecord = Record<string, unknown>;
+type ProtectionLeg = 'stop_loss' | 'take_profit';
 
 export type DeltaProtectionRepairAction =
   | 'would_attach_missing_protection'
@@ -80,15 +81,35 @@ function linkedProtectionOrderIds(item: DeltaGuardrailItem): string[] {
   );
 }
 
-function buildRepairBlockers(item: DeltaGuardrailItem): string[] {
+function missingProtectionLegs(item: DeltaGuardrailItem): ProtectionLeg[] {
+  const legs: ProtectionLeg[] = [];
+  if (hasIssue(item, 'missing_active_stop_loss')) {
+    legs.push('stop_loss');
+  }
+  if (hasIssue(item, 'missing_active_take_profit')) {
+    legs.push('take_profit');
+  }
+  return legs;
+}
+
+function buildRepairBlockers(
+  item: DeltaGuardrailItem,
+  options: {
+    requiredPriceLegs?: ProtectionLeg[];
+    requireWholeContractQuantity?: boolean;
+  } = {}
+): string[] {
   const blockers: string[] = [];
+  const requiredPriceLegs =
+    options.requiredPriceLegs ?? (['stop_loss', 'take_profit'] as ProtectionLeg[]);
+  const requireWholeContractQuantity = options.requireWholeContractQuantity ?? true;
   if (!item.accountId) {
     blockers.push('missing Delta account id');
   }
   if (!item.positionReadModelExternalId) {
     blockers.push('missing exact Delta position read-model binding');
   }
-  if (!isWholeContractQuantity(item.expectedProtectionQuantity)) {
+  if (requireWholeContractQuantity && !isWholeContractQuantity(item.expectedProtectionQuantity)) {
     blockers.push('expected Delta protection size is not a whole contract quantity');
   }
   if (item.expectedProtectionQuantityUnit !== 'contracts') {
@@ -100,13 +121,26 @@ function buildRepairBlockers(item: DeltaGuardrailItem): string[] {
   ) {
     blockers.push('Delta base-to-contract quantity conversion is missing contract_value evidence');
   }
-  if (!positiveNumber(item.plannedStopLossPrice)) {
+  if (requiredPriceLegs.includes('stop_loss') && !positiveNumber(item.plannedStopLossPrice)) {
     blockers.push('missing planned stop-loss price');
   }
-  if (!positiveNumber(item.plannedTakeProfitPrice)) {
+  if (requiredPriceLegs.includes('take_profit') && !positiveNumber(item.plannedTakeProfitPrice)) {
     blockers.push('missing planned take-profit price');
   }
   return blockers;
+}
+
+function missingProtectionRepairKind(legs: ProtectionLeg[]): string {
+  if (legs.includes('stop_loss') && legs.includes('take_profit')) {
+    return 'attach_missing_stop_loss_and_take_profit';
+  }
+  if (legs.includes('stop_loss')) {
+    return 'attach_missing_stop_loss';
+  }
+  if (legs.includes('take_profit')) {
+    return 'attach_missing_take_profit';
+  }
+  return 'attach_missing_protection';
 }
 
 function buildPartialFillReplacementBlockers(item: DeltaGuardrailItem): string[] {
@@ -159,6 +193,7 @@ export function buildDeltaProtectionRepairPreview(
   const unsafeBinding =
     hasIssue(item, 'unsafe_position_mismatch') || hasIssue(item, 'missing_position_read_model');
   const bracketProtection = isNativeBracket(item);
+  const missingLegs = missingProtectionLegs(item);
   const commonMutation = {
     brokerKey: 'delta_exchange',
     accountId: item.accountId,
@@ -213,9 +248,12 @@ export function buildDeltaProtectionRepairPreview(
   }
 
   if (bracketProtection) {
-    const blockers = buildRepairBlockers(item).filter(
-      (blocker) => blocker !== 'expected Delta protection size is not a whole contract quantity'
-    );
+    const requiredPriceLegs =
+      missingLegs.length > 0 ? missingLegs : (['stop_loss', 'take_profit'] as ProtectionLeg[]);
+    const blockers = buildRepairBlockers(item, {
+      requiredPriceLegs,
+      requireWholeContractQuantity: false,
+    });
     return {
       action: 'would_reconcile_native_bracket_protection',
       readiness: blockers.length ? 'blocked' : 'ready',
@@ -228,8 +266,19 @@ export function buildDeltaProtectionRepairPreview(
       ],
       expectedMutation: {
         ...commonMutation,
+        repairKind: 'reconcile_native_bracket_protection',
+        protectionPath: 'native_bracket',
         protectionMode: item.protectionMode,
         bracketStatus: item.bracketStatus,
+        missingLegs,
+        attachDetachedOrders: false,
+        existingStopLossOrderId: item.stopLossOrderId,
+        existingTakeProfitOrderId: item.takeProfitOrderId,
+        createStopLoss: false,
+        createTakeProfit: false,
+        requiresFreshPositionReadback: true,
+        requiresFreshProtectionOrderReadback: true,
+        requiresNativeBracketReadback: true,
       },
     };
   }
@@ -272,7 +321,7 @@ export function buildDeltaProtectionRepairPreview(
   }
 
   if (hasIssue(item, 'missing_active_stop_loss') || hasIssue(item, 'missing_active_take_profit')) {
-    const blockers = buildRepairBlockers(item);
+    const blockers = buildRepairBlockers(item, { requiredPriceLegs: missingLegs });
     return {
       action: 'would_attach_missing_protection',
       readiness: blockers.length ? 'blocked' : 'ready',
@@ -282,8 +331,22 @@ export function buildDeltaProtectionRepairPreview(
       notes: [
         'Open Delta position is missing active SL and/or TP protection.',
         'Future apply mode should create protection only after a fresh open-position and active-order read-back.',
+        'The preview creates only the missing detached protection legs and must re-check existing linked orders first.',
       ],
-      expectedMutation: commonMutation,
+      expectedMutation: {
+        ...commonMutation,
+        repairKind: missingProtectionRepairKind(missingLegs),
+        protectionPath: 'detached_reduce_only_orders',
+        missingLegs,
+        attachDetachedOrders: true,
+        existingStopLossOrderId: item.stopLossOrderId,
+        existingTakeProfitOrderId: item.takeProfitOrderId,
+        createStopLoss: missingLegs.includes('stop_loss'),
+        createTakeProfit: missingLegs.includes('take_profit'),
+        requiresFreshPositionReadback: true,
+        requiresFreshProtectionOrderReadback: true,
+        requiresDuplicateProtectionCheck: true,
+      },
     };
   }
 

@@ -86,17 +86,17 @@ Review and harden the existing Delta repair preview for missing protection.
 
 Coverage:
 
-- [ ] Missing SL only.
-- [ ] Missing TP only.
-- [ ] Missing both SL and TP.
-- [ ] Native bracket protection mode.
-- [ ] Detached protection mode.
+- [x] Missing SL only.
+- [x] Missing TP only.
+- [x] Missing both SL and TP.
+- [x] Native bracket protection mode.
+- [x] Detached protection mode.
 
 Acceptance:
 
-- [ ] Preview separates attach from reconcile.
-- [ ] Preview never creates duplicate protection for native bracket orders.
-- [ ] Preview blocks if planned SL/TP price is missing.
+- [x] Preview separates attach from reconcile.
+- [x] Preview never creates duplicate protection for native bracket orders.
+- [x] Preview blocks if planned SL/TP price is missing.
 
 ## Phase 5: Stale Protection Canary Apply
 

@@ -166,6 +166,88 @@ function testDeltaRepairPreviewCanAttachMissingProtection(): void {
   assert.equal(preview.repairable, true);
   assert.equal(preview.mutation, 'none_preview_only');
   assert.equal(preview.expectedMutation.size, 3);
+  assert.equal(preview.expectedMutation.repairKind, 'attach_missing_stop_loss_and_take_profit');
+  assert.equal(preview.expectedMutation.protectionPath, 'detached_reduce_only_orders');
+  assert.deepEqual(preview.expectedMutation.missingLegs, ['stop_loss', 'take_profit']);
+  assert.equal(preview.expectedMutation.createStopLoss, true);
+  assert.equal(preview.expectedMutation.createTakeProfit, true);
+  assert.equal(preview.expectedMutation.requiresFreshPositionReadback, true);
+  assert.equal(preview.expectedMutation.requiresFreshProtectionOrderReadback, true);
+  assert.equal(preview.expectedMutation.requiresDuplicateProtectionCheck, true);
+}
+
+function testDeltaRepairPreviewCanAttachOnlyMissingStopLoss(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      issues: ['missing_active_stop_loss'],
+      plannedTakeProfitPrice: null,
+      takeProfitOrderId: 'existing-tp',
+      takeProfitOrderStatus: 'OPEN',
+      takeProfitOrderQuantity: 3,
+    })
+  );
+
+  assert.equal(preview.action, 'would_attach_missing_protection');
+  assert.equal(preview.readiness, 'ready');
+  assert.equal(preview.expectedMutation.repairKind, 'attach_missing_stop_loss');
+  assert.deepEqual(preview.expectedMutation.missingLegs, ['stop_loss']);
+  assert.equal(preview.expectedMutation.createStopLoss, true);
+  assert.equal(preview.expectedMutation.createTakeProfit, false);
+  assert.equal(preview.expectedMutation.existingTakeProfitOrderId, 'existing-tp');
+}
+
+function testDeltaRepairPreviewCanAttachOnlyMissingTakeProfit(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      issues: ['missing_active_take_profit'],
+      plannedStopLossPrice: null,
+      stopLossOrderId: 'existing-sl',
+      stopLossOrderStatus: 'OPEN',
+      stopLossOrderQuantity: 3,
+    })
+  );
+
+  assert.equal(preview.action, 'would_attach_missing_protection');
+  assert.equal(preview.readiness, 'ready');
+  assert.equal(preview.expectedMutation.repairKind, 'attach_missing_take_profit');
+  assert.deepEqual(preview.expectedMutation.missingLegs, ['take_profit']);
+  assert.equal(preview.expectedMutation.createStopLoss, false);
+  assert.equal(preview.expectedMutation.createTakeProfit, true);
+  assert.equal(preview.expectedMutation.existingStopLossOrderId, 'existing-sl');
+}
+
+function testDeltaRepairPreviewBlocksMissingStopLossWithoutStopLossPrice(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      issues: ['missing_active_stop_loss'],
+      plannedStopLossPrice: null,
+      takeProfitOrderId: 'existing-tp',
+      takeProfitOrderStatus: 'OPEN',
+      takeProfitOrderQuantity: 3,
+    })
+  );
+
+  assert.equal(preview.action, 'would_attach_missing_protection');
+  assert.equal(preview.readiness, 'blocked');
+  assert.equal(preview.blockers.includes('missing planned stop-loss price'), true);
+  assert.equal(preview.blockers.includes('missing planned take-profit price'), false);
+}
+
+function testDeltaRepairPreviewBlocksMissingTakeProfitWithoutTakeProfitPrice(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      issues: ['missing_active_take_profit'],
+      plannedTakeProfitPrice: null,
+      stopLossOrderId: 'existing-sl',
+      stopLossOrderStatus: 'OPEN',
+      stopLossOrderQuantity: 3,
+    })
+  );
+
+  assert.equal(preview.action, 'would_attach_missing_protection');
+  assert.equal(preview.readiness, 'blocked');
+  assert.equal(preview.blockers.includes('missing planned stop-loss price'), false);
+  assert.equal(preview.blockers.includes('missing planned take-profit price'), true);
 }
 
 function testDeltaRepairPreviewBlocksUnsafeBinding(): void {
@@ -193,6 +275,29 @@ function testDeltaRepairPreviewUsesNativeBracketPath(): void {
   assert.equal(preview.action, 'would_reconcile_native_bracket_protection');
   assert.equal(preview.readiness, 'ready');
   assert.equal(preview.expectedMutation.protectionMode, 'native_bracket');
+  assert.equal(preview.expectedMutation.protectionPath, 'native_bracket');
+  assert.equal(preview.expectedMutation.attachDetachedOrders, false);
+  assert.equal(preview.expectedMutation.createStopLoss, false);
+  assert.equal(preview.expectedMutation.createTakeProfit, false);
+  assert.equal(preview.expectedMutation.requiresNativeBracketReadback, true);
+}
+
+function testDeltaRepairPreviewKeepsMissingNativeBracketOnReconcilePath(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      issues: ['missing_active_stop_loss'],
+      protectionMode: 'native_bracket',
+      bracketStatus: 'submitted',
+      plannedTakeProfitPrice: null,
+    })
+  );
+
+  assert.equal(preview.action, 'would_reconcile_native_bracket_protection');
+  assert.equal(preview.readiness, 'ready');
+  assert.deepEqual(preview.expectedMutation.missingLegs, ['stop_loss']);
+  assert.equal(preview.expectedMutation.attachDetachedOrders, false);
+  assert.equal(preview.expectedMutation.protectionPath, 'native_bracket');
+  assert.equal(preview.blockers.includes('missing planned take-profit price'), false);
 }
 
 function testDeltaRepairPreviewPlansPartialFillReplacement(): void {
@@ -385,8 +490,13 @@ testDeltaBaseQuantityCanConvertToContracts();
 testPartialFillProtectionMismatchStillFlags();
 testUnknownDeltaQuantitySourceDoesNotFalseFlag();
 testDeltaRepairPreviewCanAttachMissingProtection();
+testDeltaRepairPreviewCanAttachOnlyMissingStopLoss();
+testDeltaRepairPreviewCanAttachOnlyMissingTakeProfit();
+testDeltaRepairPreviewBlocksMissingStopLossWithoutStopLossPrice();
+testDeltaRepairPreviewBlocksMissingTakeProfitWithoutTakeProfitPrice();
 testDeltaRepairPreviewBlocksUnsafeBinding();
 testDeltaRepairPreviewUsesNativeBracketPath();
+testDeltaRepairPreviewKeepsMissingNativeBracketOnReconcilePath();
 testDeltaRepairPreviewPlansPartialFillReplacement();
 testDeltaRepairPreviewBlocksPartialFillWithoutBothProtectionOrderIds();
 testDeltaRepairPreviewBlocksPartialFillAmbiguousPositionMapping();
