@@ -68,6 +68,18 @@ function isNativeBracket(item: DeltaGuardrailItem): boolean {
   return readString(item.protectionMode).toLowerCase() === 'native_bracket';
 }
 
+function pushBlocker(blockers: string[], blocker: string): void {
+  if (!blockers.includes(blocker)) {
+    blockers.push(blocker);
+  }
+}
+
+function linkedProtectionOrderIds(item: DeltaGuardrailItem): string[] {
+  return Array.from(
+    new Set([readString(item.stopLossOrderId), readString(item.takeProfitOrderId)].filter(Boolean))
+  );
+}
+
 function buildRepairBlockers(item: DeltaGuardrailItem): string[] {
   const blockers: string[] = [];
   if (!item.accountId) {
@@ -82,12 +94,62 @@ function buildRepairBlockers(item: DeltaGuardrailItem): string[] {
   if (item.expectedProtectionQuantityUnit !== 'contracts') {
     blockers.push('expected Delta protection size is not confirmed as contract-based');
   }
+  if (
+    readString(item.expectedProtectionQuantitySource).includes(' / ') &&
+    !positiveNumber(item.expectedProtectionQuantityContractValue)
+  ) {
+    blockers.push('Delta base-to-contract quantity conversion is missing contract_value evidence');
+  }
   if (!positiveNumber(item.plannedStopLossPrice)) {
     blockers.push('missing planned stop-loss price');
   }
   if (!positiveNumber(item.plannedTakeProfitPrice)) {
     blockers.push('missing planned take-profit price');
   }
+  return blockers;
+}
+
+function buildPartialFillReplacementBlockers(item: DeltaGuardrailItem): string[] {
+  const blockers = buildRepairBlockers(item);
+  const entryOrderId = readString(item.entryOrderId);
+  const stopLossOrderId = readString(item.stopLossOrderId);
+  const takeProfitOrderId = readString(item.takeProfitOrderId);
+  const sizeSource = readString(item.expectedProtectionQuantitySource);
+
+  if (!sizeSource) {
+    pushBlocker(blockers, 'missing expected Delta protection quantity source');
+  }
+  if (sizeSource.includes('execution.quantity')) {
+    pushBlocker(
+      blockers,
+      'partial-fill replacement cannot use requested execution quantity as the protection size'
+    );
+  }
+  if (item.sameSymbolOpenPositionCandidates !== 1) {
+    pushBlocker(
+      blockers,
+      `partial-fill replacement requires exactly one same-symbol open position candidate; found ${item.sameSymbolOpenPositionCandidates}`
+    );
+  }
+  if (!stopLossOrderId) {
+    pushBlocker(blockers, 'missing linked stop-loss order id for partial-fill replacement');
+  }
+  if (!takeProfitOrderId) {
+    pushBlocker(blockers, 'missing linked take-profit order id for partial-fill replacement');
+  }
+  if (entryOrderId && stopLossOrderId === entryOrderId) {
+    pushBlocker(blockers, 'linked stop-loss order id matches the entry order id');
+  }
+  if (entryOrderId && takeProfitOrderId === entryOrderId) {
+    pushBlocker(blockers, 'linked take-profit order id matches the entry order id');
+  }
+  if (stopLossOrderId && !positiveNumber(item.stopLossOrderQuantity)) {
+    pushBlocker(blockers, 'linked stop-loss order quantity was not resolved');
+  }
+  if (takeProfitOrderId && !positiveNumber(item.takeProfitOrderQuantity)) {
+    pushBlocker(blockers, 'linked take-profit order quantity was not resolved');
+  }
+
   return blockers;
 }
 
@@ -107,6 +169,11 @@ export function buildDeltaProtectionRepairPreview(
     size: item.expectedProtectionQuantity,
     sizeSource: item.expectedProtectionQuantitySource,
     sizeUnit: item.expectedProtectionQuantityUnit,
+    sizeContractValue: item.expectedProtectionQuantityContractValue,
+    sizeNotes: item.expectedProtectionQuantityNotes,
+    positionStatus: item.positionReadModelStatus,
+    positionQuantity: item.positionReadModelQuantity,
+    sameSymbolOpenPositionCandidates: item.sameSymbolOpenPositionCandidates,
     stopLossPrice: item.plannedStopLossPrice,
     takeProfitPrice: item.plannedTakeProfitPrice,
   };
@@ -168,11 +235,8 @@ export function buildDeltaProtectionRepairPreview(
   }
 
   if (hasIssue(item, 'partial_fill_protection_mismatch')) {
-    const blockers = buildRepairBlockers(item);
-    const existingOrderIds = [item.stopLossOrderId, item.takeProfitOrderId].filter(Boolean);
-    if (!existingOrderIds.length) {
-      blockers.push('mismatched active protection order ids were not resolved');
-    }
+    const blockers = buildPartialFillReplacementBlockers(item);
+    const existingOrderIds = linkedProtectionOrderIds(item);
     return {
       action: 'would_replace_mismatched_partial_fill_protection',
       readiness: blockers.length ? 'blocked' : 'ready',
@@ -182,10 +246,27 @@ export function buildDeltaProtectionRepairPreview(
       notes: [
         'Delta partial-fill/open-size protection quantity differs from the expected contract size.',
         'Future apply mode should cancel the mismatched reduce-only pair after fresh read-back, then recreate protection for the resolved position size.',
+        'The preview is blocked unless the expected size comes from filled/open position evidence and both linked protection order ids are known.',
       ],
       expectedMutation: {
         ...commonMutation,
+        repairKind: 'partial_fill_quantity_replacement',
         replaceOrderIds: existingOrderIds,
+        currentStopLossOrderId: item.stopLossOrderId,
+        currentStopLossQuantity: item.stopLossOrderQuantity,
+        currentTakeProfitOrderId: item.takeProfitOrderId,
+        currentTakeProfitQuantity: item.takeProfitOrderQuantity,
+        requestedExecutionQuantity: item.quantity,
+        filledExecutionQuantity: item.filledQuantity,
+        remainingExecutionQuantity: item.remainingQuantity,
+        expectedProtectionQuantity: item.expectedProtectionQuantity,
+        expectedProtectionQuantitySource: item.expectedProtectionQuantitySource,
+        expectedProtectionQuantityUnit: item.expectedProtectionQuantityUnit,
+        expectedProtectionQuantityContractValue: item.expectedProtectionQuantityContractValue,
+        expectedProtectionQuantityNotes: item.expectedProtectionQuantityNotes,
+        replacementReason: 'partial_fill_protection_mismatch',
+        requiresFreshPositionReadback: true,
+        requiresFreshProtectionOrderReadback: true,
       },
     };
   }

@@ -60,7 +60,7 @@ Coverage:
 Acceptance:
 
 - [x] Cron definition added under `deploy/cron`.
-- [ ] Latest artifact proves scheduled execution.
+- [x] Latest artifact proves scheduled execution.
 - [x] No broker mutation is possible.
 
 ## Phase 3: Partial-Fill Repair Preview Hardening
@@ -69,16 +69,16 @@ Review and harden the existing Delta repair preview for partial fills.
 
 Coverage:
 
-- [ ] Candidate quantity comes from filled/open size, not requested size.
-- [ ] Quantity unit is explicit: contracts, base, or unknown.
-- [ ] Contract conversion requires contract value evidence.
-- [ ] Existing SL/TP order ids are included before replacement.
-- [ ] Unsafe or ambiguous mappings are blocked.
+- [x] Candidate quantity comes from filled/open size, not requested size.
+- [x] Quantity unit is explicit: contracts, base, or unknown.
+- [x] Contract conversion requires contract value evidence.
+- [x] Existing SL/TP order ids are included before replacement.
+- [x] Unsafe or ambiguous mappings are blocked.
 
 Acceptance:
 
-- [ ] Preview explains quantity source and blockers.
-- [ ] No apply path can run without fresh read-back.
+- [x] Preview explains quantity source and blockers.
+- [x] No apply path can run without fresh read-back.
 
 ## Phase 4: Missing SL/TP Repair Preview Hardening
 

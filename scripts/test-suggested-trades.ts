@@ -12240,6 +12240,12 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'would_attach_missing_protection',
     'would_replace_mismatched_partial_fill_protection',
     'would_reconcile_native_bracket_protection',
+    'partial-fill replacement cannot use requested execution quantity as the protection size',
+    'partial-fill replacement requires exactly one same-symbol open position candidate',
+    'currentStopLossOrderId',
+    'currentTakeProfitOrderId',
+    'requiresFreshPositionReadback',
+    'requiresFreshProtectionOrderReadback',
     'Future apply mode should create protection only after a fresh open-position and active-order read-back.',
   ]) {
     assert.equal(

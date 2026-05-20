@@ -212,6 +212,123 @@ function testDeltaRepairPreviewPlansPartialFillReplacement(): void {
   assert.equal(preview.action, 'would_replace_mismatched_partial_fill_protection');
   assert.equal(preview.readiness, 'ready');
   assert.deepEqual(preview.expectedMutation.replaceOrderIds, ['old-sl', 'old-tp']);
+  assert.equal(preview.expectedMutation.repairKind, 'partial_fill_quantity_replacement');
+  assert.equal(preview.expectedMutation.currentStopLossOrderId, 'old-sl');
+  assert.equal(preview.expectedMutation.currentStopLossQuantity, 10);
+  assert.equal(preview.expectedMutation.currentTakeProfitOrderId, 'old-tp');
+  assert.equal(preview.expectedMutation.currentTakeProfitQuantity, 10);
+  assert.equal(preview.expectedMutation.requestedExecutionQuantity, 3);
+  assert.equal(preview.expectedMutation.filledExecutionQuantity, 3);
+  assert.equal(preview.expectedMutation.expectedProtectionQuantity, 4);
+  assert.equal(
+    preview.expectedMutation.expectedProtectionQuantitySource,
+    'position.payload.quantity_contracts'
+  );
+  assert.equal(preview.expectedMutation.expectedProtectionQuantityUnit, 'contracts');
+  assert.equal(preview.expectedMutation.requiresFreshPositionReadback, true);
+  assert.equal(preview.expectedMutation.requiresFreshProtectionOrderReadback, true);
+}
+
+function testDeltaRepairPreviewBlocksPartialFillWithoutBothProtectionOrderIds(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      issues: ['partial_fill_protection_mismatch'],
+      stopLossOrderId: 'old-sl',
+      stopLossOrderStatus: 'OPEN',
+      stopLossOrderQuantity: 10,
+      takeProfitOrderId: null,
+      takeProfitOrderStatus: null,
+      takeProfitOrderQuantity: null,
+      expectedProtectionQuantity: 4,
+    })
+  );
+
+  assert.equal(preview.action, 'would_replace_mismatched_partial_fill_protection');
+  assert.equal(preview.readiness, 'blocked');
+  assert.equal(preview.repairable, false);
+  assert.equal(
+    preview.blockers.includes('missing linked take-profit order id for partial-fill replacement'),
+    true
+  );
+}
+
+function testDeltaRepairPreviewBlocksPartialFillAmbiguousPositionMapping(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      issues: ['partial_fill_protection_mismatch'],
+      stopLossOrderId: 'old-sl',
+      stopLossOrderStatus: 'OPEN',
+      stopLossOrderQuantity: 10,
+      takeProfitOrderId: 'old-tp',
+      takeProfitOrderStatus: 'OPEN',
+      takeProfitOrderQuantity: 10,
+      expectedProtectionQuantity: 4,
+      sameSymbolOpenPositionCandidates: 2,
+    })
+  );
+
+  assert.equal(preview.action, 'would_replace_mismatched_partial_fill_protection');
+  assert.equal(preview.readiness, 'blocked');
+  assert.equal(
+    preview.blockers.includes(
+      'partial-fill replacement requires exactly one same-symbol open position candidate; found 2'
+    ),
+    true
+  );
+}
+
+function testDeltaRepairPreviewBlocksPartialFillRequestedQuantitySource(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      issues: ['partial_fill_protection_mismatch'],
+      stopLossOrderId: 'old-sl',
+      stopLossOrderStatus: 'OPEN',
+      stopLossOrderQuantity: 10,
+      takeProfitOrderId: 'old-tp',
+      takeProfitOrderStatus: 'OPEN',
+      takeProfitOrderQuantity: 10,
+      expectedProtectionQuantity: 4,
+      expectedProtectionQuantitySource: 'execution.quantity / position.payload.contract_value',
+      expectedProtectionQuantityUnit: 'contracts',
+      expectedProtectionQuantityContractValue: 0.001,
+    })
+  );
+
+  assert.equal(preview.action, 'would_replace_mismatched_partial_fill_protection');
+  assert.equal(preview.readiness, 'blocked');
+  assert.equal(
+    preview.blockers.includes(
+      'partial-fill replacement cannot use requested execution quantity as the protection size'
+    ),
+    true
+  );
+}
+
+function testDeltaRepairPreviewBlocksPartialFillWithoutContractValueEvidence(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      issues: ['partial_fill_protection_mismatch'],
+      stopLossOrderId: 'old-sl',
+      stopLossOrderStatus: 'OPEN',
+      stopLossOrderQuantity: 10,
+      takeProfitOrderId: 'old-tp',
+      takeProfitOrderStatus: 'OPEN',
+      takeProfitOrderQuantity: 10,
+      expectedProtectionQuantity: 4,
+      expectedProtectionQuantitySource: 'position.quantity / position.payload.contract_value',
+      expectedProtectionQuantityUnit: 'contracts',
+      expectedProtectionQuantityContractValue: null,
+    })
+  );
+
+  assert.equal(preview.action, 'would_replace_mismatched_partial_fill_protection');
+  assert.equal(preview.readiness, 'blocked');
+  assert.equal(
+    preview.blockers.includes(
+      'Delta base-to-contract quantity conversion is missing contract_value evidence'
+    ),
+    true
+  );
 }
 
 function testDeltaRepairApplySelectionIsSafeByDefault(): void {
@@ -271,6 +388,10 @@ testDeltaRepairPreviewCanAttachMissingProtection();
 testDeltaRepairPreviewBlocksUnsafeBinding();
 testDeltaRepairPreviewUsesNativeBracketPath();
 testDeltaRepairPreviewPlansPartialFillReplacement();
+testDeltaRepairPreviewBlocksPartialFillWithoutBothProtectionOrderIds();
+testDeltaRepairPreviewBlocksPartialFillAmbiguousPositionMapping();
+testDeltaRepairPreviewBlocksPartialFillRequestedQuantitySource();
+testDeltaRepairPreviewBlocksPartialFillWithoutContractValueEvidence();
 testDeltaRepairApplySelectionIsSafeByDefault();
 
 console.log('Suggested trades Delta protection guardrail tests passed.');
