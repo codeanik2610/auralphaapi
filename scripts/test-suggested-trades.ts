@@ -11628,6 +11628,15 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const deltaProtectionRepairPreviewSource = read(
     'scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts'
   );
+  const deltaStaleProtectionWatchdogSource = read(
+    'scripts/checks/check-suggested-trades-delta-stale-protection-watchdog.ts'
+  );
+  const deltaStaleProtectionWatchdogRunnerSource = read(
+    'scripts/checks/run-suggested-trades-delta-stale-protection-watchdog.sh'
+  );
+  const deltaStaleProtectionWatchdogCronSource = read(
+    'deploy/cron/auralpha-delta-stale-protection-watchdog'
+  );
   const deltaProtectionRepairApplySource = read(
     'scripts/maintenance/repair-suggested-trades-delta-protection.ts'
   );
@@ -11686,6 +11695,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   assert.equal(
     packageScripts['check:suggested-trades-delta-protection-repair-preview'],
     'node --import tsx scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts'
+  );
+  assert.equal(
+    packageScripts['check:suggested-trades-delta-stale-protection-watchdog'],
+    'node --import tsx scripts/checks/check-suggested-trades-delta-stale-protection-watchdog.ts'
   );
   assert.equal(
     packageScripts['test:suggested-trades-delta-protection-guardrail'],
@@ -11749,6 +11762,23 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     coverageManifestSource.includes('check:suggested-trades-delta-protection-repair-preview'),
     true,
     'system coverage manifest must include the Delta protection repair preview check'
+  );
+  assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-delta-stale-protection-watchdog'),
+    true,
+    'system coverage manifest must include the Delta stale protection watchdog check'
+  );
+  assert.equal(
+    coverageManifestSource.includes(
+      'scripts/checks/run-suggested-trades-delta-stale-protection-watchdog.sh'
+    ),
+    true,
+    'system coverage manifest must include the Delta stale protection watchdog runner'
+  );
+  assert.equal(
+    coverageManifestSource.includes('deploy/cron/auralpha-delta-stale-protection-watchdog'),
+    true,
+    'system coverage manifest must include the Delta stale protection watchdog cron'
   );
   assert.equal(
     coverageManifestSource.includes('repair:suggested-trades-delta-protection'),
@@ -11943,6 +11973,48 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       deltaProtectionRepairPreviewSource.includes(marker),
       true,
       `suggested trades Delta protection repair preview must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-delta-stale-protection-watchdog',
+    'SUGGESTED_TRADES_DELTA_PROTECTION_REPAIR_APPLY',
+    'SUGGESTED_TRADES_DELTA_STALE_PROTECTION_CANCEL_APPLY',
+    'SUGGESTED_TRADES_MAX_DELTA_STALE_CANCEL_CANDIDATES',
+    'would_cancel_stale_protection_orders',
+    "mutation: 'disabled'",
+    'selectDeltaProtectionRepairApplyCandidates',
+    'Delta stale protection watchdog refuses to run with Delta repair apply flags enabled.',
+  ]) {
+    assert.equal(
+      deltaStaleProtectionWatchdogSource.includes(marker),
+      true,
+      `suggested trades Delta stale protection watchdog must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'AURALPHA_DELTA_STALE_PROTECTION_WATCHDOG_ARTIFACT_DIR',
+    'SUGGESTED_TRADES_DELTA_PROTECTION_REPAIR_APPLY=false',
+    'SUGGESTED_TRADES_DELTA_STALE_PROTECTION_CANCEL_APPLY=false',
+    'SUGGESTED_TRADES_MAX_DELTA_STALE_CANCEL_CANDIDATES',
+    'check-suggested-trades-delta-stale-protection-watchdog.js',
+    'suggested-trades-delta-stale-protection-watchdog:',
+  ]) {
+    assert.equal(
+      deltaStaleProtectionWatchdogRunnerSource.includes(marker),
+      true,
+      `suggested trades Delta stale protection watchdog runner must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    '*/10 * * * * root',
+    'auralpha-delta-stale-protection-watchdog.lock',
+    './scripts/checks/run-suggested-trades-delta-stale-protection-watchdog.sh',
+    '/var/log/auralpha-delta-stale-protection-watchdog.log',
+  ]) {
+    assert.equal(
+      deltaStaleProtectionWatchdogCronSource.includes(marker),
+      true,
+      `suggested trades Delta stale protection watchdog cron must retain ${marker}`
     );
   }
   for (const marker of [

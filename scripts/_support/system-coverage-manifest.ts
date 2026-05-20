@@ -709,6 +709,12 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts'
       ),
       script(
+        'check:suggested-trades-delta-stale-protection-watchdog',
+        'scripts/checks/check-suggested-trades-delta-stale-protection-watchdog.ts'
+      ),
+      fileOnly('scripts/checks/run-suggested-trades-delta-stale-protection-watchdog.sh'),
+      fileOnly('deploy/cron/auralpha-delta-stale-protection-watchdog'),
+      script(
         'repair:suggested-trades-delta-protection',
         'scripts/maintenance/repair-suggested-trades-delta-protection.ts'
       ),

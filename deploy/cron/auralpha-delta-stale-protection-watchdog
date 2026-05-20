@@ -1,0 +1,7 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# Phase 7: observe-only Delta stale/closed-position protection watchdog.
+# It forces both Delta repair apply flags off and writes a JSON artifact on every run.
+*/10 * * * * root cd /opt/auralpha/Backend/aurAlpha && /usr/bin/flock -n /var/lock/auralpha-delta-stale-protection-watchdog.lock bash -lc './scripts/checks/run-suggested-trades-delta-stale-protection-watchdog.sh' >> /var/log/auralpha-delta-stale-protection-watchdog.log 2>&1
