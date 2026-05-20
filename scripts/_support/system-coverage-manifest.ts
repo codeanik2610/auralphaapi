@@ -665,6 +665,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'scripts/test-suggested-trades-delta-protection-guardrail.ts'
       ),
       script(
+        'test:suggested-trades-delta-position-resolution',
+        'scripts/test-suggested-trades-delta-position-resolution.ts'
+      ),
+      script(
         'test:suggested-trades-mudrex-protection-health',
         'scripts/test-suggested-trades-mudrex-protection-health.ts'
       ),
@@ -724,6 +728,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       script(
         'check:suggested-trades-delta-protection-guardrail',
         'scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
+      ),
+      script(
+        'check:suggested-trades-delta-position-resolution',
+        'scripts/checks/check-suggested-trades-delta-position-resolution.ts'
       ),
       fileOnly('scripts/checks/run-suggested-trades-delta-protection-guardrail-watchdog.sh'),
       script(

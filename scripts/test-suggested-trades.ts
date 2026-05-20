@@ -11640,6 +11640,12 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const deltaProtectionGuardrailSource = read(
     'scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
   );
+  const deltaPositionResolutionSource = read(
+    'scripts/checks/check-suggested-trades-delta-position-resolution.ts'
+  );
+  const deltaPositionResolutionTestSource = read(
+    'scripts/test-suggested-trades-delta-position-resolution.ts'
+  );
   const deltaProtectionGuardrailWatchdogSource = read(
     'scripts/checks/run-suggested-trades-delta-protection-guardrail-watchdog.sh'
   );
@@ -11719,6 +11725,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
   );
   assert.equal(
+    packageScripts['check:suggested-trades-delta-position-resolution'],
+    'node --import tsx scripts/checks/check-suggested-trades-delta-position-resolution.ts'
+  );
+  assert.equal(
     packageScripts['check:suggested-trades-delta-protection-repair-preview'],
     'node --import tsx scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts'
   );
@@ -11729,6 +11739,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   assert.equal(
     packageScripts['test:suggested-trades-delta-protection-guardrail'],
     'node --import tsx scripts/test-suggested-trades-delta-protection-guardrail.ts'
+  );
+  assert.equal(
+    packageScripts['test:suggested-trades-delta-position-resolution'],
+    'node --import tsx scripts/test-suggested-trades-delta-position-resolution.ts'
   );
   assert.equal(
     packageScripts['test:suggested-trades-mudrex-protection-health'],
@@ -11818,6 +11832,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'system coverage manifest must include the Delta protection guardrail check'
   );
   assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-delta-position-resolution'),
+    true,
+    'system coverage manifest must include the Delta position resolution check'
+  );
+  assert.equal(
     coverageManifestSource.includes(
       'scripts/checks/run-suggested-trades-delta-protection-guardrail-watchdog.sh'
     ),
@@ -11855,6 +11874,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     coverageManifestSource.includes('test:suggested-trades-delta-protection-guardrail'),
     true,
     'system coverage manifest must include the Delta protection guardrail test'
+  );
+  assert.equal(
+    coverageManifestSource.includes('test:suggested-trades-delta-position-resolution'),
+    true,
+    'system coverage manifest must include the Delta position resolution test'
   );
 
   assert.equal(
@@ -12111,6 +12135,42 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       deltaProtectionGuardrailSource.includes(marker),
       true,
       `suggested trades Delta protection guardrail check must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-delta-position-resolution',
+    'SUGGESTED_TRADES_DELTA_POSITION_LOOKBACK_DAYS',
+    'SUGGESTED_TRADES_MAX_DELTA_POSITION_UNSAFE_MISMATCHES',
+    'SUGGESTED_TRADES_MAX_DELTA_POSITION_UNRESOLVED',
+    'missing_position_id',
+    'missing_read_model',
+    'account_mismatch',
+    'symbol_mismatch',
+    'side_mismatch',
+    'ambiguous_same_symbol',
+    'entryOrderLineage',
+    'sameSymbolOpenPositionCandidates',
+    "mutation: 'none_read_only'",
+    'resolveExpectedDeltaProtectionQuantity',
+  ]) {
+    assert.equal(
+      deltaPositionResolutionSource.includes(marker),
+      true,
+      `suggested trades Delta position resolution check must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'testExactReadModelBinding',
+    'testMissingPositionIdIsUnresolved',
+    'testAmbiguousSameSymbolIsSeparatedFromUnsafe',
+    'testAccountMismatchIsUnsafe',
+    'testEntryOrderLineageMismatchIsReported',
+    'testDeltaQuantitySourceUsesProtectionGuardrailNormalizer',
+  ]) {
+    assert.equal(
+      deltaPositionResolutionTestSource.includes(marker),
+      true,
+      `suggested trades Delta position resolution test must retain ${marker}`
     );
   }
   for (const marker of [

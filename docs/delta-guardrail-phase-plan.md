@@ -1,0 +1,155 @@
+# Delta Guardrail Phase Plan
+
+## Goal
+
+Keep Delta protection behavior safe while closing the remaining visibility gaps around position identity, partial fills, stale protection, and controlled repair.
+
+Delta currently has broader protection-health coverage than Mudrex, plus a separate stale-protection watchdog. The remaining work is mostly deeper position-resolution visibility and staged canary apply only when real candidates appear.
+
+## Current Coverage
+
+- [x] Scheduled Delta protection guardrail every 30 minutes.
+- [x] Detects missing position read-model binding.
+- [x] Detects missing active stop-loss.
+- [x] Detects missing active take-profit.
+- [x] Detects stale protection for closed positions.
+- [x] Detects partial-fill protection quantity mismatch.
+- [x] Detects unsafe position mismatch.
+- [x] Scheduled stale-protection watchdog every 10 minutes.
+- [x] Stale-protection watchdog forces both apply flags off.
+- [x] Stale-protection watchdog writes artifacts and fails on stale candidates.
+
+## Missing Coverage
+
+- [x] Mudrex-style position-resolution detail report.
+- [ ] Separate position identity watchdog focused only on Delta mapping quality.
+- [ ] Deeper "why this position id was chosen" artifact.
+- [ ] Production canary apply for repair path when a real safe candidate appears.
+- [ ] Operator runbook for single-candidate Delta repair.
+
+## Phase 1: Position Resolution Read-Only Audit
+
+Build a Delta position-resolution report similar in shape to Mudrex, but using Delta-specific identifiers and order/position payloads.
+
+Coverage:
+
+- [x] Exact position id binding.
+- [x] Account id match.
+- [x] Symbol/base symbol match.
+- [x] Side match.
+- [x] Entry order to position lineage.
+- [x] Same-symbol ambiguity count.
+- [x] Position payload source used for quantity.
+
+Acceptance:
+
+- [x] Produces JSON with audited count and by-type counts.
+- [x] Reports unresolved and unsafe mappings separately.
+- [x] Does not duplicate or weaken the existing protection guardrail.
+
+## Phase 2: Scheduled Delta Position Watchdog
+
+Add a Docker runner and cron entry for the Phase 1 position-resolution report.
+
+Coverage:
+
+- [ ] Runs every 30 minutes.
+- [ ] Writes JSON and log artifacts.
+- [ ] Thresholds default to zero unsafe mappings.
+
+Acceptance:
+
+- [ ] Cron installed under `/etc/cron.d`.
+- [ ] Latest artifact proves scheduled execution.
+- [ ] No broker mutation is possible.
+
+## Phase 3: Partial-Fill Repair Preview Hardening
+
+Review and harden the existing Delta repair preview for partial fills.
+
+Coverage:
+
+- [ ] Candidate quantity comes from filled/open size, not requested size.
+- [ ] Quantity unit is explicit: contracts, base, or unknown.
+- [ ] Contract conversion requires contract value evidence.
+- [ ] Existing SL/TP order ids are included before replacement.
+- [ ] Unsafe or ambiguous mappings are blocked.
+
+Acceptance:
+
+- [ ] Preview explains quantity source and blockers.
+- [ ] No apply path can run without fresh read-back.
+
+## Phase 4: Missing SL/TP Repair Preview Hardening
+
+Review and harden the existing Delta repair preview for missing protection.
+
+Coverage:
+
+- [ ] Missing SL only.
+- [ ] Missing TP only.
+- [ ] Missing both SL and TP.
+- [ ] Native bracket protection mode.
+- [ ] Detached protection mode.
+
+Acceptance:
+
+- [ ] Preview separates attach from reconcile.
+- [ ] Preview never creates duplicate protection for native bracket orders.
+- [ ] Preview blocks if planned SL/TP price is missing.
+
+## Phase 5: Stale Protection Canary Apply
+
+Only if the scheduled stale-protection watchdog finds a real candidate.
+
+Rules:
+
+- [ ] Apply one candidate only.
+- [ ] Require both general repair apply and stale-cancel apply flags.
+- [ ] Fresh live order read-back for every linked order.
+- [ ] Confirm active, reduce-only, correct side, correct symbol, and SL/TP stop type.
+- [ ] Never cancel the entry order.
+- [ ] Block if a same-symbol open Delta position exists.
+
+Acceptance:
+
+- [ ] Before artifact captured.
+- [ ] Broker cancellation confirmed.
+- [ ] Database state changed to `not_required`.
+- [ ] After artifact captured.
+
+## Phase 6: Missing Protection Canary Apply
+
+Only after read-only previews are clean and a real safe candidate exists.
+
+Rules:
+
+- [ ] Apply one missing-protection candidate only.
+- [ ] Fresh position read-back before mutation.
+- [ ] Fresh order read-back after mutation.
+- [ ] Confirm linked order ids persisted.
+- [ ] Stop for review after one candidate.
+
+## Phase 7: Partial-Fill Repair Canary Apply
+
+Only after a real partial-fill mismatch appears.
+
+Rules:
+
+- [ ] Apply one candidate only.
+- [ ] Fresh read-back of existing protection orders.
+- [ ] Cancel mismatched reduce-only protection only.
+- [ ] Recreate protection at resolved filled/open quantity.
+- [ ] Confirm final SL/TP quantity matches expected contracts.
+
+## Phase 8: Operator Runbook
+
+Document how to inspect, preview, and safely apply a single Delta repair.
+
+Acceptance:
+
+- [ ] Includes artifact paths for all Delta watchdogs.
+- [ ] Includes required environment flags.
+- [ ] Includes broker read-back checklist.
+- [ ] Includes "do not proceed" conditions.
+- [ ] Includes manual verification steps in Delta Exchange.
