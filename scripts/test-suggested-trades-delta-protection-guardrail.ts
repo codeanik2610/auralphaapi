@@ -1,8 +1,56 @@
 import assert from 'node:assert/strict';
 import {
+  type DeltaGuardrailItem,
   hasDeltaProtectionQuantityMismatchForTest,
   resolveExpectedDeltaProtectionQuantity,
 } from './checks/check-suggested-trades-delta-protection-guardrail';
+import { buildDeltaProtectionRepairPreview } from './checks/check-suggested-trades-delta-protection-repair-preview';
+
+function buildGuardrailItem(overrides: Partial<DeltaGuardrailItem>): DeltaGuardrailItem {
+  return {
+    suggestedTradeId: 'st-delta-preview-1',
+    userId: 'user-1',
+    accountId: 'delta-acc-1',
+    symbol: 'BTCUSDT',
+    timeframe: '5m',
+    side: 'BUY',
+    entryOrderId: 'delta-entry-1',
+    orderStatus: 'FILLED',
+    executionState: 'filled',
+    positionId: 'delta-position-1',
+    positionStatus: 'OPEN',
+    protectionState: 'failed',
+    quantity: 3,
+    filledQuantity: 3,
+    remainingQuantity: 0,
+    entryPrice: 100,
+    filledPrice: 101,
+    plannedStopLossPrice: 95,
+    plannedTakeProfitPrice: 110,
+    protectionMode: null,
+    bracketStatus: null,
+    positionReadModelExternalId: 'delta-position-1',
+    positionReadModelStatus: 'OPEN',
+    positionReadModelSymbol: 'BTCUSD',
+    positionReadModelSide: 'LONG',
+    positionReadModelQuantity: 3,
+    stopLossOrderId: null,
+    stopLossOrderStatus: null,
+    stopLossOrderQuantity: null,
+    takeProfitOrderId: null,
+    takeProfitOrderStatus: null,
+    takeProfitOrderQuantity: null,
+    expectedProtectionQuantity: 3,
+    expectedProtectionQuantitySource: 'position.payload.quantity_contracts',
+    expectedProtectionQuantityUnit: 'contracts',
+    expectedProtectionQuantityContractValue: 0.001,
+    expectedProtectionQuantityNotes: [],
+    sameSymbolOpenPositionCandidates: 1,
+    issues: ['missing_active_stop_loss', 'missing_active_take_profit'],
+    reasons: ['missing protection'],
+    ...overrides,
+  };
+}
 
 function testDeltaContractsArePreferredOverBaseQuantity(): void {
   const expected = resolveExpectedDeltaProtectionQuantity({
@@ -106,9 +154,69 @@ function testUnknownDeltaQuantitySourceDoesNotFalseFlag(): void {
   );
 }
 
+function testDeltaRepairPreviewCanAttachMissingProtection(): void {
+  const preview = buildDeltaProtectionRepairPreview(buildGuardrailItem({}));
+
+  assert.equal(preview.action, 'would_attach_missing_protection');
+  assert.equal(preview.readiness, 'ready');
+  assert.equal(preview.repairable, true);
+  assert.equal(preview.mutation, 'none_preview_only');
+  assert.equal(preview.expectedMutation.size, 3);
+}
+
+function testDeltaRepairPreviewBlocksUnsafeBinding(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      positionReadModelExternalId: null,
+      issues: ['missing_position_read_model', 'unsafe_position_mismatch'],
+      reasons: ['Delta execution cannot bind exact position.'],
+    })
+  );
+
+  assert.equal(preview.action, 'manual_review_required');
+  assert.equal(preview.readiness, 'manual_review');
+  assert.equal(preview.repairable, false);
+}
+
+function testDeltaRepairPreviewUsesNativeBracketPath(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      protectionMode: 'native_bracket',
+      bracketStatus: 'submitted',
+    })
+  );
+
+  assert.equal(preview.action, 'would_reconcile_native_bracket_protection');
+  assert.equal(preview.readiness, 'ready');
+  assert.equal(preview.expectedMutation.protectionMode, 'native_bracket');
+}
+
+function testDeltaRepairPreviewPlansPartialFillReplacement(): void {
+  const preview = buildDeltaProtectionRepairPreview(
+    buildGuardrailItem({
+      issues: ['partial_fill_protection_mismatch'],
+      stopLossOrderId: 'old-sl',
+      stopLossOrderStatus: 'OPEN',
+      stopLossOrderQuantity: 10,
+      takeProfitOrderId: 'old-tp',
+      takeProfitOrderStatus: 'OPEN',
+      takeProfitOrderQuantity: 10,
+      expectedProtectionQuantity: 4,
+    })
+  );
+
+  assert.equal(preview.action, 'would_replace_mismatched_partial_fill_protection');
+  assert.equal(preview.readiness, 'ready');
+  assert.deepEqual(preview.expectedMutation.replaceOrderIds, ['old-sl', 'old-tp']);
+}
+
 testDeltaContractsArePreferredOverBaseQuantity();
 testDeltaBaseQuantityCanConvertToContracts();
 testPartialFillProtectionMismatchStillFlags();
 testUnknownDeltaQuantitySourceDoesNotFalseFlag();
+testDeltaRepairPreviewCanAttachMissingProtection();
+testDeltaRepairPreviewBlocksUnsafeBinding();
+testDeltaRepairPreviewUsesNativeBracketPath();
+testDeltaRepairPreviewPlansPartialFillReplacement();
 
 console.log('Suggested trades Delta protection guardrail tests passed.');

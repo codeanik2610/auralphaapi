@@ -5,7 +5,7 @@ import { initializeCoreDataSource } from '../../src/database/initializeCoreDataS
 
 type JsonRecord = Record<string, unknown>;
 
-type DeltaExecutionRow = {
+export type DeltaExecutionRow = {
   suggestedTradeId: string;
   userId: string;
   accountId: string | null;
@@ -21,6 +21,10 @@ type DeltaExecutionRow = {
   quantity: number | null;
   filledQuantity: number | null;
   remainingQuantity: number | null;
+  entryPrice: number | null;
+  filledPrice: number | null;
+  stopLossPrice: number | null;
+  takeProfitPrice: number | null;
   protectionState: string;
   protectionPlan: JsonRecord;
   submittedAt: string | null;
@@ -30,7 +34,7 @@ type DeltaExecutionRow = {
   updatedAt: string | null;
 };
 
-type PositionReadModel = {
+export type PositionReadModel = {
   userId: string;
   accountId: string;
   externalId: string;
@@ -49,7 +53,7 @@ type PositionReadModel = {
   payload: JsonRecord;
 };
 
-type OrderSnapshot = {
+export type OrderSnapshot = {
   userId: string;
   accountId: string;
   externalId: string;
@@ -62,7 +66,7 @@ type OrderSnapshot = {
   payload: JsonRecord;
 };
 
-type DeltaGuardrailIssue =
+export type DeltaGuardrailIssue =
   | 'missing_position_read_model'
   | 'missing_active_stop_loss'
   | 'missing_active_take_profit'
@@ -70,7 +74,7 @@ type DeltaGuardrailIssue =
   | 'partial_fill_protection_mismatch'
   | 'unsafe_position_mismatch';
 
-type DeltaGuardrailItem = {
+export type DeltaGuardrailItem = {
   suggestedTradeId: string;
   userId: string;
   accountId: string | null;
@@ -86,6 +90,12 @@ type DeltaGuardrailItem = {
   quantity: number | null;
   filledQuantity: number | null;
   remainingQuantity: number | null;
+  entryPrice: number | null;
+  filledPrice: number | null;
+  plannedStopLossPrice: number | null;
+  plannedTakeProfitPrice: number | null;
+  protectionMode: string | null;
+  bracketStatus: string | null;
   positionReadModelExternalId: string | null;
   positionReadModelStatus: string | null;
   positionReadModelSymbol: string | null;
@@ -105,6 +115,32 @@ type DeltaGuardrailItem = {
   sameSymbolOpenPositionCandidates: number;
   issues: DeltaGuardrailIssue[];
   reasons: string[];
+};
+
+export type DeltaProtectionGuardrailReport = {
+  generatedAt: string;
+  brokerKey: typeof DELTA_BROKER;
+  lookbackDays: number;
+  limit: number;
+  audited: number;
+  openPositions: number;
+  issueTrades: number;
+  missingPositionReadModel: number;
+  missingActiveStopLoss: number;
+  missingActiveTakeProfit: number;
+  staleProtectionForClosedPosition: number;
+  partialFillProtectionMismatch: number;
+  unsafePositionMismatch: number;
+  thresholds: {
+    maxMissingPositionReadModel: number;
+    maxMissingActiveStopLoss: number;
+    maxMissingActiveTakeProfit: number;
+    maxStaleProtectionForClosedPosition: number;
+    maxPartialFillProtectionMismatch: number;
+    maxUnsafePositionMismatch: number;
+  };
+  byIssue: Record<DeltaGuardrailIssue, number>;
+  items: DeltaGuardrailItem[];
 };
 
 export type DeltaProtectionQuantityResolution = {
@@ -471,6 +507,25 @@ function extractPlanTakeProfitOrderId(plan: JsonRecord): string | null {
   );
 }
 
+function extractPlanProtectionMode(plan: JsonRecord): string | null {
+  return (
+    readNullableString(plan.protectionMode) ??
+    readNullableString(plan.protection_mode) ??
+    readNullableString(plan.deltaProtectionMode) ??
+    readNullableString(plan.delta_protection_mode)
+  );
+}
+
+function extractBracketStatus(plan: JsonRecord, position: PositionReadModel | null): string | null {
+  const payload = position?.payload ?? {};
+  return (
+    readNullableString(plan.bracketStatus) ??
+    readNullableString(plan.bracket_status) ??
+    readNullableString(payload.bracket_status) ??
+    readNullableString(payload.bracketStatus)
+  );
+}
+
 function mapExecution(row: JsonRecord): DeltaExecutionRow {
   const tradeSymbol = readString(row.tradeSymbol).toUpperCase();
   return {
@@ -489,6 +544,10 @@ function mapExecution(row: JsonRecord): DeltaExecutionRow {
     quantity: readNullableNumber(row.quantity),
     filledQuantity: readNullableNumber(row.filledQuantity),
     remainingQuantity: readNullableNumber(row.remainingQuantity),
+    entryPrice: readNullableNumber(row.entryPrice),
+    filledPrice: readNullableNumber(row.filledPrice),
+    stopLossPrice: readNullableNumber(row.stopLossPrice),
+    takeProfitPrice: readNullableNumber(row.takeProfitPrice),
     protectionState: readString(row.protectionState).toLowerCase() || 'unknown',
     protectionPlan: readRecord(row.protectionPlanJson),
     submittedAt: toIsoString(row.submittedAt),
@@ -603,6 +662,10 @@ async function queryDeltaExecutions(): Promise<DeltaExecutionRow[]> {
             execution_record.quantity AS quantity,
             execution_record.filled_quantity AS filledQuantity,
             execution_record.remaining_quantity AS remainingQuantity,
+            execution_record.entry_price AS entryPrice,
+            execution_record.filled_price AS filledPrice,
+            execution_record.stop_loss_price AS stopLossPrice,
+            execution_record.take_profit_price AS takeProfitPrice,
             execution_record.protection_state AS protectionState,
             execution_record.protection_plan_json AS protectionPlanJson,
             execution_record.submitted_at AS submittedAt,
@@ -755,6 +818,7 @@ function evaluateExecution(input: {
   const expectedProtectionQuantity = resolveExpectedDeltaProtectionQuantity({ row, position });
   const stopLossQuantity = protection.stopLossOrder?.quantity ?? null;
   const takeProfitQuantity = protection.takeProfitOrder?.quantity ?? null;
+  const protectionMode = extractPlanProtectionMode(row.protectionPlan);
 
   if (positionMissing) {
     addIssue(
@@ -867,6 +931,12 @@ function evaluateExecution(input: {
     quantity: row.quantity,
     filledQuantity: row.filledQuantity,
     remainingQuantity: row.remainingQuantity,
+    entryPrice: row.entryPrice,
+    filledPrice: row.filledPrice,
+    plannedStopLossPrice: row.stopLossPrice,
+    plannedTakeProfitPrice: row.takeProfitPrice,
+    protectionMode,
+    bracketStatus: extractBracketStatus(row.protectionPlan, position),
     positionReadModelExternalId: position?.externalId ?? null,
     positionReadModelStatus: position?.status ?? null,
     positionReadModelSymbol: position?.symbol ?? null,
@@ -910,88 +980,90 @@ function countByIssue(items: DeltaGuardrailItem[]): Record<DeltaGuardrailIssue, 
   };
 }
 
+export async function buildDeltaProtectionGuardrailReport(): Promise<DeltaProtectionGuardrailReport> {
+  const generatedAt = new Date();
+  const executions = await queryDeltaExecutions();
+  const positions = await queryDeltaPositions();
+  const positionByKey = new Map(
+    positions.map((position) => [
+      positionKey(position.userId, position.accountId, position.externalId),
+      position,
+    ])
+  );
+  const openPositions = positions.filter(isOpenPosition);
+  const orderIds = new Set<string>();
+  for (const execution of executions) {
+    const planStopLossOrderId = extractPlanStopLossOrderId(execution.protectionPlan);
+    const planTakeProfitOrderId = extractPlanTakeProfitOrderId(execution.protectionPlan);
+    if (planStopLossOrderId) {
+      orderIds.add(planStopLossOrderId);
+    }
+    if (planTakeProfitOrderId) {
+      orderIds.add(planTakeProfitOrderId);
+    }
+    const position = execution.positionId
+      ? positionByKey.get(positionKey(execution.userId, execution.accountId, execution.positionId))
+      : null;
+    if (position?.stopLossOrderId) {
+      orderIds.add(position.stopLossOrderId);
+    }
+    if (position?.takeProfitOrderId) {
+      orderIds.add(position.takeProfitOrderId);
+    }
+  }
+  const orderByKey = await queryDeltaOrders(Array.from(orderIds));
+  const items = executions
+    .map((row) => {
+      const exactPosition = row.positionId
+        ? (positionByKey.get(positionKey(row.userId, row.accountId, row.positionId)) ?? null)
+        : null;
+      const sameSymbolOpenPositions = openPositions.filter(
+        (position) =>
+          position.userId === row.userId &&
+          position.accountId === row.accountId &&
+          position.baseSymbol === row.tradeBaseSymbol
+      );
+      return evaluateExecution({
+        row,
+        position: exactPosition,
+        sameSymbolOpenPositions,
+        orderByKey,
+      });
+    })
+    .filter((item): item is DeltaGuardrailItem => Boolean(item));
+  const byIssue = countByIssue(items);
+  return {
+    generatedAt: generatedAt.toISOString(),
+    brokerKey: DELTA_BROKER,
+    lookbackDays: LOOKBACK_DAYS,
+    limit: LIMIT,
+    audited: executions.length,
+    openPositions: openPositions.length,
+    issueTrades: items.length,
+    missingPositionReadModel: byIssue.missing_position_read_model,
+    missingActiveStopLoss: byIssue.missing_active_stop_loss,
+    missingActiveTakeProfit: byIssue.missing_active_take_profit,
+    staleProtectionForClosedPosition: byIssue.stale_protection_for_closed_position,
+    partialFillProtectionMismatch: byIssue.partial_fill_protection_mismatch,
+    unsafePositionMismatch: byIssue.unsafe_position_mismatch,
+    thresholds: {
+      maxMissingPositionReadModel: MAX_MISSING_POSITION_READ_MODEL,
+      maxMissingActiveStopLoss: MAX_MISSING_ACTIVE_STOP_LOSS,
+      maxMissingActiveTakeProfit: MAX_MISSING_ACTIVE_TAKE_PROFIT,
+      maxStaleProtectionForClosedPosition: MAX_STALE_PROTECTION_FOR_CLOSED_POSITION,
+      maxPartialFillProtectionMismatch: MAX_PARTIAL_FILL_PROTECTION_MISMATCH,
+      maxUnsafePositionMismatch: MAX_UNSAFE_POSITION_MISMATCH,
+    },
+    byIssue,
+    items,
+  };
+}
+
 async function run(): Promise<void> {
   await initializeCoreDataSource();
 
   try {
-    const generatedAt = new Date();
-    const executions = await queryDeltaExecutions();
-    const positions = await queryDeltaPositions();
-    const positionByKey = new Map(
-      positions.map((position) => [
-        positionKey(position.userId, position.accountId, position.externalId),
-        position,
-      ])
-    );
-    const openPositions = positions.filter(isOpenPosition);
-    const orderIds = new Set<string>();
-    for (const execution of executions) {
-      const planStopLossOrderId = extractPlanStopLossOrderId(execution.protectionPlan);
-      const planTakeProfitOrderId = extractPlanTakeProfitOrderId(execution.protectionPlan);
-      if (planStopLossOrderId) {
-        orderIds.add(planStopLossOrderId);
-      }
-      if (planTakeProfitOrderId) {
-        orderIds.add(planTakeProfitOrderId);
-      }
-      const position = execution.positionId
-        ? positionByKey.get(
-            positionKey(execution.userId, execution.accountId, execution.positionId)
-          )
-        : null;
-      if (position?.stopLossOrderId) {
-        orderIds.add(position.stopLossOrderId);
-      }
-      if (position?.takeProfitOrderId) {
-        orderIds.add(position.takeProfitOrderId);
-      }
-    }
-    const orderByKey = await queryDeltaOrders(Array.from(orderIds));
-    const items = executions
-      .map((row) => {
-        const exactPosition = row.positionId
-          ? (positionByKey.get(positionKey(row.userId, row.accountId, row.positionId)) ?? null)
-          : null;
-        const sameSymbolOpenPositions = openPositions.filter(
-          (position) =>
-            position.userId === row.userId &&
-            position.accountId === row.accountId &&
-            position.baseSymbol === row.tradeBaseSymbol
-        );
-        return evaluateExecution({
-          row,
-          position: exactPosition,
-          sameSymbolOpenPositions,
-          orderByKey,
-        });
-      })
-      .filter((item): item is DeltaGuardrailItem => Boolean(item));
-    const byIssue = countByIssue(items);
-    const report = {
-      generatedAt: generatedAt.toISOString(),
-      brokerKey: DELTA_BROKER,
-      lookbackDays: LOOKBACK_DAYS,
-      limit: LIMIT,
-      audited: executions.length,
-      openPositions: openPositions.length,
-      issueTrades: items.length,
-      missingPositionReadModel: byIssue.missing_position_read_model,
-      missingActiveStopLoss: byIssue.missing_active_stop_loss,
-      missingActiveTakeProfit: byIssue.missing_active_take_profit,
-      staleProtectionForClosedPosition: byIssue.stale_protection_for_closed_position,
-      partialFillProtectionMismatch: byIssue.partial_fill_protection_mismatch,
-      unsafePositionMismatch: byIssue.unsafe_position_mismatch,
-      thresholds: {
-        maxMissingPositionReadModel: MAX_MISSING_POSITION_READ_MODEL,
-        maxMissingActiveStopLoss: MAX_MISSING_ACTIVE_STOP_LOSS,
-        maxMissingActiveTakeProfit: MAX_MISSING_ACTIVE_TAKE_PROFIT,
-        maxStaleProtectionForClosedPosition: MAX_STALE_PROTECTION_FOR_CLOSED_POSITION,
-        maxPartialFillProtectionMismatch: MAX_PARTIAL_FILL_PROTECTION_MISMATCH,
-        maxUnsafePositionMismatch: MAX_UNSAFE_POSITION_MISMATCH,
-      },
-      byIssue,
-      items,
-    };
+    const report = await buildDeltaProtectionGuardrailReport();
 
     await persistReport(report);
     console.log('suggested-trades-delta-protection-guardrail:', JSON.stringify(report));

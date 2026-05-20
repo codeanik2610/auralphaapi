@@ -11625,6 +11625,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const deltaProtectionGuardrailWatchdogSource = read(
     'scripts/checks/run-suggested-trades-delta-protection-guardrail-watchdog.sh'
   );
+  const deltaProtectionRepairPreviewSource = read(
+    'scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts'
+  );
   const terminalProtectionRepairSource = read(
     'scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
@@ -11676,6 +11679,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   assert.equal(
     packageScripts['check:suggested-trades-delta-protection-guardrail'],
     'node --import tsx scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
+  );
+  assert.equal(
+    packageScripts['check:suggested-trades-delta-protection-repair-preview'],
+    'node --import tsx scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts'
   );
   assert.equal(
     packageScripts['test:suggested-trades-delta-protection-guardrail'],
@@ -11730,6 +11737,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     ),
     true,
     'system coverage manifest must include the Delta protection guardrail watchdog'
+  );
+  assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-delta-protection-repair-preview'),
+    true,
+    'system coverage manifest must include the Delta protection repair preview check'
   );
   assert.equal(
     coverageManifestSource.includes('test:suggested-trades-delta-protection-guardrail'),
@@ -11905,6 +11917,20 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       deltaProtectionGuardrailWatchdogSource.includes(marker),
       true,
       `suggested trades Delta protection guardrail watchdog must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-delta-protection-repair-preview',
+    'none_preview_only',
+    'would_attach_missing_protection',
+    'would_replace_mismatched_partial_fill_protection',
+    'would_reconcile_native_bracket_protection',
+    'Future apply mode should create protection only after a fresh open-position and active-order read-back.',
+  ]) {
+    assert.equal(
+      deltaProtectionRepairPreviewSource.includes(marker),
+      true,
+      `suggested trades Delta protection repair preview must retain ${marker}`
     );
   }
   for (const marker of [

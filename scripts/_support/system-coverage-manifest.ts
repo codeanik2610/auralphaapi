@@ -705,6 +705,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       ),
       fileOnly('scripts/checks/run-suggested-trades-delta-protection-guardrail-watchdog.sh'),
       script(
+        'check:suggested-trades-delta-protection-repair-preview',
+        'scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts'
+      ),
+      script(
         'check:broker-auto-canary-readiness',
         'scripts/checks/check-broker-auto-canary-readiness.ts'
       ),

@@ -152,6 +152,7 @@
     "check:suggested-trades-protection-guardrails": "node --import tsx scripts/checks/check-suggested-trades-protection-guardrails.ts",
     "check:suggested-trades-mudrex-position-resolution": "node --import tsx scripts/checks/check-suggested-trades-mudrex-position-resolution.ts",
     "check:suggested-trades-delta-protection-guardrail": "node --import tsx scripts/checks/check-suggested-trades-delta-protection-guardrail.ts",
+    "check:suggested-trades-delta-protection-repair-preview": "node --import tsx scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts",
     "check:broker-auto-canary-readiness": "node --import tsx scripts/checks/check-broker-auto-canary-readiness.ts",
     "check:broker-assets-health": "node --import tsx scripts/checks/check-broker-assets-health.ts",
     "check:asset-price-sync-health": "node --import tsx scripts/checks/check-asset-price-sync-health.ts",
