@@ -60,10 +60,10 @@ Coverage:
 
 Acceptance:
 
-- [ ] Production cron is installed and active.
-- [ ] Latest artifact is fresh.
-- [ ] Artifact includes audited count, open position count, issue counts, and item details.
-- [ ] Apply flags are absent or false in the cron environment.
+- [x] Production cron is installed and active.
+- [x] Latest artifact is fresh.
+- [x] Artifact includes audited count, open position count, issue counts, and item details.
+- [x] Apply flags are absent or false in the cron environment.
 
 ### Mudrex Phase 3: Repair Preview Production Baseline
 
