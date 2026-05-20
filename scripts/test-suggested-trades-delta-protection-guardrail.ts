@@ -243,11 +243,23 @@ function testDeltaRepairApplySelectionIsSafeByDefault(): void {
     isDeltaProtectionRepairApplyActionSupported('would_cancel_stale_protection_orders'),
     false
   );
+  assert.equal(
+    isDeltaProtectionRepairApplyActionSupported('would_cancel_stale_protection_orders', {
+      includeStaleCancel: true,
+    }),
+    true
+  );
   assert.deepEqual(
     selectDeltaProtectionRepairApplyCandidates([staleProtectionItem, missingProtectionItem]).map(
       (item) => item.suggestedTradeId
     ),
     ['repair-ready-1']
+  );
+  assert.deepEqual(
+    selectDeltaProtectionRepairApplyCandidates([staleProtectionItem, missingProtectionItem], 5, {
+      includeStaleCancel: true,
+    }).map((item) => item.suggestedTradeId),
+    ['stale-unsupported-1', 'repair-ready-1']
   );
 }
 

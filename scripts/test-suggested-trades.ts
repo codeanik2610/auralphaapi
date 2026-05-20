@@ -11948,12 +11948,17 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   for (const marker of [
     'suggested-trades-delta-protection-repair',
     'SUGGESTED_TRADES_DELTA_PROTECTION_REPAIR_APPLY',
+    'SUGGESTED_TRADES_DELTA_STALE_PROTECTION_CANCEL_APPLY',
     'SUGGESTED_TRADES_PROTECTION_REPAIR_DELTA_EXCHANGE_ENABLED',
     'not_applied_apply_disabled',
     'blocked_broker_repair_disabled',
+    'blocked_stale_cancel_disabled',
+    'skipped_stale_cancel_live_readback_unsafe',
     'buildDeltaProtectionRepairPreviewReport',
     'maybeRemediateLiveProtection',
     'persistExecutionState',
+    'getOrder',
+    'cancelOrder',
     'would_replace_mismatched_partial_fill_protection',
   ]) {
     assert.equal(
