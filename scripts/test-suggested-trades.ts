@@ -11619,6 +11619,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const mudrexPositionResolutionSource = read(
     'scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
   );
+  const deltaProtectionGuardrailSource = read(
+    'scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
+  );
   const terminalProtectionRepairSource = read(
     'scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
@@ -11668,6 +11671,14 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
   );
   assert.equal(
+    packageScripts['check:suggested-trades-delta-protection-guardrail'],
+    'node --import tsx scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
+  );
+  assert.equal(
+    packageScripts['test:suggested-trades-delta-protection-guardrail'],
+    'node --import tsx scripts/test-suggested-trades-delta-protection-guardrail.ts'
+  );
+  assert.equal(
     packageScripts['repair:suggested-trades-terminal-protection'],
     'node --import tsx scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
@@ -11705,6 +11716,16 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     true,
     'system coverage manifest must include the Mudrex position resolution check'
   );
+  assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-delta-protection-guardrail'),
+    true,
+    'system coverage manifest must include the Delta protection guardrail check'
+  );
+  assert.equal(
+    coverageManifestSource.includes('test:suggested-trades-delta-protection-guardrail'),
+    true,
+    'system coverage manifest must include the Delta protection guardrail test'
+  );
 
   assert.equal(
     proofSource.includes('scripts/smokes/smoke-suggested-trades-lifecycle.ts'),
@@ -11740,6 +11761,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     proofSource.includes('scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'),
     true,
     'suggested trades live proof must run Mudrex position resolution gate'
+  );
+  assert.equal(
+    proofSource.includes('scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'),
+    true,
+    'suggested trades live proof must run Delta protection guardrail gate'
   );
   assert.equal(
     smokeSource.includes('/suggested-trades/overview') &&
@@ -11840,6 +11866,22 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       mudrexPositionResolutionSource.includes(marker),
       true,
       `suggested trades Mudrex position resolution check must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-delta-protection-guardrail',
+    'SUGGESTED_TRADES_MAX_DELTA_MISSING_ACTIVE_STOP_LOSS',
+    'SUGGESTED_TRADES_MAX_DELTA_PARTIAL_FILL_PROTECTION_MISMATCH',
+    'resolveExpectedDeltaProtectionQuantity',
+    'position.payload.quantity_contracts',
+    'converted base quantity to Delta contracts using contract_value',
+    'partial_fill_protection_mismatch',
+    'expectedProtectionQuantitySource',
+  ]) {
+    assert.equal(
+      deltaProtectionGuardrailSource.includes(marker),
+      true,
+      `suggested trades Delta protection guardrail check must retain ${marker}`
     );
   }
   for (const marker of [

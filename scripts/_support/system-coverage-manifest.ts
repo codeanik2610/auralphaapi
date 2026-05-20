@@ -661,6 +661,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       script('test:suggested-trades', 'scripts/test-suggested-trades.ts'),
       script('test:broker-canary-monitor', 'scripts/test-broker-canary-monitor.ts'),
       script(
+        'test:suggested-trades-delta-protection-guardrail',
+        'scripts/test-suggested-trades-delta-protection-guardrail.ts'
+      ),
+      script(
         'test:suggested-trades-protection-guardrails',
         'scripts/test-suggested-trades-protection-guardrails.ts'
       ),
@@ -693,6 +697,11 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       script(
         'check:suggested-trades-mudrex-position-resolution',
         'scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
+      ),
+      fileOnly('scripts/checks/run-suggested-trades-mudrex-position-resolution-watchdog.sh'),
+      script(
+        'check:suggested-trades-delta-protection-guardrail',
+        'scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
       ),
       script(
         'check:broker-auto-canary-readiness',

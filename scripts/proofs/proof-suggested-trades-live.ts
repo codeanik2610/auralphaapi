@@ -49,6 +49,10 @@ async function run(): Promise<void> {
     'Mudrex position resolution gate',
     'scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
   );
+  await runStep(
+    'Delta protection guardrail gate',
+    'scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
+  );
 }
 
 run().catch((error) => {
