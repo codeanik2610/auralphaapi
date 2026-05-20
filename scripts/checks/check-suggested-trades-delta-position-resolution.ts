@@ -152,6 +152,15 @@ const TERMINAL_EXECUTION_STATES = new Set([
   'failed',
 ]);
 const TERMINAL_POSITION_STATES = new Set(['closed', 'liquidated']);
+const POSITION_EVIDENCE_ORDER_STATUSES = new Set([
+  'CLOSED',
+  'FILLED',
+  'PARTIALLY_FILLED',
+  'PARTIAL_FILLED',
+  'PARTIAL',
+]);
+const POSITION_EVIDENCE_EXECUTION_STATES = new Set(['filled', 'closed']);
+const POSITION_EVIDENCE_POSITION_STATES = new Set(['open', 'partial', 'closed', 'liquidated']);
 
 function readString(value: unknown): string {
   return String(value ?? '').trim();
@@ -243,6 +252,29 @@ function isOpenPosition(position: PositionReadModel): boolean {
   }
   const normalizedStatus = readString(position.status || position.statusKey).toLowerCase();
   return normalizedStatus === 'open' || normalizedStatus === 'partial';
+}
+
+export function shouldAuditDeltaPositionResolutionExecutionForTest(
+  row: Pick<
+    DeltaPositionExecutionRow,
+    | 'positionId'
+    | 'filledAt'
+    | 'positionOpenedAt'
+    | 'positionStatus'
+    | 'orderStatus'
+    | 'executionState'
+    | 'filledQuantity'
+  >
+): boolean {
+  return Boolean(
+    row.positionId ||
+    row.filledAt ||
+    row.positionOpenedAt ||
+    (row.filledQuantity !== null && row.filledQuantity > 0) ||
+    POSITION_EVIDENCE_ORDER_STATUSES.has(normalizeStatus(row.orderStatus) ?? '') ||
+    POSITION_EVIDENCE_EXECUTION_STATES.has(readString(row.executionState).toLowerCase()) ||
+    POSITION_EVIDENCE_POSITION_STATES.has(readString(row.positionStatus).toLowerCase())
+  );
 }
 
 function mapExecution(row: JsonRecord): DeltaPositionExecutionRow {
@@ -526,10 +558,12 @@ async function queryDeltaExecutions(): Promise<DeltaPositionExecutionRow[]> {
           execution_record.position_id IS NOT NULL
           OR execution_record.filled_at IS NOT NULL
           OR execution_record.position_opened_at IS NOT NULL
+          OR execution_record.filled_quantity > 0
           OR LOWER(COALESCE(execution_record.order_status, '')) IN
             ('filled', 'closed', 'partially_filled', 'partial_filled', 'partial')
-          OR LOWER(COALESCE(execution_record.execution_state, '')) NOT IN
-            ('closed', 'cancelled', 'canceled', 'rejected', 'expired', 'failed')
+          OR LOWER(COALESCE(execution_record.execution_state, '')) IN ('filled', 'closed')
+          OR LOWER(COALESCE(execution_record.position_status, '')) IN
+            ('open', 'partial', 'closed', 'liquidated')
         )
         AND (
           COALESCE(
@@ -539,9 +573,7 @@ async function queryDeltaExecutions(): Promise<DeltaPositionExecutionRow[]> {
             suggested_trade.signal_time,
             execution_record.updated_at
           ) >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)
-          OR LOWER(COALESCE(execution_record.execution_state, '')) NOT IN
-            ('closed', 'cancelled', 'canceled', 'rejected', 'expired', 'failed')
-          OR LOWER(COALESCE(execution_record.position_status, '')) NOT IN ('closed', 'liquidated')
+          OR LOWER(COALESCE(execution_record.position_status, '')) IN ('open', 'partial')
         )
       ORDER BY COALESCE(
                  execution_record.position_opened_at,
@@ -553,7 +585,14 @@ async function queryDeltaExecutions(): Promise<DeltaPositionExecutionRow[]> {
       LIMIT ${LIMIT}`,
     [DELTA_BROKER, LOOKBACK_DAYS]
   )) as JsonRecord[];
-  return rows.map(mapExecution).filter((row) => row.suggestedTradeId && row.userId);
+  return rows
+    .map(mapExecution)
+    .filter(
+      (row) =>
+        row.suggestedTradeId &&
+        row.userId &&
+        shouldAuditDeltaPositionResolutionExecutionForTest(row)
+    );
 }
 
 async function queryDeltaPositions(): Promise<PositionReadModel[]> {

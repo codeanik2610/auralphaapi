@@ -3,6 +3,7 @@ import {
   type DeltaPositionResolutionItem,
   evaluateDeltaPositionResolutionForTest,
   resolveDeltaPositionResolutionQuantityForTest,
+  shouldAuditDeltaPositionResolutionExecutionForTest,
 } from './checks/check-suggested-trades-delta-position-resolution';
 import type { PositionReadModel } from './checks/check-suggested-trades-delta-protection-guardrail';
 
@@ -212,6 +213,48 @@ function testDeltaQuantitySourceUsesProtectionGuardrailNormalizer(): void {
   );
 }
 
+function testAuditEvidenceFilterSkipsEmptyExecutions(): void {
+  assert.equal(
+    shouldAuditDeltaPositionResolutionExecutionForTest({
+      positionId: null,
+      filledAt: null,
+      positionOpenedAt: null,
+      positionStatus: null,
+      orderStatus: null,
+      executionState: null,
+      filledQuantity: null,
+    }),
+    false
+  );
+}
+
+function testAuditEvidenceFilterKeepsFilledAndPositionRows(): void {
+  assert.equal(
+    shouldAuditDeltaPositionResolutionExecutionForTest({
+      positionId: null,
+      filledAt: null,
+      positionOpenedAt: null,
+      positionStatus: null,
+      orderStatus: 'FILLED',
+      executionState: null,
+      filledQuantity: null,
+    }),
+    true
+  );
+  assert.equal(
+    shouldAuditDeltaPositionResolutionExecutionForTest({
+      positionId: 'position-1',
+      filledAt: null,
+      positionOpenedAt: null,
+      positionStatus: null,
+      orderStatus: null,
+      executionState: null,
+      filledQuantity: null,
+    }),
+    true
+  );
+}
+
 testExactReadModelBinding();
 testMissingPositionIdIsUnresolved();
 testMissingReadModelIsUnresolved();
@@ -221,5 +264,7 @@ testSymbolMismatchIsUnsafe();
 testSideMismatchIsUnsafe();
 testEntryOrderLineageMismatchIsReported();
 testDeltaQuantitySourceUsesProtectionGuardrailNormalizer();
+testAuditEvidenceFilterSkipsEmptyExecutions();
+testAuditEvidenceFilterKeepsFilledAndPositionRows();
 
 console.log('Suggested trades Delta position resolution tests passed.');

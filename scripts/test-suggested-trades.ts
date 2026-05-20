@@ -12152,6 +12152,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'sameSymbolOpenPositionCandidates',
     "mutation: 'none_read_only'",
     'resolveExpectedDeltaProtectionQuantity',
+    'shouldAuditDeltaPositionResolutionExecutionForTest',
   ]) {
     assert.equal(
       deltaPositionResolutionSource.includes(marker),
@@ -12166,6 +12167,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'testAccountMismatchIsUnsafe',
     'testEntryOrderLineageMismatchIsReported',
     'testDeltaQuantitySourceUsesProtectionGuardrailNormalizer',
+    'testAuditEvidenceFilterSkipsEmptyExecutions',
   ]) {
     assert.equal(
       deltaPositionResolutionTestSource.includes(marker),
