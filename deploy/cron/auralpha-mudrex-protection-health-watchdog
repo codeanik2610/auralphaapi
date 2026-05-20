@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Runs the Mudrex protection-health read-only watchdog every 30 minutes.
+# The runner writes timestamped JSON/log artifacts and keeps mutation/apply flags absent.
+*/30 * * * * root cd /opt/auralpha/Backend/aurAlpha && /usr/bin/flock -n /var/lock/auralpha-mudrex-protection-health-watchdog.lock bash -lc './scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh' >> /var/log/auralpha-mudrex-protection-health-watchdog.log 2>&1

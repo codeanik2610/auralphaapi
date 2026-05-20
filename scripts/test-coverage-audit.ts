@@ -141,6 +141,7 @@ function auditPackageScriptSurface(findings: string[]): void {
       key.startsWith('signoff:') ||
       key.startsWith('smoke:') ||
       key.startsWith('capture:') ||
+      key.startsWith('repair:') ||
       key.startsWith('db:') ||
       key.startsWith('rebuild:')
   );
@@ -169,7 +170,9 @@ function auditPackageScriptSurface(findings: string[]): void {
 
   for (const [key, owners] of keyOwners.entries()) {
     if (owners.size > 1) {
-      findings.push(`package scripts: duplicate ownership for ${key} -> ${[...owners].sort().join(', ')}`);
+      findings.push(
+        `package scripts: duplicate ownership for ${key} -> ${[...owners].sort().join(', ')}`
+      );
     }
   }
 }
@@ -184,7 +187,9 @@ function auditScriptFiles(findings: string[]): void {
 
   const expectedChecks = flattenSurfaces((module) => module.checks)
     .map((surface) => surface.file)
-    .filter((file): file is string => typeof file === 'string');
+    .filter(
+      (file): file is string => typeof file === 'string' && file.startsWith('scripts/checks/')
+    );
 
   const expectedProofs = flattenSurfaces((module) => module.proofs)
     .map((surface) => surface.file)
@@ -212,15 +217,37 @@ function auditScriptFiles(findings: string[]): void {
     .map((surface) => surface.file)
     .filter((file): file is string => Boolean(file));
 
-  pushSetDiff(findings, 'scripts/test-*', expectedTopLevelTests, listDirFiles('scripts').filter((file) => file.includes('/test-') || file.startsWith('scripts/test-')));
+  pushSetDiff(
+    findings,
+    'scripts/test-*',
+    expectedTopLevelTests,
+    listDirFiles('scripts').filter(
+      (file) => file.includes('/test-') || file.startsWith('scripts/test-')
+    )
+  );
   pushSetDiff(findings, 'scripts/checks', expectedChecks, listDirFiles('scripts/checks'));
   pushSetDiff(findings, 'scripts/proofs', expectedProofs, listDirFiles('scripts/proofs'));
-  pushSetDiff(findings, 'scripts/release-gates', expectedReleaseGates, listDirFiles('scripts/release-gates'));
+  pushSetDiff(
+    findings,
+    'scripts/release-gates',
+    expectedReleaseGates,
+    listDirFiles('scripts/release-gates')
+  );
   pushSetDiff(findings, 'scripts/signoffs', expectedSignoffs, listDirFiles('scripts/signoffs'));
   pushSetDiff(findings, 'scripts/smokes', expectedSmokes, listDirFiles('scripts/smokes'));
   pushSetDiff(findings, 'scripts/capture', expectedCaptures, listDirFiles('scripts/capture'));
-  pushSetDiff(findings, 'scripts/_support', SYSTEM_SCRIPT_SURFACE.supportFiles, listDirFiles('scripts/_support'));
-  pushSetDiff(findings, 'scripts/_runtime', SYSTEM_SCRIPT_SURFACE.runtimeFiles, listDirFiles('scripts/_runtime'));
+  pushSetDiff(
+    findings,
+    'scripts/_support',
+    SYSTEM_SCRIPT_SURFACE.supportFiles,
+    listDirFiles('scripts/_support')
+  );
+  pushSetDiff(
+    findings,
+    'scripts/_runtime',
+    SYSTEM_SCRIPT_SURFACE.runtimeFiles,
+    listDirFiles('scripts/_runtime')
+  );
   pushSetDiff(
     findings,
     'scripts/db',
@@ -260,7 +287,9 @@ function auditScriptFiles(findings: string[]): void {
 
   for (const [file, owners] of fileOwners.entries()) {
     if (owners.size > 1) {
-      findings.push(`script files: duplicate ownership for ${file} -> ${[...owners].sort().join(', ')}`);
+      findings.push(
+        `script files: duplicate ownership for ${file} -> ${[...owners].sort().join(', ')}`
+      );
     }
   }
 }
@@ -290,7 +319,9 @@ function main(): void {
 
   const summary = {
     modules: COVERAGE_MODULES.length,
-    dedicatedOrCrossCuttingModules: COVERAGE_MODULES.filter((module) => module.lane !== 'aggregate-only').length,
+    dedicatedOrCrossCuttingModules: COVERAGE_MODULES.filter(
+      (module) => module.lane !== 'aggregate-only'
+    ).length,
     aggregateOnlyModules: COVERAGE_MODULES.filter((module) => module.lane === 'aggregate-only').map(
       (module) => module.key
     ),

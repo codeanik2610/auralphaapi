@@ -11619,6 +11619,24 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const mudrexPositionResolutionSource = read(
     'scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
   );
+  const mudrexProtectionHealthSource = read(
+    'scripts/checks/check-suggested-trades-mudrex-protection-health.ts'
+  );
+  const mudrexProtectionRepairPreviewSource = read(
+    'scripts/checks/check-suggested-trades-mudrex-protection-repair-preview.ts'
+  );
+  const mudrexProtectionRepairApplySource = read(
+    'scripts/maintenance/repair-suggested-trades-mudrex-protection.ts'
+  );
+  const mudrexProtectionHealthTestSource = read(
+    'scripts/test-suggested-trades-mudrex-protection-health.ts'
+  );
+  const mudrexProtectionHealthWatchdogSource = read(
+    'scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh'
+  );
+  const mudrexProtectionHealthWatchdogCronSource = read(
+    'deploy/cron/auralpha-mudrex-protection-health-watchdog'
+  );
   const deltaProtectionGuardrailSource = read(
     'scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
   );
@@ -11689,6 +11707,14 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
   );
   assert.equal(
+    packageScripts['check:suggested-trades-mudrex-protection-health'],
+    'node --import tsx scripts/checks/check-suggested-trades-mudrex-protection-health.ts'
+  );
+  assert.equal(
+    packageScripts['check:suggested-trades-mudrex-protection-repair-preview'],
+    'node --import tsx scripts/checks/check-suggested-trades-mudrex-protection-repair-preview.ts'
+  );
+  assert.equal(
     packageScripts['check:suggested-trades-delta-protection-guardrail'],
     'node --import tsx scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
   );
@@ -11705,8 +11731,16 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/test-suggested-trades-delta-protection-guardrail.ts'
   );
   assert.equal(
+    packageScripts['test:suggested-trades-mudrex-protection-health'],
+    'node --import tsx scripts/test-suggested-trades-mudrex-protection-health.ts'
+  );
+  assert.equal(
     packageScripts['repair:suggested-trades-terminal-protection'],
     'node --import tsx scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
+  );
+  assert.equal(
+    packageScripts['repair:suggested-trades-mudrex-protection'],
+    'node --import tsx scripts/maintenance/repair-suggested-trades-mudrex-protection.ts'
   );
   assert.equal(
     packageScripts['repair:suggested-trades-delta-protection'],
@@ -11745,6 +11779,38 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     coverageManifestSource.includes('check:suggested-trades-mudrex-position-resolution'),
     true,
     'system coverage manifest must include the Mudrex position resolution check'
+  );
+  assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-mudrex-protection-health'),
+    true,
+    'system coverage manifest must include the Mudrex protection health check'
+  );
+  assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-mudrex-protection-repair-preview'),
+    true,
+    'system coverage manifest must include the Mudrex protection repair preview check'
+  );
+  assert.equal(
+    coverageManifestSource.includes('repair:suggested-trades-mudrex-protection'),
+    true,
+    'system coverage manifest must include the Mudrex protection repair apply script'
+  );
+  assert.equal(
+    coverageManifestSource.includes('test:suggested-trades-mudrex-protection-health'),
+    true,
+    'system coverage manifest must include the Mudrex protection health test'
+  );
+  assert.equal(
+    coverageManifestSource.includes(
+      'scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh'
+    ),
+    true,
+    'system coverage manifest must include the Mudrex protection health watchdog'
+  );
+  assert.equal(
+    coverageManifestSource.includes('deploy/cron/auralpha-mudrex-protection-health-watchdog'),
+    true,
+    'system coverage manifest must include the Mudrex protection health watchdog cron'
   );
   assert.equal(
     coverageManifestSource.includes('check:suggested-trades-delta-protection-guardrail'),
@@ -11930,6 +11996,105 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       mudrexPositionResolutionSource.includes(marker),
       true,
       `suggested trades Mudrex position resolution check must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-mudrex-protection-health',
+    'SUGGESTED_TRADES_MUDREX_PROTECTION_LOOKBACK_DAYS',
+    'SUGGESTED_TRADES_MAX_MUDREX_MISSING_ACTIVE_STOP_LOSS',
+    'SUGGESTED_TRADES_MAX_MUDREX_MISSING_ACTIVE_TAKE_PROFIT',
+    'missing_active_stop_loss',
+    'missing_active_take_profit',
+    'partial_fill_protection_mismatch',
+    'stale_protection_for_closed_position',
+    'resolveExpectedMudrexProtectionQuantity',
+    "mutation: 'none_read_only'",
+    'direct_raw_payload',
+  ]) {
+    assert.equal(
+      mudrexProtectionHealthSource.includes(marker),
+      true,
+      `suggested trades Mudrex protection health check must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-mudrex-protection-repair-preview',
+    'none_preview_only',
+    'would_attach_missing_protection',
+    'would_replace_mismatched_partial_fill_protection',
+    'would_mark_terminal_protection_not_required',
+    'would_cancel_stale_protection_orders',
+    'manual_review_required',
+    'Mudrex repair is blocked until the execution is bound to one safe broker position.',
+    'Future apply mode should create protection only after a fresh open-position and active-order read-back.',
+  ]) {
+    assert.equal(
+      mudrexProtectionRepairPreviewSource.includes(marker),
+      true,
+      `suggested trades Mudrex protection repair preview must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-mudrex-protection-repair',
+    'SUGGESTED_TRADES_MUDREX_PROTECTION_REPAIR_APPLY',
+    'SUGGESTED_TRADES_MUDREX_STALE_PROTECTION_CANCEL_APPLY',
+    'SUGGESTED_TRADES_PROTECTION_REPAIR_MUDREX_ENABLED',
+    'not_applied_apply_disabled',
+    'blocked_broker_repair_disabled',
+    'blocked_stale_cancel_disabled',
+    'skipped_live_position_readback_unsafe',
+    'would_cancel_stale_protection_orders',
+    'would_mark_terminal_protection_not_required',
+    'buildMudrexProtectionRepairPreviewReport',
+    'maybeRemediateLiveProtection',
+    'persistExecutionState',
+    'getOrder',
+    'cancelOrder',
+    'would_replace_mismatched_partial_fill_protection',
+  ]) {
+    assert.equal(
+      mudrexProtectionRepairApplySource.includes(marker),
+      true,
+      `suggested trades Mudrex protection repair apply script must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'testMudrexRepairPreviewCanAttachMissingProtection',
+    'testMudrexRepairPreviewBlocksUnsafeBinding',
+    'testMudrexRepairPreviewPlansPartialFillReplacement',
+    'testMudrexRepairPreviewPlansStaleCancel',
+    'testMudrexRepairPreviewCanMarkTerminalNotRequired',
+  ]) {
+    assert.equal(
+      mudrexProtectionHealthTestSource.includes(marker),
+      true,
+      `suggested trades Mudrex protection health test must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'AURALPHA_MUDREX_PROTECTION_HEALTH_ARTIFACT_DIR',
+    'SUGGESTED_TRADES_MUDREX_PROTECTION_LOOKBACK_DAYS',
+    'SUGGESTED_TRADES_MAX_MUDREX_MISSING_ACTIVE_STOP_LOSS',
+    'SUGGESTED_TRADES_MAX_MUDREX_PARTIAL_FILL_PROTECTION_MISMATCH',
+    'suggested-trades-mudrex-protection-health:',
+    'check-suggested-trades-mudrex-protection-health.js',
+  ]) {
+    assert.equal(
+      mudrexProtectionHealthWatchdogSource.includes(marker),
+      true,
+      `suggested trades Mudrex protection health watchdog must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    '*/30 * * * * root',
+    'auralpha-mudrex-protection-health-watchdog.lock',
+    './scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh',
+    '/var/log/auralpha-mudrex-protection-health-watchdog.log',
+  ]) {
+    assert.equal(
+      mudrexProtectionHealthWatchdogCronSource.includes(marker),
+      true,
+      `suggested trades Mudrex protection health watchdog cron must retain ${marker}`
     );
   }
   for (const marker of [
