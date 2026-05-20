@@ -135,6 +135,11 @@ export interface LinkedPositionSnapshot {
   payload: Record<string, unknown> | null;
 }
 
+export interface LinkedPositionSnapshotLookupOptions {
+  preferredPositionOpenedAt?: Date | string | null;
+  preferredSide?: string | null;
+}
+
 interface LinkedPositionSnapshotRow {
   externalId?: string;
   status?: string | null;
@@ -156,6 +161,7 @@ interface LinkedPositionSnapshotRow {
   readModelPositionCreatedAt?: unknown;
   readModelPositionUpdatedAt?: unknown;
   readModelPositionClosedAt?: unknown;
+  preferredOpenedDiffSeconds?: number | string | null;
 }
 
 export interface SuggestedTradeExecutionUpsertPayload {
@@ -672,7 +678,8 @@ export class SuggestedTradeRepository {
     symbol: string,
     since: Date,
     limit = 20,
-    preferredExternalId?: string | null
+    preferredExternalId?: string | null,
+    options: LinkedPositionSnapshotLookupOptions = {}
   ): Promise<LinkedPositionSnapshot[]> {
     const normalizedBrokerKey = brokerKey.toLowerCase();
     const symbolLookupValues = this.buildSymbolLookupValues(normalizedBrokerKey, [symbol]);
@@ -763,10 +770,25 @@ export class SuggestedTradeRepository {
           [userId, accountId, normalizedBrokerKey, normalizedPreferredExternalId]
         )) as LinkedPositionSnapshotRow[])
       : [];
+    const resolvedPreferredRows =
+      normalizedBrokerKey === 'mudrex' && normalizedPreferredExternalId && !preferredRows.length
+        ? await this.getMudrexResolvedPreferredPositionRows(
+            userId,
+            accountId,
+            normalizedBrokerKey,
+            symbolLookupValues,
+            normalizedPreferredExternalId,
+            options
+          )
+        : [];
+    const schedulerRows =
+      normalizedBrokerKey === 'mudrex' && normalizedPreferredExternalId
+        ? this.filterMudrexPreferredPositionRows(rows, normalizedPreferredExternalId, options, true)
+        : rows;
 
     const snapshots: LinkedPositionSnapshot[] = [];
     const seenExternalIds = new Set<string>();
-    for (const row of [...preferredRows, ...rows]) {
+    for (const row of [...preferredRows, ...resolvedPreferredRows, ...schedulerRows]) {
       const externalId = String(row.externalId || '').trim();
       if (!externalId || seenExternalIds.has(externalId)) {
         continue;
@@ -784,6 +806,255 @@ export class SuggestedTradeRepository {
     }
 
     return snapshots;
+  }
+
+  private async getMudrexResolvedPreferredPositionRows(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    symbolLookupValues: string[],
+    preferredExternalId: string,
+    options: LinkedPositionSnapshotLookupOptions
+  ): Promise<LinkedPositionSnapshotRow[]> {
+    const rawRows = (await coreDataSource.query(
+      `SELECT position_model.external_id AS externalId,
+              position_model.status,
+              position_model.status_rank AS statusRank,
+              position_model.position_created_at AS firstSeenAt,
+              position_model.last_seen_at AS lastSeenAt,
+              position_model.payload_json AS payload,
+              position_model.status AS readModelStatus,
+              position_model.status_key AS readModelStatusKey,
+              position_model.quantity AS readModelQuantity,
+              position_model.entry_price AS readModelEntryPrice,
+              position_model.current_price AS readModelCurrentPrice,
+              position_model.closed_price AS readModelClosedPrice,
+              position_model.realized_pnl AS readModelRealizedPnl,
+              position_model.stoploss_price AS readModelStopLossPrice,
+              position_model.takeprofit_price AS readModelTakeProfitPrice,
+              position_model.stoploss_order_id AS readModelStopLossOrderId,
+              position_model.takeprofit_order_id AS readModelTakeProfitOrderId,
+              position_model.position_created_at AS readModelPositionCreatedAt,
+              position_model.position_updated_at AS readModelPositionUpdatedAt,
+              position_model.position_closed_at AS readModelPositionClosedAt
+         FROM position_read_models position_model
+        WHERE position_model.user_id = ?
+          AND position_model.account_id = ?
+          AND LOWER(position_model.broker_key) = ?
+          AND (
+            position_model.external_id = ?
+            OR NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(position_model.payload_json, '$.id')), 'null'), '') = ?
+            OR NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(position_model.payload_json, '$.position_id')), 'null'), '') = ?
+            OR NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(position_model.payload_json, '$.positionId')), 'null'), '') = ?
+            OR CAST(position_model.payload_json AS CHAR) LIKE ?
+          )
+        ORDER BY position_model.last_seen_at DESC
+        LIMIT 10`,
+      [
+        userId,
+        accountId,
+        brokerKey,
+        preferredExternalId,
+        preferredExternalId,
+        preferredExternalId,
+        preferredExternalId,
+        `%${preferredExternalId}%`,
+      ]
+    )) as LinkedPositionSnapshotRow[];
+    const directRows = this.filterMudrexPreferredPositionRows(
+      rawRows,
+      preferredExternalId,
+      options,
+      false
+    );
+    if (directRows.length) {
+      return directRows;
+    }
+
+    const openedAt = normalizeOptionalDate(options.preferredPositionOpenedAt);
+    const expectedDirection = this.normalizeMudrexDirection(options.preferredSide);
+    if (!openedAt || !expectedDirection || !symbolLookupValues.length) {
+      return [];
+    }
+
+    const timeRows = (await coreDataSource.query(
+      `SELECT position_model.external_id AS externalId,
+              position_model.status,
+              position_model.status_rank AS statusRank,
+              position_model.position_created_at AS firstSeenAt,
+              position_model.last_seen_at AS lastSeenAt,
+              position_model.payload_json AS payload,
+              position_model.status AS readModelStatus,
+              position_model.status_key AS readModelStatusKey,
+              position_model.quantity AS readModelQuantity,
+              position_model.entry_price AS readModelEntryPrice,
+              position_model.current_price AS readModelCurrentPrice,
+              position_model.closed_price AS readModelClosedPrice,
+              position_model.realized_pnl AS readModelRealizedPnl,
+              position_model.stoploss_price AS readModelStopLossPrice,
+              position_model.takeprofit_price AS readModelTakeProfitPrice,
+              position_model.stoploss_order_id AS readModelStopLossOrderId,
+              position_model.takeprofit_order_id AS readModelTakeProfitOrderId,
+              position_model.position_created_at AS readModelPositionCreatedAt,
+              position_model.position_updated_at AS readModelPositionUpdatedAt,
+              position_model.position_closed_at AS readModelPositionClosedAt,
+              ABS(TIMESTAMPDIFF(SECOND, position_model.position_created_at, ?)) AS preferredOpenedDiffSeconds
+         FROM position_read_models position_model
+        WHERE position_model.user_id = ?
+          AND position_model.account_id = ?
+          AND LOWER(position_model.broker_key) = ?
+          AND LOWER(position_model.symbol) IN (${symbolLookupValues.map(() => '?').join(',')})
+          AND position_model.position_created_at IS NOT NULL
+          AND position_model.position_created_at BETWEEN DATE_SUB(?, INTERVAL 30 MINUTE)
+                                                   AND DATE_ADD(?, INTERVAL 30 MINUTE)
+        ORDER BY preferredOpenedDiffSeconds ASC, position_model.last_seen_at DESC
+        LIMIT 10`,
+      [openedAt, userId, accountId, brokerKey, ...symbolLookupValues, openedAt, openedAt]
+    )) as LinkedPositionSnapshotRow[];
+
+    return this.filterMudrexPreferredPositionRows(timeRows, preferredExternalId, options, true);
+  }
+
+  private filterMudrexPreferredPositionRows(
+    rows: LinkedPositionSnapshotRow[],
+    preferredExternalId: string,
+    options: LinkedPositionSnapshotLookupOptions,
+    allowTimeFallback: boolean
+  ): LinkedPositionSnapshotRow[] {
+    const expectedDirection = this.normalizeMudrexDirection(options.preferredSide);
+    const directRows = rows.filter((row) =>
+      this.isMudrexDirectPositionIdentifierMatch(row, preferredExternalId)
+    );
+    if (directRows.length) {
+      return directRows.filter((row) => {
+        const direction = this.resolveMudrexPositionRowDirection(row);
+        return !expectedDirection || !direction || direction === expectedDirection;
+      });
+    }
+    if (!allowTimeFallback || !expectedDirection) {
+      return [];
+    }
+
+    const anchor = normalizeOptionalDate(options.preferredPositionOpenedAt);
+    if (!anchor) {
+      return [];
+    }
+    const anchorMs = anchor.getTime();
+    const compatibleRows = rows
+      .map((row) => {
+        const direction = this.resolveMudrexPositionRowDirection(row);
+        if (direction !== expectedDirection) {
+          return null;
+        }
+        const diffSeconds =
+          normalizeOptionalNumber(row.preferredOpenedDiffSeconds) ??
+          this.resolveMudrexPositionOpenedDiffSeconds(row, anchorMs);
+        if (diffSeconds === null || diffSeconds > 30 * 60) {
+          return null;
+        }
+        return { row, diffSeconds };
+      })
+      .filter((item): item is { row: LinkedPositionSnapshotRow; diffSeconds: number } =>
+        Boolean(item)
+      )
+      .sort((a, b) => a.diffSeconds - b.diffSeconds);
+
+    const tightRows = compatibleRows.filter((item) => item.diffSeconds <= 5);
+    if (tightRows.length === 1) {
+      return [tightRows[0].row];
+    }
+    if (tightRows.length > 1) {
+      return [];
+    }
+
+    const oneMinuteRows = compatibleRows.filter((item) => item.diffSeconds <= 60);
+    return oneMinuteRows.length === 1 ? [oneMinuteRows[0].row] : [];
+  }
+
+  private isMudrexDirectPositionIdentifierMatch(
+    row: LinkedPositionSnapshotRow,
+    preferredExternalId: string
+  ): boolean {
+    const payload = this.parsePayloadObject(row.payload);
+    const identifiers = [
+      row.externalId,
+      payload?.id,
+      payload?.position_id,
+      payload?.positionId,
+      this.buildMudrexSyntheticPositionId(row, payload),
+    ];
+    return identifiers.some((value) => normalizeOptionalString(value) === preferredExternalId);
+  }
+
+  private buildMudrexSyntheticPositionId(
+    row: LinkedPositionSnapshotRow,
+    payload: Record<string, unknown> | null = this.parsePayloadObject(row.payload)
+  ): string | null {
+    const assetUuid =
+      normalizeOptionalString(payload?.asset_uuid) ?? normalizeOptionalString(payload?.assetUuid);
+    const openedAt =
+      normalizeOptionalDate(row.readModelPositionCreatedAt as Date | string | null | undefined) ??
+      normalizeOptionalDate(row.firstSeenAt as Date | string | null | undefined) ??
+      normalizeOptionalDate(payload?.created_at as Date | string | null | undefined) ??
+      normalizeOptionalDate(payload?.createdAt as Date | string | null | undefined) ??
+      normalizeOptionalDate(payload?.opened_at as Date | string | null | undefined) ??
+      normalizeOptionalDate(payload?.openedAt as Date | string | null | undefined);
+    const direction = this.resolveMudrexPositionRowDirection(row, payload);
+    if (!assetUuid || !openedAt || !direction) {
+      return null;
+    }
+    return `mudrex:${assetUuid}:${openedAt.toISOString().replace('.000Z', 'Z')}:${direction}`;
+  }
+
+  private resolveMudrexPositionRowDirection(
+    row: LinkedPositionSnapshotRow,
+    payload: Record<string, unknown> | null = this.parsePayloadObject(row.payload)
+  ): 'LONG' | 'SHORT' | null {
+    const explicit =
+      this.normalizeMudrexDirection(payload?.position_type) ??
+      this.normalizeMudrexDirection(payload?.positionType) ??
+      this.normalizeMudrexDirection(payload?.order_type) ??
+      this.normalizeMudrexDirection(payload?.orderType) ??
+      this.normalizeMudrexDirection(payload?.side) ??
+      this.normalizeMudrexDirection(payload?.position_side) ??
+      this.normalizeMudrexDirection(payload?.positionSide);
+    if (explicit) {
+      return explicit;
+    }
+    const suffix = normalizeOptionalString(row.externalId)?.split(':').pop();
+    return this.normalizeMudrexDirection(suffix);
+  }
+
+  private normalizeMudrexDirection(value: unknown): 'LONG' | 'SHORT' | null {
+    const normalized = normalizeOptionalString(value)?.toUpperCase();
+    if (!normalized) {
+      return null;
+    }
+    if (normalized === 'BUY' || normalized === 'LONG') {
+      return 'LONG';
+    }
+    if (normalized === 'SELL' || normalized === 'SHORT') {
+      return 'SHORT';
+    }
+    return null;
+  }
+
+  private resolveMudrexPositionOpenedDiffSeconds(
+    row: LinkedPositionSnapshotRow,
+    anchorMs: number
+  ): number | null {
+    const payload = this.parsePayloadObject(row.payload);
+    const openedAt =
+      normalizeOptionalDate(row.readModelPositionCreatedAt as Date | string | null | undefined) ??
+      normalizeOptionalDate(row.firstSeenAt as Date | string | null | undefined) ??
+      normalizeOptionalDate(payload?.created_at as Date | string | null | undefined) ??
+      normalizeOptionalDate(payload?.createdAt as Date | string | null | undefined) ??
+      normalizeOptionalDate(payload?.opened_at as Date | string | null | undefined) ??
+      normalizeOptionalDate(payload?.openedAt as Date | string | null | undefined);
+    if (!openedAt) {
+      return null;
+    }
+    return Math.abs(openedAt.getTime() - anchorMs) / 1000;
   }
 
   async findLinkedTradesByOrderIds(

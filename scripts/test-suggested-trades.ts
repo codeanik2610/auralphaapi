@@ -4580,7 +4580,11 @@ async function runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions(): Pr
     );
 
     calls.length = 0;
-    const snapshots = await repository.getLinkedPositionSnapshots(
+    const snapshots: Array<{
+      externalId: string;
+      status?: string | null;
+      payload?: Record<string, unknown> | null;
+    }> = await repository.getLinkedPositionSnapshots(
       'user-1',
       'delta_exchange',
       'acc-1',
@@ -4670,7 +4674,11 @@ async function runSuggestedTradeExactPositionSnapshotRepositoryAssertions(): Pro
   };
 
   try {
-    const snapshots = await repository.getLinkedPositionSnapshots(
+    const snapshots: Array<{
+      externalId: string;
+      status?: string | null;
+      payload?: Record<string, unknown> | null;
+    }> = await repository.getLinkedPositionSnapshots(
       'user-1',
       'mudrex',
       'acc-1',
@@ -4689,6 +4697,189 @@ async function runSuggestedTradeExactPositionSnapshotRepositoryAssertions(): Pro
     assert.equal(snapshots[0]?.payload?.closed_at, '2026-05-20T05:44:23.000Z');
     assert.match(calls[0]?.sql || '', /scheduler_position\.external_id = \?/);
     assert.deepEqual(calls[1]?.params, ['user-1', 'acc-1', 'mudrex', exactPositionId]);
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
+async function runSuggestedTradeMudrexRawPositionResolutionRepositoryAssertions(): Promise<void> {
+  const repository = new SuggestedTradeRepository() as any;
+  const originalQuery = coreDataSource.query;
+  const rawPositionId = '019e38f9-b800-7bca-89d1-53f11254291e';
+  const normalizedPositionId =
+    'mudrex:01903bcb-29e5-765e-b282-2483da5007b3:2026-05-18T02:45:50Z:SHORT';
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+
+  (coreDataSource as any).query = async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (sql.includes('FROM scheduler_positions_snapshots')) {
+      return [
+        {
+          externalId: 'mudrex:old-sol-asset:2025-04-16T18:09:25Z:SHORT',
+          status: 'Liquidated',
+          statusRank: 4,
+          firstSeenAt: '2025-04-16T18:09:25.000Z',
+          lastSeenAt: '2026-05-20T05:57:41.000Z',
+          payload: JSON.stringify({
+            status: 'LIQUIDATED',
+            symbol: 'SOLUSDT',
+            position_type: 'SHORT',
+            created_at: '2025-04-16T18:09:25.000Z',
+            closed_price: '127.47',
+          }),
+        },
+      ];
+    }
+    if (sql.includes('position_model.external_id = ?')) {
+      return [];
+    }
+    if (sql.includes('CAST(position_model.payload_json AS CHAR) LIKE ?')) {
+      return [];
+    }
+    if (sql.includes('position_model.position_created_at BETWEEN')) {
+      return [
+        {
+          externalId: normalizedPositionId,
+          status: 'Closed',
+          statusRank: 3,
+          firstSeenAt: '2026-05-18T02:45:50.000Z',
+          lastSeenAt: '2026-05-20T05:54:23.000Z',
+          payload: JSON.stringify({
+            status: 'CLOSED',
+            symbol: 'SOLUSDT',
+            position_type: 'SHORT',
+            created_at: '2026-05-18T02:45:50.000Z',
+            closed_at: '2026-05-18T03:07:43.000Z',
+            entry_price: '84.92',
+          }),
+          readModelStatus: 'Closed',
+          readModelStatusKey: 'closed',
+          readModelEntryPrice: '84.92',
+          readModelClosedPrice: '85.13',
+          readModelRealizedPnl: '-0.399',
+          readModelPositionCreatedAt: '2026-05-18T02:45:50.000Z',
+          readModelPositionClosedAt: '2026-05-18T03:07:43.000Z',
+          preferredOpenedDiffSeconds: 0,
+        },
+      ];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  try {
+    const snapshots: Array<{
+      externalId: string;
+      status?: string | null;
+      payload?: Record<string, unknown> | null;
+    }> = await repository.getLinkedPositionSnapshots(
+      'user-1',
+      'mudrex',
+      'acc-1',
+      'SOLUSDT',
+      new Date('2026-05-17T02:45:50.000Z'),
+      20,
+      rawPositionId,
+      {
+        preferredPositionOpenedAt: '2026-05-18T02:45:50.000Z',
+        preferredSide: 'SELL',
+      }
+    );
+
+    assert.equal(snapshots[0]?.externalId, normalizedPositionId);
+    assert.equal(snapshots[0]?.payload?.closed_price, '85.13');
+    assert.equal(
+      snapshots.some(
+        (snapshot) => snapshot.externalId === 'mudrex:old-sol-asset:2025-04-16T18:09:25Z:SHORT'
+      ),
+      false
+    );
+    assert.ok(
+      calls.some((call) => call.sql.includes('position_model.position_created_at BETWEEN'))
+    );
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
+async function runSuggestedTradeMudrexRawPositionAmbiguousFallbackAssertions(): Promise<void> {
+  const repository = new SuggestedTradeRepository() as any;
+  const originalQuery = coreDataSource.query;
+  const rawPositionId = '019e2038-61c2-755b-8add-ef54d0a16457';
+
+  (coreDataSource as any).query = async (sql: string) => {
+    if (sql.includes('FROM scheduler_positions_snapshots')) {
+      return [
+        {
+          externalId: 'mudrex:old-drift-asset:2026-05-13T01:23:08Z:LONG',
+          status: 'Closed',
+          statusRank: 3,
+          firstSeenAt: '2026-05-13T01:23:08.000Z',
+          lastSeenAt: '2026-05-20T07:40:20.000Z',
+          payload: JSON.stringify({
+            symbol: 'DRIFTUSDT',
+            position_type: 'LONG',
+            created_at: '2026-05-13T01:23:08.000Z',
+          }),
+        },
+      ];
+    }
+    if (sql.includes('position_model.external_id = ?')) {
+      return [];
+    }
+    if (sql.includes('CAST(position_model.payload_json AS CHAR) LIKE ?')) {
+      return [];
+    }
+    if (sql.includes('position_model.position_created_at BETWEEN')) {
+      return [
+        {
+          externalId: 'mudrex:drift-asset:2026-05-13T07:23:46Z:LONG',
+          status: 'Closed',
+          statusRank: 3,
+          firstSeenAt: '2026-05-13T07:23:46.000Z',
+          lastSeenAt: '2026-05-20T07:40:20.000Z',
+          payload: JSON.stringify({
+            symbol: 'DRIFTUSDT',
+            position_type: 'LONG',
+            created_at: '2026-05-13T07:23:46.000Z',
+          }),
+          readModelPositionCreatedAt: '2026-05-13T07:23:46.000Z',
+          preferredOpenedDiffSeconds: 0,
+        },
+        {
+          externalId: 'mudrex:drift-asset:2026-05-13T07:23:47Z:LONG',
+          status: 'Closed',
+          statusRank: 3,
+          firstSeenAt: '2026-05-13T07:23:47.000Z',
+          lastSeenAt: '2026-05-20T07:40:20.000Z',
+          payload: JSON.stringify({
+            symbol: 'DRIFTUSDT',
+            position_type: 'LONG',
+            created_at: '2026-05-13T07:23:47.000Z',
+          }),
+          readModelPositionCreatedAt: '2026-05-13T07:23:47.000Z',
+          preferredOpenedDiffSeconds: 1,
+        },
+      ];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  try {
+    const snapshots = await repository.getLinkedPositionSnapshots(
+      'user-1',
+      'mudrex',
+      'acc-1',
+      'DRIFTUSDT',
+      new Date('2026-05-12T07:23:46.000Z'),
+      20,
+      rawPositionId,
+      {
+        preferredPositionOpenedAt: '2026-05-13T07:23:46.000Z',
+        preferredSide: 'BUY',
+      }
+    );
+
+    assert.deepEqual(snapshots, []);
   } finally {
     (coreDataSource as any).query = originalQuery;
   }
@@ -13317,6 +13508,8 @@ async function main(): Promise<void> {
   await runSuggestedTradeExactPositionReconcileAssertions();
   await runSuggestedTradeDeltaSymbolEquivalenceRepositoryAssertions();
   await runSuggestedTradeExactPositionSnapshotRepositoryAssertions();
+  await runSuggestedTradeMudrexRawPositionResolutionRepositoryAssertions();
+  await runSuggestedTradeMudrexRawPositionAmbiguousFallbackAssertions();
   await runSuggestedTradeExecutionLinkPreservationAssertions();
   runSuggestedTradeDeltaClosedFilledTimestampAssertions();
   await runSuggestedTradeLimitOrderExpiryAssertions();

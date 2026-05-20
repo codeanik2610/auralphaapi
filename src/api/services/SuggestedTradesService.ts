@@ -8412,7 +8412,16 @@ export class SuggestedTradesService {
             trade.symbol,
             positionAnchor,
             20,
-            this.readStringValue(execution?.positionId)
+            this.readStringValue(execution?.positionId),
+            {
+              preferredPositionOpenedAt:
+                execution?.positionOpenedAt ??
+                execution?.filledAt ??
+                execution?.submittedAt ??
+                execution?.linkedAt ??
+                trade.signalTime.toISOString(),
+              preferredSide: trade.side,
+            }
           );
           let nextExecution = this.mergePositionOutcome(trade, execution ?? {}, positionSnapshots, {
             allowPositionEvidenceFill: true,
@@ -8477,7 +8486,20 @@ export class SuggestedTradesService {
         trade.symbol,
         positionAnchor,
         20,
-        this.readStringValue(nextExecution.positionId ?? execution?.positionId)
+        this.readStringValue(nextExecution.positionId ?? execution?.positionId),
+        {
+          preferredPositionOpenedAt:
+            nextExecution.positionOpenedAt ??
+            execution?.positionOpenedAt ??
+            nextExecution.filledAt ??
+            execution?.filledAt ??
+            nextExecution.submittedAt ??
+            execution?.submittedAt ??
+            nextExecution.linkedAt ??
+            execution?.linkedAt ??
+            trade.signalTime.toISOString(),
+          preferredSide: trade.side,
+        }
       );
       nextExecution = this.mergePositionOutcome(trade, nextExecution, positionSnapshots, {
         allowPositionEvidenceFill: options.allowPositionEvidenceFill === true,
