@@ -725,6 +725,7 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       fileOnly('scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh'),
       fileOnly('deploy/cron/auralpha-mudrex-protection-health-watchdog'),
       fileOnly('scripts/checks/run-suggested-trades-mudrex-position-resolution-watchdog.sh'),
+      fileOnly('deploy/cron/auralpha-mudrex-position-resolution-watchdog'),
       script(
         'check:suggested-trades-delta-protection-guardrail',
         'scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'

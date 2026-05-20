@@ -11833,6 +11833,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'system coverage manifest must include the Mudrex protection health watchdog cron'
   );
   assert.equal(
+    coverageManifestSource.includes('deploy/cron/auralpha-mudrex-position-resolution-watchdog'),
+    true,
+    'system coverage manifest must include the Mudrex position resolution watchdog cron'
+  );
+  assert.equal(
     coverageManifestSource.includes('check:suggested-trades-delta-protection-guardrail'),
     true,
     'system coverage manifest must include the Delta protection guardrail check'
