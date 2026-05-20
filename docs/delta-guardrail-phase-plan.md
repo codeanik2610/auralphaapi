@@ -25,7 +25,7 @@ Delta currently has broader protection-health coverage than Mudrex, plus a separ
 - [x] Separate position identity watchdog focused only on Delta mapping quality.
 - [ ] Deeper "why this position id was chosen" artifact.
 - [ ] Production canary apply for repair path when a real safe candidate appears.
-- [ ] Operator runbook for single-candidate Delta repair.
+- [x] Operator runbook for single-candidate Delta repair.
 
 ## Phase 1: Position Resolution Read-Only Audit
 
@@ -148,8 +148,10 @@ Document how to inspect, preview, and safely apply a single Delta repair.
 
 Acceptance:
 
-- [ ] Includes artifact paths for all Delta watchdogs.
-- [ ] Includes required environment flags.
-- [ ] Includes broker read-back checklist.
-- [ ] Includes "do not proceed" conditions.
-- [ ] Includes manual verification steps in Delta Exchange.
+- [x] Includes artifact paths for all Delta watchdogs.
+- [x] Includes required environment flags.
+- [x] Includes broker read-back checklist.
+- [x] Includes "do not proceed" conditions.
+- [x] Includes manual verification steps in Delta Exchange.
+
+Runbook: `docs/delta-protection-repair-operator-runbook.md`
