@@ -12942,6 +12942,33 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
     ema5PullbackConfig.rules
   );
 
+  const pythonMetadataOnlyTrailing = service.resolveProtectionPlanTrailingStop(
+    {
+      symbol: 'ICPUSDT',
+      side: 'BUY',
+      timeframe: '5m',
+      meta: {
+        signalTradePlan: {
+          metadata: {
+            trailing_stop_rules: [
+              { whenProfitR: 0.5, moveStopToR: 0 },
+              { whenProfitR: 2, moveStopToR: 1 },
+            ],
+          },
+        },
+      },
+    },
+    {
+      executionMode: 'live',
+      protectionPlan: {},
+    }
+  );
+  assert.equal(
+    pythonMetadataOnlyTrailing,
+    null,
+    'Python entry_plan metadata must not be treated as a trailing SL ladder source'
+  );
+
   const templateOnlyLadderConfig = normalizeCustomRLadderTrailingStopConfig({
     enabled: true,
     mode: 'custom_r_ladder',
@@ -12990,6 +13017,14 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
           capturedAt: '2026-05-19T06:00:00.000Z',
           trailingStop: ema5PullbackConfig,
         },
+        signalTradePlan: {
+          metadata: {
+            trailing_stop_rules: [
+              { whenProfitR: 0.5, moveStopToR: 0 },
+              { whenProfitR: 2, moveStopToR: 1 },
+            ],
+          },
+        },
       },
     },
     {
@@ -13006,6 +13041,57 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
   assert.equal(mudrexTemplateConfig.sourceTemplateVersion, 7);
   assert.equal(mudrexTemplateConfig.sourceTemplateUpdatedAt, '2026-05-19T06:30:00.000Z');
   assert.deepEqual(mudrexTemplateConfig.config?.rules, templateOnlyLadderConfig.rules);
+
+  const templateCodeOnlyService = new SuggestedTradesService() as any;
+  templateCodeOnlyService.strategyTemplateRepository = {
+    async getStrategyTemplateById(userId: string, strategyId: string) {
+      assert.equal(userId, 'user-1');
+      assert.equal(strategyId, 'template-code-only');
+      return {
+        id: 'template-code-only',
+        userId,
+        name: 'EMA5 Cross Pullback 1:6',
+        description: null,
+        status: 'Active',
+        templateVersion: 8,
+        config: {
+          codeTarget: 'python',
+          codeDefinition:
+            'def entry_plan(self, ctx):\n' +
+            '    return {"metadata": {"trailing_stop_rules": [{"whenProfitR": 0.5, "moveStopToR": 0}]}}',
+        },
+        createdAt: new Date('2026-05-18T00:00:00.000Z'),
+        updatedAt: new Date('2026-05-19T06:45:00.000Z'),
+      };
+    },
+  };
+  const templateCodeOnlyConfig = await templateCodeOnlyService.resolveTemplateTrailingStopConfig(
+    'user-1',
+    {
+      id: 'trade-template-code-only',
+      sourceTemplateId: 'template-code-only',
+      symbol: 'TONUSDT',
+      side: 'BUY',
+      timeframe: '15m',
+      meta: {
+        signalTradePlan: {
+          metadata: {
+            trailing_stop_rules: [{ whenProfitR: 0.5, moveStopToR: 0 }],
+          },
+        },
+      },
+    },
+    {
+      brokerKey: 'mudrex',
+      protectionPlan: {},
+    }
+  );
+  assert.equal(templateCodeOnlyConfig.config, null);
+  assert.equal(templateCodeOnlyConfig.source, 'strategy_template');
+  assert.equal(
+    templateCodeOnlyConfig.unavailableReason,
+    'template_ladder_unavailable:invalid_or_missing_trailing_stop'
+  );
 
   const missingTemplateConfig = await service.resolveTemplateTrailingStopConfig(
     'user-1',
