@@ -214,11 +214,11 @@ Coverage:
 
 Acceptance:
 
-- [ ] Run production preview with apply disabled.
-- [ ] Capture artifact showing `dryRun: true`.
-- [ ] Capture artifact showing repair apply disabled.
-- [ ] Capture artifact showing stale-cancel apply disabled.
-- [ ] Review every candidate before allowing any canary.
+- [x] Run production preview with apply disabled.
+- [x] Capture artifact showing `dryRun: true`. Verified in `/opt/auralpha/guardrail-artifacts/delta-protection-repair-preview/20260521T052956Z-preview.json`.
+- [x] Capture artifact showing repair apply disabled. Verified in `/opt/auralpha/guardrail-artifacts/delta-protection-repair-preview/20260521T052956Z-dry-run.json`.
+- [x] Capture artifact showing stale-cancel apply disabled. Verified in `/opt/auralpha/guardrail-artifacts/delta-protection-repair-preview/20260521T052956Z-dry-run.json`.
+- [x] Review every candidate before allowing any canary. Production baseline found zero candidates: audited 240, open positions 1, issue trades 0, repairable items 0, blocked items 0, manual review items 0.
 
 ### Delta Phase 5: Stale-Protection Canary Apply
 
