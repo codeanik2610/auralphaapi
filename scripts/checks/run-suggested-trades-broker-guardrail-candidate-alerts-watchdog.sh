@@ -3,6 +3,7 @@ set -euo pipefail
 
 CONTAINER_NAME="${AURALPHA_API_CONTAINER_NAME:-auralpha-auralpha-api-1}"
 ARTIFACT_DIR="${AURALPHA_BROKER_GUARDRAIL_ALERT_ARTIFACT_DIR:-/opt/auralpha/guardrail-artifacts/broker-guardrail-candidate-alerts}"
+HISTORY_DIR="${AURALPHA_BROKER_GUARDRAIL_ALERT_HISTORY_DIR:-${ARTIFACT_DIR}/candidate-history}"
 RETENTION_DAYS="${AURALPHA_BROKER_GUARDRAIL_ALERT_RETENTION_DAYS:-14}"
 DRY_RUN="${SUGGESTED_TRADES_BROKER_GUARDRAIL_ALERT_DRY_RUN:-false}"
 ALERT_LIMIT="${SUGGESTED_TRADES_BROKER_GUARDRAIL_ALERT_LIMIT:-100}"
@@ -17,6 +18,7 @@ mkdir -p "${ARTIFACT_DIR}"
 tmp_output="${ARTIFACT_DIR}/${timestamp}.tmp"
 log_output="${ARTIFACT_DIR}/${timestamp}.log"
 json_output="${ARTIFACT_DIR}/${timestamp}.json"
+history_output="${HISTORY_DIR}/${timestamp:0:8}.jsonl"
 
 cleanup_tmp() {
   rm -f "${tmp_output}"
@@ -46,9 +48,12 @@ trap - EXIT
 json_line="$(sed -n 's/^suggested-trades-broker-guardrail-candidate-alerts: //p' "${log_output}" | tail -n 1)"
 if [[ -n "${json_line}" ]]; then
   printf '%s\n' "${json_line}" >"${json_output}"
+  mkdir -p "${HISTORY_DIR}"
+  printf '%s\n' "${json_line}" >>"${history_output}"
 fi
 
 find "${ARTIFACT_DIR}" -type f -mtime +"${RETENTION_DAYS}" -delete
+find "${HISTORY_DIR}" -type f -mtime +"${RETENTION_DAYS}" -delete 2>/dev/null || true
 
 if [[ "${status}" -ne 0 ]]; then
   echo "Broker guardrail candidate alert watchdog failed; see ${log_output}" >&2
@@ -60,4 +65,4 @@ if [[ ! -s "${json_output}" ]]; then
   exit 1
 fi
 
-echo "Broker guardrail candidate alert watchdog passed; artifact=${json_output}"
+echo "Broker guardrail candidate alert watchdog passed; artifact=${json_output}; history=${history_output}"

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   type BrokerGuardrailAlertRepository,
   type BrokerGuardrailCandidateAlertPlan,
@@ -191,6 +192,34 @@ async function testDryRunDoesNotWriteAlert(): Promise<void> {
   assert.deepEqual(repo.updates, []);
 }
 
+function testWatchdogPersistsAppendOnlyCandidateHistory(): void {
+  const runnerSource = readFileSync(
+    'scripts/checks/run-suggested-trades-broker-guardrail-candidate-alerts-watchdog.sh',
+    'utf8'
+  );
+
+  assert.equal(
+    runnerSource.includes('AURALPHA_BROKER_GUARDRAIL_ALERT_HISTORY_DIR'),
+    true,
+    'candidate alert watchdog must allow a configurable history directory'
+  );
+  assert.equal(
+    runnerSource.includes('history_output="${HISTORY_DIR}/${timestamp:0:8}.jsonl"'),
+    true,
+    'candidate alert watchdog must persist daily JSONL history'
+  );
+  assert.equal(
+    runnerSource.includes('printf \'%s\\n\' "${json_line}" >>"${history_output}"'),
+    true,
+    'candidate alert watchdog must append reports instead of overwriting history'
+  );
+  assert.equal(
+    runnerSource.includes('history=${history_output}'),
+    true,
+    'candidate alert watchdog must print the history artifact path'
+  );
+}
+
 async function run(): Promise<void> {
   testBuildsHighPriorityReadyAlertPlan();
   testBuildsReviewAlertPlanForBlockedDeltaCandidate();
@@ -198,6 +227,7 @@ async function run(): Promise<void> {
   await testCreateAlertForNewCandidate();
   await testUpdateExistingAlertWhenDetailsChange();
   await testDryRunDoesNotWriteAlert();
+  testWatchdogPersistsAppendOnlyCandidateHistory();
 
   console.log('suggested-trades broker guardrail candidate alert tests passed');
 }

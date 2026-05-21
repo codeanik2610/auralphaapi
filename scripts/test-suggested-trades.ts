@@ -11682,6 +11682,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const brokerGuardrailCheckpointSource = read(
     'scripts/checks/check-suggested-trades-broker-guardrail-checkpoint.ts'
   );
+  const brokerGuardrailCandidateAlertRunnerSource = read(
+    'scripts/checks/run-suggested-trades-broker-guardrail-candidate-alerts-watchdog.sh'
+  );
   const brokerGuardrailCheckpointRunnerSource = read(
     'scripts/checks/run-suggested-trades-broker-guardrail-checkpoint.sh'
   );
@@ -12030,6 +12033,18 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     true,
     'platform compose must mount guardrail artifacts read-only for the checkpoint'
   );
+  for (const marker of [
+    'AURALPHA_BROKER_GUARDRAIL_ALERT_HISTORY_DIR',
+    'candidate-history',
+    'history_output="${HISTORY_DIR}/${timestamp:0:8}.jsonl"',
+    '>>"${history_output}"',
+  ]) {
+    assert.equal(
+      brokerGuardrailCandidateAlertRunnerSource.includes(marker),
+      true,
+      `broker guardrail candidate alert runner must retain ${marker}`
+    );
+  }
 
   assert.equal(
     proofSource.includes('scripts/smokes/smoke-suggested-trades-lifecycle.ts'),
