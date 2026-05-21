@@ -39,6 +39,23 @@ type DeltaRepairApplyStatus =
   | 'no_change'
   | 'error';
 
+type DeltaRepairApplyOutcome =
+  | 'dry_run_preview'
+  | 'no_change_pre_apply_refresh'
+  | 'blocked_broker_repair_disabled'
+  | 'apply_error'
+  | 'apply_blocked'
+  | 'applied'
+  | 'no_change'
+  | 'apply_completed_without_changes';
+
+type DeltaRepairApplyOutcomeSummary = {
+  applyOutcome: DeltaRepairApplyOutcome;
+  applyOutcomeReason: string;
+  candidateApplyAttempted: boolean;
+  brokerMutationConfirmed: boolean;
+};
+
 type PositionSnapshots = Awaited<
   ReturnType<SuggestedTradeRepository['getLinkedPositionSnapshots']>
 >;
@@ -407,6 +424,83 @@ function buildSkippedItem(
   };
 }
 
+export function resolveDeltaProtectionRepairApplyOutcomeForTest(input: {
+  applyEnabled: boolean;
+  brokerRepairEnabled: boolean;
+  candidateItems: number;
+  appliedItems: number;
+  noChangeItems: number;
+  blockedItems: number;
+  errorItems: number;
+}): DeltaRepairApplyOutcomeSummary {
+  if (!input.applyEnabled) {
+    return {
+      applyOutcome: 'dry_run_preview',
+      applyOutcomeReason: 'apply mode is disabled; no broker mutation was attempted',
+      candidateApplyAttempted: false,
+      brokerMutationConfirmed: false,
+    };
+  }
+  if (input.candidateItems === 0) {
+    return {
+      applyOutcome: 'no_change_pre_apply_refresh',
+      applyOutcomeReason:
+        'pre-apply refresh found no repairable candidates; no broker mutation was attempted',
+      candidateApplyAttempted: false,
+      brokerMutationConfirmed: false,
+    };
+  }
+  if (!input.brokerRepairEnabled) {
+    return {
+      applyOutcome: 'blocked_broker_repair_disabled',
+      applyOutcomeReason:
+        'Delta repair apply flag was enabled, but the broker-specific repair guard remained disabled',
+      candidateApplyAttempted: false,
+      brokerMutationConfirmed: false,
+    };
+  }
+
+  const candidateApplyAttempted = true;
+  if (input.errorItems > 0) {
+    return {
+      applyOutcome: 'apply_error',
+      applyOutcomeReason: `${input.errorItems} candidate apply attempt(s) failed`,
+      candidateApplyAttempted,
+      brokerMutationConfirmed: input.appliedItems > 0,
+    };
+  }
+  if (input.blockedItems > 0) {
+    return {
+      applyOutcome: 'apply_blocked',
+      applyOutcomeReason: `${input.blockedItems} candidate apply attempt(s) were blocked by live safety checks`,
+      candidateApplyAttempted,
+      brokerMutationConfirmed: input.appliedItems > 0,
+    };
+  }
+  if (input.appliedItems > 0) {
+    return {
+      applyOutcome: 'applied',
+      applyOutcomeReason: `${input.appliedItems} candidate apply attempt(s) completed`,
+      candidateApplyAttempted,
+      brokerMutationConfirmed: true,
+    };
+  }
+  if (input.noChangeItems > 0) {
+    return {
+      applyOutcome: 'no_change',
+      applyOutcomeReason: `${input.noChangeItems} candidate apply attempt(s) produced no state change`,
+      candidateApplyAttempted,
+      brokerMutationConfirmed: false,
+    };
+  }
+  return {
+    applyOutcome: 'apply_completed_without_changes',
+    applyOutcomeReason: 'apply mode ran, but no candidate produced a mutation',
+    candidateApplyAttempted,
+    brokerMutationConfirmed: false,
+  };
+}
+
 async function applyCandidate(input: {
   item: DeltaProtectionRepairPreviewItem;
   repository: SuggestedTradeRepository;
@@ -760,6 +854,15 @@ async function run(): Promise<void> {
         item.status === 'skipped_execution_missing' ||
         item.status.startsWith('skipped_stale_cancel_')
     ).length;
+    const applyOutcome = resolveDeltaProtectionRepairApplyOutcomeForTest({
+      applyEnabled: APPLY,
+      brokerRepairEnabled,
+      candidateItems: candidates.length,
+      appliedItems,
+      noChangeItems,
+      blockedItems,
+      errorItems,
+    });
 
     const report = {
       generatedAt: new Date().toISOString(),
@@ -784,6 +887,19 @@ async function run(): Promise<void> {
       candidateItems: candidates.length,
       staleCancelCandidateItems,
       unsupportedRepairableItems,
+      preApplyRefresh: {
+        generatedAt: previewReport.generatedAt,
+        candidateItems: candidates.length,
+        staleCancelCandidateItems,
+        issueTrades: previewReport.issueTrades,
+        repairableItems: previewReport.repairableItems,
+        blockedItems: previewReport.blockedItems,
+        manualReviewItems: previewReport.manualReviewItems,
+      },
+      applyOutcome: applyOutcome.applyOutcome,
+      applyOutcomeReason: applyOutcome.applyOutcomeReason,
+      candidateApplyAttempted: applyOutcome.candidateApplyAttempted,
+      brokerMutationConfirmed: applyOutcome.brokerMutationConfirmed,
       appliedItems,
       noChangeItems,
       blockedItems,

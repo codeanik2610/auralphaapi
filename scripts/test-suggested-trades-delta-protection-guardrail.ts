@@ -7,6 +7,7 @@ import {
 import { buildDeltaProtectionRepairPreview } from './checks/check-suggested-trades-delta-protection-repair-preview';
 import {
   isDeltaProtectionRepairApplyActionSupported,
+  resolveDeltaProtectionRepairApplyOutcomeForTest,
   selectDeltaProtectionRepairApplyCandidates,
 } from './maintenance/repair-suggested-trades-delta-protection';
 
@@ -485,6 +486,63 @@ function testDeltaRepairApplySelectionIsSafeByDefault(): void {
   );
 }
 
+function testDeltaRepairApplyOutcomeExplainsDisappearedCandidate(): void {
+  const outcome = resolveDeltaProtectionRepairApplyOutcomeForTest({
+    applyEnabled: true,
+    brokerRepairEnabled: true,
+    candidateItems: 0,
+    appliedItems: 0,
+    noChangeItems: 0,
+    blockedItems: 0,
+    errorItems: 0,
+  });
+
+  assert.deepEqual(outcome, {
+    applyOutcome: 'no_change_pre_apply_refresh',
+    applyOutcomeReason:
+      'pre-apply refresh found no repairable candidates; no broker mutation was attempted',
+    candidateApplyAttempted: false,
+    brokerMutationConfirmed: false,
+  });
+}
+
+function testDeltaRepairApplyOutcomeConfirmsMutationOnlyWhenApplied(): void {
+  assert.deepEqual(
+    resolveDeltaProtectionRepairApplyOutcomeForTest({
+      applyEnabled: true,
+      brokerRepairEnabled: true,
+      candidateItems: 1,
+      appliedItems: 1,
+      noChangeItems: 0,
+      blockedItems: 0,
+      errorItems: 0,
+    }),
+    {
+      applyOutcome: 'applied',
+      applyOutcomeReason: '1 candidate apply attempt(s) completed',
+      candidateApplyAttempted: true,
+      brokerMutationConfirmed: true,
+    }
+  );
+  assert.deepEqual(
+    resolveDeltaProtectionRepairApplyOutcomeForTest({
+      applyEnabled: false,
+      brokerRepairEnabled: false,
+      candidateItems: 1,
+      appliedItems: 0,
+      noChangeItems: 0,
+      blockedItems: 0,
+      errorItems: 0,
+    }),
+    {
+      applyOutcome: 'dry_run_preview',
+      applyOutcomeReason: 'apply mode is disabled; no broker mutation was attempted',
+      candidateApplyAttempted: false,
+      brokerMutationConfirmed: false,
+    }
+  );
+}
+
 testDeltaContractsArePreferredOverBaseQuantity();
 testDeltaBaseQuantityCanConvertToContracts();
 testPartialFillProtectionMismatchStillFlags();
@@ -503,5 +561,7 @@ testDeltaRepairPreviewBlocksPartialFillAmbiguousPositionMapping();
 testDeltaRepairPreviewBlocksPartialFillRequestedQuantitySource();
 testDeltaRepairPreviewBlocksPartialFillWithoutContractValueEvidence();
 testDeltaRepairApplySelectionIsSafeByDefault();
+testDeltaRepairApplyOutcomeExplainsDisappearedCandidate();
+testDeltaRepairApplyOutcomeConfirmsMutationOnlyWhenApplied();
 
 console.log('Suggested trades Delta protection guardrail tests passed.');
