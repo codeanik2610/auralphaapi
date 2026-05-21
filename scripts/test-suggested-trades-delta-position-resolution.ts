@@ -107,10 +107,7 @@ function testExactReadModelBinding(): void {
   assert.equal(item.positionSelection.decision, 'accepted_exact_position_id');
   assert.equal(item.positionSelection.preferredTimestampSource, 'position_opened_at');
   assert.equal(item.positionSelection.preferredTimestamp, '2026-05-20T00:00:05.000Z');
-  assert.equal(
-    item.positionSelection.exactLookupKey,
-    'user-1:delta-acc-1:delta-position-1'
-  );
+  assert.equal(item.positionSelection.exactLookupKey, 'user-1:delta-acc-1:delta-position-1');
   assert.equal(item.positionSelection.externalLookupKey, 'user-1:delta-position-1');
   assert.equal(item.positionSelection.checks.positionIdPresent, true);
   assert.equal(item.positionSelection.checks.exactReadModelFound, true);
@@ -160,6 +157,25 @@ function testMissingReadModelIsUnresolved(): void {
   assert.equal(
     item.positionSelection.rejectedCandidates[0]?.candidateSource,
     'same_symbol_open_position'
+  );
+}
+
+function testTerminalMissingReadModelIsHistoricalDrift(): void {
+  const item = evaluate({
+    execution: {
+      executionState: 'closed',
+      positionStatus: 'CLOSED',
+    },
+    exactPosition: null,
+    sameSymbolOpenPositions: [],
+  });
+
+  assert.equal(item.type, 'terminal_missing_read_model');
+  assert.equal(item.positionSelection.decision, 'observed_terminal_missing_read_model');
+  assert.equal(item.sameSymbolOpenPositionCandidates, 0);
+  assert.equal(
+    item.reasons.some((reason) => reason.includes('no same-symbol open candidates')),
+    true
   );
 }
 
@@ -333,6 +349,7 @@ function testAuditEvidenceFilterKeepsFilledAndPositionRows(): void {
 testExactReadModelBinding();
 testMissingPositionIdIsUnresolved();
 testMissingReadModelIsUnresolved();
+testTerminalMissingReadModelIsHistoricalDrift();
 testAmbiguousSameSymbolIsSeparatedFromUnsafe();
 testAccountMismatchIsUnsafe();
 testSymbolMismatchIsUnsafe();

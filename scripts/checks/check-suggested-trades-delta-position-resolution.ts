@@ -45,6 +45,7 @@ export type DeltaPositionResolutionType =
   | 'exact_read_model'
   | 'missing_position_id'
   | 'missing_read_model'
+  | 'terminal_missing_read_model'
   | 'account_mismatch'
   | 'symbol_mismatch'
   | 'side_mismatch'
@@ -62,6 +63,7 @@ type DeltaPositionSelectionDecision =
   | 'rejected_missing_position_id'
   | 'rejected_account_mismatch'
   | 'rejected_missing_read_model'
+  | 'observed_terminal_missing_read_model'
   | 'rejected_symbol_mismatch'
   | 'rejected_side_mismatch'
   | 'rejected_ambiguous_same_symbol';
@@ -177,6 +179,7 @@ export type DeltaPositionResolutionReport = {
   exactReadModel: number;
   missingPositionId: number;
   missingReadModel: number;
+  terminalMissingReadModel: number;
   accountMismatch: number;
   symbolMismatch: number;
   sideMismatch: number;
@@ -223,6 +226,7 @@ const TERMINAL_EXECUTION_STATES = new Set([
   'expired',
   'failed',
 ]);
+const TERMINAL_ORDER_STATUSES = new Set(['CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'FAILED']);
 const TERMINAL_POSITION_STATES = new Set(['closed', 'liquidated']);
 const POSITION_EVIDENCE_ORDER_STATUSES = new Set([
   'CLOSED',
@@ -308,7 +312,11 @@ function normalizeStatus(value: unknown): string | null {
 }
 
 function isTerminalExecution(row: DeltaPositionExecutionRow): boolean {
-  return TERMINAL_EXECUTION_STATES.has(readString(row.executionState).toLowerCase());
+  return (
+    TERMINAL_EXECUTION_STATES.has(readString(row.executionState).toLowerCase()) ||
+    TERMINAL_ORDER_STATUSES.has(normalizeStatus(row.orderStatus) ?? '') ||
+    isTerminalPositionState(row.positionStatus)
+  );
 }
 
 function isTerminalPositionState(value: unknown): boolean {
@@ -448,6 +456,8 @@ function countByType(
     exact_read_model: items.filter((item) => item.type === 'exact_read_model').length,
     missing_position_id: items.filter((item) => item.type === 'missing_position_id').length,
     missing_read_model: items.filter((item) => item.type === 'missing_read_model').length,
+    terminal_missing_read_model: items.filter((item) => item.type === 'terminal_missing_read_model')
+      .length,
     account_mismatch: items.filter((item) => item.type === 'account_mismatch').length,
     symbol_mismatch: items.filter((item) => item.type === 'symbol_mismatch').length,
     side_mismatch: items.filter((item) => item.type === 'side_mismatch').length,
@@ -493,9 +503,7 @@ function resolveEntryOrderLineage(input: {
   return 'entry_order_snapshot_match';
 }
 
-function summarizePosition(
-  position: PositionReadModel
-): DeltaPositionSelectionPositionSummary {
+function summarizePosition(position: PositionReadModel): DeltaPositionSelectionPositionSummary {
   return {
     externalId: position.externalId,
     accountId: position.accountId,
@@ -554,6 +562,12 @@ function resolvePositionSelectionDecision(type: DeltaPositionResolutionType): {
       return {
         decision: 'rejected_missing_read_model',
         reason: 'No exact Delta position read-model row was found for the execution position id.',
+      };
+    case 'terminal_missing_read_model':
+      return {
+        decision: 'observed_terminal_missing_read_model',
+        reason:
+          'Terminal Delta execution has no exact position read-model row and no same-symbol open candidate.',
       };
     case 'symbol_mismatch':
       return {
@@ -647,9 +661,7 @@ function buildPositionSelectionEvidence(input: {
     exactLookupKey: input.row.positionId
       ? positionKey(input.row.userId, input.row.accountId, input.row.positionId)
       : null,
-    externalLookupKey: input.row.positionId
-      ? `${input.row.userId}:${input.row.positionId}`
-      : null,
+    externalLookupKey: input.row.positionId ? `${input.row.userId}:${input.row.positionId}` : null,
     searchedPositionId: input.row.positionId,
     checks: {
       positionIdPresent: Boolean(input.row.positionId),
@@ -714,11 +726,18 @@ export function evaluateDeltaPositionResolutionForTest(input: {
         .join(', ')}).`
     );
   } else if (!exactPosition) {
-    type = sameSymbolOpenPositions.length > 1 ? 'ambiguous_same_symbol' : 'missing_read_model';
+    type =
+      isTerminalExecution(row) && sameSymbolOpenPositions.length === 0
+        ? 'terminal_missing_read_model'
+        : sameSymbolOpenPositions.length > 1
+          ? 'ambiguous_same_symbol'
+          : 'missing_read_model';
     reasons.push(
-      sameSymbolOpenPositions.length > 1
-        ? `No exact position_read_models row for ${row.positionId}; same-symbol open candidates=${sameSymbolOpenPositions.length}.`
-        : `No exact Delta position_read_models row for position_id ${row.positionId}.`
+      type === 'terminal_missing_read_model'
+        ? `Terminal Delta execution has no exact position_read_models row for position_id ${row.positionId}; no same-symbol open candidates were found.`
+        : sameSymbolOpenPositions.length > 1
+          ? `No exact position_read_models row for ${row.positionId}; same-symbol open candidates=${sameSymbolOpenPositions.length}.`
+          : `No exact Delta position_read_models row for position_id ${row.positionId}.`
     );
   } else if (symbolMatches === false) {
     type = 'symbol_mismatch';
@@ -1014,6 +1033,7 @@ export async function buildDeltaPositionResolutionReport(): Promise<DeltaPositio
     exactReadModel: byType.exact_read_model,
     missingPositionId: byType.missing_position_id,
     missingReadModel: byType.missing_read_model,
+    terminalMissingReadModel: byType.terminal_missing_read_model,
     accountMismatch: byType.account_mismatch,
     symbolMismatch: byType.symbol_mismatch,
     sideMismatch: byType.side_mismatch,
