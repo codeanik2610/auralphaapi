@@ -91,19 +91,19 @@ Purpose: document the exact Mudrex operating process before any apply canary.
 
 Coverage:
 
-- [ ] Artifact locations.
-- [ ] Preview command.
-- [ ] Apply command with required env flags.
-- [ ] Broker read-back checklist.
-- [ ] Database verification checklist.
-- [ ] Do-not-proceed conditions.
-- [ ] Manual recovery steps.
+- [x] Artifact locations.
+- [x] Preview command.
+- [x] Apply command with required env flags.
+- [x] Broker read-back checklist.
+- [x] Database verification checklist.
+- [x] Do-not-proceed conditions.
+- [x] Manual recovery steps.
 
 Acceptance:
 
-- [ ] Runbook saved under `docs/`.
-- [ ] Runbook references the actual scripts and artifact paths.
-- [ ] Runbook states mutation is disabled by default.
+- [x] Runbook saved under `docs/`.
+- [x] Runbook references the actual scripts and artifact paths.
+- [x] Runbook states mutation is disabled by default.
 
 ### Mudrex Phase 5: Single-Candidate Canary Apply
 

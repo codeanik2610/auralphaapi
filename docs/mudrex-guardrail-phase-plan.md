@@ -144,7 +144,9 @@ Document how to inspect, preview, and apply a single repair.
 
 Acceptance:
 
-- [ ] Includes artifact paths.
-- [ ] Includes required environment flags.
-- [ ] Includes rollback/manual broker verification steps.
-- [ ] Includes "do not proceed" conditions.
+- [x] Includes artifact paths.
+- [x] Includes required environment flags.
+- [x] Includes rollback/manual broker verification steps.
+- [x] Includes "do not proceed" conditions.
+
+Runbook: `docs/mudrex-protection-repair-operator-runbook.md`
