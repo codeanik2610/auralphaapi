@@ -673,6 +673,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'scripts/test-suggested-trades-mudrex-protection-health.ts'
       ),
       script(
+        'test:suggested-trades-broker-guardrail-candidate-alerts',
+        'scripts/test-suggested-trades-broker-guardrail-candidate-alerts.ts'
+      ),
+      script(
         'test:suggested-trades-protection-guardrails',
         'scripts/test-suggested-trades-protection-guardrails.ts'
       ),
@@ -748,6 +752,12 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       ),
       fileOnly('scripts/checks/run-suggested-trades-delta-stale-protection-watchdog.sh'),
       fileOnly('deploy/cron/auralpha-delta-stale-protection-watchdog'),
+      script(
+        'check:suggested-trades-broker-guardrail-candidate-alerts',
+        'scripts/checks/check-suggested-trades-broker-guardrail-candidate-alerts.ts'
+      ),
+      fileOnly('scripts/checks/run-suggested-trades-broker-guardrail-candidate-alerts-watchdog.sh'),
+      fileOnly('deploy/cron/auralpha-broker-guardrail-candidate-alerts-watchdog'),
       script(
         'repair:suggested-trades-delta-protection',
         'scripts/maintenance/repair-suggested-trades-delta-protection.ts'

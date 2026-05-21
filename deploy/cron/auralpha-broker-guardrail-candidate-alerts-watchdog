@@ -1,0 +1,7 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# Converts Mudrex and Delta guardrail repair-preview candidates into app alerts every 10 minutes.
+# The runner does not enable any broker repair or stale-cancel mutation flags.
+*/10 * * * * root cd /opt/auralpha/Backend/aurAlpha && /usr/bin/flock -n /var/lock/auralpha-broker-guardrail-candidate-alerts-watchdog.lock bash -lc './scripts/checks/run-suggested-trades-broker-guardrail-candidate-alerts-watchdog.sh' >> /var/log/auralpha-broker-guardrail-candidate-alerts-watchdog.log 2>&1

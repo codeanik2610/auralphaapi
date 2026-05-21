@@ -20,6 +20,7 @@ Required default posture:
 
 - [x] Watchdogs may read database and broker state.
 - [x] Watchdogs may write artifacts and fail on thresholds.
+- [x] Watchdogs may create app alerts for detected repair-preview candidates.
 - [x] Repair scripts may run in dry-run/preview mode.
 - [ ] Scheduled watchdogs must not mutate broker state.
 - [ ] Apply flags must only be enabled for one reviewed candidate at a time.
@@ -33,6 +34,7 @@ Last read-only verification: May 21, 2026, 5:40 AM UTC.
 - [x] Delta position resolution is clean: audited 95, exact read-model 95, unresolved 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/delta-position-resolution/20260521T054019Z.json`.
 - [x] Delta protection guardrail is clean: audited 240, open positions 1, issue trades 0, missing SL/TP 0, stale protection 0, partial-fill mismatch 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/delta-protection-guardrail/20260521T054037Z.json`.
 - [x] Delta stale-protection watchdog is clean and read-only: `dryRun: true`, mutation disabled, apply flags false, stale candidates 0. Artifact: `/opt/auralpha/guardrail-artifacts/delta-stale-protection-watchdog/20260521T054056Z.json`.
+- [x] Broker guardrail candidate alerting is represented in code and cron: it reuses Mudrex and Delta repair-preview reports and writes alerts only, with broker mutation flags absent.
 - [x] Canary phases are blocked until a real safe candidate appears.
 
 ## Mudrex Plan
