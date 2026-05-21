@@ -160,8 +160,8 @@ Coverage:
 Acceptance:
 
 - [x] Cron file exists in the repo.
-- [ ] Cron is installed on production.
-- [ ] Latest production artifact proves scheduled execution.
+- [x] Cron is installed on production.
+- [x] Latest production artifact proves scheduled execution.
 - [x] Missing protection, stale protection, partial-fill mismatch, and unsafe mismatch thresholds default to zero.
 
 ### Delta Phase 2: Existing Scheduled Watchdog Verification
