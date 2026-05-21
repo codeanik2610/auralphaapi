@@ -24,6 +24,17 @@ Required default posture:
 - [ ] Scheduled watchdogs must not mutate broker state.
 - [ ] Apply flags must only be enabled for one reviewed candidate at a time.
 
+## Current Production Status
+
+Last read-only verification: May 21, 2026, 5:40 AM UTC.
+
+- [x] Mudrex position resolution is clean: audited 217, unresolved preferred 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/mudrex-position-resolution/20260521T053938Z.json`.
+- [x] Mudrex protection health is clean: audited 392, open positions 0, issue trades 0, missing SL/TP 0, stale protection 0, partial-fill mismatch 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/mudrex-protection-health/20260521T053955Z.json`.
+- [x] Delta position resolution is clean: audited 95, exact read-model 95, unresolved 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/delta-position-resolution/20260521T054019Z.json`.
+- [x] Delta protection guardrail is clean: audited 240, open positions 1, issue trades 0, missing SL/TP 0, stale protection 0, partial-fill mismatch 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/delta-protection-guardrail/20260521T054037Z.json`.
+- [x] Delta stale-protection watchdog is clean and read-only: `dryRun: true`, mutation disabled, apply flags false, stale candidates 0. Artifact: `/opt/auralpha/guardrail-artifacts/delta-stale-protection-watchdog/20260521T054056Z.json`.
+- [x] Canary phases are blocked until a real safe candidate appears.
+
 ## Mudrex Plan
 
 ### Mudrex Phase 1: Position-Resolution Watchdog Source Of Truth
