@@ -17,7 +17,7 @@ Mudrex currently has strong position identity coverage through the position-reso
 - [x] Read-only, no mutation path.
 - [x] Scheduled protection-health watchdog artifacts.
 - [x] Production repair preview baseline with apply flags disabled.
-- [x] Scheduled stale-protection watchdog source, runner, and cron definition.
+- [x] Scheduled stale-protection watchdog source, runner, cron definition, and production cron artifact.
 
 ## Missing Coverage
 
@@ -28,7 +28,7 @@ Mudrex currently has strong position identity coverage through the position-reso
 - [x] Stale protection cancellation preview.
 - [x] Mutation apply path guarded by read-back and disabled by default.
 - [x] Scheduled protection-health watchdog artifacts.
-- [x] Scheduled stale-protection watchdog artifacts path and zero-mutation flag checks.
+- [x] Scheduled stale-protection watchdog artifacts path and zero-mutation flag checks. Verified in `/opt/auralpha/guardrail-artifacts/mudrex-stale-protection-watchdog/20260521T070001Z.json`.
 - [ ] Single-candidate production canary apply when a real safe candidate appears.
 - [ ] Scheduled apply decision after canary evidence.
 
@@ -143,7 +143,7 @@ Acceptance:
 
 - [x] Watchdog shows exactly which stale-cancel items would be eligible for apply.
 - [x] Watchdog fails loudly if apply flags are accidentally enabled in the cron environment.
-- [ ] Production cron installed and latest artifact verified.
+- [x] Production cron installed and latest artifact verified. Cron artifact `/opt/auralpha/guardrail-artifacts/mudrex-stale-protection-watchdog/20260521T070001Z.json` showed `dryRun: true`, `mutation: disabled`, `applyEnabled: false`, `staleCancelApplyEnabled: false`, audited 394, issue trades 0, stale cancel candidates 0.
 
 ## Phase 8: Operator Runbook
 
