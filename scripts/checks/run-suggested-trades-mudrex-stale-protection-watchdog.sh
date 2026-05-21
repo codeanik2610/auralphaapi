@@ -14,6 +14,7 @@ mkdir -p "${ARTIFACT_DIR}"
 tmp_output="${ARTIFACT_DIR}/${timestamp}.tmp"
 log_output="${ARTIFACT_DIR}/${timestamp}.log"
 json_output="${ARTIFACT_DIR}/${timestamp}.json"
+container_json_output="/tmp/auralpha-mudrex-stale-protection-${timestamp}.json"
 
 cleanup_tmp() {
   rm -f "${tmp_output}"
@@ -27,7 +28,7 @@ docker exec \
   -e SUGGESTED_TRADES_MUDREX_PROTECTION_LOOKBACK_DAYS="${LOOKBACK_DAYS}" \
   -e SUGGESTED_TRADES_MUDREX_STALE_PROTECTION_WATCHDOG_LIMIT="${LIMIT}" \
   -e SUGGESTED_TRADES_MAX_MUDREX_STALE_CANCEL_CANDIDATES="${MAX_STALE_CANCEL_CANDIDATES}" \
-  -e SUGGESTED_TRADES_MUDREX_STALE_PROTECTION_WATCHDOG_OUTPUT_FILE="" \
+  -e SUGGESTED_TRADES_MUDREX_STALE_PROTECTION_WATCHDOG_OUTPUT_FILE="${container_json_output}" \
   "${CONTAINER_NAME}" \
   node dist/scripts/checks/check-suggested-trades-mudrex-stale-protection-watchdog.js \
   >"${tmp_output}" 2>&1
@@ -37,9 +38,14 @@ set -e
 mv "${tmp_output}" "${log_output}"
 trap - EXIT
 
-json_line="$(sed -n 's/^suggested-trades-mudrex-stale-protection-watchdog: //p' "${log_output}" | tail -n 1)"
-if [[ -n "${json_line}" ]]; then
-  printf '%s\n' "${json_line}" >"${json_output}"
+if docker cp "${CONTAINER_NAME}:${container_json_output}" "${json_output}" >/dev/null 2>&1; then
+  docker exec "${CONTAINER_NAME}" rm -f "${container_json_output}" >/dev/null 2>&1 || true
+else
+  docker exec "${CONTAINER_NAME}" rm -f "${container_json_output}" >/dev/null 2>&1 || true
+  json_line="$(sed -n 's/^suggested-trades-mudrex-stale-protection-watchdog: //p' "${log_output}" | tail -n 1)"
+  if [[ -n "${json_line}" ]]; then
+    printf '%s\n' "${json_line}" >"${json_output}"
+  fi
 fi
 
 find "${ARTIFACT_DIR}" -type f -mtime +"${RETENTION_DAYS}" -delete

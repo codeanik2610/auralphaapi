@@ -19,6 +19,7 @@ mkdir -p "${ARTIFACT_DIR}"
 tmp_output="${ARTIFACT_DIR}/${timestamp}.tmp"
 log_output="${ARTIFACT_DIR}/${timestamp}.log"
 json_output="${ARTIFACT_DIR}/${timestamp}.json"
+container_json_output="/tmp/auralpha-delta-protection-guardrail-${timestamp}.json"
 
 cleanup_tmp() {
   rm -f "${tmp_output}"
@@ -35,7 +36,7 @@ docker exec \
   -e SUGGESTED_TRADES_MAX_DELTA_STALE_PROTECTION_FOR_CLOSED_POSITION="${MAX_STALE_PROTECTION_FOR_CLOSED_POSITION}" \
   -e SUGGESTED_TRADES_MAX_DELTA_PARTIAL_FILL_PROTECTION_MISMATCH="${MAX_PARTIAL_FILL_PROTECTION_MISMATCH}" \
   -e SUGGESTED_TRADES_MAX_DELTA_UNSAFE_POSITION_MISMATCH="${MAX_UNSAFE_POSITION_MISMATCH}" \
-  -e SUGGESTED_TRADES_DELTA_PROTECTION_GUARDRAIL_OUTPUT_FILE="" \
+  -e SUGGESTED_TRADES_DELTA_PROTECTION_GUARDRAIL_OUTPUT_FILE="${container_json_output}" \
   "${CONTAINER_NAME}" \
   node dist/scripts/checks/check-suggested-trades-delta-protection-guardrail.js \
   >"${tmp_output}" 2>&1
@@ -45,9 +46,14 @@ set -e
 mv "${tmp_output}" "${log_output}"
 trap - EXIT
 
-json_line="$(sed -n 's/^suggested-trades-delta-protection-guardrail: //p' "${log_output}" | tail -n 1)"
-if [[ -n "${json_line}" ]]; then
-  printf '%s\n' "${json_line}" >"${json_output}"
+if docker cp "${CONTAINER_NAME}:${container_json_output}" "${json_output}" >/dev/null 2>&1; then
+  docker exec "${CONTAINER_NAME}" rm -f "${container_json_output}" >/dev/null 2>&1 || true
+else
+  docker exec "${CONTAINER_NAME}" rm -f "${container_json_output}" >/dev/null 2>&1 || true
+  json_line="$(sed -n 's/^suggested-trades-delta-protection-guardrail: //p' "${log_output}" | tail -n 1)"
+  if [[ -n "${json_line}" ]]; then
+    printf '%s\n' "${json_line}" >"${json_output}"
+  fi
 fi
 
 find "${ARTIFACT_DIR}" -type f -mtime +"${RETENTION_DAYS}" -delete

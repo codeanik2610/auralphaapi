@@ -12007,13 +12007,17 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     true,
     'broker checkpoint runner must use the production guardrail artifact root'
   );
-  assert.equal(
-    brokerGuardrailCheckpointRunnerSource.includes(
-      'SUGGESTED_TRADES_BROKER_GUARDRAIL_CHECKPOINT_OUTPUT_FILE=""'
-    ),
-    true,
-    'broker checkpoint runner must keep container-side output disabled'
-  );
+  for (const marker of [
+    'container_json_output=',
+    'SUGGESTED_TRADES_BROKER_GUARDRAIL_CHECKPOINT_OUTPUT_FILE="${container_json_output}"',
+    'docker cp',
+  ]) {
+    assert.equal(
+      brokerGuardrailCheckpointRunnerSource.includes(marker),
+      true,
+      `broker checkpoint runner must retain durable artifact marker ${marker}`
+    );
+  }
   assert.equal(
     brokerGuardrailCheckpointCronSource.includes('10 0 * * * root'),
     true,

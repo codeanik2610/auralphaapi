@@ -18,6 +18,7 @@ mkdir -p "${ARTIFACT_DIR}"
 tmp_output="${ARTIFACT_DIR}/${timestamp}.tmp"
 log_output="${ARTIFACT_DIR}/${timestamp}.log"
 json_output="${ARTIFACT_DIR}/${timestamp}.json"
+container_json_output="/tmp/auralpha-broker-guardrail-candidate-alerts-${timestamp}.json"
 history_output="${HISTORY_DIR}/${timestamp:0:8}.jsonl"
 
 cleanup_tmp() {
@@ -29,7 +30,7 @@ set +e
 docker exec \
   -e SUGGESTED_TRADES_BROKER_GUARDRAIL_ALERT_DRY_RUN="${DRY_RUN}" \
   -e SUGGESTED_TRADES_BROKER_GUARDRAIL_ALERT_LIMIT="${ALERT_LIMIT}" \
-  -e SUGGESTED_TRADES_BROKER_GUARDRAIL_ALERT_OUTPUT_FILE="" \
+  -e SUGGESTED_TRADES_BROKER_GUARDRAIL_ALERT_OUTPUT_FILE="${container_json_output}" \
   -e SUGGESTED_TRADES_MUDREX_PROTECTION_LOOKBACK_DAYS="${MUDREX_LOOKBACK_DAYS}" \
   -e SUGGESTED_TRADES_MUDREX_PROTECTION_LIMIT="${MUDREX_LIMIT}" \
   -e SUGGESTED_TRADES_MUDREX_PROTECTION_HEALTH_OUTPUT_FILE="" \
@@ -45,11 +46,21 @@ set -e
 mv "${tmp_output}" "${log_output}"
 trap - EXIT
 
-json_line="$(sed -n 's/^suggested-trades-broker-guardrail-candidate-alerts: //p' "${log_output}" | tail -n 1)"
-if [[ -n "${json_line}" ]]; then
-  printf '%s\n' "${json_line}" >"${json_output}"
-  mkdir -p "${HISTORY_DIR}"
-  printf '%s\n' "${json_line}" >>"${history_output}"
+if docker cp "${CONTAINER_NAME}:${container_json_output}" "${json_output}" >/dev/null 2>&1; then
+  docker exec "${CONTAINER_NAME}" rm -f "${container_json_output}" >/dev/null 2>&1 || true
+  json_line="$(sed -n 's/^suggested-trades-broker-guardrail-candidate-alerts: //p' "${log_output}" | tail -n 1)"
+  if [[ -n "${json_line}" ]]; then
+    mkdir -p "${HISTORY_DIR}"
+    printf '%s\n' "${json_line}" >>"${history_output}"
+  fi
+else
+  docker exec "${CONTAINER_NAME}" rm -f "${container_json_output}" >/dev/null 2>&1 || true
+  json_line="$(sed -n 's/^suggested-trades-broker-guardrail-candidate-alerts: //p' "${log_output}" | tail -n 1)"
+  if [[ -n "${json_line}" ]]; then
+    printf '%s\n' "${json_line}" >"${json_output}"
+    mkdir -p "${HISTORY_DIR}"
+    printf '%s\n' "${json_line}" >>"${history_output}"
+  fi
 fi
 
 find "${ARTIFACT_DIR}" -type f -mtime +"${RETENTION_DAYS}" -delete

@@ -15,6 +15,7 @@ mkdir -p "${ARTIFACT_DIR}"
 tmp_output="${ARTIFACT_DIR}/${timestamp}.tmp"
 log_output="${ARTIFACT_DIR}/${timestamp}.log"
 json_output="${ARTIFACT_DIR}/${timestamp}.json"
+container_json_output="/tmp/auralpha-mudrex-position-resolution-${timestamp}.json"
 
 cleanup_tmp() {
   rm -f "${tmp_output}"
@@ -27,7 +28,7 @@ docker exec \
   -e SUGGESTED_TRADES_MUDREX_POSITION_RESOLUTION_LIMIT="${LIMIT}" \
   -e SUGGESTED_TRADES_MAX_MUDREX_POSITION_UNSAFE_MISMATCHES="${MAX_UNSAFE_MISMATCHES}" \
   -e SUGGESTED_TRADES_MAX_MUDREX_POSITION_UNRESOLVED="${MAX_UNRESOLVED}" \
-  -e SUGGESTED_TRADES_MUDREX_POSITION_RESOLUTION_OUTPUT_FILE="" \
+  -e SUGGESTED_TRADES_MUDREX_POSITION_RESOLUTION_OUTPUT_FILE="${container_json_output}" \
   "${CONTAINER_NAME}" \
   node dist/scripts/checks/check-suggested-trades-mudrex-position-resolution.js \
   >"${tmp_output}" 2>&1
@@ -37,9 +38,14 @@ set -e
 mv "${tmp_output}" "${log_output}"
 trap - EXIT
 
-json_line="$(sed -n 's/^suggested-trades-mudrex-position-resolution: //p' "${log_output}" | tail -n 1)"
-if [[ -n "${json_line}" ]]; then
-  printf '%s\n' "${json_line}" >"${json_output}"
+if docker cp "${CONTAINER_NAME}:${container_json_output}" "${json_output}" >/dev/null 2>&1; then
+  docker exec "${CONTAINER_NAME}" rm -f "${container_json_output}" >/dev/null 2>&1 || true
+else
+  docker exec "${CONTAINER_NAME}" rm -f "${container_json_output}" >/dev/null 2>&1 || true
+  json_line="$(sed -n 's/^suggested-trades-mudrex-position-resolution: //p' "${log_output}" | tail -n 1)"
+  if [[ -n "${json_line}" ]]; then
+    printf '%s\n' "${json_line}" >"${json_output}"
+  fi
 fi
 
 find "${ARTIFACT_DIR}" -type f -mtime +"${RETENTION_DAYS}" -delete
