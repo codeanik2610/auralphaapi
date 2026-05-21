@@ -177,10 +177,10 @@ Coverage:
 
 Acceptance:
 
-- [ ] Production position-resolution cron is installed and active.
-- [ ] Production stale-protection cron is installed and active.
-- [ ] Latest artifacts are fresh.
-- [ ] Stale watchdog artifact confirms mutation flags are false.
+- [x] Production position-resolution cron is installed and active.
+- [x] Production stale-protection cron is installed and active.
+- [x] Latest artifacts are fresh.
+- [x] Stale watchdog artifact confirms mutation flags are false.
 
 ### Delta Phase 3: Position-Selection Evidence Artifact
 
