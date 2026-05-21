@@ -1,0 +1,7 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# Runs the Delta protection-guardrail read-only watchdog every 30 minutes.
+# The runner writes timestamped JSON/log artifacts and keeps mutation/apply flags absent.
+*/30 * * * * root cd /opt/auralpha/Backend/aurAlpha && /usr/bin/flock -n /var/lock/auralpha-delta-protection-guardrail-watchdog.lock bash -lc './scripts/checks/run-suggested-trades-delta-protection-guardrail-watchdog.sh' >> /var/log/auralpha-delta-protection-guardrail-watchdog.log 2>&1

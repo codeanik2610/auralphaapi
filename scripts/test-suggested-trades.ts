@@ -11867,6 +11867,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'system coverage manifest must include the Delta protection guardrail watchdog'
   );
   assert.equal(
+    coverageManifestSource.includes('deploy/cron/auralpha-delta-protection-guardrail-watchdog'),
+    true,
+    'system coverage manifest must include the Delta protection guardrail watchdog cron'
+  );
+  assert.equal(
     coverageManifestSource.includes('check:suggested-trades-delta-protection-repair-preview'),
     true,
     'system coverage manifest must include the Delta protection repair preview check'

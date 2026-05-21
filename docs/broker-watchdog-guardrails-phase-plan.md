@@ -153,16 +153,16 @@ Coverage:
 
 - [x] Delta protection-guardrail check script exists.
 - [x] Delta protection-guardrail watchdog runner exists.
-- [ ] Add or verify `deploy/cron/auralpha-delta-protection-guardrail-watchdog`.
-- [ ] Confirm cron uses read-only env only.
-- [ ] Confirm cron writes artifacts to `/opt/auralpha/guardrail-artifacts/delta-protection-guardrail`.
+- [x] Add or verify `deploy/cron/auralpha-delta-protection-guardrail-watchdog`.
+- [x] Confirm cron uses read-only env only.
+- [x] Confirm cron writes artifacts to `/opt/auralpha/guardrail-artifacts/delta-protection-guardrail`.
 
 Acceptance:
 
-- [ ] Cron file exists in the repo.
+- [x] Cron file exists in the repo.
 - [ ] Cron is installed on production.
 - [ ] Latest production artifact proves scheduled execution.
-- [ ] Missing protection, stale protection, partial-fill mismatch, and unsafe mismatch thresholds default to zero.
+- [x] Missing protection, stale protection, partial-fill mismatch, and unsafe mismatch thresholds default to zero.
 
 ### Delta Phase 2: Existing Scheduled Watchdog Verification
 
