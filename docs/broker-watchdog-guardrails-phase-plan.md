@@ -198,7 +198,7 @@ Acceptance:
 
 - [x] Code is validated with tests.
 - [x] Artifact is committed.
-- [ ] Production read-only run includes the new evidence fields.
+- [x] Production read-only run includes the new evidence fields. Verified in `/opt/auralpha/guardrail-artifacts/delta-position-resolution/20260521T051905Z.json`: 95/95 items included `positionSelection`, all accepted exact position ids, no unresolved or unsafe mismatches.
 
 ### Delta Phase 4: Repair Preview Production Baseline
 
