@@ -68,6 +68,7 @@ export type OrderSnapshot = {
 
 export type DeltaGuardrailIssue =
   | 'missing_position_read_model'
+  | 'stale_missing_position_read_model'
   | 'missing_active_stop_loss'
   | 'missing_active_take_profit'
   | 'stale_protection_for_closed_position'
@@ -126,6 +127,7 @@ export type DeltaProtectionGuardrailReport = {
   openPositions: number;
   issueTrades: number;
   missingPositionReadModel: number;
+  staleMissingPositionReadModel: number;
   missingActiveStopLoss: number;
   missingActiveTakeProfit: number;
   staleProtectionForClosedPosition: number;
@@ -138,9 +140,11 @@ export type DeltaProtectionGuardrailReport = {
     maxStaleProtectionForClosedPosition: number;
     maxPartialFillProtectionMismatch: number;
     maxUnsafePositionMismatch: number;
+    staleMissingReadModelMinHours: number;
   };
   byIssue: Record<DeltaGuardrailIssue, number>;
   items: DeltaGuardrailItem[];
+  staleItems: DeltaGuardrailItem[];
 };
 
 export type DeltaProtectionQuantityResolution = {
@@ -183,6 +187,10 @@ const MAX_PARTIAL_FILL_PROTECTION_MISMATCH = readThreshold(
 );
 const MAX_UNSAFE_POSITION_MISMATCH = readThreshold(
   'SUGGESTED_TRADES_MAX_DELTA_UNSAFE_POSITION_MISMATCH'
+);
+const STALE_MISSING_READ_MODEL_MIN_HOURS = Math.max(
+  1,
+  Number(process.env.SUGGESTED_TRADES_DELTA_PROTECTION_STALE_MISSING_READ_MODEL_MIN_HOURS || 12)
 );
 
 const ACTIVE_ORDER_STATUSES = new Set([
@@ -343,6 +351,29 @@ function isPartialFill(row: DeltaExecutionRow): boolean {
       row.filledQuantity < row.quantity) ||
     (row.remainingQuantity !== null && row.remainingQuantity > 0)
   );
+}
+
+function resolveExecutionTimestamp(row: DeltaExecutionRow): string | null {
+  return (
+    row.positionOpenedAt ??
+    row.filledAt ??
+    row.submittedAt ??
+    row.positionClosedAt ??
+    row.updatedAt ??
+    null
+  );
+}
+
+function isStaleMissingPositionReadModel(row: DeltaExecutionRow, now: Date): boolean {
+  const timestamp = resolveExecutionTimestamp(row);
+  if (!timestamp) {
+    return false;
+  }
+  const timestampMs = new Date(timestamp).getTime();
+  if (!Number.isFinite(timestampMs)) {
+    return false;
+  }
+  return now.getTime() - timestampMs >= STALE_MISSING_READ_MODEL_MIN_HOURS * 60 * 60 * 1000;
 }
 
 function quantitiesMismatch(expected: number | null, actual: number | null): boolean {
@@ -805,6 +836,7 @@ function evaluateExecution(input: {
   position: PositionReadModel | null;
   sameSymbolOpenPositions: PositionReadModel[];
   orderByKey: Map<string, OrderSnapshot>;
+  now?: Date;
 }): DeltaGuardrailItem | null {
   const { row, position, sameSymbolOpenPositions, orderByKey } = input;
   const issues = new Set<DeltaGuardrailIssue>();
@@ -819,8 +851,20 @@ function evaluateExecution(input: {
   const stopLossQuantity = protection.stopLossOrder?.quantity ?? null;
   const takeProfitQuantity = protection.takeProfitOrder?.quantity ?? null;
   const protectionMode = extractPlanProtectionMode(row.protectionPlan);
+  const staleMissingPosition =
+    positionMissing &&
+    !position &&
+    sameSymbolOpenPositions.length === 0 &&
+    isStaleMissingPositionReadModel(row, input.now ?? new Date());
 
-  if (positionMissing) {
+  if (staleMissingPosition) {
+    addIssue(
+      issues,
+      reasons,
+      'stale_missing_position_read_model',
+      `Delta execution position_id ${row.positionId ?? 'unknown'} has no exact position_read_models row, no same-symbol open candidate, and is older than ${STALE_MISSING_READ_MODEL_MIN_HOURS}h.`
+    );
+  } else if (positionMissing) {
     addIssue(
       issues,
       reasons,
@@ -833,6 +877,7 @@ function evaluateExecution(input: {
 
   if (
     positionMissing &&
+    !staleMissingPosition &&
     (sameSymbolOpenPositions.length > 0 || Boolean(row.positionId && !position))
   ) {
     addIssue(
@@ -959,6 +1004,16 @@ function evaluateExecution(input: {
   };
 }
 
+export function evaluateDeltaProtectionGuardrailExecutionForTest(input: {
+  row: DeltaExecutionRow;
+  position: PositionReadModel | null;
+  sameSymbolOpenPositions: PositionReadModel[];
+  orderByKey: Map<string, OrderSnapshot>;
+  now?: Date;
+}): DeltaGuardrailItem | null {
+  return evaluateExecution(input);
+}
+
 function countItemsWithIssue(items: DeltaGuardrailItem[], issue: DeltaGuardrailIssue): number {
   return items.filter((item) => item.issues.includes(issue)).length;
 }
@@ -966,6 +1021,10 @@ function countItemsWithIssue(items: DeltaGuardrailItem[], issue: DeltaGuardrailI
 function countByIssue(items: DeltaGuardrailItem[]): Record<DeltaGuardrailIssue, number> {
   return {
     missing_position_read_model: countItemsWithIssue(items, 'missing_position_read_model'),
+    stale_missing_position_read_model: countItemsWithIssue(
+      items,
+      'stale_missing_position_read_model'
+    ),
     missing_active_stop_loss: countItemsWithIssue(items, 'missing_active_stop_loss'),
     missing_active_take_profit: countItemsWithIssue(items, 'missing_active_take_profit'),
     stale_protection_for_closed_position: countItemsWithIssue(
@@ -1028,10 +1087,19 @@ export async function buildDeltaProtectionGuardrailReport(): Promise<DeltaProtec
         position: exactPosition,
         sameSymbolOpenPositions,
         orderByKey,
+        now: generatedAt,
       });
     })
     .filter((item): item is DeltaGuardrailItem => Boolean(item));
-  const byIssue = countByIssue(items);
+  const staleItems = items.filter(
+    (item) => item.issues.length === 1 && item.issues.includes('stale_missing_position_read_model')
+  );
+  const liveIssueItems = items.filter(
+    (item) =>
+      !(item.issues.length === 1 && item.issues.includes('stale_missing_position_read_model'))
+  );
+  const byIssue = countByIssue(liveIssueItems);
+  byIssue.stale_missing_position_read_model = staleItems.length;
   return {
     generatedAt: generatedAt.toISOString(),
     brokerKey: DELTA_BROKER,
@@ -1039,8 +1107,9 @@ export async function buildDeltaProtectionGuardrailReport(): Promise<DeltaProtec
     limit: LIMIT,
     audited: executions.length,
     openPositions: openPositions.length,
-    issueTrades: items.length,
+    issueTrades: liveIssueItems.length,
     missingPositionReadModel: byIssue.missing_position_read_model,
+    staleMissingPositionReadModel: staleItems.length,
     missingActiveStopLoss: byIssue.missing_active_stop_loss,
     missingActiveTakeProfit: byIssue.missing_active_take_profit,
     staleProtectionForClosedPosition: byIssue.stale_protection_for_closed_position,
@@ -1053,9 +1122,11 @@ export async function buildDeltaProtectionGuardrailReport(): Promise<DeltaProtec
       maxStaleProtectionForClosedPosition: MAX_STALE_PROTECTION_FOR_CLOSED_POSITION,
       maxPartialFillProtectionMismatch: MAX_PARTIAL_FILL_PROTECTION_MISMATCH,
       maxUnsafePositionMismatch: MAX_UNSAFE_POSITION_MISMATCH,
+      staleMissingReadModelMinHours: STALE_MISSING_READ_MODEL_MIN_HOURS,
     },
     byIssue,
-    items,
+    items: liveIssueItems,
+    staleItems,
   };
 }
 

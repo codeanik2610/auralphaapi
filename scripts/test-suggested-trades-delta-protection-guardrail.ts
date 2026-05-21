@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
+  type DeltaExecutionRow,
   type DeltaGuardrailItem,
+  evaluateDeltaProtectionGuardrailExecutionForTest,
   hasDeltaProtectionQuantityMismatchForTest,
   resolveExpectedDeltaProtectionQuantity,
 } from './checks/check-suggested-trades-delta-protection-guardrail';
@@ -55,6 +57,73 @@ function buildGuardrailItem(overrides: Partial<DeltaGuardrailItem>): DeltaGuardr
     reasons: ['missing protection'],
     ...overrides,
   };
+}
+
+function buildDeltaExecution(overrides: Partial<DeltaExecutionRow> = {}): DeltaExecutionRow {
+  return {
+    suggestedTradeId: 'st-delta-stale-1',
+    userId: 'user-1',
+    accountId: 'delta-acc-1',
+    tradeSymbol: 'BCHUSDT',
+    tradeBaseSymbol: 'BCH',
+    tradeSide: 'SELL',
+    timeframe: '15m',
+    entryOrderId: null,
+    orderStatus: 'FILLED',
+    executionState: 'filled',
+    positionId: '15001',
+    positionStatus: 'OPEN',
+    quantity: 0.12134947,
+    filledQuantity: 12,
+    remainingQuantity: 0,
+    entryPrice: 368.44,
+    filledPrice: 368.94,
+    stopLossPrice: 371.549607142857,
+    takeProfitPrice: 349.782357142857,
+    protectionState: 'attached',
+    protectionPlan: {},
+    submittedAt: '2026-05-20T09:21:00.000Z',
+    filledAt: '2026-05-20T09:21:19.000Z',
+    positionOpenedAt: '2026-05-20T09:21:19.000Z',
+    positionClosedAt: null,
+    updatedAt: '2026-05-20T09:21:20.000Z',
+    ...overrides,
+  };
+}
+
+function testStaleMissingPositionReadModelIsObservationOnly(): void {
+  const item = evaluateDeltaProtectionGuardrailExecutionForTest({
+    row: buildDeltaExecution(),
+    position: null,
+    sameSymbolOpenPositions: [],
+    orderByKey: new Map(),
+    now: new Date('2026-05-21T11:45:47.000Z'),
+  });
+
+  assert.equal(item?.issues.length, 1);
+  assert.equal(item?.issues[0], 'stale_missing_position_read_model');
+  assert.equal(
+    item?.reasons.some((reason) => reason.includes('older than 12h')),
+    true
+  );
+}
+
+function testRecentMissingPositionReadModelStillBlocks(): void {
+  const item = evaluateDeltaProtectionGuardrailExecutionForTest({
+    row: buildDeltaExecution({
+      positionOpenedAt: '2026-05-21T11:30:00.000Z',
+      filledAt: '2026-05-21T11:30:00.000Z',
+      updatedAt: '2026-05-21T11:30:10.000Z',
+    }),
+    position: null,
+    sameSymbolOpenPositions: [],
+    orderByKey: new Map(),
+    now: new Date('2026-05-21T11:45:47.000Z'),
+  });
+
+  assert.equal(item?.issues.includes('missing_position_read_model'), true);
+  assert.equal(item?.issues.includes('unsafe_position_mismatch'), true);
+  assert.equal(item?.issues.includes('stale_missing_position_read_model'), false);
 }
 
 function testDeltaContractsArePreferredOverBaseQuantity(): void {
@@ -543,6 +612,8 @@ function testDeltaRepairApplyOutcomeConfirmsMutationOnlyWhenApplied(): void {
   );
 }
 
+testStaleMissingPositionReadModelIsObservationOnly();
+testRecentMissingPositionReadModelStillBlocks();
 testDeltaContractsArePreferredOverBaseQuantity();
 testDeltaBaseQuantityCanConvertToContracts();
 testPartialFillProtectionMismatchStillFlags();

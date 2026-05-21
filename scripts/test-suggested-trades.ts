@@ -12336,6 +12336,8 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'position.payload.quantity_contracts',
     'converted base quantity to Delta contracts using contract_value',
     'partial_fill_protection_mismatch',
+    'stale_missing_position_read_model',
+    'evaluateDeltaProtectionGuardrailExecutionForTest',
     'expectedProtectionQuantitySource',
   ]) {
     assert.equal(
