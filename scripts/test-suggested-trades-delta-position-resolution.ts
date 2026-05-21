@@ -77,6 +77,7 @@ function evaluate(
     accountMismatchPositions?: PositionReadModel[];
     sameSymbolOpenPositions?: PositionReadModel[];
     entryOrder?: ReturnType<typeof buildEntryOrder> | null;
+    now?: Date;
   } = {}
 ): DeltaPositionResolutionItem {
   const row = buildExecution(overrides.execution);
@@ -89,6 +90,7 @@ function evaluate(
     sameSymbolOpenPositions:
       overrides.sameSymbolOpenPositions ?? (exactPosition ? [exactPosition] : []),
     entryOrder: overrides.entryOrder === undefined ? buildEntryOrder() : overrides.entryOrder,
+    now: overrides.now,
   });
 }
 
@@ -177,6 +179,49 @@ function testTerminalMissingReadModelIsHistoricalDrift(): void {
     item.reasons.some((reason) => reason.includes('no same-symbol open candidates')),
     true
   );
+}
+
+function testStaleMissingReadModelIsHistoricalDrift(): void {
+  const item = evaluate({
+    execution: {
+      positionOpenedAt: '2026-05-20T09:21:19.000Z',
+      filledAt: '2026-05-20T09:21:19.000Z',
+      executionState: 'filled',
+      positionStatus: 'OPEN',
+      orderStatus: 'FILLED',
+      entryOrderId: null,
+    },
+    exactPosition: null,
+    sameSymbolOpenPositions: [],
+    entryOrder: null,
+    now: new Date('2026-05-21T11:26:56.000Z'),
+  });
+
+  assert.equal(item.type, 'stale_missing_read_model');
+  assert.equal(item.positionSelection.decision, 'observed_stale_missing_read_model');
+  assert.equal(item.sameSymbolOpenPositionCandidates, 0);
+  assert.equal(
+    item.reasons.some((reason) => reason.includes('Stale Delta execution')),
+    true
+  );
+}
+
+function testRecentMissingReadModelStillBlocks(): void {
+  const item = evaluate({
+    execution: {
+      positionOpenedAt: '2026-05-21T10:50:00.000Z',
+      filledAt: '2026-05-21T10:50:00.000Z',
+      executionState: 'filled',
+      positionStatus: 'OPEN',
+      orderStatus: 'FILLED',
+    },
+    exactPosition: null,
+    sameSymbolOpenPositions: [],
+    now: new Date('2026-05-21T11:26:56.000Z'),
+  });
+
+  assert.equal(item.type, 'missing_read_model');
+  assert.equal(item.positionSelection.decision, 'rejected_missing_read_model');
 }
 
 function testAmbiguousSameSymbolIsSeparatedFromUnsafe(): void {
@@ -350,6 +395,8 @@ testExactReadModelBinding();
 testMissingPositionIdIsUnresolved();
 testMissingReadModelIsUnresolved();
 testTerminalMissingReadModelIsHistoricalDrift();
+testStaleMissingReadModelIsHistoricalDrift();
+testRecentMissingReadModelStillBlocks();
 testAmbiguousSameSymbolIsSeparatedFromUnsafe();
 testAccountMismatchIsUnsafe();
 testSymbolMismatchIsUnsafe();

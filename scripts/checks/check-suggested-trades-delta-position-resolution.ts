@@ -46,6 +46,7 @@ export type DeltaPositionResolutionType =
   | 'missing_position_id'
   | 'missing_read_model'
   | 'terminal_missing_read_model'
+  | 'stale_missing_read_model'
   | 'account_mismatch'
   | 'symbol_mismatch'
   | 'side_mismatch'
@@ -64,6 +65,7 @@ type DeltaPositionSelectionDecision =
   | 'rejected_account_mismatch'
   | 'rejected_missing_read_model'
   | 'observed_terminal_missing_read_model'
+  | 'observed_stale_missing_read_model'
   | 'rejected_symbol_mismatch'
   | 'rejected_side_mismatch'
   | 'rejected_ambiguous_same_symbol';
@@ -180,6 +182,7 @@ export type DeltaPositionResolutionReport = {
   missingPositionId: number;
   missingReadModel: number;
   terminalMissingReadModel: number;
+  staleMissingReadModel: number;
   accountMismatch: number;
   symbolMismatch: number;
   sideMismatch: number;
@@ -189,6 +192,7 @@ export type DeltaPositionResolutionReport = {
   thresholds: {
     maxUnsafeMismatches: number;
     maxUnresolved: number;
+    staleMissingReadModelMinHours: number;
   };
   byType: Record<DeltaPositionResolutionType, number>;
   items: DeltaPositionResolutionItem[];
@@ -216,6 +220,10 @@ const MAX_UNSAFE_MISMATCHES = Math.max(
 const MAX_UNRESOLVED = Math.max(
   0,
   Number(process.env.SUGGESTED_TRADES_MAX_DELTA_POSITION_UNRESOLVED || 0)
+);
+const STALE_MISSING_READ_MODEL_MIN_HOURS = Math.max(
+  1,
+  Number(process.env.SUGGESTED_TRADES_DELTA_POSITION_STALE_MISSING_READ_MODEL_MIN_HOURS || 12)
 );
 
 const TERMINAL_EXECUTION_STATES = new Set([
@@ -458,6 +466,8 @@ function countByType(
     missing_read_model: items.filter((item) => item.type === 'missing_read_model').length,
     terminal_missing_read_model: items.filter((item) => item.type === 'terminal_missing_read_model')
       .length,
+    stale_missing_read_model: items.filter((item) => item.type === 'stale_missing_read_model')
+      .length,
     account_mismatch: items.filter((item) => item.type === 'account_mismatch').length,
     symbol_mismatch: items.filter((item) => item.type === 'symbol_mismatch').length,
     side_mismatch: items.filter((item) => item.type === 'side_mismatch').length,
@@ -482,6 +492,18 @@ function resolveSelectionTimestamp(row: DeltaPositionExecutionRow): {
     return { value: row.updatedAt, source: 'updated_at' };
   }
   return { value: null, source: 'none' };
+}
+
+function isStaleMissingReadModel(row: DeltaPositionExecutionRow, now: Date): boolean {
+  const timestamp = resolveSelectionTimestamp(row).value;
+  if (!timestamp) {
+    return false;
+  }
+  const timestampMs = new Date(timestamp).getTime();
+  if (!Number.isFinite(timestampMs)) {
+    return false;
+  }
+  return now.getTime() - timestampMs >= STALE_MISSING_READ_MODEL_MIN_HOURS * 60 * 60 * 1000;
 }
 
 function resolveEntryOrderLineage(input: {
@@ -568,6 +590,12 @@ function resolvePositionSelectionDecision(type: DeltaPositionResolutionType): {
         decision: 'observed_terminal_missing_read_model',
         reason:
           'Terminal Delta execution has no exact position read-model row and no same-symbol open candidate.',
+      };
+    case 'stale_missing_read_model':
+      return {
+        decision: 'observed_stale_missing_read_model',
+        reason:
+          'Stale Delta execution has no exact position read-model row and no same-symbol open candidate.',
       };
     case 'symbol_mismatch':
       return {
@@ -692,6 +720,7 @@ export function evaluateDeltaPositionResolutionForTest(input: {
   accountMismatchPositions: PositionReadModel[];
   sameSymbolOpenPositions: PositionReadModel[];
   entryOrder: DeltaEntryOrderSnapshot | null;
+  now?: Date;
 }): DeltaPositionResolutionItem {
   const { row, exactPosition, accountMismatchPositions, sameSymbolOpenPositions, entryOrder } =
     input;
@@ -729,15 +758,20 @@ export function evaluateDeltaPositionResolutionForTest(input: {
     type =
       isTerminalExecution(row) && sameSymbolOpenPositions.length === 0
         ? 'terminal_missing_read_model'
-        : sameSymbolOpenPositions.length > 1
-          ? 'ambiguous_same_symbol'
-          : 'missing_read_model';
+        : isStaleMissingReadModel(row, input.now ?? new Date()) &&
+            sameSymbolOpenPositions.length === 0
+          ? 'stale_missing_read_model'
+          : sameSymbolOpenPositions.length > 1
+            ? 'ambiguous_same_symbol'
+            : 'missing_read_model';
     reasons.push(
       type === 'terminal_missing_read_model'
         ? `Terminal Delta execution has no exact position_read_models row for position_id ${row.positionId}; no same-symbol open candidates were found.`
-        : sameSymbolOpenPositions.length > 1
-          ? `No exact position_read_models row for ${row.positionId}; same-symbol open candidates=${sameSymbolOpenPositions.length}.`
-          : `No exact Delta position_read_models row for position_id ${row.positionId}.`
+        : type === 'stale_missing_read_model'
+          ? `Stale Delta execution has no exact position_read_models row for position_id ${row.positionId}; no same-symbol open candidates were found within ${STALE_MISSING_READ_MODEL_MIN_HOURS}h of the preferred timestamp.`
+          : sameSymbolOpenPositions.length > 1
+            ? `No exact position_read_models row for ${row.positionId}; same-symbol open candidates=${sameSymbolOpenPositions.length}.`
+            : `No exact Delta position_read_models row for position_id ${row.positionId}.`
     );
   } else if (symbolMatches === false) {
     type = 'symbol_mismatch';
@@ -1013,6 +1047,7 @@ export async function buildDeltaPositionResolutionReport(): Promise<DeltaPositio
       accountMismatchPositions,
       sameSymbolOpenPositions,
       entryOrder,
+      now: generatedAt,
     });
   });
 
@@ -1034,6 +1069,7 @@ export async function buildDeltaPositionResolutionReport(): Promise<DeltaPositio
     missingPositionId: byType.missing_position_id,
     missingReadModel: byType.missing_read_model,
     terminalMissingReadModel: byType.terminal_missing_read_model,
+    staleMissingReadModel: byType.stale_missing_read_model,
     accountMismatch: byType.account_mismatch,
     symbolMismatch: byType.symbol_mismatch,
     sideMismatch: byType.side_mismatch,
@@ -1043,6 +1079,7 @@ export async function buildDeltaPositionResolutionReport(): Promise<DeltaPositio
     thresholds: {
       maxUnsafeMismatches: MAX_UNSAFE_MISMATCHES,
       maxUnresolved: MAX_UNRESOLVED,
+      staleMissingReadModelMinHours: STALE_MISSING_READ_MODEL_MIN_HOURS,
     },
     byType,
     items,
