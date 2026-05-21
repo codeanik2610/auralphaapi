@@ -13,9 +13,11 @@ Production host:
 - Backend checkout: `/opt/auralpha/Backend/aurAlpha`
 - Mudrex position-resolution watchdog: `/opt/auralpha/guardrail-artifacts/mudrex-position-resolution`
 - Mudrex protection-health watchdog: `/opt/auralpha/guardrail-artifacts/mudrex-protection-health`
+- Mudrex stale-protection watchdog: `/opt/auralpha/guardrail-artifacts/mudrex-stale-protection-watchdog`
 - Mudrex repair preview evidence: `/opt/auralpha/guardrail-artifacts/mudrex-protection-repair-preview`
 - Position-resolution watchdog log: `/var/log/auralpha-mudrex-position-resolution-watchdog.log`
 - Protection-health watchdog log: `/var/log/auralpha-mudrex-protection-health-watchdog.log`
+- Stale-protection watchdog log: `/var/log/auralpha-mudrex-stale-protection-watchdog.log`
 
 Container output files used during manual checks:
 
@@ -32,6 +34,7 @@ Start with the scheduled artifacts. The latest JSON should be inspected before a
 cd /opt/auralpha/Backend/aurAlpha
 ls -1t /opt/auralpha/guardrail-artifacts/mudrex-position-resolution/*.json | head -5
 ls -1t /opt/auralpha/guardrail-artifacts/mudrex-protection-health/*.json | head -5
+ls -1t /opt/auralpha/guardrail-artifacts/mudrex-stale-protection-watchdog/*.json | head -5
 ```
 
 Run the Mudrex position-resolution watchdog. This is read-only:
@@ -46,6 +49,13 @@ Run the Mudrex protection-health watchdog. This is read-only:
 ```bash
 cd /opt/auralpha/Backend/aurAlpha
 ./scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh
+```
+
+Run the Mudrex stale-protection watchdog. This is read-only and forces apply flags off:
+
+```bash
+cd /opt/auralpha/Backend/aurAlpha
+./scripts/checks/run-suggested-trades-mudrex-stale-protection-watchdog.sh
 ```
 
 Run the repair preview. This command only classifies what would be repaired:

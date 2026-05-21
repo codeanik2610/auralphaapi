@@ -17,6 +17,7 @@ Mudrex currently has strong position identity coverage through the position-reso
 - [x] Read-only, no mutation path.
 - [x] Scheduled protection-health watchdog artifacts.
 - [x] Production repair preview baseline with apply flags disabled.
+- [x] Scheduled stale-protection watchdog source, runner, and cron definition.
 
 ## Missing Coverage
 
@@ -27,6 +28,7 @@ Mudrex currently has strong position identity coverage through the position-reso
 - [x] Stale protection cancellation preview.
 - [x] Mutation apply path guarded by read-back and disabled by default.
 - [x] Scheduled protection-health watchdog artifacts.
+- [x] Scheduled stale-protection watchdog artifacts path and zero-mutation flag checks.
 - [ ] Single-candidate production canary apply when a real safe candidate appears.
 - [ ] Scheduled apply decision after canary evidence.
 
@@ -139,8 +141,9 @@ Keep scheduled watchdog read-only, but make its artifacts compatible with the ap
 
 Acceptance:
 
-- [ ] Watchdog shows exactly which items would be eligible for apply.
-- [ ] Watchdog fails loudly if apply flags are accidentally enabled in the cron environment.
+- [x] Watchdog shows exactly which stale-cancel items would be eligible for apply.
+- [x] Watchdog fails loudly if apply flags are accidentally enabled in the cron environment.
+- [ ] Production cron installed and latest artifact verified.
 
 ## Phase 8: Operator Runbook
 

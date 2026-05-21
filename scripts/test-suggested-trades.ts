@@ -11625,6 +11625,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const mudrexProtectionRepairPreviewSource = read(
     'scripts/checks/check-suggested-trades-mudrex-protection-repair-preview.ts'
   );
+  const mudrexStaleProtectionWatchdogSource = read(
+    'scripts/checks/check-suggested-trades-mudrex-stale-protection-watchdog.ts'
+  );
   const mudrexProtectionRepairApplySource = read(
     'scripts/maintenance/repair-suggested-trades-mudrex-protection.ts'
   );
@@ -11636,6 +11639,12 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   );
   const mudrexProtectionHealthWatchdogCronSource = read(
     'deploy/cron/auralpha-mudrex-protection-health-watchdog'
+  );
+  const mudrexStaleProtectionWatchdogRunnerSource = read(
+    'scripts/checks/run-suggested-trades-mudrex-stale-protection-watchdog.sh'
+  );
+  const mudrexStaleProtectionWatchdogCronSource = read(
+    'deploy/cron/auralpha-mudrex-stale-protection-watchdog'
   );
   const deltaProtectionGuardrailSource = read(
     'scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
@@ -11727,6 +11736,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/checks/check-suggested-trades-mudrex-protection-repair-preview.ts'
   );
   assert.equal(
+    packageScripts['check:suggested-trades-mudrex-stale-protection-watchdog'],
+    'node --import tsx scripts/checks/check-suggested-trades-mudrex-stale-protection-watchdog.ts'
+  );
+  assert.equal(
     packageScripts['check:suggested-trades-delta-protection-guardrail'],
     'node --import tsx scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
   );
@@ -11811,6 +11824,11 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'system coverage manifest must include the Mudrex protection repair preview check'
   );
   assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-mudrex-stale-protection-watchdog'),
+    true,
+    'system coverage manifest must include the Mudrex stale protection watchdog check'
+  );
+  assert.equal(
     coverageManifestSource.includes('repair:suggested-trades-mudrex-protection'),
     true,
     'system coverage manifest must include the Mudrex protection repair apply script'
@@ -11836,6 +11854,18 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     coverageManifestSource.includes('deploy/cron/auralpha-mudrex-position-resolution-watchdog'),
     true,
     'system coverage manifest must include the Mudrex position resolution watchdog cron'
+  );
+  assert.equal(
+    coverageManifestSource.includes(
+      'scripts/checks/run-suggested-trades-mudrex-stale-protection-watchdog.sh'
+    ),
+    true,
+    'system coverage manifest must include the Mudrex stale protection watchdog runner'
+  );
+  assert.equal(
+    coverageManifestSource.includes('deploy/cron/auralpha-mudrex-stale-protection-watchdog'),
+    true,
+    'system coverage manifest must include the Mudrex stale protection watchdog cron'
   );
   assert.equal(
     coverageManifestSource.includes('check:suggested-trades-delta-protection-guardrail'),
@@ -12147,6 +12177,48 @@ function runSuggestedTradesScriptWiringAssertions(): void {
       mudrexProtectionHealthWatchdogCronSource.includes(marker),
       true,
       `suggested trades Mudrex protection health watchdog cron must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'suggested-trades-mudrex-stale-protection-watchdog',
+    'SUGGESTED_TRADES_MUDREX_PROTECTION_REPAIR_APPLY',
+    'SUGGESTED_TRADES_MUDREX_STALE_PROTECTION_CANCEL_APPLY',
+    'SUGGESTED_TRADES_MAX_MUDREX_STALE_CANCEL_CANDIDATES',
+    'would_cancel_stale_protection_orders',
+    "mutation: 'disabled'",
+    'selectMudrexProtectionRepairApplyCandidates',
+    'Mudrex stale protection watchdog refuses to run with Mudrex repair apply flags enabled.',
+  ]) {
+    assert.equal(
+      mudrexStaleProtectionWatchdogSource.includes(marker),
+      true,
+      `suggested trades Mudrex stale protection watchdog must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    'AURALPHA_MUDREX_STALE_PROTECTION_WATCHDOG_ARTIFACT_DIR',
+    'SUGGESTED_TRADES_MUDREX_PROTECTION_REPAIR_APPLY=false',
+    'SUGGESTED_TRADES_MUDREX_STALE_PROTECTION_CANCEL_APPLY=false',
+    'SUGGESTED_TRADES_MAX_MUDREX_STALE_CANCEL_CANDIDATES',
+    'check-suggested-trades-mudrex-stale-protection-watchdog.js',
+    'suggested-trades-mudrex-stale-protection-watchdog:',
+  ]) {
+    assert.equal(
+      mudrexStaleProtectionWatchdogRunnerSource.includes(marker),
+      true,
+      `suggested trades Mudrex stale protection watchdog runner must retain ${marker}`
+    );
+  }
+  for (const marker of [
+    '*/10 * * * * root',
+    'auralpha-mudrex-stale-protection-watchdog.lock',
+    './scripts/checks/run-suggested-trades-mudrex-stale-protection-watchdog.sh',
+    '/var/log/auralpha-mudrex-stale-protection-watchdog.log',
+  ]) {
+    assert.equal(
+      mudrexStaleProtectionWatchdogCronSource.includes(marker),
+      true,
+      `suggested trades Mudrex stale protection watchdog cron must retain ${marker}`
     );
   }
   for (const marker of [

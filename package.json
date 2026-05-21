@@ -156,6 +156,7 @@
     "check:suggested-trades-mudrex-position-resolution": "node --import tsx scripts/checks/check-suggested-trades-mudrex-position-resolution.ts",
     "check:suggested-trades-mudrex-protection-health": "node --import tsx scripts/checks/check-suggested-trades-mudrex-protection-health.ts",
     "check:suggested-trades-mudrex-protection-repair-preview": "node --import tsx scripts/checks/check-suggested-trades-mudrex-protection-repair-preview.ts",
+    "check:suggested-trades-mudrex-stale-protection-watchdog": "node --import tsx scripts/checks/check-suggested-trades-mudrex-stale-protection-watchdog.ts",
     "check:suggested-trades-delta-protection-guardrail": "node --import tsx scripts/checks/check-suggested-trades-delta-protection-guardrail.ts",
     "check:suggested-trades-delta-position-resolution": "node --import tsx scripts/checks/check-suggested-trades-delta-position-resolution.ts",
     "check:suggested-trades-delta-protection-repair-preview": "node --import tsx scripts/checks/check-suggested-trades-delta-protection-repair-preview.ts",

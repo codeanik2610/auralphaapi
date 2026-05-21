@@ -719,6 +719,10 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'scripts/checks/check-suggested-trades-mudrex-protection-repair-preview.ts'
       ),
       script(
+        'check:suggested-trades-mudrex-stale-protection-watchdog',
+        'scripts/checks/check-suggested-trades-mudrex-stale-protection-watchdog.ts'
+      ),
+      script(
         'repair:suggested-trades-terminal-protection',
         'scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
       ),
@@ -730,6 +734,8 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       fileOnly('deploy/cron/auralpha-mudrex-protection-health-watchdog'),
       fileOnly('scripts/checks/run-suggested-trades-mudrex-position-resolution-watchdog.sh'),
       fileOnly('deploy/cron/auralpha-mudrex-position-resolution-watchdog'),
+      fileOnly('scripts/checks/run-suggested-trades-mudrex-stale-protection-watchdog.sh'),
+      fileOnly('deploy/cron/auralpha-mudrex-stale-protection-watchdog'),
       script(
         'check:suggested-trades-delta-protection-guardrail',
         'scripts/checks/check-suggested-trades-delta-protection-guardrail.ts'
