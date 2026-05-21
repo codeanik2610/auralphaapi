@@ -104,6 +104,25 @@ function testExactReadModelBinding(): void {
   assert.equal(item.entryOrderLineage, 'entry_order_snapshot_match');
   assert.equal(item.expectedProtectionQuantity, 3);
   assert.equal(item.expectedProtectionQuantitySource, 'position.payload.quantity_contracts');
+  assert.equal(item.positionSelection.decision, 'accepted_exact_position_id');
+  assert.equal(item.positionSelection.preferredTimestampSource, 'position_opened_at');
+  assert.equal(item.positionSelection.preferredTimestamp, '2026-05-20T00:00:05.000Z');
+  assert.equal(
+    item.positionSelection.exactLookupKey,
+    'user-1:delta-acc-1:delta-position-1'
+  );
+  assert.equal(item.positionSelection.externalLookupKey, 'user-1:delta-position-1');
+  assert.equal(item.positionSelection.checks.positionIdPresent, true);
+  assert.equal(item.positionSelection.checks.exactReadModelFound, true);
+  assert.equal(item.positionSelection.checks.accountIdMatches, true);
+  assert.equal(item.positionSelection.checks.symbolMatches, true);
+  assert.equal(item.positionSelection.checks.sideMatches, true);
+  assert.equal(item.positionSelection.checks.entryOrderLineage, 'entry_order_snapshot_match');
+  assert.equal(item.positionSelection.selectedPosition?.externalId, 'delta-position-1');
+  assert.equal(item.positionSelection.exactPosition?.externalId, 'delta-position-1');
+  assert.equal(item.positionSelection.exactPosition?.accountId, 'delta-acc-1');
+  assert.deepEqual(item.positionSelection.rejectedCandidates, []);
+  assert.equal(item.positionSelection.quantity.source, 'position.payload.quantity_contracts');
 }
 
 function testMissingPositionIdIsUnresolved(): void {
@@ -115,6 +134,10 @@ function testMissingPositionIdIsUnresolved(): void {
 
   assert.equal(item.type, 'missing_position_id');
   assert.equal(item.exactPositionIdBound, false);
+  assert.equal(item.positionSelection.decision, 'rejected_missing_position_id');
+  assert.equal(item.positionSelection.exactLookupKey, null);
+  assert.equal(item.positionSelection.externalLookupKey, null);
+  assert.equal(item.positionSelection.checks.positionIdPresent, false);
   assert.equal(
     item.reasons.some((reason) => reason.includes('no position_id')),
     true
@@ -129,6 +152,15 @@ function testMissingReadModelIsUnresolved(): void {
 
   assert.equal(item.type, 'missing_read_model');
   assert.equal(item.sameSymbolOpenPositionCandidates, 1);
+  assert.equal(item.positionSelection.decision, 'rejected_missing_read_model');
+  assert.equal(item.positionSelection.sameSymbolOpenCandidates.length, 1);
+  assert.equal(item.positionSelection.sameSymbolOpenCandidates[0]?.externalId, 'other-position-1');
+  assert.equal(item.positionSelection.selectedPosition, null);
+  assert.equal(item.positionSelection.rejectedCandidates.length, 1);
+  assert.equal(
+    item.positionSelection.rejectedCandidates[0]?.candidateSource,
+    'same_symbol_open_position'
+  );
 }
 
 function testAmbiguousSameSymbolIsSeparatedFromUnsafe(): void {
@@ -142,6 +174,15 @@ function testAmbiguousSameSymbolIsSeparatedFromUnsafe(): void {
 
   assert.equal(item.type, 'ambiguous_same_symbol');
   assert.equal(item.sameSymbolOpenPositionCandidates, 2);
+  assert.equal(item.positionSelection.decision, 'rejected_ambiguous_same_symbol');
+  assert.deepEqual(
+    item.positionSelection.sameSymbolOpenCandidates.map((position) => position.externalId),
+    ['candidate-1', 'candidate-2']
+  );
+  assert.deepEqual(
+    item.positionSelection.rejectedCandidates.map((candidate) => candidate.position.externalId),
+    ['candidate-1', 'candidate-2']
+  );
 }
 
 function testAccountMismatchIsUnsafe(): void {
@@ -153,6 +194,13 @@ function testAccountMismatchIsUnsafe(): void {
 
   assert.equal(item.type, 'account_mismatch');
   assert.equal(item.accountMismatchCandidates, 1);
+  assert.equal(item.positionSelection.decision, 'rejected_account_mismatch');
+  assert.equal(item.positionSelection.accountMismatchCandidates[0]?.accountId, 'other-account');
+  assert.equal(
+    item.positionSelection.rejectedCandidates[0]?.candidateSource,
+    'same_position_external_id'
+  );
+  assert.equal(item.positionSelection.rejectedCandidates[0]?.checks.accountIdMatches, false);
 }
 
 function testSymbolMismatchIsUnsafe(): void {
@@ -165,6 +213,11 @@ function testSymbolMismatchIsUnsafe(): void {
 
   assert.equal(item.type, 'symbol_mismatch');
   assert.equal(item.symbolMatches, false);
+  assert.equal(item.positionSelection.decision, 'rejected_symbol_mismatch');
+  assert.equal(item.positionSelection.checks.symbolMatches, false);
+  assert.equal(item.positionSelection.selectedPosition, null);
+  assert.equal(item.positionSelection.rejectedCandidates[0]?.candidateSource, 'exact_position');
+  assert.equal(item.positionSelection.rejectedCandidates[0]?.checks.symbolMatches, false);
 }
 
 function testSideMismatchIsUnsafe(): void {
@@ -174,6 +227,10 @@ function testSideMismatchIsUnsafe(): void {
 
   assert.equal(item.type, 'side_mismatch');
   assert.equal(item.sideMatches, false);
+  assert.equal(item.positionSelection.decision, 'rejected_side_mismatch');
+  assert.equal(item.positionSelection.checks.sideMatches, false);
+  assert.equal(item.positionSelection.rejectedCandidates[0]?.candidateSource, 'exact_position');
+  assert.equal(item.positionSelection.rejectedCandidates[0]?.checks.sideMatches, false);
 }
 
 function testEntryOrderLineageMismatchIsReported(): void {
@@ -187,6 +244,24 @@ function testEntryOrderLineageMismatchIsReported(): void {
     item.reasons.includes('Entry order lineage is entry_order_snapshot_account_mismatch.'),
     true
   );
+  assert.equal(
+    item.positionSelection.checks.entryOrderLineage,
+    'entry_order_snapshot_account_mismatch'
+  );
+}
+
+function testSelectionTimestampFallsBackToFilledAt(): void {
+  const item = evaluate({
+    execution: {
+      positionOpenedAt: null,
+      filledAt: '2026-05-20T00:00:04.000Z',
+      submittedAt: '2026-05-20T00:00:03.000Z',
+      updatedAt: '2026-05-20T00:00:06.000Z',
+    },
+  });
+
+  assert.equal(item.positionSelection.preferredTimestampSource, 'filled_at');
+  assert.equal(item.positionSelection.preferredTimestamp, '2026-05-20T00:00:04.000Z');
 }
 
 function testDeltaQuantitySourceUsesProtectionGuardrailNormalizer(): void {
@@ -263,6 +338,7 @@ testAccountMismatchIsUnsafe();
 testSymbolMismatchIsUnsafe();
 testSideMismatchIsUnsafe();
 testEntryOrderLineageMismatchIsReported();
+testSelectionTimestampFallsBackToFilledAt();
 testDeltaQuantitySourceUsesProtectionGuardrailNormalizer();
 testAuditEvidenceFilterSkipsEmptyExecutions();
 testAuditEvidenceFilterKeepsFilledAndPositionRows();

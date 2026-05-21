@@ -189,15 +189,15 @@ Purpose: finish the deeper explanation for why a Delta position id was selected.
 Coverage:
 
 - [x] Basic position-resolution audit exists.
-- [ ] Explain selected position id.
-- [ ] Explain rejected candidate positions.
-- [ ] Include account, symbol, side, open time, entry order lineage, and quantity source.
-- [ ] Mark ambiguous same-symbol cases as blocked.
+- [x] Explain selected position id.
+- [x] Explain rejected candidate positions.
+- [x] Include account, symbol, side, open time, entry order lineage, and quantity source.
+- [x] Mark ambiguous same-symbol cases as blocked.
 
 Acceptance:
 
-- [ ] Code is validated with tests.
-- [ ] Artifact is committed.
+- [x] Code is validated with tests.
+- [x] Artifact is committed.
 - [ ] Production read-only run includes the new evidence fields.
 
 ### Delta Phase 4: Repair Preview Production Baseline

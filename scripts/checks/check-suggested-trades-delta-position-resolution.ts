@@ -57,6 +57,77 @@ export type DeltaEntryOrderLineage =
   | 'entry_order_snapshot_account_mismatch'
   | 'entry_order_snapshot_symbol_mismatch';
 
+type DeltaPositionSelectionDecision =
+  | 'accepted_exact_position_id'
+  | 'rejected_missing_position_id'
+  | 'rejected_account_mismatch'
+  | 'rejected_missing_read_model'
+  | 'rejected_symbol_mismatch'
+  | 'rejected_side_mismatch'
+  | 'rejected_ambiguous_same_symbol';
+
+type DeltaPositionSelectionTimestampSource =
+  | 'position_opened_at'
+  | 'filled_at'
+  | 'submitted_at'
+  | 'updated_at'
+  | 'none';
+
+type DeltaPositionSelectionPositionSummary = {
+  externalId: string;
+  accountId: string;
+  symbol: string | null;
+  baseSymbol: string;
+  side: string | null;
+  status: string | null;
+  statusRank: number | null;
+  quantity: number | null;
+  lastSeenAt: string | null;
+};
+
+type DeltaPositionSelectionRejectedCandidate = {
+  candidateSource: 'exact_position' | 'same_position_external_id' | 'same_symbol_open_position';
+  rejectionReason: string;
+  checks: {
+    exactPositionIdMatches: boolean;
+    accountIdMatches: boolean | null;
+    symbolMatches: boolean | null;
+    sideMatches: boolean | null;
+    isOpenPosition: boolean;
+  };
+  position: DeltaPositionSelectionPositionSummary;
+};
+
+export type DeltaPositionSelectionEvidence = {
+  decision: DeltaPositionSelectionDecision;
+  decisionReason: string;
+  preferredTimestamp: string | null;
+  preferredTimestampSource: DeltaPositionSelectionTimestampSource;
+  exactLookupKey: string | null;
+  externalLookupKey: string | null;
+  searchedPositionId: string | null;
+  checks: {
+    positionIdPresent: boolean;
+    exactReadModelFound: boolean;
+    accountIdMatches: boolean | null;
+    symbolMatches: boolean | null;
+    sideMatches: boolean | null;
+    entryOrderLineage: DeltaEntryOrderLineage;
+  };
+  selectedPosition: DeltaPositionSelectionPositionSummary | null;
+  exactPosition: DeltaPositionSelectionPositionSummary | null;
+  accountMismatchCandidates: DeltaPositionSelectionPositionSummary[];
+  sameSymbolOpenCandidates: DeltaPositionSelectionPositionSummary[];
+  rejectedCandidates: DeltaPositionSelectionRejectedCandidate[];
+  quantity: {
+    value: number | null;
+    source: string | null;
+    unit: 'contracts' | 'base' | 'unknown';
+    contractValue: number | null;
+    notes: string[];
+  };
+};
+
 export type DeltaPositionResolutionItem = {
   type: DeltaPositionResolutionType;
   mutation: 'none_read_only';
@@ -93,6 +164,7 @@ export type DeltaPositionResolutionItem = {
   expectedProtectionQuantityUnit: 'contracts' | 'base' | 'unknown';
   expectedProtectionQuantityContractValue: number | null;
   expectedProtectionQuantityNotes: string[];
+  positionSelection: DeltaPositionSelectionEvidence;
   reasons: string[];
 };
 
@@ -383,6 +455,25 @@ function countByType(
   };
 }
 
+function resolveSelectionTimestamp(row: DeltaPositionExecutionRow): {
+  value: string | null;
+  source: DeltaPositionSelectionTimestampSource;
+} {
+  if (row.positionOpenedAt) {
+    return { value: row.positionOpenedAt, source: 'position_opened_at' };
+  }
+  if (row.filledAt) {
+    return { value: row.filledAt, source: 'filled_at' };
+  }
+  if (row.submittedAt) {
+    return { value: row.submittedAt, source: 'submitted_at' };
+  }
+  if (row.updatedAt) {
+    return { value: row.updatedAt, source: 'updated_at' };
+  }
+  return { value: null, source: 'none' };
+}
+
 function resolveEntryOrderLineage(input: {
   row: DeltaPositionExecutionRow;
   entryOrder: DeltaEntryOrderSnapshot | null;
@@ -400,6 +491,187 @@ function resolveEntryOrderLineage(input: {
     return 'entry_order_snapshot_symbol_mismatch';
   }
   return 'entry_order_snapshot_match';
+}
+
+function summarizePosition(
+  position: PositionReadModel
+): DeltaPositionSelectionPositionSummary {
+  return {
+    externalId: position.externalId,
+    accountId: position.accountId,
+    symbol: position.symbol,
+    baseSymbol: position.baseSymbol,
+    side: position.side,
+    status: position.status,
+    statusRank: position.statusRank,
+    quantity: position.quantity,
+    lastSeenAt: position.lastSeenAt,
+  };
+}
+
+function summarizeRejectedCandidate(input: {
+  row: DeltaPositionExecutionRow;
+  position: PositionReadModel;
+  candidateSource: DeltaPositionSelectionRejectedCandidate['candidateSource'];
+  rejectionReason: string;
+}): DeltaPositionSelectionRejectedCandidate {
+  const { row, position } = input;
+  return {
+    candidateSource: input.candidateSource,
+    rejectionReason: input.rejectionReason,
+    checks: {
+      exactPositionIdMatches: Boolean(row.positionId && position.externalId === row.positionId),
+      accountIdMatches: row.accountId ? position.accountId === row.accountId : null,
+      symbolMatches: position.baseSymbol ? position.baseSymbol === row.tradeBaseSymbol : null,
+      sideMatches: position.side && row.expectedSide ? position.side === row.expectedSide : null,
+      isOpenPosition: isOpenPosition(position),
+    },
+    position: summarizePosition(position),
+  };
+}
+
+function resolvePositionSelectionDecision(type: DeltaPositionResolutionType): {
+  decision: DeltaPositionSelectionDecision;
+  reason: string;
+} {
+  switch (type) {
+    case 'exact_read_model':
+      return {
+        decision: 'accepted_exact_position_id',
+        reason: 'Exact Delta position id resolved and all safety checks passed.',
+      };
+    case 'missing_position_id':
+      return {
+        decision: 'rejected_missing_position_id',
+        reason: 'Execution has no Delta position id to bind.',
+      };
+    case 'account_mismatch':
+      return {
+        decision: 'rejected_account_mismatch',
+        reason: 'The Delta position id exists, but not under the execution account.',
+      };
+    case 'missing_read_model':
+      return {
+        decision: 'rejected_missing_read_model',
+        reason: 'No exact Delta position read-model row was found for the execution position id.',
+      };
+    case 'symbol_mismatch':
+      return {
+        decision: 'rejected_symbol_mismatch',
+        reason: 'Exact position id was found, but the position symbol does not match the trade.',
+      };
+    case 'side_mismatch':
+      return {
+        decision: 'rejected_side_mismatch',
+        reason: 'Exact position id was found, but the position side does not match the trade.',
+      };
+    case 'ambiguous_same_symbol':
+      return {
+        decision: 'rejected_ambiguous_same_symbol',
+        reason: 'No exact position row was found and multiple same-symbol open candidates exist.',
+      };
+  }
+}
+
+function buildPositionSelectionEvidence(input: {
+  row: DeltaPositionExecutionRow;
+  type: DeltaPositionResolutionType;
+  exactPosition: PositionReadModel | null;
+  accountMismatchPositions: PositionReadModel[];
+  sameSymbolOpenPositions: PositionReadModel[];
+  entryOrderLineage: DeltaEntryOrderLineage;
+  accountIdMatches: boolean | null;
+  symbolMatches: boolean | null;
+  sideMatches: boolean | null;
+  quantity: ReturnType<typeof resolveExpectedDeltaProtectionQuantity>;
+}): DeltaPositionSelectionEvidence {
+  const timestamp = resolveSelectionTimestamp(input.row);
+  const decision = resolvePositionSelectionDecision(input.type);
+  const selectedPosition =
+    input.type === 'exact_read_model' && input.exactPosition
+      ? summarizePosition(input.exactPosition)
+      : null;
+  const rejectedCandidates: DeltaPositionSelectionRejectedCandidate[] = [];
+  if (input.exactPosition && input.type !== 'exact_read_model') {
+    rejectedCandidates.push(
+      summarizeRejectedCandidate({
+        row: input.row,
+        position: input.exactPosition,
+        candidateSource: 'exact_position',
+        rejectionReason: decision.reason,
+      })
+    );
+  }
+  for (const position of input.accountMismatchPositions) {
+    rejectedCandidates.push(
+      summarizeRejectedCandidate({
+        row: input.row,
+        position,
+        candidateSource: 'same_position_external_id',
+        rejectionReason:
+          'Candidate has the same Delta position id but belongs to a different account.',
+      })
+    );
+  }
+  for (const position of input.sameSymbolOpenPositions) {
+    if (
+      selectedPosition &&
+      position.externalId === selectedPosition.externalId &&
+      position.accountId === selectedPosition.accountId
+    ) {
+      continue;
+    }
+    if (
+      input.exactPosition &&
+      input.type !== 'exact_read_model' &&
+      position.externalId === input.exactPosition.externalId &&
+      position.accountId === input.exactPosition.accountId
+    ) {
+      continue;
+    }
+    rejectedCandidates.push(
+      summarizeRejectedCandidate({
+        row: input.row,
+        position,
+        candidateSource: 'same_symbol_open_position',
+        rejectionReason:
+          'Same-symbol open candidate was not selected because it did not match the execution position id exactly.',
+      })
+    );
+  }
+  return {
+    decision: decision.decision,
+    decisionReason: decision.reason,
+    preferredTimestamp: timestamp.value,
+    preferredTimestampSource: timestamp.source,
+    exactLookupKey: input.row.positionId
+      ? positionKey(input.row.userId, input.row.accountId, input.row.positionId)
+      : null,
+    externalLookupKey: input.row.positionId
+      ? `${input.row.userId}:${input.row.positionId}`
+      : null,
+    searchedPositionId: input.row.positionId,
+    checks: {
+      positionIdPresent: Boolean(input.row.positionId),
+      exactReadModelFound: Boolean(input.exactPosition),
+      accountIdMatches: input.accountIdMatches,
+      symbolMatches: input.symbolMatches,
+      sideMatches: input.sideMatches,
+      entryOrderLineage: input.entryOrderLineage,
+    },
+    selectedPosition,
+    exactPosition: input.exactPosition ? summarizePosition(input.exactPosition) : null,
+    accountMismatchCandidates: input.accountMismatchPositions.map(summarizePosition),
+    sameSymbolOpenCandidates: input.sameSymbolOpenPositions.map(summarizePosition),
+    rejectedCandidates,
+    quantity: {
+      value: input.quantity.value,
+      source: input.quantity.source,
+      unit: input.quantity.unit,
+      contractValue: input.quantity.contractValue,
+      notes: input.quantity.notes,
+    },
+  };
 }
 
 export function evaluateDeltaPositionResolutionForTest(input: {
@@ -473,6 +745,18 @@ export function evaluateDeltaPositionResolutionForTest(input: {
       'Execution is terminal, so this may be historical drift rather than a live repair target.'
     );
   }
+  const positionSelection = buildPositionSelectionEvidence({
+    row,
+    type,
+    exactPosition,
+    accountMismatchPositions,
+    sameSymbolOpenPositions,
+    entryOrderLineage,
+    accountIdMatches,
+    symbolMatches,
+    sideMatches,
+    quantity: quantityResolution,
+  });
 
   return {
     type,
@@ -510,6 +794,7 @@ export function evaluateDeltaPositionResolutionForTest(input: {
     expectedProtectionQuantityUnit: quantityResolution.unit,
     expectedProtectionQuantityContractValue: quantityResolution.contractValue,
     expectedProtectionQuantityNotes: quantityResolution.notes,
+    positionSelection,
     reasons,
   };
 }
