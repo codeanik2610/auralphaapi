@@ -4,7 +4,7 @@
 
 Keep Delta protection behavior safe while closing the remaining visibility gaps around position identity, partial fills, stale protection, and controlled repair.
 
-Delta currently has broader protection-health coverage than Mudrex, plus a separate stale-protection watchdog. The remaining work is mostly deeper position-resolution visibility and staged canary apply only when real candidates appear.
+Delta currently has broader protection-health coverage than Mudrex, plus a separate stale-protection watchdog. Position-resolution evidence and repair-preview production baseline are now verified; the remaining work is staged canary apply only when real candidates appear.
 
 ## Current Coverage
 
@@ -18,12 +18,15 @@ Delta currently has broader protection-health coverage than Mudrex, plus a separ
 - [x] Scheduled stale-protection watchdog every 10 minutes.
 - [x] Stale-protection watchdog forces both apply flags off.
 - [x] Stale-protection watchdog writes artifacts and fails on stale candidates.
+- [x] Position-selection evidence explains selected and rejected Delta position candidates.
+- [x] Production repair preview baseline is verified with apply flags disabled.
 
 ## Missing Coverage
 
 - [x] Mudrex-style position-resolution detail report.
 - [x] Separate position identity watchdog focused only on Delta mapping quality.
-- [ ] Deeper "why this position id was chosen" artifact.
+- [x] Deeper "why this position id was chosen" artifact.
+- [x] Production repair preview baseline before canary apply.
 - [ ] Production canary apply for repair path when a real safe candidate appears.
 - [x] Operator runbook for single-candidate Delta repair.
 
@@ -97,6 +100,17 @@ Acceptance:
 - [x] Preview separates attach from reconcile.
 - [x] Preview never creates duplicate protection for native bracket orders.
 - [x] Preview blocks if planned SL/TP price is missing.
+
+## Phase 4A: Repair Preview Production Baseline
+
+Run the production repair preview and dry-run with mutation disabled before any canary apply.
+
+Acceptance:
+
+- [x] Preview artifact shows `dryRun: true`: `/opt/auralpha/guardrail-artifacts/delta-protection-repair-preview/20260521T052956Z-preview.json`.
+- [x] Dry-run artifact shows `applyEnabled: false`: `/opt/auralpha/guardrail-artifacts/delta-protection-repair-preview/20260521T052956Z-dry-run.json`.
+- [x] Dry-run artifact shows `staleCancelApplyEnabled: false`: `/opt/auralpha/guardrail-artifacts/delta-protection-repair-preview/20260521T052956Z-dry-run.json`.
+- [x] Candidate review completed. Baseline found zero candidates: audited 240, open positions 1, issue trades 0, repairable items 0, blocked items 0, manual review items 0.
 
 ## Phase 5: Stale Protection Canary Apply
 

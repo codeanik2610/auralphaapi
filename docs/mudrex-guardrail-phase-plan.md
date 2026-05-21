@@ -4,7 +4,7 @@
 
 Bring Mudrex to production-grade guardrail coverage without changing live trading behavior until each read-only phase proves clean.
 
-Mudrex currently has strong position identity coverage through the position-resolution watchdog. The missing work is mostly protection-health coverage: missing SL/TP, wrong protection size, stale protection after close, and scheduled preview artifacts.
+Mudrex currently has strong position identity coverage through the position-resolution watchdog and production-verified protection-health coverage. The remaining work is staged canary apply only when a real safe candidate appears, followed by a scheduled-apply decision.
 
 ## Current Coverage
 
@@ -15,6 +15,8 @@ Mudrex currently has strong position identity coverage through the position-reso
 - [x] Checks strict open-time fallback mapping.
 - [x] Writes artifacts every 30 minutes.
 - [x] Read-only, no mutation path.
+- [x] Scheduled protection-health watchdog artifacts.
+- [x] Production repair preview baseline with apply flags disabled.
 
 ## Missing Coverage
 
@@ -25,6 +27,8 @@ Mudrex currently has strong position identity coverage through the position-reso
 - [x] Stale protection cancellation preview.
 - [x] Mutation apply path guarded by read-back and disabled by default.
 - [x] Scheduled protection-health watchdog artifacts.
+- [ ] Single-candidate production canary apply when a real safe candidate appears.
+- [ ] Scheduled apply decision after canary evidence.
 
 ## Phase 1: Protection Health Read-Only Audit
 
@@ -111,11 +115,11 @@ Deploy Phases 1-4, keep all apply flags off, and run production preview.
 
 Acceptance:
 
-- [ ] `dryRun: true`
-- [ ] `applyEnabled: false`
-- [ ] `staleCancelApplyEnabled: false`
-- [ ] Issue counts reviewed.
-- [ ] No mutation executed.
+- [x] `dryRun: true`. Verified in `/opt/auralpha/guardrail-artifacts/mudrex-protection-repair-preview/20260521T044501Z-preview.json`.
+- [x] `applyEnabled: false`. Verified in `/opt/auralpha/guardrail-artifacts/mudrex-protection-repair-preview/20260521T044501Z-dry-run.json`.
+- [x] `staleCancelApplyEnabled: false`. Verified in `/opt/auralpha/guardrail-artifacts/mudrex-protection-repair-preview/20260521T044501Z-dry-run.json`.
+- [x] Issue counts reviewed. Baseline found zero repairable items.
+- [x] No mutation executed.
 
 ## Phase 6: Canary Apply
 
