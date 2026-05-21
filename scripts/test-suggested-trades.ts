@@ -11679,6 +11679,15 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const deltaProtectionRepairApplySource = read(
     'scripts/maintenance/repair-suggested-trades-delta-protection.ts'
   );
+  const brokerGuardrailCheckpointSource = read(
+    'scripts/checks/check-suggested-trades-broker-guardrail-checkpoint.ts'
+  );
+  const brokerGuardrailCheckpointRunnerSource = read(
+    'scripts/checks/run-suggested-trades-broker-guardrail-checkpoint.sh'
+  );
+  const brokerGuardrailCheckpointCronSource = read(
+    'deploy/cron/auralpha-broker-guardrail-checkpoint'
+  );
   const terminalProtectionRepairSource = read(
     'scripts/maintenance/repair-suggested-trade-terminal-protection.ts'
   );
@@ -11689,6 +11698,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const signoffSource = read('scripts/signoffs/signoff-suggested-trades.ts');
   const canaryReadinessSource = read('scripts/checks/check-broker-auto-canary-readiness.ts');
   const coverageManifestSource = read('scripts/_support/system-coverage-manifest.ts');
+  const dockerComposePlatformSource = read('docker-compose.platform.yml');
   const envSource = read('src/env.ts');
   const serviceSource = read('src/api/services/SuggestedTradesService.ts');
   const deltaOrdersAdapterSource = read(
@@ -11754,6 +11764,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   assert.equal(
     packageScripts['check:suggested-trades-delta-stale-protection-watchdog'],
     'node --import tsx scripts/checks/check-suggested-trades-delta-stale-protection-watchdog.ts'
+  );
+  assert.equal(
+    packageScripts['check:suggested-trades-broker-guardrail-checkpoint'],
+    'node --import tsx scripts/checks/check-suggested-trades-broker-guardrail-checkpoint.ts'
   );
   assert.equal(
     packageScripts['test:suggested-trades-delta-protection-guardrail'],
@@ -11924,6 +11938,23 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'system coverage manifest must include the Delta stale protection watchdog cron'
   );
   assert.equal(
+    coverageManifestSource.includes('check:suggested-trades-broker-guardrail-checkpoint'),
+    true,
+    'system coverage manifest must include the broker guardrail checkpoint check'
+  );
+  assert.equal(
+    coverageManifestSource.includes(
+      'scripts/checks/run-suggested-trades-broker-guardrail-checkpoint.sh'
+    ),
+    true,
+    'system coverage manifest must include the broker guardrail checkpoint runner'
+  );
+  assert.equal(
+    coverageManifestSource.includes('deploy/cron/auralpha-broker-guardrail-checkpoint'),
+    true,
+    'system coverage manifest must include the broker guardrail checkpoint cron'
+  );
+  assert.equal(
     coverageManifestSource.includes('repair:suggested-trades-delta-protection'),
     true,
     'system coverage manifest must include the Delta protection repair apply script'
@@ -11937,6 +11968,67 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     coverageManifestSource.includes('test:suggested-trades-delta-position-resolution'),
     true,
     'system coverage manifest must include the Delta position resolution test'
+  );
+  assert.equal(
+    brokerGuardrailCheckpointSource.includes('read_only_checkpoint'),
+    true,
+    'broker checkpoint must be read-only'
+  );
+  assert.equal(
+    brokerGuardrailCheckpointSource.includes('phase1Ready'),
+    true,
+    'broker checkpoint must expose canary phase readiness'
+  );
+  assert.equal(
+    brokerGuardrailCheckpointSource.includes('candidateItems'),
+    true,
+    'broker checkpoint must summarize broker guardrail candidates'
+  );
+  assert.equal(
+    brokerGuardrailCheckpointSource.includes('applyFlagsSafe'),
+    true,
+    'broker checkpoint must summarize apply flag safety'
+  );
+  assert.equal(
+    brokerGuardrailCheckpointSource.includes('mudrex-protection-health'),
+    true,
+    'broker checkpoint must read Mudrex protection-health artifacts'
+  );
+  assert.equal(
+    brokerGuardrailCheckpointSource.includes('delta-protection-guardrail'),
+    true,
+    'broker checkpoint must read Delta protection-guardrail artifacts'
+  );
+  assert.equal(
+    brokerGuardrailCheckpointRunnerSource.includes('/opt/auralpha/guardrail-artifacts'),
+    true,
+    'broker checkpoint runner must use the production guardrail artifact root'
+  );
+  assert.equal(
+    brokerGuardrailCheckpointRunnerSource.includes(
+      'SUGGESTED_TRADES_BROKER_GUARDRAIL_CHECKPOINT_OUTPUT_FILE=""'
+    ),
+    true,
+    'broker checkpoint runner must keep container-side output disabled'
+  );
+  assert.equal(
+    brokerGuardrailCheckpointCronSource.includes('10 0 * * * root'),
+    true,
+    'broker checkpoint cron must run daily'
+  );
+  assert.equal(
+    brokerGuardrailCheckpointCronSource.includes(
+      './scripts/checks/run-suggested-trades-broker-guardrail-checkpoint.sh'
+    ),
+    true,
+    'broker checkpoint cron must call the checkpoint runner'
+  );
+  assert.equal(
+    dockerComposePlatformSource.includes(
+      '${AURALPHA_GUARDRAIL_ARTIFACT_ROOT:-/opt/auralpha/guardrail-artifacts}:/opt/auralpha/guardrail-artifacts:ro'
+    ),
+    true,
+    'platform compose must mount guardrail artifacts read-only for the checkpoint'
   );
 
   assert.equal(

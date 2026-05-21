@@ -55,6 +55,7 @@ services:
     volumes:
       - activity-exports:/app/storage/activity-exports
       - ../discovery-engine:/opt/discovery-engine:ro
+      - ${AURALPHA_GUARDRAIL_ARTIFACT_ROOT:-/opt/auralpha/guardrail-artifacts}:/opt/auralpha/guardrail-artifacts:ro
     restart: unless-stopped
     depends_on:
       - auralpha-scheduler-worker

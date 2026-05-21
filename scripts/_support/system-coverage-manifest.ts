@@ -765,6 +765,12 @@ export const COVERAGE_MODULES: CoverageModule[] = [
       fileOnly('scripts/checks/run-suggested-trades-broker-guardrail-candidate-alerts-watchdog.sh'),
       fileOnly('deploy/cron/auralpha-broker-guardrail-candidate-alerts-watchdog'),
       script(
+        'check:suggested-trades-broker-guardrail-checkpoint',
+        'scripts/checks/check-suggested-trades-broker-guardrail-checkpoint.ts'
+      ),
+      fileOnly('scripts/checks/run-suggested-trades-broker-guardrail-checkpoint.sh'),
+      fileOnly('deploy/cron/auralpha-broker-guardrail-checkpoint'),
+      script(
         'repair:suggested-trades-delta-protection',
         'scripts/maintenance/repair-suggested-trades-delta-protection.ts'
       ),

@@ -37,6 +37,28 @@ Last read-only verification: May 21, 2026, 7:00 AM UTC.
 - [x] Delta stale-protection watchdog is clean and read-only: `dryRun: true`, mutation disabled, apply flags false, stale candidates 0. Artifact: `/opt/auralpha/guardrail-artifacts/delta-stale-protection-watchdog/20260521T054056Z.json`.
 - [x] Broker guardrail candidate alerting is represented in code and cron: it reuses Mudrex and Delta repair-preview reports and writes alerts only, with broker mutation flags absent.
 - [x] Canary phases are blocked until a real safe candidate appears.
+- [x] Daily broker guardrail checkpoint is represented in code and cron: it summarizes the latest Mudrex, Delta, and candidate-alert artifacts without broker or database mutation.
+
+## Shared Phase 0B: Daily Broker Guardrail Checkpoint
+
+Purpose: give one daily read-only checkpoint that says whether both broker guardrail stacks are fresh, mutation flags are still safe, and whether a real canary candidate is waiting.
+
+Coverage:
+
+- [x] Reads latest artifacts from `/opt/auralpha/guardrail-artifacts`.
+- [x] Summarizes Mudrex issue counts, Delta issue counts, broker candidate count, emitted alert count, apply flag safety, and artifact freshness.
+- [x] Emits `phase1Ready` only when repair-preview candidates exist.
+- [x] Writes its own JSON/log artifacts under `/opt/auralpha/guardrail-artifacts/broker-guardrail-checkpoint`.
+- [x] Mounts the host guardrail artifact root read-only into the API container.
+- [x] Adds `deploy/cron/auralpha-broker-guardrail-checkpoint`.
+
+Acceptance:
+
+- [ ] Production cron is installed.
+- [ ] Latest checkpoint artifact is fresh.
+- [ ] Checkpoint reports all required artifacts present.
+- [ ] Checkpoint reports `applyFlagsSafe: true`.
+- [ ] Checkpoint reports `phase1Ready: false` unless a real reviewed candidate exists.
 
 ## Mudrex Plan
 

@@ -1,0 +1,7 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# Daily read-only checkpoint over the latest Mudrex and Delta guardrail artifacts.
+# The runner only reads artifacts and writes a summary artifact; broker mutation flags remain absent.
+10 0 * * * root cd /opt/auralpha/Backend/aurAlpha && /usr/bin/flock -n /var/lock/auralpha-broker-guardrail-checkpoint.lock bash -lc './scripts/checks/run-suggested-trades-broker-guardrail-checkpoint.sh' >> /var/log/auralpha-broker-guardrail-checkpoint.log 2>&1
