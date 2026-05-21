@@ -79,10 +79,11 @@ Coverage:
 
 Acceptance:
 
-- [ ] Run production preview with apply disabled.
-- [ ] Capture artifact showing `dryRun: true`.
-- [ ] Capture artifact showing repair apply disabled.
-- [ ] Review every candidate before allowing any canary.
+- [x] Run production preview with apply disabled.
+- [x] Capture artifact showing `dryRun: true`.
+- [x] Capture artifact showing repair apply disabled.
+- [x] Capture artifact showing stale-cancel apply disabled.
+- [x] Review every candidate before allowing any canary.
 
 ### Mudrex Phase 4: Operator Runbook
 
