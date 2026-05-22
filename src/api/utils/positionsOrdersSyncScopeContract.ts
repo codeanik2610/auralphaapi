@@ -46,7 +46,10 @@ type SharedSyncRequestShape = Pick<
   | 'lookbackDays'
   | 'startDate'
   | 'endDate'
+  | 'startDateTime'
+  | 'endDateTime'
   | 'historyWindowDays'
+  | 'historyMode'
   | 'backfill'
   | 'runLogId'
 >;
@@ -87,7 +90,12 @@ function normalizeSharedSyncRequest(
   const lookbackDays = normalizeOptionalNumber(request.lookbackDays);
   const startDate = normalizeOptionalString(request.startDate);
   const endDate = normalizeOptionalString(request.endDate);
+  const startDateTime = normalizeOptionalString(request.startDateTime);
+  const endDateTime = normalizeOptionalString(request.endDateTime);
   const historyWindowDays = normalizeOptionalNumber(request.historyWindowDays);
+  const historyModeRaw = normalizeOptionalString(request.historyMode);
+  const historyMode =
+    historyModeRaw === 'fast' || historyModeRaw === 'full' ? historyModeRaw : undefined;
   const runLogId = normalizeOptionalString(request.runLogId);
 
   if (brokerKeys) {
@@ -105,8 +113,17 @@ function normalizeSharedSyncRequest(
   if (endDate) {
     normalized.endDate = endDate;
   }
+  if (startDateTime) {
+    normalized.startDateTime = startDateTime;
+  }
+  if (endDateTime) {
+    normalized.endDateTime = endDateTime;
+  }
   if (historyWindowDays !== undefined) {
     normalized.historyWindowDays = historyWindowDays;
+  }
+  if (historyMode) {
+    normalized.historyMode = historyMode;
   }
   if (typeof request.backfill === 'boolean') {
     normalized.backfill = request.backfill;

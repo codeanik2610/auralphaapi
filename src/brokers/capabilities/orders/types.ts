@@ -12,6 +12,8 @@ export interface ValidatedOrdersRouteQuery {
   accountId?: string;
   startDate?: string;
   endDate?: string;
+  startDateTime?: string;
+  endDateTime?: string;
 }
 
 export type ValidatedCreateOrderRouteBody = ValidatedCreateOrderBody;
