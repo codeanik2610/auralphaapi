@@ -91,6 +91,13 @@ export class InternalOrdersSyncService {
     return Number.isNaN(d.getTime()) ? null : d;
   }
 
+  private parseDateTime(value: unknown): Date | null {
+    const raw = typeof value === 'string' ? value.trim() : '';
+    if (!raw) return null;
+    const date = new Date(raw);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
   private formatIsoDate(date: Date): string {
     return date.toISOString().slice(0, 10);
   }
@@ -106,6 +113,10 @@ export class InternalOrdersSyncService {
     }
 
     return new Date(Math.floor(value / 1000) * 1000);
+  }
+
+  private toMysqlDateTime(date: Date): string {
+    return date.toISOString().slice(0, 19).replace('T', ' ');
   }
 
   private buildDateWindows(
@@ -466,13 +477,23 @@ export class InternalOrdersSyncService {
   private async listTrackedSubmissionOrderIds(
     userId: string,
     accountId: string,
-    brokerKey: string
+    brokerKey: string,
+    createdAfter?: Date | null
   ): Promise<string[]> {
     type TrackedOrderIdRow = {
       brokerOrderId?: string | null;
       stopLossOrderId?: string | null;
       takeProfitOrderId?: string | null;
     };
+
+    const createdAfterSql =
+      createdAfter && Number.isFinite(createdAfter.getTime())
+        ? 'AND created_at >= ?'
+        : 'AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)';
+    const createdAfterParam =
+      createdAfter && Number.isFinite(createdAfter.getTime())
+        ? this.toMysqlDateTime(createdAfter)
+        : MAX_LOOKBACK_DAYS;
 
     const submissionRows = (await coreDataSource.query(
       `SELECT broker_order_id AS brokerOrderId,
@@ -485,11 +506,16 @@ export class InternalOrdersSyncService {
           AND status = 'completed'
           AND placement_state = 'placed'
           AND response_json IS NOT NULL
-          AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+          ${createdAfterSql}
         ORDER BY created_at DESC
         LIMIT 500`,
-      [userId, accountId, brokerKey.toLowerCase(), MAX_LOOKBACK_DAYS]
+      [userId, accountId, brokerKey.toLowerCase(), createdAfterParam]
     )) as TrackedOrderIdRow[];
+
+    const submittedAfterSql =
+      createdAfter && Number.isFinite(createdAfter.getTime())
+        ? 'AND submitted_at >= ?'
+        : 'AND submitted_at >= DATE_SUB(NOW(), INTERVAL ? DAY)';
 
     const suggestedTradeRows = (await coreDataSource.query(
       `SELECT order_id AS brokerOrderId,
@@ -500,10 +526,10 @@ export class InternalOrdersSyncService {
           AND account_id = ?
           AND LOWER(COALESCE(broker_key, '')) = ?
           AND protection_plan_json IS NOT NULL
-          AND submitted_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+          ${submittedAfterSql}
         ORDER BY submitted_at DESC
         LIMIT 500`,
-      [userId, accountId, brokerKey.toLowerCase(), MAX_LOOKBACK_DAYS]
+      [userId, accountId, brokerKey.toLowerCase(), createdAfterParam]
     )) as TrackedOrderIdRow[];
 
     return Array.from(
@@ -1219,9 +1245,19 @@ export class InternalOrdersSyncService {
                   brokerKey,
                   accountId,
                   brokerKey
-                );
+            );
             const resolvedBrokerKey = String(route.brokerKey || brokerKey).trim() || brokerKey;
             const resolvedAccountId = String(route.accountId || accountId).trim() || accountId;
+            const normalizedResolvedBrokerKey = resolvedBrokerKey.toLowerCase();
+            const requestedHistoryMode = String(request.historyMode || '').trim().toLowerCase();
+            const requestedStartDateTime =
+              normalizedResolvedBrokerKey === 'delta_exchange'
+                ? this.parseDateTime(request.startDateTime)
+                : null;
+            const requestedEndDateTime =
+              normalizedResolvedBrokerKey === 'delta_exchange'
+                ? this.parseDateTime(request.endDateTime)
+                : null;
 
             let openOrders: unknown[] = [];
             let openError: string | null = null;
@@ -1263,12 +1299,38 @@ export class InternalOrdersSyncService {
               }
             }
 
+            if (requestedStartDateTime) {
+              historyStart = requestedStartDateTime;
+            }
+            if (requestedEndDateTime) {
+              historyEnd = requestedEndDateTime;
+            }
+            const useExactDeltaHistoryWindow =
+              normalizedResolvedBrokerKey === 'delta_exchange' &&
+              Boolean(requestedStartDateTime || requestedEndDateTime);
+            const fastHistoryMode =
+              useExactDeltaHistoryWindow && requestedHistoryMode === 'fast';
+
             // Step 3: Fetch history in date windows
             const startDateStr = this.formatIsoDate(historyStart);
             const endDateStr = this.formatIsoDate(historyEnd);
 
             try {
-              const windows = this.buildDateWindows(startDateStr, endDateStr, historyWindowDays);
+              const windows: Array<{
+                startDate: string;
+                endDate: string;
+                startDateTime?: string;
+                endDateTime?: string;
+              }> = useExactDeltaHistoryWindow
+                ? [
+                    {
+                      startDate: startDateStr,
+                      endDate: endDateStr,
+                      startDateTime: historyStart.toISOString(),
+                      endDateTime: historyEnd.toISOString(),
+                    },
+                  ]
+                : this.buildDateWindows(startDateStr, endDateStr, historyWindowDays);
               const combinedHistory: unknown[] = [];
               for (const window of windows) {
                 const historyRaw = await this.brokerRuntimeRegistry
@@ -1278,6 +1340,8 @@ export class InternalOrdersSyncService {
                       limit: SYNC_LIMIT,
                       startDate: window.startDate || undefined,
                       endDate: window.endDate || undefined,
+                      startDateTime: window.startDateTime || undefined,
+                      endDateTime: window.endDateTime || undefined,
                     },
                     route
                   );
@@ -1294,11 +1358,12 @@ export class InternalOrdersSyncService {
               );
             }
 
-            if (resolvedBrokerKey.toLowerCase() === 'delta_exchange') {
+            if (normalizedResolvedBrokerKey === 'delta_exchange') {
               trackedSubmissionOrderIds = await this.listTrackedSubmissionOrderIds(
                 userId,
                 resolvedAccountId,
-                resolvedBrokerKey
+                normalizedResolvedBrokerKey,
+                fastHistoryMode ? historyStart : null
               );
               const fetchedOrderIds = new Set(
                 this.extractOrderExternalIds([...openOrders, ...historyOrders])
@@ -1456,11 +1521,11 @@ export class InternalOrdersSyncService {
               }
             }
 
-            if (!historyError) {
+            if (!historyError && !fastHistoryMode) {
               const reconciliation = await this.reconcileTerminalHistoryWindow(
                 userId,
                 resolvedAccountId,
-                resolvedBrokerKey.toLowerCase(),
+                normalizedResolvedBrokerKey,
                 historyStart,
                 historyEnd,
                 historyOrdersInWindow,
@@ -1472,7 +1537,7 @@ export class InternalOrdersSyncService {
               }
             }
 
-            if (resolvedBrokerKey.toLowerCase() === 'delta_exchange') {
+            if (normalizedResolvedBrokerKey === 'delta_exchange') {
               await this.positionReadModelRepository.refreshOpenDeltaProtectionFromOrderSnapshots?.(
                 {
                   userId,

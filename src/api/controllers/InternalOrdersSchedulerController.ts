@@ -24,8 +24,11 @@ export class InternalOrdersSchedulerController {
       accountIds: Array.isArray(body.accountIds) ? body.accountIds : [],
       startDate: typeof body.startDate === 'string' ? body.startDate.trim() : undefined,
       endDate: typeof body.endDate === 'string' ? body.endDate.trim() : undefined,
+      startDateTime: typeof body.startDateTime === 'string' ? body.startDateTime.trim() : undefined,
+      endDateTime: typeof body.endDateTime === 'string' ? body.endDateTime.trim() : undefined,
       lookbackDays: body.lookbackDays,
       historyWindowDays: body.historyWindowDays,
+      historyMode: body.historyMode,
       backfill: body.backfill,
       runLogId: typeof body.runLogId === 'string' ? body.runLogId.trim() || undefined : undefined,
     };

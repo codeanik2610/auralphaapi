@@ -1255,8 +1255,12 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
   ): Promise<unknown> {
     const pageSize = 50;
     const maxItems = Math.min(Math.max(1, Number(query.limit || 100)), 50000);
-    const startTime = this.toEpochMicrosStartOfDay(query.startDate);
-    const endTime = this.toEpochMicrosEndOfDay(query.endDate);
+    const startTime = query.startDateTime
+      ? this.toEpochMicros(query.startDateTime)
+      : this.toEpochMicrosStartOfDay(query.startDate);
+    const endTime = query.endDateTime
+      ? this.toEpochMicros(query.endDateTime)
+      : this.toEpochMicrosEndOfDay(query.endDate);
     let after: string | null | undefined;
     const items: DeltaOrderPayload[] = [];
 
@@ -1287,6 +1291,13 @@ export class DeltaExchangeOrdersAdapter implements BrokerOrdersAdapter {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return undefined;
     // `YYYY-MM-DD` parses to UTC midnight in JS.
+    return Math.floor(date.getTime() * 1000);
+  }
+
+  private toEpochMicros(value?: string): number | undefined {
+    if (!value) return undefined;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return undefined;
     return Math.floor(date.getTime() * 1000);
   }
 

@@ -9,7 +9,10 @@ export interface InternalSyncBody {
   lookbackDays?: number;
   startDate?: string;
   endDate?: string;
+  startDateTime?: string;
+  endDateTime?: string;
   historyWindowDays?: number;
+  historyMode?: 'fast' | 'full';
   backfill?: boolean;
   runLogId?: string;
 }
@@ -22,7 +25,10 @@ export interface OrdersSyncRequest {
   accountIds?: string[];
   startDate?: string;
   endDate?: string;
+  startDateTime?: string;
+  endDateTime?: string;
   historyWindowDays?: number;
+  historyMode?: 'fast' | 'full';
   lookbackDays?: number;
   backfill?: boolean;
   runLogId?: string;
