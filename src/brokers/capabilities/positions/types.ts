@@ -60,5 +60,17 @@ export interface BrokerPositionsAdapter {
   getClosingFills?(
     productIds: string[],
     context?: BrokerPositionContext
-  ): Promise<Map<string, { closePrice: number; closedAt: string; fillType: string | null }> | undefined>;
+  ): Promise<
+    | Map<
+        string,
+        {
+          closePrice: number;
+          closedAt: string;
+          fillType: string | null;
+          closeFillId?: string | null;
+          closeOrderId?: string | null;
+        }
+      >
+    | undefined
+  >;
 }

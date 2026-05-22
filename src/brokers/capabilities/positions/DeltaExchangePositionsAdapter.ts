@@ -12,6 +12,7 @@ import {
 import { BrokerPositionContext, BrokerPositionsAdapter } from './types';
 import { ValidatedPositionsRouteQuery } from './types';
 import { DeltaExchangeHttpClient } from '../../providers/delta_exchange/DeltaExchangeHttpClient';
+import { buildDeltaClosedPositionLifecycleId } from '../../providers/delta_exchange/deltaPositionLifecycle';
 
 interface DeltaPositionPayload {
   product_id?: number | string;
@@ -745,7 +746,17 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
     productIds: string[],
     context?: BrokerPositionContext
   ): Promise<
-    Map<string, { closePrice: number; closedAt: string; fillType: string | null }> | undefined
+    | Map<
+        string,
+        {
+          closePrice: number;
+          closedAt: string;
+          fillType: string | null;
+          closeFillId: string | null;
+          closeOrderId: string | null;
+        }
+      >
+    | undefined
   > {
     if (productIds.length === 0) return new Map();
 
@@ -761,7 +772,13 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
 
     const result = new Map<
       string,
-      { closePrice: number; closedAt: string; fillType: string | null }
+      {
+        closePrice: number;
+        closedAt: string;
+        fillType: string | null;
+        closeFillId: string | null;
+        closeOrderId: string | null;
+      }
     >();
     // Fills are returned most-recent-first; first match per product wins.
     for (const fill of fills) {
@@ -773,6 +790,9 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
         closePrice: price,
         closedAt: fill.created_at ?? new Date().toISOString(),
         fillType: fill.fill_type ? String(fill.fill_type) : null,
+        closeFillId: fill.id === undefined || fill.id === null ? null : String(fill.id),
+        closeOrderId:
+          fill.order_id === undefined || fill.order_id === null ? null : String(fill.order_id),
       });
     }
     return result;
@@ -851,10 +871,23 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
           .trim()
           .toLowerCase();
         const isLiquidation = fillType === 'liquidation' || fillType === 'liquidate';
+        const positionSide = direction > 0 ? 'long' : 'short';
+        const positionStatus = isLiquidation ? 'liquidated' : 'closed';
+        const productId = String(fill.product_id ?? product?.id ?? '').trim();
+        const lifecycleId = buildDeltaClosedPositionLifecycleId({
+          productId,
+          side: positionSide,
+          status: positionStatus,
+          quantity: closingQty,
+          entryPrice: state.avgEntry,
+          closePrice: price,
+          closedAt: fill.created_at,
+        });
 
         output.push({
           created_at: state.openedAt ?? fill.created_at ?? '',
           updated_at: fill.created_at ?? '',
+          closed_at: fill.created_at ?? '',
           stoploss: null,
           takeprofit: null,
           entry_price: String(state.avgEntry || 0),
@@ -868,11 +901,14 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
           leverage: '1',
           order_type: direction > 0 ? 'buy' : 'sell',
           side: direction > 0 ? 'Long' : 'Short',
-          position_type: direction > 0 ? 'long' : 'short',
-          status: isLiquidation ? 'liquidated' : 'closed',
+          position_type: positionSide,
+          status: positionStatus,
           close_state: afterSizeSigned === 0 ? 'CLOSED' : 'PARTIAL',
-          id: String(fill.id ?? fill.order_id ?? fill.product_id ?? ''),
+          id: lifecycleId ?? String(fill.id ?? fill.order_id ?? fill.product_id ?? ''),
           asset_uuid: String(fill.product_id ?? ''),
+          close_fill_id: fill.id === undefined || fill.id === null ? null : String(fill.id),
+          close_order_id:
+            fill.order_id === undefined || fill.order_id === null ? null : String(fill.order_id),
           symbol: fill.product_symbol ?? String(fill.product_id ?? ''),
           pnl: realized,
           realized,
