@@ -220,6 +220,30 @@ export class PositionReadModelRepository {
     await this.upsertReadModelsWithExecutor(coreDataSource, normalizedRows);
   }
 
+  async deleteReadModelsByExternalIds(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    externalIds: string[]
+  ): Promise<number> {
+    const normalizedExternalIds = Array.from(
+      new Set(externalIds.map((value) => String(value || '').trim()).filter(Boolean))
+    );
+    if (!normalizedExternalIds.length) {
+      return 0;
+    }
+
+    const result = await coreDataSource.query(
+      `DELETE FROM position_read_models
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND external_id IN (${normalizedExternalIds.map(() => '?').join(', ')})`,
+      [userId, accountId, brokerKey.trim().toLowerCase(), ...normalizedExternalIds]
+    );
+    return this.readAffectedRows(result);
+  }
+
   async refreshOpenDeltaProtectionFromOrderSnapshots(
     scope: PositionProtectionRefreshScope = {}
   ): Promise<number> {

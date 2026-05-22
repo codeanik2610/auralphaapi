@@ -21,12 +21,36 @@ import {
   POSITIONS_ORDERS_SYSTEM_SYNC_SCOPE,
 } from '../utils/positionsOrdersSyncScopeContract';
 import { buildPositionReadModelUpsert, PositionReadModelUpsert } from '../utils/positionsReadModel';
+import { buildDeltaClosedPositionLifecycleId } from '../../brokers/providers/delta_exchange/deltaPositionLifecycle';
 
 const MAX_LOOKBACK_DAYS = 90;
 const DEFAULT_WINDOW_DAYS = 7;
 const SYNC_LIMIT = 50000;
 const CHUNK_SIZE = 250;
 const CHECKPOINT_SCHEDULER_KEY = 'positions-sync';
+
+interface DeltaClosedLifecycleRow {
+  id?: string | null;
+  externalId: string;
+  symbol: string | null;
+  status: string | null;
+  statusRank: number;
+  payloadJson: unknown;
+  side?: string | null;
+  sideKey?: string | null;
+  quantity?: unknown;
+  entryPrice?: unknown;
+  closedPrice?: unknown;
+  positionClosedAt?: unknown;
+  lastSeenAt?: unknown;
+  updatedAt?: unknown;
+}
+
+interface DeltaClosedLifecycleCleanupResult {
+  deletedSchedulerRows: number;
+  deletedReadModelRows: number;
+  symbols: string[];
+}
 
 @Service()
 export class InternalPositionsSyncService {
@@ -1405,7 +1429,16 @@ export class InternalPositionsSyncService {
 
               // Fetch closing fills from broker if adapter supports it
               let closingFills:
-                | Map<string, { closePrice: number; closedAt: string; fillType: string | null }>
+                | Map<
+                    string,
+                    {
+                      closePrice: number;
+                      closedAt: string;
+                      fillType: string | null;
+                      closeFillId?: string | null;
+                      closeOrderId?: string | null;
+                    }
+                  >
                 | undefined;
               if (stalePositions.length > 0) {
                 if (typeof adapter.getClosingFills === 'function') {
@@ -1421,6 +1454,7 @@ export class InternalPositionsSyncService {
               // Close stale positions and compute PnL
               const staleReadModelRows: PositionReadModelUpsert[] = [];
               const staleReadModelIdsWithoutPayload: string[] = [];
+              const staleReadModelIdsToDelete: string[] = [];
               for (const stale of stalePositions) {
                 const payload = this.parsePayloadJson(stale.payload_json);
                 if (payload) {
@@ -1439,6 +1473,8 @@ export class InternalPositionsSyncService {
                     closePrice = fill.closePrice;
                     payload.closed_at = fill.closedAt;
                     if (fill.fillType) payload.fill_type = fill.fillType;
+                    if (fill.closeFillId) payload.close_fill_id = fill.closeFillId;
+                    if (fill.closeOrderId) payload.close_order_id = fill.closeOrderId;
                   } else {
                     closePrice =
                       this.toFiniteNumber(payload.mark_price) ||
@@ -1452,29 +1488,69 @@ export class InternalPositionsSyncService {
                     payload.closed_price = String(closePrice);
                   }
 
+                  const lifecycleExternalId = this.buildDeltaClosedPositionLifecycleExternalId(
+                    resolvedBrokerKey,
+                    stale.external_id,
+                    payload,
+                    closePrice,
+                    fill?.closedAt ?? payload.closed_at ?? payload.updated_at
+                  );
+                  const nextExternalId = lifecycleExternalId ?? stale.external_id;
+                  const shouldCanonicalize =
+                    Boolean(lifecycleExternalId) && lifecycleExternalId !== stale.external_id;
+                  if (shouldCanonicalize) {
+                    payload.legacy_external_id ??= stale.external_id;
+                    payload.id = lifecycleExternalId;
+                  }
+
                   const updatedJson = JSON.stringify(payload);
                   const updatedHash = createHash('sha256').update(updatedJson).digest('hex');
-                  await coreDataSource.query(
-                    `UPDATE scheduler_positions_snapshots
-                     SET status = 'CLOSED', status_rank = ?, payload_json = ?, payload_hash = ?, updated_at = NOW()
-                     WHERE id = ?`,
-                    [closeRank, updatedJson, updatedHash, stale.id]
-                  );
+                  const mergedIntoExisting = shouldCanonicalize
+                    ? await this.mergeDeltaClosedSchedulerSnapshot({
+                        userId,
+                        accountId: resolvedAccountId,
+                        staleRowId: stale.id,
+                        staleExternalId: stale.external_id,
+                        lifecycleExternalId: nextExternalId,
+                        statusRank: closeRank,
+                        observedAt: accountSyncStartedAt,
+                        payloadJson: updatedJson,
+                        payloadHash: updatedHash,
+                      })
+                    : false;
+                  if (!shouldCanonicalize) {
+                    await coreDataSource.query(
+                      `UPDATE scheduler_positions_snapshots
+                       SET status = 'CLOSED',
+                           status_rank = ?,
+                           payload_json = ?,
+                           payload_hash = ?,
+                           last_seen_at = ?,
+                           updated_at = NOW()
+                       WHERE id = ?`,
+                      [closeRank, updatedJson, updatedHash, accountSyncStartedAt, stale.id]
+                    );
+                  }
 
-                  const readModelRow = buildPositionReadModelUpsert({
-                    userId,
-                    accountId: resolvedAccountId,
-                    brokerKey: resolvedBrokerKey.toLowerCase(),
-                    externalId: stale.external_id,
-                    payload,
-                    payloadJson: updatedJson,
-                    payloadHash: updatedHash,
-                    statusRank: closeRank,
-                    firstSeenAt: null,
-                    lastSeenAt: accountSyncStartedAt,
-                  });
-                  if (readModelRow) {
-                    staleReadModelRows.push(readModelRow);
+                  if (shouldCanonicalize) {
+                    staleReadModelIdsToDelete.push(stale.external_id);
+                  }
+                  if (!mergedIntoExisting) {
+                    const readModelRow = buildPositionReadModelUpsert({
+                      userId,
+                      accountId: resolvedAccountId,
+                      brokerKey: resolvedBrokerKey.toLowerCase(),
+                      externalId: nextExternalId,
+                      payload,
+                      payloadJson: updatedJson,
+                      payloadHash: updatedHash,
+                      statusRank: closeRank,
+                      firstSeenAt: null,
+                      lastSeenAt: accountSyncStartedAt,
+                    });
+                    if (readModelRow) {
+                      staleReadModelRows.push(readModelRow);
+                    }
                   }
                 } else {
                   await coreDataSource.query(
@@ -1488,6 +1564,14 @@ export class InternalPositionsSyncService {
               }
               if (staleReadModelRows.length) {
                 await this.positionReadModelRepository.upsertReadModels(staleReadModelRows);
+              }
+              if (staleReadModelIdsToDelete.length) {
+                await this.positionReadModelRepository.deleteReadModelsByExternalIds(
+                  userId,
+                  resolvedAccountId,
+                  resolvedBrokerKey.toLowerCase(),
+                  staleReadModelIdsToDelete
+                );
               }
               if (staleReadModelIdsWithoutPayload.length) {
                 await this.positionReadModelRepository.markPositionsClosed(
@@ -1531,6 +1615,17 @@ export class InternalPositionsSyncService {
                   affectedSymbols.add(symbol);
                 }
               }
+            }
+
+            const lifecycleCleanup = await this.pruneDeltaClosedPositionLifecycleDuplicates(
+              userId,
+              resolvedAccountId,
+              resolvedBrokerKey.toLowerCase()
+            );
+            updatedRecords +=
+              lifecycleCleanup.deletedSchedulerRows + lifecycleCleanup.deletedReadModelRows;
+            for (const symbol of lifecycleCleanup.symbols) {
+              affectedSymbols.add(symbol);
             }
 
             if (affectedSymbols.size > 0) {
@@ -1636,5 +1731,463 @@ export class InternalPositionsSyncService {
     }
 
     return result;
+  }
+
+  private buildDeltaClosedPositionLifecycleExternalId(
+    brokerKey: string,
+    externalId: string,
+    payload: Record<string, unknown>,
+    closePrice: number,
+    closedAt: unknown
+  ): string | null {
+    if (
+      String(brokerKey || '')
+        .trim()
+        .toLowerCase() !== 'delta_exchange'
+    ) {
+      return null;
+    }
+    const productId = this.resolveDeltaProductIdForLifecycle(externalId, payload);
+    return buildDeltaClosedPositionLifecycleId({
+      productId,
+      side: payload.position_type ?? payload.side ?? payload.order_type,
+      status: payload.status ?? 'closed',
+      quantity: Math.abs(
+        this.toFiniteNumber(payload.quantity) || this.toFiniteNumber(payload.size)
+      ),
+      entryPrice: payload.entry_price ?? payload.entryPrice,
+      closePrice,
+      closedAt,
+    });
+  }
+
+  private async pruneDeltaClosedPositionLifecycleDuplicates(
+    userId: string,
+    accountId: string,
+    brokerKey: string
+  ): Promise<DeltaClosedLifecycleCleanupResult> {
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (normalizedBrokerKey !== 'delta_exchange') {
+      return { deletedSchedulerRows: 0, deletedReadModelRows: 0, symbols: [] };
+    }
+
+    const closeRank = this.computePositionStatusRank('CLOSED');
+    const schedulerRows = await this.listDeltaClosedSchedulerLifecycleRows(
+      userId,
+      accountId,
+      normalizedBrokerKey,
+      closeRank
+    );
+    const readModelRows = await this.listDeltaClosedReadModelLifecycleRows(
+      userId,
+      accountId,
+      normalizedBrokerKey,
+      closeRank
+    );
+    const schedulerDuplicates = this.resolveDeltaClosedLifecycleDuplicateRows(schedulerRows);
+    const readModelDuplicates = this.resolveDeltaClosedLifecycleDuplicateRows(readModelRows);
+
+    const deletedSchedulerRows = await this.deleteDeltaClosedSchedulerLifecycleDuplicates(
+      userId,
+      accountId,
+      normalizedBrokerKey,
+      schedulerDuplicates.rowIds
+    );
+    const deletedReadModelRows = await this.positionReadModelRepository.deleteReadModelsByExternalIds(
+      userId,
+      accountId,
+      normalizedBrokerKey,
+      readModelDuplicates.externalIds
+    );
+    const symbols = Array.from(
+      new Set([...schedulerDuplicates.symbols, ...readModelDuplicates.symbols])
+    );
+
+    return { deletedSchedulerRows, deletedReadModelRows, symbols };
+  }
+
+  private async listDeltaClosedSchedulerLifecycleRows(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    closeRank: number
+  ): Promise<DeltaClosedLifecycleRow[]> {
+    const rows = (await coreDataSource.query(
+      `SELECT id,
+              external_id AS externalId,
+              symbol,
+              status,
+              status_rank AS statusRank,
+              payload_json AS payloadJson,
+              last_seen_at AS lastSeenAt,
+              updated_at AS updatedAt
+         FROM scheduler_positions_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND status_rank >= ?`,
+      [userId, accountId, brokerKey, closeRank]
+    )) as DeltaClosedLifecycleRow[];
+    return rows;
+  }
+
+  private async listDeltaClosedReadModelLifecycleRows(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    closeRank: number
+  ): Promise<DeltaClosedLifecycleRow[]> {
+    const rows = (await coreDataSource.query(
+      `SELECT NULL AS id,
+              external_id AS externalId,
+              symbol,
+              side,
+              side_key AS sideKey,
+              status,
+              status_rank AS statusRank,
+              quantity,
+              entry_price AS entryPrice,
+              closed_price AS closedPrice,
+              position_closed_at AS positionClosedAt,
+              payload_json AS payloadJson,
+              last_seen_at AS lastSeenAt,
+              updated_at AS updatedAt
+         FROM position_read_models
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND status_rank >= ?`,
+      [userId, accountId, brokerKey, closeRank]
+    )) as DeltaClosedLifecycleRow[];
+    return rows;
+  }
+
+  private resolveDeltaClosedLifecycleDuplicateRows(rows: DeltaClosedLifecycleRow[]): {
+    rowIds: string[];
+    externalIds: string[];
+    symbols: string[];
+  } {
+    const groups = new Map<
+      string,
+      { canonicalRows: DeltaClosedLifecycleRow[]; duplicateRows: DeltaClosedLifecycleRow[] }
+    >();
+
+    for (const row of rows) {
+      const payload = this.buildDeltaClosedLifecyclePayload(row);
+      const closePrice = this.resolveDeltaClosedLifecycleClosePrice(row, payload);
+      const closedAt = this.resolveDeltaClosedLifecycleClosedAt(row, payload);
+      const lifecycleId = this.buildDeltaClosedPositionLifecycleExternalId(
+        'delta_exchange',
+        row.externalId,
+        payload,
+        closePrice,
+        closedAt
+      );
+      const matchKey = this.buildDeltaClosedLifecycleMatchKey(
+        row.externalId,
+        payload,
+        closePrice,
+        closedAt
+      );
+      if (!matchKey) {
+        continue;
+      }
+
+      const group =
+        groups.get(matchKey) || { canonicalRows: [], duplicateRows: [] };
+      if (row.externalId === lifecycleId || this.isDeltaClosedLifecycleExternalId(row.externalId)) {
+        group.canonicalRows.push(row);
+      } else {
+        group.duplicateRows.push(row);
+      }
+      groups.set(matchKey, group);
+    }
+
+    const rowIds = new Set<string>();
+    const externalIds = new Set<string>();
+    const symbols = new Set<string>();
+    for (const group of groups.values()) {
+      if (!group.canonicalRows.length || !group.duplicateRows.length) {
+        continue;
+      }
+      for (const row of group.duplicateRows) {
+        const rowId = String(row.id || '').trim();
+        if (rowId) {
+          rowIds.add(rowId);
+        }
+        const externalId = String(row.externalId || '').trim();
+        if (externalId) {
+          externalIds.add(externalId);
+        }
+        const symbol = String(row.symbol || '')
+          .trim()
+          .toUpperCase();
+        if (symbol) {
+          symbols.add(symbol);
+        }
+      }
+    }
+
+    return {
+      rowIds: Array.from(rowIds),
+      externalIds: Array.from(externalIds),
+      symbols: Array.from(symbols),
+    };
+  }
+
+  private isDeltaClosedLifecycleExternalId(value: unknown): boolean {
+    return String(value || '')
+      .trim()
+      .startsWith('delta:');
+  }
+
+  private buildDeltaClosedLifecycleMatchKey(
+    externalId: string,
+    payload: Record<string, unknown>,
+    closePrice: number,
+    closedAt: unknown
+  ): string | null {
+    const productId = this.resolveDeltaProductIdForLifecycle(externalId, payload);
+    const side = this.normalizeDeltaLifecycleSide(
+      payload.position_type ?? payload.side ?? payload.order_type
+    );
+    const status = this.normalizeDeltaLifecycleStatus(payload.status ?? 'closed');
+    const quantity = this.normalizeDeltaLifecycleNumber(
+      Math.abs(this.toFiniteNumber(payload.quantity) || this.toFiniteNumber(payload.size))
+    );
+    const entryPrice = this.normalizeDeltaLifecycleNumber(
+      payload.entry_price ?? payload.entryPrice
+    );
+    const normalizedClosePrice = this.normalizeDeltaLifecycleNumber(closePrice);
+    const closedAtSecond = this.normalizeDeltaLifecycleTimestampSecond(closedAt);
+
+    if (
+      !productId ||
+      !side ||
+      !status ||
+      !quantity ||
+      !entryPrice ||
+      !normalizedClosePrice ||
+      !closedAtSecond
+    ) {
+      return null;
+    }
+
+    return [
+      productId,
+      side,
+      status,
+      quantity,
+      entryPrice,
+      normalizedClosePrice,
+      closedAtSecond,
+    ].join('|');
+  }
+
+  private normalizeDeltaLifecycleSide(value: unknown): 'long' | 'short' | null {
+    const raw = String(value ?? '')
+      .trim()
+      .toLowerCase();
+    if (raw === 'long' || raw === 'buy') {
+      return 'long';
+    }
+    if (raw === 'short' || raw === 'sell') {
+      return 'short';
+    }
+    return null;
+  }
+
+  private normalizeDeltaLifecycleStatus(value: unknown): 'closed' | 'liquidated' | null {
+    const raw = String(value ?? '')
+      .trim()
+      .toLowerCase();
+    if (raw === 'closed' || raw === 'close') {
+      return 'closed';
+    }
+    if (raw === 'liquidated' || raw === 'liquidation') {
+      return 'liquidated';
+    }
+    return null;
+  }
+
+  private normalizeDeltaLifecycleNumber(value: unknown): string | null {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return null;
+    }
+    return numeric.toFixed(8);
+  }
+
+  private normalizeDeltaLifecycleTimestampSecond(value: unknown): string | null {
+    const raw = String(value ?? '').trim();
+    if (!raw) {
+      return null;
+    }
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) {
+      return raw;
+    }
+    return new Date(Math.round(date.getTime() / 1000) * 1000).toISOString();
+  }
+
+  private buildDeltaClosedLifecyclePayload(
+    row: DeltaClosedLifecycleRow
+  ): Record<string, unknown> {
+    const payload = { ...(this.parsePayloadJson(row.payloadJson) || {}) };
+    if (payload.status === undefined && row.status) payload.status = row.status;
+    if (payload.side === undefined && row.side) payload.side = row.side;
+    if (payload.position_type === undefined && row.sideKey) payload.position_type = row.sideKey;
+    if (payload.quantity === undefined && row.quantity !== undefined) {
+      payload.quantity = row.quantity;
+    }
+    if (payload.entry_price === undefined && row.entryPrice !== undefined) {
+      payload.entry_price = row.entryPrice;
+    }
+    if (payload.closed_price === undefined && row.closedPrice !== undefined) {
+      payload.closed_price = row.closedPrice;
+    }
+    if (payload.closed_at === undefined && row.positionClosedAt !== undefined) {
+      payload.closed_at = row.positionClosedAt;
+    }
+    return payload;
+  }
+
+  private resolveDeltaClosedLifecycleClosePrice(
+    row: DeltaClosedLifecycleRow,
+    payload: Record<string, unknown>
+  ): number {
+    return (
+      this.toFiniteNumber(payload.closed_price) ||
+      this.toFiniteNumber(payload.close_price) ||
+      this.toFiniteNumber(payload.closedPrice) ||
+      this.toFiniteNumber(row.closedPrice)
+    );
+  }
+
+  private resolveDeltaClosedLifecycleClosedAt(
+    row: DeltaClosedLifecycleRow,
+    payload: Record<string, unknown>
+  ): unknown {
+    return (
+      payload.closed_at ??
+      payload.closedAt ??
+      payload.updated_at ??
+      row.positionClosedAt ??
+      row.lastSeenAt ??
+      row.updatedAt
+    );
+  }
+
+  private async deleteDeltaClosedSchedulerLifecycleDuplicates(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    rowIds: string[]
+  ): Promise<number> {
+    const normalizedRowIds = Array.from(
+      new Set(rowIds.map((value) => String(value || '').trim()).filter(Boolean))
+    );
+    if (!normalizedRowIds.length) {
+      return 0;
+    }
+
+    const result = await coreDataSource.query(
+      `DELETE FROM scheduler_positions_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND id IN (${normalizedRowIds.map(() => '?').join(', ')})`,
+      [userId, accountId, brokerKey, ...normalizedRowIds]
+    );
+    return this.readAffectedRows(result);
+  }
+
+  private resolveDeltaProductIdForLifecycle(
+    externalId: string,
+    payload: Record<string, unknown>
+  ): string | null {
+    for (const candidate of [
+      payload.asset_uuid,
+      payload.product_id,
+      payload.productId,
+      payload.product,
+      externalId,
+    ]) {
+      const value = String(candidate ?? '').trim();
+      if (value && /^[0-9]+$/.test(value)) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  private async mergeDeltaClosedSchedulerSnapshot(input: {
+    userId: string;
+    accountId: string;
+    staleRowId: string;
+    staleExternalId: string;
+    lifecycleExternalId: string;
+    statusRank: number;
+    observedAt: Date;
+    payloadJson: string;
+    payloadHash: string;
+  }): Promise<boolean> {
+    const existingRows = (await coreDataSource.query(
+      `SELECT id
+         FROM scheduler_positions_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND external_id = ?
+        LIMIT 1`,
+      [input.userId, input.accountId, input.lifecycleExternalId]
+    )) as Array<{ id?: string }>;
+    const existingId = String(existingRows[0]?.id || '').trim();
+
+    if (existingId && existingId !== input.staleRowId) {
+      await coreDataSource.query(
+        `UPDATE scheduler_positions_snapshots
+            SET status = IF(status_rank <= ?, 'CLOSED', status),
+                status_rank = GREATEST(status_rank, ?),
+                last_seen_at = IF(last_seen_at IS NULL OR ? > last_seen_at, ?, last_seen_at),
+                updated_at = NOW()
+          WHERE id = ?`,
+        [
+          input.statusRank,
+          input.statusRank,
+          input.observedAt,
+          input.observedAt,
+          existingId,
+        ]
+      );
+      await coreDataSource.query(
+        `DELETE FROM scheduler_positions_snapshots
+          WHERE id = ?`,
+        [input.staleRowId]
+      );
+      return true;
+    }
+
+    await coreDataSource.query(
+      `UPDATE scheduler_positions_snapshots
+          SET external_id = ?,
+              status = 'CLOSED',
+              status_rank = ?,
+              payload_json = ?,
+              payload_hash = ?,
+              last_seen_at = ?,
+              updated_at = NOW()
+        WHERE id = ?`,
+      [
+        input.lifecycleExternalId,
+        input.statusRank,
+        input.payloadJson,
+        input.payloadHash,
+        input.observedAt,
+        input.staleRowId,
+      ]
+    );
+    return false;
   }
 }
