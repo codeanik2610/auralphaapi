@@ -121,6 +121,32 @@ function testBuildsReviewAlertPlanForBlockedDeltaCandidate(): void {
   assert.equal(plan.message.includes('blockers=missing planned stop-loss price'), true);
 }
 
+function testBuildsActionableDeltaNativeBracketMissingProtectionAlertPlan(): void {
+  const plan = assertPlan(
+    buildBrokerGuardrailCandidateAlertPlan(
+      'delta_exchange',
+      buildPreviewItem({
+        remediation: {
+          action: 'would_repair_or_close_missing_native_bracket_protection',
+          readiness: 'ready',
+          repairable: true,
+          blockers: [],
+          expectedMutation: {
+            positionId: 'position-123',
+            repairKind: 'repair_or_close_missing_native_bracket_protection',
+          },
+        },
+      })
+    )
+  );
+
+  assert.equal(plan.brokerKey, 'delta_exchange');
+  assert.equal(plan.severity, 'High');
+  assert.equal(plan.urgency, 'immediate');
+  assert.equal(plan.remediationAction, 'would_repair_or_close_missing_native_bracket_protection');
+  assert.equal(plan.message.includes('native bracket missing protection'), true);
+}
+
 function testReportPlanBuilderLimitsCombinedBrokerItems(): void {
   const mudrexItem = buildPreviewItem({ suggestedTradeId: 'mudrex-1' });
   const deltaItem = buildPreviewItem({ suggestedTradeId: 'delta-1' });
@@ -223,6 +249,7 @@ function testWatchdogPersistsAppendOnlyCandidateHistory(): void {
 async function run(): Promise<void> {
   testBuildsHighPriorityReadyAlertPlan();
   testBuildsReviewAlertPlanForBlockedDeltaCandidate();
+  testBuildsActionableDeltaNativeBracketMissingProtectionAlertPlan();
   testReportPlanBuilderLimitsCombinedBrokerItems();
   await testCreateAlertForNewCandidate();
   await testUpdateExistingAlertWhenDetailsChange();

@@ -2159,6 +2159,69 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
 
     {
       const { service } = createService();
+      const retryDelays: number[] = [];
+      let evaluations = 0;
+
+      service.automationSignalEvaluatorService = {
+        evaluateLatestSignals: async (payload: Record<string, unknown>) => {
+          evaluations += 1;
+          assert.equal(payload.evaluatedAt, '2026-04-04T10:00:30.000Z');
+          if (evaluations === 1) {
+            return {
+              evaluatedSymbols: 1,
+              skippedSymbols: 1,
+              items: [
+                {
+                  symbol: 'ETHUSDT',
+                  timeframe: '1m',
+                  status: 'ok',
+                  latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+                  signals: [],
+                },
+                {
+                  symbol: 'BTCUSDT',
+                  timeframe: '1m',
+                  status: 'stale',
+                  reason: 'Latest closed candle is stale',
+                },
+              ],
+            };
+          }
+
+          return {
+            evaluatedSymbols: 1,
+            skippedSymbols: 0,
+            items: [
+              {
+                symbol: 'BTCUSDT',
+                timeframe: '1m',
+                status: 'ok',
+                latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+                signals: [],
+              },
+            ],
+          };
+        },
+      };
+      service.sleepForClosedCandleReadinessRetry = async (delayMs: number) => {
+        retryDelays.push(delayMs);
+      };
+
+      const result = await service.evaluateTradeSuggestionSignalsWithReadinessRetry({
+        templateConfig: {},
+        symbols: ['BTCUSDT'],
+        timeframe: '1m',
+        evaluatedAt: '2026-04-04T10:00:30.000Z',
+      });
+
+      assert.equal(evaluations, 2);
+      assert.deepEqual(retryDelays, [5000]);
+      assert.equal(result.evaluatedSymbols, 1);
+      assert.equal(result.items[0]?.status, 'ok');
+    }
+
+    {
+      const { service } = createService();
       const createdSuggestions: Array<Record<string, unknown>> = [];
       const outputs: Array<Record<string, unknown>> = [];
       const automationTradeSuggestion = {
@@ -3773,6 +3836,18 @@ function runAutomationsScriptWiringAssertions(): void {
       runtimeEvaluatorSource.includes('bucket_seconds'),
     true,
     'automation runtime must evaluate timeframe-aligned closed candle boundaries'
+  );
+  assert.equal(
+    runtimeEvaluatorSource.includes('df = df.reset_index(drop=True)') &&
+      runtimeEvaluatorSource.includes('latest_index, previous_index, reason'),
+    true,
+    'automation runtime must reset candle indexes before position-based latest-closed lookup'
+  );
+  assert.equal(
+    executionSource.includes('evaluateTradeSuggestionSignalsWithReadinessRetry') &&
+      executionSource.includes('sleepForClosedCandleReadinessRetry'),
+    true,
+    'trade-suggestion automation must retry briefly when 1m closed candles are still syncing'
   );
   assert.equal(
     executionSource.includes('suggestedTradeId: context?.suggestedTradeId ?? null'),

@@ -7805,6 +7805,238 @@ async function runSuggestedTradeBrokerProtectionRepairHandlerAssertions(): Promi
       'partial_protection_execution'
     );
   }
+
+  {
+    const nativeBracketMismatchExecution = await remediateDeltaLiveProtection({
+      userId: 'user-1',
+      trade: {
+        id: 'st-delta-native-bracket-size-mismatch',
+        symbol: 'ALTUSDT',
+        side: 'SELL',
+        timeframe: '3m',
+      },
+      execution: {
+        orderId: 'delta-entry-native-bracket-mismatch',
+        orderStatus: 'FILLED',
+        entryPrice: '0.0078',
+        quantity: 138,
+        filledQuantity: 138,
+        remainingQuantity: 0,
+        protectionState: 'attaching',
+        protectionAttempts: 1,
+        protectionPlan: {
+          protectionMode: 'native_bracket',
+          stopLossOrderId: 'delta-native-sl-half-size',
+          takeProfitOrderId: 'delta-native-tp-half-size',
+        },
+      } as any,
+      position: {
+        externalId: '20194',
+        payload: {
+          entry_price: '0.0078',
+          quantity_contracts: '138',
+          mark_price: '0.00779',
+        },
+      },
+      prices: {
+        requestedEntryPrice: 0.0078,
+        stopLossPrice: 0.007849,
+        takeProfitPrice: 0.00745,
+      },
+      nowIso: '2026-05-23T05:41:00.000Z',
+      brokerKey: 'delta_exchange',
+      accountId: 'acc-delta-1',
+      ordersAdapter: {
+        async cancelOrder() {
+          throw new Error('Native bracket size mismatch should not cancel in detection phase');
+        },
+        async createLiveAutoProtectiveOrdersForPosition() {
+          throw new Error('Native bracket size mismatch should not place protection in phase 3');
+        },
+      },
+      protectionRepairEnabled: true,
+      resolveLiveProtectionOrderContext: async () => ({
+        stopLossOrderId: 'delta-native-sl-half-size',
+        takeProfitOrderId: 'delta-native-tp-half-size',
+        stopLossStatus: 'PENDING',
+        takeProfitStatus: 'PENDING',
+        activeOrderIds: ['delta-native-sl-half-size', 'delta-native-tp-half-size'],
+        orderDetails: {
+          'delta-native-sl-half-size': {
+            status: 'PENDING',
+            quantity: 69,
+            filledQuantity: 0,
+            remainingQuantity: 69,
+          },
+          'delta-native-tp-half-size': {
+            status: 'PENDING',
+            quantity: 69,
+            filledQuantity: 0,
+            remainingQuantity: 69,
+          },
+        },
+      }),
+      hasUsableProtectionContext: () => false,
+      resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
+      resolvePositionCurrentPrice: (payload) => Number(payload.mark_price),
+      deriveScaledProtectionPrice: (
+        _actualEntryPrice,
+        _requestedEntryPrice,
+        requestedTargetPrice
+      ) => String(requestedTargetPrice),
+      resolveLiveAutoAssetRoute: async () => {
+        throw new Error('Native bracket size mismatch should not resolve route in phase 3');
+      },
+      resolveActiveProtectionOrdersForSymbol: async () => {
+        throw new Error('Native bracket size mismatch should not inspect symbol protection');
+      },
+      unwrapOrderPlacementResponse: (response) => response as Record<string, unknown>,
+      markProtectionAttached: () => {
+        throw new Error('Native bracket size mismatch must not be marked attached');
+      },
+      markProtectionAttaching: () => {
+        throw new Error('Native bracket size mismatch must not keep waiting');
+      },
+      markProtectionManualUnlinked: () => {
+        throw new Error('Native bracket size mismatch should fail loudly in phase 3');
+      },
+      markProtectionFailed: (execution, nowIso, message) =>
+        ({
+          ...execution,
+          protectionState: 'failed',
+          protectionCheckedAt: nowIso,
+          protectionLastError: message,
+          note: message,
+        }) as any,
+    });
+
+    assert.equal(nativeBracketMismatchExecution.protectionState, 'failed');
+    assert.match(
+      String(nativeBracketMismatchExecution.protectionLastError || ''),
+      /does not match current open position size 138/
+    );
+    assert.match(
+      String(nativeBracketMismatchExecution.protectionLastError || ''),
+      /Replacement protection is required/
+    );
+  }
+
+  {
+    const residualExecution = await remediateDeltaLiveProtection({
+      userId: 'user-1',
+      trade: {
+        id: 'st-delta-residual-missing-sl',
+        symbol: 'ALTUSDT',
+        side: 'SELL',
+        timeframe: '3m',
+      },
+      execution: {
+        orderId: 'delta-entry-residual',
+        orderStatus: 'CANCELLED',
+        entryPrice: '0.007792',
+        quantity: 451,
+        filledQuantity: 138,
+        remainingQuantity: 0,
+        canceledAt: '2026-05-23T05:42:17.000Z',
+        protectionState: 'attaching',
+        protectionAttempts: 2,
+        protectionPlan: {
+          stopLossOrderId: 'delta-residual-sl',
+          takeProfitOrderId: 'delta-residual-tp',
+        },
+      } as any,
+      position: {
+        externalId: '20194',
+        payload: {
+          entry_price: '0.0078',
+          quantity_contracts: '69',
+          mark_price: '0.008073',
+        },
+      },
+      prices: {
+        requestedEntryPrice: 0.007792,
+        stopLossPrice: 0.007849,
+        takeProfitPrice: 0.00745,
+      },
+      nowIso: '2026-05-23T10:31:00.000Z',
+      brokerKey: 'delta_exchange',
+      accountId: 'acc-delta-1',
+      ordersAdapter: {
+        async cancelOrder() {
+          throw new Error('Residual missing-SL detection should not cancel orders in phase 1');
+        },
+        async createLiveAutoProtectiveOrdersForPosition() {
+          throw new Error('Residual missing-SL detection should not place protection in phase 1');
+        },
+      },
+      protectionRepairEnabled: true,
+      resolveLiveProtectionOrderContext: async () => ({
+        stopLossOrderId: 'delta-residual-sl',
+        takeProfitOrderId: 'delta-residual-tp',
+        stopLossStatus: 'CLOSED',
+        takeProfitStatus: 'PENDING',
+        activeOrderIds: ['delta-residual-tp'],
+        orderDetails: {
+          'delta-residual-sl': {
+            status: 'CLOSED',
+            quantity: 69,
+            filledQuantity: 69,
+            remainingQuantity: 0,
+          },
+          'delta-residual-tp': {
+            status: 'PENDING',
+            quantity: 69,
+            filledQuantity: 0,
+            remainingQuantity: 69,
+          },
+        },
+      }),
+      hasUsableProtectionContext: () => false,
+      resolvePositionEntryPrice: (payload) => Number(payload.entry_price),
+      resolvePositionCurrentPrice: (payload) => Number(payload.mark_price),
+      deriveScaledProtectionPrice: (
+        _actualEntryPrice,
+        _requestedEntryPrice,
+        requestedTargetPrice
+      ) => String(requestedTargetPrice),
+      resolveLiveAutoAssetRoute: async () => {
+        throw new Error('Residual missing-SL detection should not resolve route in phase 1');
+      },
+      resolveActiveProtectionOrdersForSymbol: async () => {
+        throw new Error('Residual missing-SL detection should not inspect symbol protection');
+      },
+      unwrapOrderPlacementResponse: (response) => response as Record<string, unknown>,
+      markProtectionAttached: () => {
+        throw new Error('Residual missing-SL execution should not be marked attached');
+      },
+      markProtectionAttaching: () => {
+        throw new Error('Residual missing-SL execution must not keep waiting');
+      },
+      markProtectionManualUnlinked: () => {
+        throw new Error('Residual missing-SL execution should fail loudly in phase 1');
+      },
+      markProtectionFailed: (execution, nowIso, message) =>
+        ({
+          ...execution,
+          protectionState: 'failed',
+          protectionCheckedAt: nowIso,
+          protectionLastError: message,
+          note: message,
+        }) as any,
+    });
+
+    assert.equal(residualExecution.protectionState, 'failed');
+    assert.equal(residualExecution.protectionCheckedAt, '2026-05-23T10:31:00.000Z');
+    assert.match(String(residualExecution.protectionLastError || ''), /open residual position/);
+    assert.match(
+      String(residualExecution.protectionLastError || ''),
+      /active stop-loss is missing/
+    );
+    assert.match(
+      String(residualExecution.protectionLastError || ''),
+      /replacement protection is required/
+    );
+  }
 }
 
 async function runSuggestedTradeProtectionRemediationAssertions(): Promise<void> {
@@ -12441,7 +12673,10 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'none_preview_only',
     'would_attach_missing_protection',
     'would_replace_mismatched_partial_fill_protection',
+    'would_repair_or_close_missing_native_bracket_protection',
     'would_reconcile_native_bracket_protection',
+    'repair_or_close_missing_native_bracket_protection',
+    'requiresUnsafeResidualCloseCheck',
     'missingProtectionLegs',
     'attach_missing_stop_loss_and_take_profit',
     'detached_reduce_only_orders',
@@ -12522,6 +12757,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'getOrder',
     'cancelOrder',
     'would_replace_mismatched_partial_fill_protection',
+    'would_repair_or_close_missing_native_bracket_protection',
   ]) {
     assert.equal(
       deltaProtectionRepairApplySource.includes(marker),
@@ -12942,6 +13178,33 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
     ema5PullbackConfig.rules
   );
 
+  const pythonMetadataOnlyTrailing = service.resolveProtectionPlanTrailingStop(
+    {
+      symbol: 'ICPUSDT',
+      side: 'BUY',
+      timeframe: '5m',
+      meta: {
+        signalTradePlan: {
+          metadata: {
+            trailing_stop_rules: [
+              { whenProfitR: 0.5, moveStopToR: 0 },
+              { whenProfitR: 2, moveStopToR: 1 },
+            ],
+          },
+        },
+      },
+    },
+    {
+      executionMode: 'live',
+      protectionPlan: {},
+    }
+  );
+  assert.equal(
+    pythonMetadataOnlyTrailing,
+    null,
+    'Python entry_plan metadata must not be treated as a trailing SL ladder source'
+  );
+
   const templateOnlyLadderConfig = normalizeCustomRLadderTrailingStopConfig({
     enabled: true,
     mode: 'custom_r_ladder',
@@ -12990,6 +13253,14 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
           capturedAt: '2026-05-19T06:00:00.000Z',
           trailingStop: ema5PullbackConfig,
         },
+        signalTradePlan: {
+          metadata: {
+            trailing_stop_rules: [
+              { whenProfitR: 0.5, moveStopToR: 0 },
+              { whenProfitR: 2, moveStopToR: 1 },
+            ],
+          },
+        },
       },
     },
     {
@@ -13006,6 +13277,57 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
   assert.equal(mudrexTemplateConfig.sourceTemplateVersion, 7);
   assert.equal(mudrexTemplateConfig.sourceTemplateUpdatedAt, '2026-05-19T06:30:00.000Z');
   assert.deepEqual(mudrexTemplateConfig.config?.rules, templateOnlyLadderConfig.rules);
+
+  const templateCodeOnlyService = new SuggestedTradesService() as any;
+  templateCodeOnlyService.strategyTemplateRepository = {
+    async getStrategyTemplateById(userId: string, strategyId: string) {
+      assert.equal(userId, 'user-1');
+      assert.equal(strategyId, 'template-code-only');
+      return {
+        id: 'template-code-only',
+        userId,
+        name: 'EMA5 Cross Pullback 1:6',
+        description: null,
+        status: 'Active',
+        templateVersion: 8,
+        config: {
+          codeTarget: 'python',
+          codeDefinition:
+            'def entry_plan(self, ctx):\n' +
+            '    return {"metadata": {"trailing_stop_rules": [{"whenProfitR": 0.5, "moveStopToR": 0}]}}',
+        },
+        createdAt: new Date('2026-05-18T00:00:00.000Z'),
+        updatedAt: new Date('2026-05-19T06:45:00.000Z'),
+      };
+    },
+  };
+  const templateCodeOnlyConfig = await templateCodeOnlyService.resolveTemplateTrailingStopConfig(
+    'user-1',
+    {
+      id: 'trade-template-code-only',
+      sourceTemplateId: 'template-code-only',
+      symbol: 'TONUSDT',
+      side: 'BUY',
+      timeframe: '15m',
+      meta: {
+        signalTradePlan: {
+          metadata: {
+            trailing_stop_rules: [{ whenProfitR: 0.5, moveStopToR: 0 }],
+          },
+        },
+      },
+    },
+    {
+      brokerKey: 'mudrex',
+      protectionPlan: {},
+    }
+  );
+  assert.equal(templateCodeOnlyConfig.config, null);
+  assert.equal(templateCodeOnlyConfig.source, 'strategy_template');
+  assert.equal(
+    templateCodeOnlyConfig.unavailableReason,
+    'template_ladder_unavailable:invalid_or_missing_trailing_stop'
+  );
 
   const missingTemplateConfig = await service.resolveTemplateTrailingStopConfig(
     'user-1',

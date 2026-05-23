@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import os from 'node:os';
 import { Inject, Service } from 'typedi';
 import { Automation, AutomationRun, Backtest } from '../../database';
@@ -36,13 +37,19 @@ import {
 import { normalizeTimeZone } from '../utils/timezone';
 import { Logger } from '../../lib/logger';
 import type { StrategyLibraryRunBody } from '../contracts/StrategyLibrary';
-import { AutomationSignalEvaluatorService } from './AutomationSignalEvaluatorService';
+import {
+  AutomationSignalEvaluatorService,
+  EvaluateAutomationSignalsPayload,
+  EvaluateAutomationSignalsResult,
+} from './AutomationSignalEvaluatorService';
 import { BrokerOrdersFacadeService } from './BrokerOrdersFacadeService';
 import { SuggestedTradesService } from './SuggestedTradesService';
 import { WhatsappNotificationsService } from './WhatsappNotificationsService';
 
 const log = new Logger('AutomationExecutionService');
 const AUTOMATION_RUNTIME_WORKER_ID = `${os.hostname()}:${process.pid}:automation-api`;
+const CLOSED_CANDLE_READINESS_RETRY_ATTEMPTS = 3;
+const CLOSED_CANDLE_READINESS_RETRY_DELAY_MS = 5_000;
 
 export interface ExecuteAutomationPayload {
   automationId?: string;
@@ -905,7 +912,7 @@ export class AutomationExecutionService {
     const cursorMap = new Map(
       existingCursors.map((cursor) => [cursor.symbol.trim().toUpperCase(), cursor])
     );
-    const evaluation = await this.automationSignalEvaluatorService.evaluateLatestSignals({
+    const evaluation = await this.evaluateTradeSuggestionSignalsWithReadinessRetry({
       templateId: profileInfo.sourceTemplateId,
       templateName:
         this.readString(
@@ -1428,6 +1435,42 @@ export class AutomationExecutionService {
         `Unable to queue WhatsApp live trade suggestion notification for automation ${payload.automation.id} suggested trade ${payload.suggestedTradeId}: ${message}`
       );
     }
+  }
+
+  private async evaluateTradeSuggestionSignalsWithReadinessRetry(
+    payload: EvaluateAutomationSignalsPayload
+  ): Promise<EvaluateAutomationSignalsResult> {
+    let evaluation = await this.automationSignalEvaluatorService.evaluateLatestSignals(payload);
+    let attempt = 0;
+
+    while (
+      attempt < CLOSED_CANDLE_READINESS_RETRY_ATTEMPTS &&
+      this.shouldRetryClosedCandleReadinessEvaluation(evaluation, payload.timeframe)
+    ) {
+      attempt += 1;
+      log.info(
+        `Closed 1m candles are not ready yet for ${payload.symbols.length} automation symbol(s); retrying in ${CLOSED_CANDLE_READINESS_RETRY_DELAY_MS}ms (${attempt}/${CLOSED_CANDLE_READINESS_RETRY_ATTEMPTS})`
+      );
+      await this.sleepForClosedCandleReadinessRetry(CLOSED_CANDLE_READINESS_RETRY_DELAY_MS);
+      evaluation = await this.automationSignalEvaluatorService.evaluateLatestSignals(payload);
+    }
+
+    return evaluation;
+  }
+
+  private shouldRetryClosedCandleReadinessEvaluation(
+    evaluation: EvaluateAutomationSignalsResult,
+    timeframe: string
+  ): boolean {
+    if (parseTimeframeSeconds(timeframe) !== 60) {
+      return false;
+    }
+
+    return this.hasClosedCandleReadinessSkip(evaluation.items);
+  }
+
+  private async sleepForClosedCandleReadinessRetry(delayMs: number): Promise<void> {
+    await sleep(delayMs);
   }
 
   private async syncBacktestRunnerRun(automation: Automation, run: AutomationRun): Promise<void> {
@@ -2335,22 +2378,33 @@ export class AutomationExecutionService {
       return false;
     }
 
-    return items.every((item) => {
-      const status = String(item.status || '')
-        .trim()
-        .toLowerCase();
-      const reason = String(item.reason || '')
-        .trim()
-        .toLowerCase();
-      if (status !== 'no_data' && status !== 'stale') {
-        return false;
-      }
-      return (
-        reason.includes('closed candle') ||
-        reason.includes('no candles returned') ||
-        reason.includes('no candles available')
-      );
-    });
+    return items.every((item) => this.isClosedCandleReadinessSkipItem(item));
+  }
+
+  private hasClosedCandleReadinessSkip(
+    items: Array<{ status?: string; reason?: string | null }>
+  ): boolean {
+    return items.some((item) => this.isClosedCandleReadinessSkipItem(item));
+  }
+
+  private isClosedCandleReadinessSkipItem(item: {
+    status?: string;
+    reason?: string | null;
+  }): boolean {
+    const status = String(item.status || '')
+      .trim()
+      .toLowerCase();
+    const reason = String(item.reason || '')
+      .trim()
+      .toLowerCase();
+    if (status !== 'no_data' && status !== 'stale') {
+      return false;
+    }
+    return (
+      reason.includes('closed candle') ||
+      reason.includes('no candles returned') ||
+      reason.includes('no candles available')
+    );
   }
 
   private readString(...values: unknown[]): string | null {

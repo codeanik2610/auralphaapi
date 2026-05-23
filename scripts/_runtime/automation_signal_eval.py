@@ -135,6 +135,63 @@ def _resolve_closed_indexes(
     return latest_index, previous_index, None
 
 
+def _source_timeframe_for_fetch(timeframe: str) -> str:
+    return "1m" if timeframe.strip().lower() != "1m" else timeframe
+
+
+def _source_limit_for_fetch(timeframe: str, limit: int) -> int:
+    bucket_seconds = _timeframe_to_seconds(timeframe) or 60
+    source_multiplier = max(1, int(ceil(bucket_seconds / 60)))
+    return max(50, limit * source_multiplier + source_multiplier + 5)
+
+
+def _resample_ohlcv(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    normalized_timeframe = timeframe.strip().lower()
+    if normalized_timeframe == "1m" or df.empty:
+        return df
+
+    bucket_seconds = _timeframe_to_seconds(normalized_timeframe)
+    if bucket_seconds is None or bucket_seconds < 60:
+        return df
+
+    required_columns = {"timestamp", "open", "high", "low", "close"}
+    if not required_columns.issubset(set(df.columns)):
+        return df
+
+    working = df.copy()
+    working["timestamp"] = pd.to_datetime(working["timestamp"], utc=True, errors="coerce")
+    working = working.dropna(subset=["timestamp"]).sort_values("timestamp")
+    if working.empty:
+        return working
+
+    for column in ("open", "high", "low", "close", "volume"):
+        if column in working.columns:
+            working[column] = pd.to_numeric(working[column], errors="coerce")
+    working = working.dropna(subset=["open", "high", "low", "close"])
+    if working.empty:
+        return working
+
+    aggregation: dict[str, str] = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+    }
+    if "volume" in working.columns:
+        aggregation["volume"] = "sum"
+
+    resampled = (
+        working.set_index("timestamp")
+        .resample(f"{bucket_seconds}s", label="left", closed="left")
+        .agg(aggregation)
+        .dropna(subset=["open", "high", "low", "close"])
+        .reset_index()
+    )
+    if "volume" not in resampled.columns:
+        resampled["volume"] = 0.0
+    return resampled
+
+
 async def _evaluate() -> dict[str, Any]:
     payload = _load_payload()
     _install_discovery_engine_root(payload.get("discoveryEngineRoot"))
@@ -235,10 +292,12 @@ async def _evaluate() -> dict[str, Any]:
                 required_limit = max(required_limit, required_bars)
 
             try:
+                source_timeframe = _source_timeframe_for_fetch(timeframe)
+                fetch_limit = _source_limit_for_fetch(timeframe, max(50, required_limit))
                 df = await fetcher.fetch_ohlcv(
                     symbol,
-                    timeframe,
-                    limit=max(50, required_limit),
+                    source_timeframe,
+                    limit=fetch_limit,
                     end=evaluated_at.isoformat(),
                 )
             except Exception as exc:
@@ -265,6 +324,7 @@ async def _evaluate() -> dict[str, Any]:
                 skipped_symbols += 1
                 continue
 
+            df = _resample_ohlcv(df, timeframe).reset_index(drop=True)
             latest_index, previous_index, reason = _resolve_closed_indexes(df, timeframe, evaluated_at)
             if latest_index is None:
                 items.append(

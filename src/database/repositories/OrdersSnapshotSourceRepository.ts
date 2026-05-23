@@ -3,6 +3,7 @@ import { Service } from 'typedi';
 import { coreDataSource } from '../data-source';
 
 const ORDER_SNAPSHOT_UPSERT_CHUNK_SIZE = 100;
+const MUDREX_STALE_PARTIAL_FILL_SUPPRESSION_HOURS = 24;
 
 export interface OpenOrderSnapshotSourceRow {
   accountId: string;
@@ -280,6 +281,7 @@ export class OrdersSnapshotSourceRepository {
           AND status_rank > 0
           AND status_rank <= 2
           AND ${this.clearedPartialFillRemainderExclusionSql('scheduler_orders_snapshots')}
+          AND ${this.staleUnmanagedMudrexPartialFillExclusionSql('scheduler_orders_snapshots')}
         ORDER BY last_seen_at DESC, external_id ASC`,
       [userId, ...normalizedAccountIds]
     )) as Array<{
@@ -325,6 +327,26 @@ export class OrdersSnapshotSourceRepository {
                AND cleared_execution.remaining_quantity IS NOT NULL
                AND cleared_execution.remaining_quantity <= 0
                AND cleared_execution.canceled_at IS NOT NULL
+          )`;
+  }
+
+  private staleUnmanagedMudrexPartialFillExclusionSql(ordersAlias: string): string {
+    return `NOT (
+            LOWER(COALESCE(${ordersAlias}.broker_key, '')) = 'mudrex'
+            AND (
+              UPPER(COALESCE(${ordersAlias}.order_status, '')) IN ('PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL')
+              OR ${ordersAlias}.status_rank = 2
+            )
+            AND COALESCE(${ordersAlias}.created_at, ${ordersAlias}.first_seen_at, ${ordersAlias}.last_seen_at) < DATE_SUB(NOW(), INTERVAL ${MUDREX_STALE_PARTIAL_FILL_SUPPRESSION_HOURS} HOUR)
+            AND NOT EXISTS (
+              SELECT 1
+                FROM suggested_trade_executions unmanaged_mudrex_partial_execution
+               WHERE unmanaged_mudrex_partial_execution.user_id = ${ordersAlias}.user_id
+                 AND COALESCE(unmanaged_mudrex_partial_execution.account_id, '') = COALESCE(${ordersAlias}.account_id, '')
+                 AND LOWER(COALESCE(unmanaged_mudrex_partial_execution.broker_key, '')) = LOWER(COALESCE(${ordersAlias}.broker_key, ''))
+                 AND COALESCE(unmanaged_mudrex_partial_execution.order_id, '') = COALESCE(${ordersAlias}.external_id, '')
+               LIMIT 1
+            )
           )`;
   }
 

@@ -78,6 +78,8 @@ import {
 import { buildProductOwnedOrdersSyncRequest } from '../utils/positionsOrdersSyncScopeContract';
 import { SuggestedTradesService } from './SuggestedTradesService';
 import { PaperOrderExecutionService } from './PaperOrderExecutionService';
+
+const MUDREX_STALE_PARTIAL_FILL_SUPPRESSION_HOURS = 24;
 import { InternalOrdersSyncService } from './InternalOrdersSyncService';
 import { Logger } from '../../lib/logger';
 import { OrdersSyncDiagnosticsService } from './OrdersSyncDiagnosticsService';
@@ -2211,6 +2213,7 @@ export class BrokerOrdersFacadeService {
     if (openOnly) {
       where.push('status_rank > 0 AND status_rank <= 2');
       where.push(this.clearedPartialFillRemainderExclusionSql('scheduler_orders_snapshots'));
+      where.push(this.staleUnmanagedMudrexPartialFillExclusionSql('scheduler_orders_snapshots'));
     } else {
       where.push('status_rank >= 3');
     }
@@ -3987,7 +3990,12 @@ export class BrokerOrdersFacadeService {
        FROM scheduler_orders_snapshots
        WHERE user_id = ?
          AND account_id IN (${accountIds.map(() => '?').join(', ')})
-         ${openOnly ? `AND ${this.clearedPartialFillRemainderExclusionSql('scheduler_orders_snapshots')}` : ''}
+         ${
+           openOnly
+             ? `AND ${this.clearedPartialFillRemainderExclusionSql('scheduler_orders_snapshots')}
+                AND ${this.staleUnmanagedMudrexPartialFillExclusionSql('scheduler_orders_snapshots')}`
+             : ''
+         }
        ORDER BY last_seen_at DESC`,
       [userId, ...accountIds]
     );
@@ -4108,6 +4116,26 @@ export class BrokerOrdersFacadeService {
                AND cleared_execution.remaining_quantity IS NOT NULL
                AND cleared_execution.remaining_quantity <= 0
                AND cleared_execution.canceled_at IS NOT NULL
+          )`;
+  }
+
+  private staleUnmanagedMudrexPartialFillExclusionSql(ordersAlias: string): string {
+    return `NOT (
+            LOWER(COALESCE(${ordersAlias}.broker_key, '')) = 'mudrex'
+            AND (
+              UPPER(COALESCE(${ordersAlias}.order_status, '')) IN ('PARTIALLY_FILLED', 'PARTIAL_FILLED', 'PARTIAL')
+              OR ${ordersAlias}.status_rank = 2
+            )
+            AND COALESCE(${ordersAlias}.created_at, ${ordersAlias}.first_seen_at, ${ordersAlias}.last_seen_at) < DATE_SUB(NOW(), INTERVAL ${MUDREX_STALE_PARTIAL_FILL_SUPPRESSION_HOURS} HOUR)
+            AND NOT EXISTS (
+              SELECT 1
+                FROM suggested_trade_executions unmanaged_mudrex_partial_execution
+               WHERE unmanaged_mudrex_partial_execution.user_id = ${ordersAlias}.user_id
+                 AND COALESCE(unmanaged_mudrex_partial_execution.account_id, '') = COALESCE(${ordersAlias}.account_id, '')
+                 AND LOWER(COALESCE(unmanaged_mudrex_partial_execution.broker_key, '')) = LOWER(COALESCE(${ordersAlias}.broker_key, ''))
+                 AND COALESCE(unmanaged_mudrex_partial_execution.order_id, '') = COALESCE(${ordersAlias}.external_id, '')
+               LIMIT 1
+            )
           )`;
   }
 

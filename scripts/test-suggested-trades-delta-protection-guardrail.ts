@@ -6,7 +6,10 @@ import {
   hasDeltaProtectionQuantityMismatchForTest,
   resolveExpectedDeltaProtectionQuantity,
 } from './checks/check-suggested-trades-delta-protection-guardrail';
-import { buildDeltaProtectionRepairPreview } from './checks/check-suggested-trades-delta-protection-repair-preview';
+import {
+  buildDeltaProtectionRepairPreview,
+  buildDeltaProtectionRepairPreviewReport,
+} from './checks/check-suggested-trades-delta-protection-repair-preview';
 import {
   isDeltaProtectionRepairApplyActionSupported,
   resolveDeltaProtectionRepairApplyOutcomeForTest,
@@ -337,6 +340,8 @@ function testDeltaRepairPreviewBlocksUnsafeBinding(): void {
 function testDeltaRepairPreviewUsesNativeBracketPath(): void {
   const preview = buildDeltaProtectionRepairPreview(
     buildGuardrailItem({
+      issues: [],
+      reasons: [],
       protectionMode: 'native_bracket',
       bracketStatus: 'submitted',
     })
@@ -352,7 +357,7 @@ function testDeltaRepairPreviewUsesNativeBracketPath(): void {
   assert.equal(preview.expectedMutation.requiresNativeBracketReadback, true);
 }
 
-function testDeltaRepairPreviewKeepsMissingNativeBracketOnReconcilePath(): void {
+function testDeltaRepairPreviewMakesMissingNativeBracketActionable(): void {
   const preview = buildDeltaProtectionRepairPreview(
     buildGuardrailItem({
       issues: ['missing_active_stop_loss'],
@@ -362,12 +367,71 @@ function testDeltaRepairPreviewKeepsMissingNativeBracketOnReconcilePath(): void 
     })
   );
 
-  assert.equal(preview.action, 'would_reconcile_native_bracket_protection');
+  assert.equal(preview.action, 'would_repair_or_close_missing_native_bracket_protection');
   assert.equal(preview.readiness, 'ready');
+  assert.equal(preview.repairable, true);
+  assert.equal(
+    preview.expectedMutation.repairKind,
+    'repair_or_close_missing_native_bracket_protection'
+  );
   assert.deepEqual(preview.expectedMutation.missingLegs, ['stop_loss']);
   assert.equal(preview.expectedMutation.attachDetachedOrders, false);
   assert.equal(preview.expectedMutation.protectionPath, 'native_bracket');
+  assert.equal(preview.expectedMutation.requiresUnsafeResidualCloseCheck, true);
   assert.equal(preview.blockers.includes('missing planned take-profit price'), false);
+}
+
+function testDeltaRepairPreviewReportCountsMissingNativeBracketAction(): void {
+  const item = buildGuardrailItem({
+    suggestedTradeId: 'native-missing-sl-1',
+    issues: ['missing_active_stop_loss'],
+    protectionMode: 'native_bracket',
+    bracketStatus: 'submitted',
+    plannedTakeProfitPrice: null,
+  });
+  const report = buildDeltaProtectionRepairPreviewReport({
+    generatedAt: '2026-05-23T10:00:00.000Z',
+    brokerKey: 'delta_exchange',
+    lookbackDays: 7,
+    limit: 1000,
+    audited: 1,
+    openPositions: 1,
+    issueTrades: 1,
+    missingPositionReadModel: 0,
+    staleMissingPositionReadModel: 0,
+    missingActiveStopLoss: 1,
+    missingActiveTakeProfit: 0,
+    staleProtectionForClosedPosition: 0,
+    partialFillProtectionMismatch: 0,
+    unsafePositionMismatch: 0,
+    thresholds: {
+      maxMissingPositionReadModel: 0,
+      maxMissingActiveStopLoss: 0,
+      maxMissingActiveTakeProfit: 0,
+      maxStaleProtectionForClosedPosition: 0,
+      maxPartialFillProtectionMismatch: 0,
+      maxUnsafePositionMismatch: 0,
+      staleMissingReadModelMinHours: 12,
+    },
+    byIssue: {
+      missing_position_read_model: 0,
+      stale_missing_position_read_model: 0,
+      missing_active_stop_loss: 1,
+      missing_active_take_profit: 0,
+      stale_protection_for_closed_position: 0,
+      partial_fill_protection_mismatch: 0,
+      unsafe_position_mismatch: 0,
+    },
+    items: [item],
+    staleItems: [],
+  });
+
+  assert.equal(report.repairableItems, 1);
+  assert.equal(report.byAction.would_repair_or_close_missing_native_bracket_protection, 1);
+  assert.equal(
+    report.items[0]?.remediation.action,
+    'would_repair_or_close_missing_native_bracket_protection'
+  );
 }
 
 function testDeltaRepairPreviewPlansPartialFillReplacement(): void {
@@ -511,6 +575,21 @@ function testDeltaRepairApplySelectionIsSafeByDefault(): void {
     ...buildGuardrailItem({ suggestedTradeId: 'repair-ready-1' }),
     remediation: buildDeltaProtectionRepairPreview(buildGuardrailItem({})),
   };
+  const nativeBracketMissingItem = {
+    ...buildGuardrailItem({
+      suggestedTradeId: 'native-bracket-missing-1',
+      issues: ['missing_active_stop_loss'],
+      protectionMode: 'native_bracket',
+      plannedTakeProfitPrice: null,
+    }),
+    remediation: buildDeltaProtectionRepairPreview(
+      buildGuardrailItem({
+        issues: ['missing_active_stop_loss'],
+        protectionMode: 'native_bracket',
+        plannedTakeProfitPrice: null,
+      })
+    ),
+  };
   const staleProtectionItem = {
     ...buildGuardrailItem({
       suggestedTradeId: 'stale-unsupported-1',
@@ -536,22 +615,34 @@ function testDeltaRepairApplySelectionIsSafeByDefault(): void {
     false
   );
   assert.equal(
+    isDeltaProtectionRepairApplyActionSupported(
+      'would_repair_or_close_missing_native_bracket_protection'
+    ),
+    true
+  );
+  assert.equal(
     isDeltaProtectionRepairApplyActionSupported('would_cancel_stale_protection_orders', {
       includeStaleCancel: true,
     }),
     true
   );
   assert.deepEqual(
-    selectDeltaProtectionRepairApplyCandidates([staleProtectionItem, missingProtectionItem]).map(
-      (item) => item.suggestedTradeId
-    ),
-    ['repair-ready-1']
+    selectDeltaProtectionRepairApplyCandidates([
+      staleProtectionItem,
+      nativeBracketMissingItem,
+      missingProtectionItem,
+    ]).map((item) => item.suggestedTradeId),
+    ['native-bracket-missing-1', 'repair-ready-1']
   );
   assert.deepEqual(
-    selectDeltaProtectionRepairApplyCandidates([staleProtectionItem, missingProtectionItem], 5, {
-      includeStaleCancel: true,
-    }).map((item) => item.suggestedTradeId),
-    ['stale-unsupported-1', 'repair-ready-1']
+    selectDeltaProtectionRepairApplyCandidates(
+      [staleProtectionItem, nativeBracketMissingItem, missingProtectionItem],
+      5,
+      {
+        includeStaleCancel: true,
+      }
+    ).map((item) => item.suggestedTradeId),
+    ['stale-unsupported-1', 'native-bracket-missing-1', 'repair-ready-1']
   );
 }
 
@@ -625,7 +716,8 @@ testDeltaRepairPreviewBlocksMissingStopLossWithoutStopLossPrice();
 testDeltaRepairPreviewBlocksMissingTakeProfitWithoutTakeProfitPrice();
 testDeltaRepairPreviewBlocksUnsafeBinding();
 testDeltaRepairPreviewUsesNativeBracketPath();
-testDeltaRepairPreviewKeepsMissingNativeBracketOnReconcilePath();
+testDeltaRepairPreviewMakesMissingNativeBracketActionable();
+testDeltaRepairPreviewReportCountsMissingNativeBracketAction();
 testDeltaRepairPreviewPlansPartialFillReplacement();
 testDeltaRepairPreviewBlocksPartialFillWithoutBothProtectionOrderIds();
 testDeltaRepairPreviewBlocksPartialFillAmbiguousPositionMapping();
