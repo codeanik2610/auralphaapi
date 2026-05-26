@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import {
-  type MudrexProtectionHealthItem,
+  type MudrexProtectionGuardrailItem,
   hasMudrexProtectionQuantityMismatchForTest,
   resolveExpectedMudrexProtectionQuantity,
-} from './checks/check-suggested-trades-mudrex-protection-health';
+} from './checks/check-suggested-trades-mudrex-protection-guardrail';
 import { buildMudrexProtectionRepairPreview } from './checks/check-suggested-trades-mudrex-protection-repair-preview';
 import {
   isMudrexProtectionRepairApplyActionSupported,
@@ -11,8 +11,8 @@ import {
 } from './maintenance/repair-suggested-trades-mudrex-protection';
 
 function buildHealthItem(
-  overrides: Partial<MudrexProtectionHealthItem>
-): MudrexProtectionHealthItem {
+  overrides: Partial<MudrexProtectionGuardrailItem>
+): MudrexProtectionGuardrailItem {
   return {
     suggestedTradeId: 'st-mudrex-preview-1',
     userId: 'user-1',
@@ -265,4 +265,4 @@ testMudrexRepairPreviewCanMarkTerminalNotRequired();
 testMudrexRepairApplyActionSupportKeepsStaleGateSeparate();
 testMudrexRepairApplyCandidateSelectionRespectsReadinessAndLimit();
 
-console.log('Suggested trades Mudrex protection health tests passed.');
+console.log('Suggested trades Mudrex protection guardrail tests passed.');

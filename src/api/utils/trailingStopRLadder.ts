@@ -10,6 +10,7 @@ export interface CustomRLadderTrailingStopConfig {
   enabled: boolean;
   mode: 'custom_r_ladder';
   basis: 'actual_fill' | 'planned_entry';
+  timeframe: string;
   updateOnlyInProfitDirection: boolean;
   rules: CustomRLadderTrailingStopRule[];
 }
@@ -110,6 +111,16 @@ const normalizeBasis = (value: unknown): 'actual_fill' | 'planned_entry' => {
     return 'planned_entry';
   }
   return 'actual_fill';
+};
+
+const normalizeTimeframe = (value: unknown, fallback = '1m'): string => {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (/^\d+[mhdw]$/.test(normalized)) {
+    return normalized;
+  }
+  return fallback;
 };
 
 const normalizeRule = (value: unknown): CustomRLadderTrailingStopRule | null => {
@@ -214,6 +225,13 @@ export function normalizeCustomRLadderTrailingStopConfig(
     enabled: true,
     mode: 'custom_r_ladder',
     basis: normalizeBasis(config.basis ?? config.entryBasis ?? config.entry_basis),
+    timeframe: normalizeTimeframe(
+      config.timeframe ??
+        config.evaluationTimeframe ??
+        config.evaluation_timeframe ??
+        config.trailingTimeframe ??
+        config.trailing_timeframe
+    ),
     updateOnlyInProfitDirection:
       parseBoolean(config.updateOnlyInProfitDirection ?? config.update_only_in_profit_direction) ??
       true,

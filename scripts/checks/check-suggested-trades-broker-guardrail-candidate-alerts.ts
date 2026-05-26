@@ -10,7 +10,7 @@ import {
   buildDeltaProtectionRepairPreviewReport,
   type DeltaProtectionRepairPreviewReport,
 } from './check-suggested-trades-delta-protection-repair-preview';
-import { buildMudrexProtectionHealthReport } from './check-suggested-trades-mudrex-protection-health';
+import { buildMudrexProtectionGuardrailReport } from './check-suggested-trades-mudrex-protection-guardrail';
 import {
   buildMudrexProtectionRepairPreviewReport,
   type MudrexProtectionRepairPreviewReport,
@@ -443,7 +443,7 @@ export async function buildBrokerGuardrailCandidateAlertReport(
   alertRepository: BrokerGuardrailAlertRepository,
   options: { dryRun: boolean; limit: number }
 ): Promise<BrokerGuardrailCandidateAlertReport> {
-  const mudrexHealthReport = await buildMudrexProtectionHealthReport();
+  const mudrexHealthReport = await buildMudrexProtectionGuardrailReport();
   const mudrexPreviewReport = buildMudrexProtectionRepairPreviewReport(mudrexHealthReport);
   const deltaGuardrailReport = await buildDeltaProtectionGuardrailReport();
   const deltaPreviewReport = buildDeltaProtectionRepairPreviewReport(deltaGuardrailReport);

@@ -6,7 +6,7 @@ type JsonRecord = Record<string, unknown>;
 type GuardrailArtifactKey =
   | 'candidateAlerts'
   | 'mudrexPositionResolution'
-  | 'mudrexProtectionHealth'
+  | 'mudrexProtectionGuardrail'
   | 'mudrexStaleProtectionWatchdog'
   | 'deltaPositionResolution'
   | 'deltaProtectionGuardrail'
@@ -60,8 +60,8 @@ const ARTIFACTS: GuardrailArtifactConfig[] = [
     required: true,
   },
   {
-    key: 'mudrexProtectionHealth',
-    dirName: 'mudrex-protection-health',
+    key: 'mudrexProtectionGuardrail',
+    dirName: 'mudrex-protection-guardrail',
     required: true,
   },
   {
@@ -152,7 +152,7 @@ function summarizeArtifact(key: GuardrailArtifactKey, data: JsonRecord): JsonRec
         unsafeMismatch: readNumber(data.unsafeMismatch),
         byType: readObjectValue(data, 'byType'),
       };
-    case 'mudrexProtectionHealth':
+    case 'mudrexProtectionGuardrail':
     case 'deltaProtectionGuardrail':
       return {
         audited: readNumber(data.audited),
@@ -265,7 +265,7 @@ async function persistReport(report: JsonRecord): Promise<void> {
 
 function buildBrokerSummary(artifacts: Record<GuardrailArtifactKey, LatestGuardrailArtifact>) {
   const mudrexPosition = artifacts.mudrexPositionResolution.summary;
-  const mudrexProtection = artifacts.mudrexProtectionHealth.summary;
+  const mudrexProtection = artifacts.mudrexProtectionGuardrail.summary;
   const mudrexStale = artifacts.mudrexStaleProtectionWatchdog.summary;
   const deltaPosition = artifacts.deltaPositionResolution.summary;
   const deltaProtection = artifacts.deltaProtectionGuardrail.summary;
@@ -275,7 +275,7 @@ function buildBrokerSummary(artifacts: Record<GuardrailArtifactKey, LatestGuardr
     mudrex: {
       audited: {
         positionResolution: readNumber(mudrexPosition.audited),
-        protectionHealth: readNumber(mudrexProtection.audited),
+        protectionGuardrail: readNumber(mudrexProtection.audited),
       },
       openPositions: readNumber(mudrexProtection.openPositions),
       issues: {

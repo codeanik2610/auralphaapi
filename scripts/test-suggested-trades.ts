@@ -11851,8 +11851,8 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const mudrexPositionResolutionSource = read(
     'scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
   );
-  const mudrexProtectionHealthSource = read(
-    'scripts/checks/check-suggested-trades-mudrex-protection-health.ts'
+  const mudrexProtectionGuardrailSource = read(
+    'scripts/checks/check-suggested-trades-mudrex-protection-guardrail.ts'
   );
   const mudrexProtectionRepairPreviewSource = read(
     'scripts/checks/check-suggested-trades-mudrex-protection-repair-preview.ts'
@@ -11863,14 +11863,14 @@ function runSuggestedTradesScriptWiringAssertions(): void {
   const mudrexProtectionRepairApplySource = read(
     'scripts/maintenance/repair-suggested-trades-mudrex-protection.ts'
   );
-  const mudrexProtectionHealthTestSource = read(
-    'scripts/test-suggested-trades-mudrex-protection-health.ts'
+  const mudrexProtectionGuardrailTestSource = read(
+    'scripts/test-suggested-trades-mudrex-protection-guardrail.ts'
   );
-  const mudrexProtectionHealthWatchdogSource = read(
-    'scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh'
+  const mudrexProtectionGuardrailWatchdogSource = read(
+    'scripts/checks/run-suggested-trades-mudrex-protection-guardrail-watchdog.sh'
   );
-  const mudrexProtectionHealthWatchdogCronSource = read(
-    'deploy/cron/auralpha-mudrex-protection-health-watchdog'
+  const mudrexProtectionGuardrailWatchdogCronSource = read(
+    'deploy/cron/auralpha-mudrex-protection-guardrail-watchdog'
   );
   const mudrexStaleProtectionWatchdogRunnerSource = read(
     'scripts/checks/run-suggested-trades-mudrex-stale-protection-watchdog.sh'
@@ -11973,8 +11973,8 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
   );
   assert.equal(
-    packageScripts['check:suggested-trades-mudrex-protection-health'],
-    'node --import tsx scripts/checks/check-suggested-trades-mudrex-protection-health.ts'
+    packageScripts['check:suggested-trades-mudrex-protection-guardrail'],
+    'node --import tsx scripts/checks/check-suggested-trades-mudrex-protection-guardrail.ts'
   );
   assert.equal(
     packageScripts['check:suggested-trades-mudrex-protection-repair-preview'],
@@ -12013,8 +12013,8 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'node --import tsx scripts/test-suggested-trades-delta-position-resolution.ts'
   );
   assert.equal(
-    packageScripts['test:suggested-trades-mudrex-protection-health'],
-    'node --import tsx scripts/test-suggested-trades-mudrex-protection-health.ts'
+    packageScripts['test:suggested-trades-mudrex-protection-guardrail'],
+    'node --import tsx scripts/test-suggested-trades-mudrex-protection-guardrail.ts'
   );
   assert.equal(
     packageScripts['repair:suggested-trades-terminal-protection'],
@@ -12063,9 +12063,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'system coverage manifest must include the Mudrex position resolution check'
   );
   assert.equal(
-    coverageManifestSource.includes('check:suggested-trades-mudrex-protection-health'),
+    coverageManifestSource.includes('check:suggested-trades-mudrex-protection-guardrail'),
     true,
-    'system coverage manifest must include the Mudrex protection health check'
+    'system coverage manifest must include the Mudrex protection guardrail check'
   );
   assert.equal(
     coverageManifestSource.includes('check:suggested-trades-mudrex-protection-repair-preview'),
@@ -12083,21 +12083,21 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'system coverage manifest must include the Mudrex protection repair apply script'
   );
   assert.equal(
-    coverageManifestSource.includes('test:suggested-trades-mudrex-protection-health'),
+    coverageManifestSource.includes('test:suggested-trades-mudrex-protection-guardrail'),
     true,
-    'system coverage manifest must include the Mudrex protection health test'
+    'system coverage manifest must include the Mudrex protection guardrail test'
   );
   assert.equal(
     coverageManifestSource.includes(
-      'scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh'
+      'scripts/checks/run-suggested-trades-mudrex-protection-guardrail-watchdog.sh'
     ),
     true,
-    'system coverage manifest must include the Mudrex protection health watchdog'
+    'system coverage manifest must include the Mudrex protection guardrail watchdog'
   );
   assert.equal(
-    coverageManifestSource.includes('deploy/cron/auralpha-mudrex-protection-health-watchdog'),
+    coverageManifestSource.includes('deploy/cron/auralpha-mudrex-protection-guardrail-watchdog'),
     true,
-    'system coverage manifest must include the Mudrex protection health watchdog cron'
+    'system coverage manifest must include the Mudrex protection guardrail watchdog cron'
   );
   assert.equal(
     coverageManifestSource.includes('deploy/cron/auralpha-mudrex-position-resolution-watchdog'),
@@ -12225,9 +12225,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'broker checkpoint must summarize apply flag safety'
   );
   assert.equal(
-    brokerGuardrailCheckpointSource.includes('mudrex-protection-health'),
+    brokerGuardrailCheckpointSource.includes('mudrex-protection-guardrail'),
     true,
-    'broker checkpoint must read Mudrex protection-health artifacts'
+    'broker checkpoint must read Mudrex protection-guardrail artifacts'
   );
   assert.equal(
     brokerGuardrailCheckpointSource.includes('delta-protection-guardrail'),
@@ -12424,7 +12424,7 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     );
   }
   for (const marker of [
-    'suggested-trades-mudrex-protection-health',
+    'suggested-trades-mudrex-protection-guardrail',
     'SUGGESTED_TRADES_MUDREX_PROTECTION_LOOKBACK_DAYS',
     'SUGGESTED_TRADES_MAX_MUDREX_MISSING_ACTIVE_STOP_LOSS',
     'SUGGESTED_TRADES_MAX_MUDREX_MISSING_ACTIVE_TAKE_PROFIT',
@@ -12437,9 +12437,9 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'direct_raw_payload',
   ]) {
     assert.equal(
-      mudrexProtectionHealthSource.includes(marker),
+      mudrexProtectionGuardrailSource.includes(marker),
       true,
-      `suggested trades Mudrex protection health check must retain ${marker}`
+      `suggested trades Mudrex protection guardrail check must retain ${marker}`
     );
   }
   for (const marker of [
@@ -12491,35 +12491,35 @@ function runSuggestedTradesScriptWiringAssertions(): void {
     'testMudrexRepairPreviewCanMarkTerminalNotRequired',
   ]) {
     assert.equal(
-      mudrexProtectionHealthTestSource.includes(marker),
+      mudrexProtectionGuardrailTestSource.includes(marker),
       true,
-      `suggested trades Mudrex protection health test must retain ${marker}`
+      `suggested trades Mudrex protection guardrail test must retain ${marker}`
     );
   }
   for (const marker of [
-    'AURALPHA_MUDREX_PROTECTION_HEALTH_ARTIFACT_DIR',
+    'AURALPHA_MUDREX_PROTECTION_GUARDRAIL_ARTIFACT_DIR',
     'SUGGESTED_TRADES_MUDREX_PROTECTION_LOOKBACK_DAYS',
     'SUGGESTED_TRADES_MAX_MUDREX_MISSING_ACTIVE_STOP_LOSS',
     'SUGGESTED_TRADES_MAX_MUDREX_PARTIAL_FILL_PROTECTION_MISMATCH',
-    'suggested-trades-mudrex-protection-health:',
-    'check-suggested-trades-mudrex-protection-health.js',
+    'suggested-trades-mudrex-protection-guardrail:',
+    'check-suggested-trades-mudrex-protection-guardrail.js',
   ]) {
     assert.equal(
-      mudrexProtectionHealthWatchdogSource.includes(marker),
+      mudrexProtectionGuardrailWatchdogSource.includes(marker),
       true,
-      `suggested trades Mudrex protection health watchdog must retain ${marker}`
+      `suggested trades Mudrex protection guardrail watchdog must retain ${marker}`
     );
   }
   for (const marker of [
     '*/30 * * * * root',
-    'auralpha-mudrex-protection-health-watchdog.lock',
-    './scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh',
-    '/var/log/auralpha-mudrex-protection-health-watchdog.log',
+    'auralpha-mudrex-protection-guardrail-watchdog.lock',
+    './scripts/checks/run-suggested-trades-mudrex-protection-guardrail-watchdog.sh',
+    '/var/log/auralpha-mudrex-protection-guardrail-watchdog.log',
   ]) {
     assert.equal(
-      mudrexProtectionHealthWatchdogCronSource.includes(marker),
+      mudrexProtectionGuardrailWatchdogCronSource.includes(marker),
       true,
-      `suggested trades Mudrex protection health watchdog cron must retain ${marker}`
+      `suggested trades Mudrex protection guardrail watchdog cron must retain ${marker}`
     );
   }
   for (const marker of [

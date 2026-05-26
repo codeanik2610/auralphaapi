@@ -12,11 +12,11 @@ Production host:
 
 - Backend checkout: `/opt/auralpha/Backend/aurAlpha`
 - Mudrex position-resolution watchdog: `/opt/auralpha/guardrail-artifacts/mudrex-position-resolution`
-- Mudrex protection-health watchdog: `/opt/auralpha/guardrail-artifacts/mudrex-protection-health`
+- Mudrex protection-guardrail watchdog: `/opt/auralpha/guardrail-artifacts/mudrex-protection-guardrail`
 - Mudrex stale-protection watchdog: `/opt/auralpha/guardrail-artifacts/mudrex-stale-protection-watchdog`
 - Mudrex repair preview evidence: `/opt/auralpha/guardrail-artifacts/mudrex-protection-repair-preview`
 - Position-resolution watchdog log: `/var/log/auralpha-mudrex-position-resolution-watchdog.log`
-- Protection-health watchdog log: `/var/log/auralpha-mudrex-protection-health-watchdog.log`
+- Protection-guardrail watchdog log: `/var/log/auralpha-mudrex-protection-guardrail-watchdog.log`
 - Stale-protection watchdog log: `/var/log/auralpha-mudrex-stale-protection-watchdog.log`
 
 Container output files used during manual checks:
@@ -33,7 +33,7 @@ Start with the scheduled artifacts. The latest JSON should be inspected before a
 ```bash
 cd /opt/auralpha/Backend/aurAlpha
 ls -1t /opt/auralpha/guardrail-artifacts/mudrex-position-resolution/*.json | head -5
-ls -1t /opt/auralpha/guardrail-artifacts/mudrex-protection-health/*.json | head -5
+ls -1t /opt/auralpha/guardrail-artifacts/mudrex-protection-guardrail/*.json | head -5
 ls -1t /opt/auralpha/guardrail-artifacts/mudrex-stale-protection-watchdog/*.json | head -5
 ```
 
@@ -44,11 +44,11 @@ cd /opt/auralpha/Backend/aurAlpha
 ./scripts/checks/run-suggested-trades-mudrex-position-resolution-watchdog.sh
 ```
 
-Run the Mudrex protection-health watchdog. This is read-only:
+Run the Mudrex protection-guardrail watchdog. This is read-only:
 
 ```bash
 cd /opt/auralpha/Backend/aurAlpha
-./scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh
+./scripts/checks/run-suggested-trades-mudrex-protection-guardrail-watchdog.sh
 ```
 
 Run the Mudrex stale-protection watchdog. This is read-only and forces apply flags off:
@@ -225,6 +225,6 @@ There is no blind automatic rollback for broker mutations. If post-apply verific
 
 - Stop all further repair attempts.
 - Capture `/tmp/mudrex-repair-apply.json` and `/tmp/mudrex-repair-after.json`.
-- Capture the latest Mudrex position-resolution and protection-health artifacts.
+- Capture the latest Mudrex position-resolution and protection-guardrail artifacts.
 - Verify the broker state manually in Mudrex.
 - Only recreate or cancel broker protection manually after explicit operator approval.

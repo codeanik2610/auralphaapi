@@ -30,7 +30,7 @@ Required default posture:
 Last read-only verification: May 21, 2026, 7:00 AM UTC.
 
 - [x] Mudrex position resolution is clean: audited 217, unresolved preferred 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/mudrex-position-resolution/20260521T053938Z.json`.
-- [x] Mudrex protection health is clean: audited 392, open positions 0, issue trades 0, missing SL/TP 0, stale protection 0, partial-fill mismatch 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/mudrex-protection-health/20260521T053955Z.json`.
+- [x] Mudrex protection guardrail is clean: audited 392, open positions 0, issue trades 0, missing SL/TP 0, stale protection 0, partial-fill mismatch 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/mudrex-protection-guardrail/20260521T053955Z.json`.
 - [x] Mudrex stale-protection watchdog is clean and read-only from cron: `dryRun: true`, mutation disabled, apply flags false, audited 394, open positions 1, stale cancel candidates 0. Artifact: `/opt/auralpha/guardrail-artifacts/mudrex-stale-protection-watchdog/20260521T070001Z.json`.
 - [x] Delta position resolution is clean: audited 95, exact read-model 95, unresolved 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/delta-position-resolution/20260521T054019Z.json`.
 - [x] Delta protection guardrail is clean: audited 240, open positions 1, issue trades 0, missing SL/TP 0, stale protection 0, partial-fill mismatch 0, unsafe mismatch 0. Artifact: `/opt/auralpha/guardrail-artifacts/delta-protection-guardrail/20260521T054037Z.json`.
@@ -81,9 +81,9 @@ Acceptance:
 - [x] Latest production artifact proves scheduled execution.
 - [x] Unsafe and unresolved thresholds default to zero.
 
-### Mudrex Phase 2: Protection-Health Watchdog Verification
+### Mudrex Phase 2: Protection-Guardrail Watchdog Verification
 
-Purpose: verify the existing protection-health watchdog is active and producing usable artifacts.
+Purpose: verify the existing protection-guardrail watchdog is active and producing usable artifacts.
 
 Coverage:
 
@@ -92,7 +92,7 @@ Coverage:
 - [x] Partial-fill protection quantity mismatch detection.
 - [x] Stale protection after terminal/closed position detection.
 - [x] Unsafe position mismatch detection.
-- [x] `deploy/cron/auralpha-mudrex-protection-health-watchdog` exists.
+- [x] `deploy/cron/auralpha-mudrex-protection-guardrail-watchdog` exists.
 
 Acceptance:
 
@@ -183,7 +183,7 @@ Acceptance:
 
 ### Delta Phase 1: Protection-Guardrail Watchdog Source Of Truth
 
-Purpose: make the repo match the intended scheduled coverage for Delta protection-health checks.
+Purpose: make the repo match the intended scheduled coverage for Delta protection-guardrail checks.
 
 Coverage:
 

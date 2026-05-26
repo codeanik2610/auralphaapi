@@ -1581,6 +1581,28 @@ async function runTradeSuggestionTemplateContractAssertions(): Promise<void> {
   executionService.strategyTemplateRepository = {
     getStrategyTemplateById: async (userId: string, templateId: string) => {
       assert.equal(userId, 'user-1');
+      if (templateId === 'template-fixed') {
+        return {
+          id: templateId,
+          config: {
+            market: 'crypto-futures',
+            automation: {
+              timeframePolicy: {
+                evaluationTimeframe: '15m',
+                useClosedCandlesOnly: true,
+                initialStopLossTimeframe: 'evaluation',
+                targetTimeframe: 'evaluation',
+              },
+            },
+            entryLogic: 'close > open',
+            exitLogic: 'close < open',
+            risk: {
+              stopLossPct: 2,
+              riskRewardRatio: 5,
+            },
+          },
+        };
+      }
       return {
         id: templateId,
         config: {
@@ -1635,6 +1657,37 @@ async function runTradeSuggestionTemplateContractAssertions(): Promise<void> {
   assert.equal(canonicalTemplateResolved.sourceTemplateId, 'template-legacy');
   assert.equal(canonicalTemplateResolved.profile.signalThreshold, 0.81);
   assert.equal(canonicalTemplateResolved.profile.tradePlan.long?.stopLossPct, 2);
+
+  const fixedTimeframeResolved = await executionService.resolveTradeSuggestionProfile('user-1', {
+    sourceTemplateId: 'template-fixed',
+  });
+  assert.equal(fixedTimeframeResolved.profile.execution.evaluationTimeframe, '15m');
+  assert.equal(fixedTimeframeResolved.profile.execution.useClosedCandlesOnly, true);
+  assert.equal(
+    executionService.resolveTradeSuggestionTimeframe(
+      { timeframe: '5m' },
+      fixedTimeframeResolved.profile
+    ),
+    '15m'
+  );
+  assert.equal(
+    executionService.resolveTradeSuggestionIncludeOpenCandleSignals(
+      {
+        timeframe: '15m',
+        tradeSuggestion: {
+          execution: {
+            executionMode: 'live_trade_auto',
+            includeOpenCandleSignals: true,
+          },
+        },
+      },
+      { executionMode: 'live_trade_auto' },
+      '15m',
+      fixedTimeframeResolved.profile
+    ),
+    false
+  );
+  assert.equal(fixedTimeframeResolved.profile.tradePlan.long?.riskRewardRatio, 5);
 
   const embeddedFallbackResolved = await executionService.resolveTradeSuggestionProfile('user-1', {
     sourceTemplateId: 'template-legacy',
@@ -2016,6 +2069,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
               side: 'long',
               stopLossPct: 2,
               takeProfitTargetsPct: [4],
+              riskRewardRatio: 5,
               rationale: 'Trend continuation',
               entryRule: 'Break above range high',
               exitRule: 'Stop at invalidation',
@@ -2245,6 +2299,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
               side: 'long',
               stopLossPct: 2,
               takeProfitTargetsPct: [4],
+              riskRewardRatio: 5,
               rationale: 'Trend continuation',
               entryRule: 'Break above range high',
               exitRule: 'Stop at invalidation',
@@ -2355,10 +2410,12 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       assert.equal(createdSuggestions[0]?.score, 0.91);
       assert.equal(createdSuggestions[0]?.sourceSetupKey, 'setup-btc');
       assert.equal(createdSuggestions[0]?.sourceBacktestId, 'backtest-btc');
+      assert.deepEqual(createdSuggestions[0]?.takeProfitTargets, ['110']);
       assert.equal((createdSuggestions[0]?.meta as Record<string, unknown>)?.setupScore, 0.91);
       assert.equal(createdSuggestions[1]?.score, 0.72);
       assert.equal(createdSuggestions[1]?.sourceSetupKey, 'setup-eth');
       assert.equal(createdSuggestions[1]?.sourceBacktestId, 'backtest-eth');
+      assert.deepEqual(createdSuggestions[1]?.takeProfitTargets, ['220']);
       assert.equal((createdSuggestions[1]?.meta as Record<string, unknown>)?.setupScore, 0.72);
       assert.equal((outputs[0]?.payload as Record<string, unknown>)?.score, 0.91);
       assert.equal((outputs[1]?.payload as Record<string, unknown>)?.score, 0.72);
@@ -2557,6 +2614,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
         enabled: true,
         mode: 'custom_r_ladder',
         basis: 'actual_fill',
+        timeframe: '1m',
         updateOnlyInProfitDirection: true,
         rules: [
           { whenProfitR: 0.5, moveStopToR: 0.1 },
@@ -3855,10 +3913,17 @@ function runAutomationsScriptWiringAssertions(): void {
   );
   assert.equal(
     executionSource.includes('resolveTradeSuggestionIncludeOpenCandleSignals') &&
+      executionSource.includes('useClosedCandlesOnly') &&
       executionSource.includes("executionMode === 'live_trade_auto'") &&
       executionSource.includes('includeOpenCandleSignals'),
     true,
-    'live trade-suggestion automations must enable intrabar open-candle signal evaluation by default'
+    'trade-suggestion automations must honor template-level closed-candle policy before live intrabar fallback'
+  );
+  assert.equal(
+    executionSource.includes('resolveTemplateEvaluationTimeframe') &&
+      executionSource.includes('profile?.execution?.evaluationTimeframe'),
+    true,
+    'trade-suggestion automations must allow templates to pin the evaluation timeframe'
   );
   assert.equal(
     executionSource.includes('skippedAlreadyTriggeredSignalCount') &&

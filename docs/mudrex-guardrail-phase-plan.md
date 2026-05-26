@@ -4,7 +4,7 @@
 
 Bring Mudrex to production-grade guardrail coverage without changing live trading behavior until each read-only phase proves clean.
 
-Mudrex currently has strong position identity coverage through the position-resolution watchdog and production-verified protection-health coverage. The remaining work is staged canary apply only when a real safe candidate appears, followed by a scheduled-apply decision.
+Mudrex currently has strong position identity coverage through the position-resolution watchdog and production-verified protection-guardrail coverage. The remaining work is staged canary apply only when a real safe candidate appears, followed by a scheduled-apply decision.
 
 ## Current Coverage
 
@@ -15,7 +15,7 @@ Mudrex currently has strong position identity coverage through the position-reso
 - [x] Checks strict open-time fallback mapping.
 - [x] Writes artifacts every 30 minutes.
 - [x] Read-only, no mutation path.
-- [x] Scheduled protection-health watchdog artifacts.
+- [x] Scheduled protection-guardrail watchdog artifacts.
 - [x] Production repair preview baseline with apply flags disabled.
 - [x] Scheduled stale-protection watchdog source, runner, cron definition, and production cron artifact.
 
@@ -27,14 +27,14 @@ Mudrex currently has strong position identity coverage through the position-reso
 - [x] Stale protection after terminal/closed position detection.
 - [x] Stale protection cancellation preview.
 - [x] Mutation apply path guarded by read-back and disabled by default.
-- [x] Scheduled protection-health watchdog artifacts.
+- [x] Scheduled protection-guardrail watchdog artifacts.
 - [x] Scheduled stale-protection watchdog artifacts path and zero-mutation flag checks. Verified in `/opt/auralpha/guardrail-artifacts/mudrex-stale-protection-watchdog/20260521T070001Z.json`.
 - [ ] Single-candidate production canary apply when a real safe candidate appears.
 - [ ] Scheduled apply decision after canary evidence.
 
-## Phase 1: Protection Health Read-Only Audit
+## Phase 1: Protection Guardrail Read-Only Audit
 
-Build a Mudrex protection-health check that audits recent suggested trade executions and live/read-model order snapshots.
+Build a Mudrex protection-guardrail check that audits recent suggested trade executions and live/read-model order snapshots.
 
 Coverage:
 
@@ -51,7 +51,7 @@ Acceptance:
 - [x] Fails only when issue counts exceed thresholds.
 - [x] No broker mutation code is reachable.
 
-## Phase 2: Scheduled Mudrex Protection Watchdog
+## Phase 2: Scheduled Mudrex Protection Guardrail Watchdog
 
 Wrap Phase 1 in a Docker runner and cron entry.
 

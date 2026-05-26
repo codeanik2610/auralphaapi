@@ -4,7 +4,7 @@
 
 Keep Delta protection behavior safe while closing the remaining visibility gaps around position identity, partial fills, stale protection, and controlled repair.
 
-Delta currently has broader protection-health coverage than Mudrex, plus a separate stale-protection watchdog. Position-resolution evidence and repair-preview production baseline are now verified; the remaining work is staged canary apply only when real candidates appear.
+Delta currently has broader protection-guardrail coverage than Mudrex, plus a separate stale-protection watchdog. Position-resolution evidence and repair-preview production baseline are now verified; the remaining work is staged canary apply only when real candidates appear.
 
 ## Current Coverage
 

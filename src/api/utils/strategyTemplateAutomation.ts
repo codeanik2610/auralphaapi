@@ -64,6 +64,13 @@ export interface StrategyTemplateTradeManagementProfile {
   trailingStop: CustomRLadderTrailingStopConfig | null;
 }
 
+export interface StrategyTemplateExecutionProfile {
+  evaluationTimeframe: string;
+  useClosedCandlesOnly: boolean;
+  initialStopLossTimeframe: string;
+  targetTimeframe: string;
+}
+
 export interface StrategyTemplateAutomationProfile {
   contractVersion: 'trade-suggestion.v1';
   automationReady: boolean;
@@ -80,6 +87,7 @@ export interface StrategyTemplateAutomationProfile {
     long: StrategyTemplateTradePlanLeg | null;
     short: StrategyTemplateTradePlanLeg | null;
   };
+  execution: StrategyTemplateExecutionProfile;
   tradeManagement?: StrategyTemplateTradeManagementProfile;
 }
 
@@ -147,6 +155,26 @@ const parseRecord = (value: unknown): Record<string, unknown> | null => {
     return null;
   }
   return value as Record<string, unknown>;
+};
+
+const normalizeTimeframeText = (value: unknown): string | null => {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (
+    ['automation', 'automation_timeframe', 'configured', 'configured_timeframe'].includes(
+      normalized
+    )
+  ) {
+    return 'automation';
+  }
+  if (['evaluation', 'evaluation_timeframe', 'signal', 'signal_timeframe'].includes(normalized)) {
+    return 'evaluation';
+  }
+  return /^\d+[mhdw]$/.test(normalized) ? normalized : null;
 };
 
 const parseBoolean = (value: unknown): boolean | null => {
@@ -490,6 +518,91 @@ const extractTradeManagementConfig = (
   return null;
 };
 
+const extractExecutionConfig = (
+  searchSpace: Array<Record<string, unknown>>
+): Record<string, unknown> | null => {
+  for (const scope of searchSpace) {
+    const automation = parseRecord(scope.automation) || parseRecord(scope.automationConfig);
+    const tradeSuggestion =
+      parseRecord(scope.tradeSuggestion) || parseRecord(scope.trade_suggestion);
+    const execution =
+      parseRecord(scope.execution) ||
+      parseRecord(scope.executionConfig) ||
+      parseRecord(tradeSuggestion?.execution);
+    const timeframePolicy =
+      parseRecord(scope.timeframePolicy) ||
+      parseRecord(scope.timeframe_policy) ||
+      parseRecord(scope.candlePolicy) ||
+      parseRecord(scope.candle_policy) ||
+      parseRecord(automation?.timeframePolicy) ||
+      parseRecord(automation?.timeframe_policy) ||
+      parseRecord(tradeSuggestion?.timeframePolicy) ||
+      parseRecord(tradeSuggestion?.timeframe_policy) ||
+      parseRecord(execution?.timeframePolicy) ||
+      parseRecord(execution?.timeframe_policy);
+
+    const merged = {
+      ...(automation ?? {}),
+      ...(tradeSuggestion ?? {}),
+      ...(execution ?? {}),
+      ...(timeframePolicy ?? {}),
+    };
+    if (Object.keys(merged).length > 0) {
+      return merged;
+    }
+  }
+  return null;
+};
+
+const buildExecutionProfile = (
+  searchSpace: Array<Record<string, unknown>>
+): StrategyTemplateExecutionProfile => {
+  const execution = extractExecutionConfig(searchSpace) ?? {};
+  const includeOpenCandleSignals = parseBoolean(
+    execution.includeOpenCandleSignals ??
+      execution.include_open_candle_signals ??
+      execution.intrabarSignals ??
+      execution.intrabar_signals ??
+      execution.liveIntrabarSignals ??
+      execution.live_intrabar_signals
+  );
+  const useClosedCandlesOnly =
+    parseBoolean(
+      execution.useClosedCandlesOnly ??
+        execution.use_closed_candles_only ??
+        execution.closedCandlesOnly ??
+        execution.closed_candles_only ??
+        execution.closedCandleOnly ??
+        execution.closed_candle_only
+    ) ?? (includeOpenCandleSignals !== null ? !includeOpenCandleSignals : true);
+
+  return {
+    evaluationTimeframe:
+      normalizeTimeframeText(
+        execution.evaluationTimeframe ??
+          execution.evaluation_timeframe ??
+          execution.signalTimeframe ??
+          execution.signal_timeframe ??
+          execution.timeframe
+      ) ?? 'automation',
+    useClosedCandlesOnly,
+    initialStopLossTimeframe:
+      normalizeTimeframeText(
+        execution.initialStopLossTimeframe ??
+          execution.initial_stop_loss_timeframe ??
+          execution.stopLossTimeframe ??
+          execution.stop_loss_timeframe
+      ) ?? 'evaluation',
+    targetTimeframe:
+      normalizeTimeframeText(
+        execution.targetTimeframe ??
+          execution.target_timeframe ??
+          execution.takeProfitTimeframe ??
+          execution.take_profit_timeframe
+      ) ?? 'evaluation',
+  };
+};
+
 const buildFirst60Leg = (
   side: StrategyTradeSide,
   first60: Record<string, unknown>
@@ -742,6 +855,7 @@ export const buildStrategyTemplateAutomationProfile = (
   const baseRiskConfig = extractRiskConfig(searchSpace);
   const parameters = extractParameters(searchSpace);
   const tradeManagement = buildTradeManagementProfile(searchSpace);
+  const execution = buildExecutionProfile(searchSpace);
 
   const entryLogic = readText(...searchSpace.map((scope) => scope.entryLogic ?? scope.entry_logic));
   const exitLogic = readText(...searchSpace.map((scope) => scope.exitLogic ?? scope.exit_logic));
@@ -907,6 +1021,7 @@ export const buildStrategyTemplateAutomationProfile = (
       long: longPlan,
       short: shortPlan,
     },
+    execution,
     ...(tradeManagement ? { tradeManagement } : {}),
   };
 };

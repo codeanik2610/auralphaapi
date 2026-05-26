@@ -3,10 +3,10 @@ import path from 'node:path';
 import { coreDataSource } from '../../src/database/data-source';
 import { initializeCoreDataSource } from '../../src/database/initializeCoreDataSource';
 import {
-  buildMudrexProtectionHealthReport,
-  type MudrexProtectionHealthItem,
-  type MudrexProtectionHealthReport,
-} from './check-suggested-trades-mudrex-protection-health';
+  buildMudrexProtectionGuardrailReport,
+  type MudrexProtectionGuardrailItem,
+  type MudrexProtectionGuardrailReport,
+} from './check-suggested-trades-mudrex-protection-guardrail';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -29,11 +29,11 @@ export type MudrexProtectionRepairPreview = {
   expectedMutation: JsonRecord;
 };
 
-export type MudrexProtectionRepairPreviewItem = MudrexProtectionHealthItem & {
+export type MudrexProtectionRepairPreviewItem = MudrexProtectionGuardrailItem & {
   remediation: MudrexProtectionRepairPreview;
 };
 
-export type MudrexProtectionRepairPreviewReport = Omit<MudrexProtectionHealthReport, 'items'> & {
+export type MudrexProtectionRepairPreviewReport = Omit<MudrexProtectionGuardrailReport, 'items'> & {
   mode: 'preview';
   dryRun: true;
   repairableItems: number;
@@ -49,8 +49,8 @@ const OUTPUT_FILE = String(
 ).trim();
 
 function hasIssue(
-  item: MudrexProtectionHealthItem,
-  issue: MudrexProtectionHealthItem['issues'][number]
+  item: MudrexProtectionGuardrailItem,
+  issue: MudrexProtectionGuardrailItem['issues'][number]
 ): boolean {
   return item.issues.includes(issue);
 }
@@ -59,7 +59,7 @@ function positiveNumber(value: number | null): boolean {
   return value !== null && Number.isFinite(value) && value > 0;
 }
 
-function isResolvedPositionIdentity(item: MudrexProtectionHealthItem): boolean {
+function isResolvedPositionIdentity(item: MudrexProtectionGuardrailItem): boolean {
   return Boolean(
     item.positionReadModelExternalId &&
     item.positionResolution !== 'unresolved' &&
@@ -68,7 +68,7 @@ function isResolvedPositionIdentity(item: MudrexProtectionHealthItem): boolean {
   );
 }
 
-function buildCommonMutation(item: MudrexProtectionHealthItem): JsonRecord {
+function buildCommonMutation(item: MudrexProtectionGuardrailItem): JsonRecord {
   return {
     brokerKey: 'mudrex',
     accountId: item.accountId,
@@ -87,7 +87,7 @@ function buildCommonMutation(item: MudrexProtectionHealthItem): JsonRecord {
   };
 }
 
-function buildRepairBlockers(item: MudrexProtectionHealthItem): string[] {
+function buildRepairBlockers(item: MudrexProtectionGuardrailItem): string[] {
   const blockers: string[] = [];
   if (!item.accountId) {
     blockers.push('missing Mudrex account id');
@@ -110,7 +110,7 @@ function buildRepairBlockers(item: MudrexProtectionHealthItem): string[] {
   return blockers;
 }
 
-function buildIdentityBlockers(item: MudrexProtectionHealthItem): string[] {
+function buildIdentityBlockers(item: MudrexProtectionGuardrailItem): string[] {
   const blockers = item.reasons.length ? [...item.reasons] : [];
   if (!item.positionReadModelExternalId) {
     blockers.push('missing Mudrex position read-model external id');
@@ -122,7 +122,7 @@ function buildIdentityBlockers(item: MudrexProtectionHealthItem): string[] {
 }
 
 export function buildMudrexProtectionRepairPreview(
-  item: MudrexProtectionHealthItem
+  item: MudrexProtectionGuardrailItem
 ): MudrexProtectionRepairPreview {
   const unsafeBinding =
     hasIssue(item, 'unsafe_position_mismatch') ||
@@ -226,7 +226,9 @@ export function buildMudrexProtectionRepairPreview(
     readiness: 'manual_review',
     repairable: false,
     mutation: 'none_preview_only',
-    blockers: item.reasons.length ? item.reasons : ['unclassified Mudrex protection-health issue'],
+    blockers: item.reasons.length
+      ? item.reasons
+      : ['unclassified Mudrex protection-guardrail issue'],
     notes: ['No automatic Mudrex repair preview is available for this issue mix yet.'],
     expectedMutation: commonMutation,
   };
@@ -255,7 +257,7 @@ function countByAction(
 }
 
 export function buildMudrexProtectionRepairPreviewReport(
-  healthReport: MudrexProtectionHealthReport
+  healthReport: MudrexProtectionGuardrailReport
 ): MudrexProtectionRepairPreviewReport {
   const items = healthReport.items.map((item) => ({
     ...item,
@@ -287,7 +289,7 @@ async function run(): Promise<void> {
   await initializeCoreDataSource();
 
   try {
-    const healthReport = await buildMudrexProtectionHealthReport();
+    const healthReport = await buildMudrexProtectionGuardrailReport();
     const previewReport = buildMudrexProtectionRepairPreviewReport(healthReport);
     await persistReport(previewReport);
     console.log(

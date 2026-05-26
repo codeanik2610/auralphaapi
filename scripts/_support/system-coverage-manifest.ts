@@ -669,8 +669,8 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'scripts/test-suggested-trades-delta-position-resolution.ts'
       ),
       script(
-        'test:suggested-trades-mudrex-protection-health',
-        'scripts/test-suggested-trades-mudrex-protection-health.ts'
+        'test:suggested-trades-mudrex-protection-guardrail',
+        'scripts/test-suggested-trades-mudrex-protection-guardrail.ts'
       ),
       script(
         'test:suggested-trades-broker-guardrail-candidate-alerts',
@@ -711,8 +711,8 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'scripts/checks/check-suggested-trades-mudrex-position-resolution.ts'
       ),
       script(
-        'check:suggested-trades-mudrex-protection-health',
-        'scripts/checks/check-suggested-trades-mudrex-protection-health.ts'
+        'check:suggested-trades-mudrex-protection-guardrail',
+        'scripts/checks/check-suggested-trades-mudrex-protection-guardrail.ts'
       ),
       script(
         'check:suggested-trades-mudrex-protection-repair-preview',
@@ -730,8 +730,8 @@ export const COVERAGE_MODULES: CoverageModule[] = [
         'repair:suggested-trades-mudrex-protection',
         'scripts/maintenance/repair-suggested-trades-mudrex-protection.ts'
       ),
-      fileOnly('scripts/checks/run-suggested-trades-mudrex-protection-health-watchdog.sh'),
-      fileOnly('deploy/cron/auralpha-mudrex-protection-health-watchdog'),
+      fileOnly('scripts/checks/run-suggested-trades-mudrex-protection-guardrail-watchdog.sh'),
+      fileOnly('deploy/cron/auralpha-mudrex-protection-guardrail-watchdog'),
       fileOnly('scripts/checks/run-suggested-trades-mudrex-position-resolution-watchdog.sh'),
       fileOnly('deploy/cron/auralpha-mudrex-position-resolution-watchdog'),
       fileOnly('scripts/checks/run-suggested-trades-mudrex-stale-protection-watchdog.sh'),

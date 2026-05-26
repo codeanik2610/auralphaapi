@@ -59,6 +59,12 @@ assert.deepEqual(profile.tradePlan.long?.takeProfitTargetsPct, [2.6]);
 assert.equal(profile.tradePlan.short?.stopLossPct, 1.2);
 assert.deepEqual(profile.tradePlan.short?.takeProfitTargetsPct, [2.6]);
 assert.equal(profile.signalThreshold, 0.82);
+assert.deepEqual(profile.execution, {
+  evaluationTimeframe: 'automation',
+  useClosedCandlesOnly: true,
+  initialStopLossTimeframe: 'evaluation',
+  targetTimeframe: 'evaluation',
+});
 
 const explicitRiskWins = buildStrategyTemplateAutomationProfile({
   ...pythonTemplate,
@@ -74,10 +80,19 @@ assert.deepEqual(explicitRiskWins.tradePlan.long?.takeProfitTargetsPct, [3.4]);
 
 const first60Managed = buildStrategyTemplateAutomationProfile({
   ...pythonTemplate,
+  automation: {
+    timeframePolicy: {
+      evaluationTimeframe: '15m',
+      useClosedCandlesOnly: true,
+      initialStopLossTimeframe: 'evaluation',
+      targetTimeframe: 'evaluation',
+    },
+  },
   tradeManagement: {
     trailingStop: {
       enabled: true,
       mode: 'custom_r_ladder',
+      timeframe: '1m',
       rules: [
         { whenProfitR: 0.5, moveStopToR: 0.1 },
         { whenProfitR: 1, moveStopToR: 0.3 },
@@ -125,6 +140,9 @@ const first60Managed = buildStrategyTemplateAutomationProfile({
 
 assert.equal(first60Managed.tradeManagement?.first60?.enabled, true);
 assert.equal(first60Managed.tradeManagement?.trailingStop?.mode, 'custom_r_ladder');
+assert.equal(first60Managed.execution.evaluationTimeframe, '15m');
+assert.equal(first60Managed.execution.useClosedCandlesOnly, true);
+assert.equal(first60Managed.tradeManagement?.trailingStop?.timeframe, '1m');
 assert.deepEqual(first60Managed.tradeManagement?.trailingStop?.rules, [
   { whenProfitR: 0.5, moveStopToR: 0.1 },
   { whenProfitR: 1, moveStopToR: 0.3 },

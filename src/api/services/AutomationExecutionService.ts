@@ -838,7 +838,7 @@ export class AutomationExecutionService {
       );
     }
 
-    const timeframe = this.resolveTradeSuggestionTimeframe(config);
+    const timeframe = this.resolveTradeSuggestionTimeframe(config, profile);
     if (!timeframe) {
       throw new BadRequestAppError('trade-suggestion automation config must include a timeframe');
     }
@@ -906,7 +906,8 @@ export class AutomationExecutionService {
     const includeOpenCandleSignals = this.resolveTradeSuggestionIncludeOpenCandleSignals(
       config,
       executionPolicy,
-      timeframe
+      timeframe,
+      profile
     );
     const existingCursors = await this.automationCursorRepository.listByAutomationAndScope(
       automation.id,
@@ -1147,6 +1148,13 @@ export class AutomationExecutionService {
             includeOpenCandleSignals,
             signalCandleState: candleState,
             capturedAt: signalBaseTime.toISOString(),
+            templateExecutionProfile: {
+              evaluationTimeframe: profile.execution?.evaluationTimeframe ?? 'automation',
+              resolvedEvaluationTimeframe: timeframe,
+              useClosedCandlesOnly: profile.execution?.useClosedCandlesOnly ?? true,
+              initialStopLossTimeframe: profile.execution?.initialStopLossTimeframe ?? 'evaluation',
+              targetTimeframe: profile.execution?.targetTimeframe ?? 'evaluation',
+            },
             signalTradePlan: tradePlan,
             tradeManagementSnapshot,
             resolvedProtection: {
@@ -2070,12 +2078,17 @@ export class AutomationExecutionService {
   private resolveTradeSuggestionIncludeOpenCandleSignals(
     config: Record<string, unknown>,
     executionPolicy: Record<string, unknown>,
-    timeframe: string
+    timeframe: string,
+    profile?: StrategyTemplateAutomationProfile | null
   ): boolean {
     const nestedConfig = this.parseRecord(config.config) ?? {};
     const inputSnapshot = this.parseRecord(config.inputSnapshot) ?? {};
     const tradeSuggestion = this.parseRecord(config.tradeSuggestion) ?? {};
     const execution = this.parseRecord(tradeSuggestion.execution) ?? executionPolicy;
+    if (profile?.execution?.useClosedCandlesOnly === true) {
+      return false;
+    }
+
     const explicit = this.readBoolean(
       tradeSuggestion.includeOpenCandleSignals,
       tradeSuggestion.intrabarSignals,
@@ -2232,7 +2245,15 @@ export class AutomationExecutionService {
       .filter((item): item is string => Boolean(item));
   }
 
-  private resolveTradeSuggestionTimeframe(config: Record<string, unknown>): string | null {
+  private resolveTradeSuggestionTimeframe(
+    config: Record<string, unknown>,
+    profile?: StrategyTemplateAutomationProfile | null
+  ): string | null {
+    const templateTimeframe = this.resolveTemplateEvaluationTimeframe(profile);
+    if (templateTimeframe) {
+      return templateTimeframe;
+    }
+
     const tradeSuggestion = this.parseRecord(config.tradeSuggestion) ?? {};
     const nestedConfig = this.parseRecord(config.config) ?? {};
     const inputSnapshot = this.parseRecord(config.inputSnapshot) ?? {};
@@ -2250,6 +2271,18 @@ export class AutomationExecutionService {
         Array.isArray(config.timeframes) ? config.timeframes[0] : null
       ) ?? null
     );
+  }
+
+  private resolveTemplateEvaluationTimeframe(
+    profile?: StrategyTemplateAutomationProfile | null
+  ): string | null {
+    const normalized = this.readString(profile?.execution?.evaluationTimeframe)
+      ?.trim()
+      .toLowerCase();
+    if (!normalized || normalized === 'automation' || normalized === 'evaluation') {
+      return null;
+    }
+    return parseTimeframeSeconds(normalized) ? normalized : null;
   }
 
   private extractSymbolsFromAssets(value: unknown): string[] {
@@ -2324,7 +2357,7 @@ export class AutomationExecutionService {
   } {
     const fallbackStopLossPrice = this.computeStopLossPrice(entryPrice, leg);
     const fallbackTakeProfitTargets = this.computeTakeProfitTargets(entryPrice, leg);
-    if (!tradePlan || !Number.isFinite(entryPrice) || entryPrice <= 0) {
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
       return {
         stopLossPrice: fallbackStopLossPrice,
         takeProfitTargets: fallbackTakeProfitTargets,
@@ -2334,10 +2367,13 @@ export class AutomationExecutionService {
     }
 
     const normalizedSide = leg.side === 'long' ? 'long' : 'short';
-    let stopLossPrice = this.readNumber(tradePlan.stop_loss_price, tradePlan.stopLossPrice);
-    let takeProfitPrice = this.readNumber(tradePlan.take_profit_price, tradePlan.takeProfitPrice);
-    const riskRewardRatio = this.readNumber(tradePlan.risk_reward_ratio, tradePlan.riskRewardRatio);
-    const planLabel = this.readString(tradePlan.label) ?? null;
+    const fallbackStopLossNumber = this.readNumber(fallbackStopLossPrice);
+    let stopLossPrice = this.readNumber(tradePlan?.stop_loss_price, tradePlan?.stopLossPrice);
+    let takeProfitPrice = this.readNumber(tradePlan?.take_profit_price, tradePlan?.takeProfitPrice);
+    const riskRewardRatio =
+      this.readNumber(tradePlan?.risk_reward_ratio, tradePlan?.riskRewardRatio) ??
+      this.readNumber(leg.riskRewardRatio);
+    const planLabel = this.readString(tradePlan?.label) ?? null;
 
     if (stopLossPrice !== null) {
       if (
@@ -2347,6 +2383,7 @@ export class AutomationExecutionService {
         stopLossPrice = null;
       }
     }
+    const stopLossForRiskReward = stopLossPrice ?? fallbackStopLossNumber;
 
     if (takeProfitPrice !== null) {
       if (
@@ -2359,12 +2396,14 @@ export class AutomationExecutionService {
 
     if (
       takeProfitPrice === null &&
-      stopLossPrice !== null &&
+      stopLossForRiskReward !== null &&
       riskRewardRatio !== null &&
       riskRewardRatio > 0
     ) {
       const riskDistance =
-        normalizedSide === 'long' ? entryPrice - stopLossPrice : stopLossPrice - entryPrice;
+        normalizedSide === 'long'
+          ? entryPrice - stopLossForRiskReward
+          : stopLossForRiskReward - entryPrice;
       if (riskDistance > 0) {
         takeProfitPrice =
           normalizedSide === 'long'
@@ -2420,6 +2459,13 @@ export class AutomationExecutionService {
       signalTime: context.signalTime.toISOString(),
       capturedAt: context.capturedAt.toISOString(),
       timeframe: context.timeframe,
+      execution: {
+        evaluationTimeframe: profile.execution?.evaluationTimeframe ?? 'automation',
+        resolvedEvaluationTimeframe: context.timeframe,
+        useClosedCandlesOnly: profile.execution?.useClosedCandlesOnly ?? true,
+        initialStopLossTimeframe: profile.execution?.initialStopLossTimeframe ?? 'evaluation',
+        targetTimeframe: profile.execution?.targetTimeframe ?? 'evaluation',
+      },
       ...(first60?.enabled && first60Leg?.enabled
         ? {
             first60: {
@@ -2440,7 +2486,13 @@ export class AutomationExecutionService {
           }
         : {}),
       ...(trailingStop
-        ? { trailingStop: { ...trailingStop, rules: [...trailingStop.rules] } }
+        ? {
+            trailingStop: {
+              ...trailingStop,
+              timeframe: trailingStop.timeframe ?? '1m',
+              rules: [...trailingStop.rules],
+            },
+          }
         : {}),
     };
   }

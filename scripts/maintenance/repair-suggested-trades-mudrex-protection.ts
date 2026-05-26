@@ -12,7 +12,7 @@ import { coreDataSource } from '../../src/database/data-source';
 import { SuggestedTrade } from '../../src/database/entities/SuggestedTrade';
 import { initializeCoreDataSource } from '../../src/database/initializeCoreDataSource';
 import { SuggestedTradeRepository } from '../../src/database/repositories/SuggestedTradeRepository';
-import { buildMudrexProtectionHealthReport } from '../checks/check-suggested-trades-mudrex-protection-health';
+import { buildMudrexProtectionGuardrailReport } from '../checks/check-suggested-trades-mudrex-protection-guardrail';
 import {
   buildMudrexProtectionRepairPreviewReport,
   type MudrexProtectionRepairAction,
@@ -1137,7 +1137,7 @@ async function run(): Promise<void> {
   await initializeCoreDataSource();
 
   try {
-    const healthReport = await buildMudrexProtectionHealthReport();
+    const healthReport = await buildMudrexProtectionGuardrailReport();
     const previewReport = buildMudrexProtectionRepairPreviewReport(healthReport);
     const candidates = selectMudrexProtectionRepairApplyCandidates(previewReport.items, LIMIT, {
       includeStaleCancel: true,

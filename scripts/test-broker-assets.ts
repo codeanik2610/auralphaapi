@@ -47,12 +47,7 @@ function parsePackageJson(): {
   };
 }
 
-function ensureMarkers(
-  source: string,
-  markers: string[],
-  findings: string[],
-  label: string
-): void {
+function ensureMarkers(source: string, markers: string[], findings: string[], label: string): void {
   for (const marker of markers) {
     if (!source.includes(marker)) {
       findings.push(`${label}: missing marker ${marker}`);
@@ -87,7 +82,9 @@ function ensureBrokerAssetsPackageWiring(
     '"test:broker-assets-phase9"',
   ]) {
     if (packageSource.includes(legacyScript)) {
-      findings.push(`${label}: legacy broker-assets package script should stay removed ${legacyScript}`);
+      findings.push(
+        `${label}: legacy broker-assets package script should stay removed ${legacyScript}`
+      );
     }
   }
 }
@@ -224,14 +221,22 @@ function runPhase2Assertions(): void {
   if (!read('BROKER_ASSETS_PHASE3.md').includes('Phase 3 aligns the runtime')) {
     findings.push('BROKER_ASSETS_PHASE3.md: missing Phase 3 handoff after the Phase 2 audit');
   }
-  if (!read('BROKER_ASSETS_PHASE4.md').includes('Phase 4 removes the last legacy user-ownership schema')) {
+  if (
+    !read('BROKER_ASSETS_PHASE4.md').includes(
+      'Phase 4 removes the last legacy user-ownership schema'
+    )
+  ) {
     findings.push('BROKER_ASSETS_PHASE4.md: missing Phase 4 handoff after the Phase 2 audit');
   }
 
   ensureBrokerAssetsPackageWiring(read('package.json'), findings, 'package.json');
   ensureLegacyBrokerAssetsTestsRemoved(findings, 'broker-assets');
 
-  assert.equal(findings.length, 0, `Broker assets Phase 2 audit guard failed:\n${findings.join('\n')}`);
+  assert.equal(
+    findings.length,
+    0,
+    `Broker assets Phase 2 audit guard failed:\n${findings.join('\n')}`
+  );
 }
 
 function runPhase3Assertions(): void {
@@ -387,7 +392,9 @@ async function runPhase4MigrationAssertions(): Promise<void> {
     true
   );
   assert.equal(
-    executedQueries.some((sql) => sql.includes('DELETE FROM broker_assets WHERE user_id IS NOT NULL')),
+    executedQueries.some((sql) =>
+      sql.includes('DELETE FROM broker_assets WHERE user_id IS NOT NULL')
+    ),
     true
   );
   assert.equal(
@@ -646,9 +653,7 @@ function runPhase5ContractAssertions(): void {
     );
   }
 
-  const deltaAdapterSource = read(
-    'src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter.ts'
-  );
+  const deltaAdapterSource = read('src/brokers/capabilities/orders/DeltaExchangeOrdersAdapter.ts');
   ensureMarkers(
     deltaAdapterSource,
     [
@@ -684,7 +689,10 @@ function runPhase5ContractAssertions(): void {
   if (scripts[moduleTestCommand] !== expectedMainScript) {
     findings.push(`package.json: ${moduleTestCommand} should equal "${expectedMainScript}"`);
   }
-  if (scripts['release-gate:broker-assets'] !== 'node --import tsx scripts/release-gates/release-gate-broker-assets.ts') {
+  if (
+    scripts['release-gate:broker-assets'] !==
+    'node --import tsx scripts/release-gates/release-gate-broker-assets.ts'
+  ) {
     findings.push(
       'package.json: release-gate:broker-assets should equal "node --import tsx scripts/release-gates/release-gate-broker-assets.ts"'
     );
@@ -700,12 +708,19 @@ function runPhase5ContractAssertions(): void {
   }
 
   const testAllScript = String(scripts['test:all'] || '');
-  if (!testAllScript.includes('npm run test:broker-assets') && !testAllScript.includes('npm run test:module-only')) {
-    findings.push('package.json: test:all should include the stable broker-assets umbrella suite or module-only bundle');
+  if (
+    !testAllScript.includes('npm run test:broker-assets') &&
+    !testAllScript.includes('npm run test:module-only')
+  ) {
+    findings.push(
+      'package.json: test:all should include the stable broker-assets umbrella suite or module-only bundle'
+    );
   }
   const moduleOnlyScript = String(scripts['test:module-only'] || '');
   if (moduleOnlyScript && !moduleOnlyScript.includes('run-package-suite.ts module-only')) {
-    findings.push('package.json: test:module-only should resolve through run-package-suite.ts module-only');
+    findings.push(
+      'package.json: test:module-only should resolve through run-package-suite.ts module-only'
+    );
   }
   for (const legacyScript of [
     'npm run test:broker-assets-contract',
@@ -750,7 +765,9 @@ async function runSyncFlowAssertions(): Promise<void> {
   Object.defineProperty(service, 'brokerDefinitionService', {
     get: () => ({
       async getRequiredDefinition(source: string) {
-        const normalizedSource = String(source || '').trim().toLowerCase();
+        const normalizedSource = String(source || '')
+          .trim()
+          .toLowerCase();
 
         if (normalizedSource === 'mudrex') {
           return {
@@ -787,7 +804,11 @@ async function runSyncFlowAssertions(): Promise<void> {
   Object.defineProperty(service, 'exchangeRepository', {
     get: () => ({
       async getExchangeByKey(exchangeKey: string) {
-        if (String(exchangeKey || '').trim().toLowerCase() === 'binance') {
+        if (
+          String(exchangeKey || '')
+            .trim()
+            .toLowerCase() === 'binance'
+        ) {
           return { id: 'exchange-binance', exchangeKey: 'binance' };
         }
 
@@ -892,10 +913,7 @@ async function runSyncFlowAssertions(): Promise<void> {
   assert.equal(replaceCaptures[0].attempted, 2);
   assert.equal(replaceCaptures[0].assets.length, 2);
   assert.equal(replaceCaptures[0].assets[0].brokerId, null);
-  assert.equal(
-    Object.prototype.hasOwnProperty.call(replaceCaptures[0].assets[0], 'userId'),
-    false
-  );
+  assert.equal(Object.prototype.hasOwnProperty.call(replaceCaptures[0].assets[0], 'userId'), false);
 
   const mudrexSync = await service.syncExchangeAssets('user-1', 'mudrex');
   assert.equal(mudrexSync.data.source, 'mudrex');
@@ -908,10 +926,7 @@ async function runSyncFlowAssertions(): Promise<void> {
   assert.equal(upsertCaptures[0].attempted, 2);
   assert.equal(upsertCaptures[0].assets[0].brokerId, 'broker-delta');
   assert.equal(mudrexSync.data.deltaInsertedAssets, 2);
-  assert.equal(
-    Object.prototype.hasOwnProperty.call(replaceCaptures[1].assets[0], 'userId'),
-    false
-  );
+  assert.equal(Object.prototype.hasOwnProperty.call(replaceCaptures[1].assets[0], 'userId'), false);
   assert.deepEqual(
     syncRequests.map((request) => request.source),
     ['binance', 'delta_exchange']
@@ -1106,7 +1121,10 @@ async function runDeltaLookupAssertions(): Promise<void> {
           payload,
           userId,
         });
-        if ((payload.client_order_id as string | undefined) === expectedClientOrderId('live-auto:delta-market-short')) {
+        if (
+          (payload.client_order_id as string | undefined) ===
+          expectedClientOrderId('live-auto:delta-market-short')
+        ) {
           return {
             id: `delta-order-${submittedPayloads.length}`,
             state: 'closed',
@@ -1204,48 +1222,20 @@ async function runDeltaLookupAssertions(): Promise<void> {
       time_in_force: 'gtc',
       client_order_id: expectedClientOrderId('live-auto:delta-limit-long'),
       limit_price: '101.5',
-    },
-    userId: 'user-1',
-  });
-  assert.deepEqual(submittedPayloads[1], {
-    accountId: 'acct-1',
-    routePath: '/v2/orders',
-    payload: {
-      product_id: 45678,
-      size: 2000,
-      side: 'sell',
-      order_type: 'market_order',
-      time_in_force: 'gtc',
-      stop_order_type: 'stop_loss_order',
-      stop_price: '95',
-      stop_trigger_method: 'mark_price',
-      reduce_only: true,
-      client_order_id: expectedClientOrderId('live-auto:delta-limit-long:stop_loss'),
-    },
-    userId: 'user-1',
-  });
-  assert.deepEqual(submittedPayloads[2], {
-    accountId: 'acct-1',
-    routePath: '/v2/orders',
-    payload: {
-      product_id: 45678,
-      size: 2000,
-      side: 'sell',
-      order_type: 'market_order',
-      time_in_force: 'gtc',
-      stop_order_type: 'take_profit_order',
-      stop_price: '110',
-      stop_trigger_method: 'mark_price',
-      reduce_only: true,
-      client_order_id: expectedClientOrderId('live-auto:delta-limit-long:take_profit'),
+      bracket_stop_loss_price: '95',
+      bracket_take_profit_price: '110',
+      bracket_stop_trigger_method: 'mark_price',
     },
     userId: 'user-1',
   });
   assert.equal(response.order_id, 'delta-order-1');
   assert.equal(response.status, 'open');
-  assert.equal(response.protection_status, 'attached');
-  assert.equal(response.stop_loss_order_id, 'delta-order-2');
-  assert.equal(response.take_profit_order_id, 'delta-order-3');
+  assert.equal(response.protection_status, 'pending_confirmation');
+  assert.equal(response.protection_mode, 'native_bracket');
+  assert.equal(response.bracket_status, 'submitted');
+  assert.equal(response.bracket_stop_loss_price, '95');
+  assert.equal(response.bracket_take_profit_price, '110');
+  assert.equal(response.bracket_stop_trigger_method, 'mark_price');
   assert.equal(response.leverage, '3');
   assert.deepEqual(publicProductRequests, ['/v2/products']);
 
@@ -1271,7 +1261,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
       accountId: 'acct-1',
     }
   );
-  assert.deepEqual(submittedPayloads[3], {
+  assert.deepEqual(submittedPayloads[1], {
     accountId: 'acct-1',
     routePath: '/v2/orders',
     payload: {
@@ -1282,63 +1272,29 @@ async function runDeltaLookupAssertions(): Promise<void> {
       time_in_force: 'gtc',
       client_order_id: expectedClientOrderId('live-auto:delta-market-short'),
       limit_price: '100',
+      bracket_stop_loss_price: '105',
+      bracket_take_profit_price: '90',
+      bracket_stop_trigger_method: 'mark_price',
     },
     userId: 'user-1',
   });
-  assert.deepEqual(submittedPayloads[4], {
-    accountId: 'acct-1',
-    routePath: '/v2/orders',
-    payload: {
-      product_id: 45678,
-      size: 3000,
-      side: 'buy',
-      order_type: 'market_order',
-      time_in_force: 'gtc',
-      stop_order_type: 'stop_loss_order',
-      stop_price: '102',
-      stop_trigger_method: 'mark_price',
-      reduce_only: true,
-      client_order_id: expectedClientOrderId('live-auto:delta-market-short:stop_loss'),
-    },
-    userId: 'user-1',
-  });
-  assert.deepEqual(submittedPayloads[5], {
-    accountId: 'acct-1',
-    routePath: '/v2/orders',
-    payload: {
-      product_id: 45678,
-      size: 3000,
-      side: 'buy',
-      order_type: 'market_order',
-      time_in_force: 'gtc',
-      stop_order_type: 'take_profit_order',
-      stop_price: '87',
-      stop_trigger_method: 'mark_price',
-      reduce_only: true,
-      client_order_id: expectedClientOrderId('live-auto:delta-market-short:take_profit'),
-    },
-    userId: 'user-1',
-  });
-  assert.equal(marketResponse.order_id, 'delta-order-4');
-  assert.equal(marketResponse.stop_loss_order_id, 'delta-order-5');
-  assert.equal(marketResponse.take_profit_order_id, 'delta-order-6');
+  assert.equal(marketResponse.order_id, 'delta-order-2');
+  assert.equal(marketResponse.protection_status, 'pending_confirmation');
+  assert.equal(marketResponse.protection_mode, 'native_bracket');
+  assert.equal(marketResponse.bracket_status, 'submitted');
+  assert.equal(marketResponse.bracket_stop_loss_price, '105');
+  assert.equal(marketResponse.bracket_take_profit_price, '90');
+  assert.equal(marketResponse.bracket_stop_trigger_method, 'mark_price');
   assert.equal(marketResponse.leverage, '15');
-  assert.equal(marketResponse.protection_reference_price, '97');
-  assert.equal(marketResponse.protection_rebased, true);
-  assert.equal(marketResponse.filled_price, '97');
+  assert.equal(marketResponse.protection_reference_price, '100');
+  assert.equal(marketResponse.protection_rebased, false);
   assert.equal(
     detailRequests.filter((request) => request.routePath === '/v2/positions/margined').length,
     2
   );
   assert.deepEqual(
     detailRequests.filter((request) => request.routePath !== '/v2/positions/margined'),
-    [
-      {
-        accountId: 'acct-1',
-        routePath: '/v2/orders/delta-order-4',
-        userId: 'user-1',
-      },
-    ]
+    []
   );
   const stopChild = await adapter.getOrder('delta-stop-child', {
     userId: 'user-1',
@@ -1377,7 +1333,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
       accountId: 'acct-1',
     }
   );
-  assert.deepEqual(submittedPayloads[6], {
+  assert.deepEqual(submittedPayloads[2], {
     accountId: 'acct-1',
     routePath: '/v2/orders',
     payload: {
@@ -1416,7 +1372,7 @@ async function runDeltaLookupAssertions(): Promise<void> {
     }
   );
   assert.deepEqual(publicProductRequests, ['/v2/products']);
-  assert.deepEqual(submittedPayloads[7], {
+  assert.deepEqual(submittedPayloads[3], {
     accountId: 'acct-1',
     routePath: '/v2/orders',
     payload: {
@@ -1427,46 +1383,19 @@ async function runDeltaLookupAssertions(): Promise<void> {
       time_in_force: 'gtc',
       client_order_id: expectedClientOrderId('live-auto:delta-notional-contract-conversion'),
       limit_price: '74739.2',
+      bracket_stop_loss_price: '73991.808',
+      bracket_take_profit_price: '76233.984',
+      bracket_stop_trigger_method: 'mark_price',
     },
     userId: 'user-1',
   });
-  assert.deepEqual(submittedPayloads[8], {
-    accountId: 'acct-1',
-    routePath: '/v2/orders',
-    payload: {
-      product_id: 45678,
-      size: 1,
-      side: 'sell',
-      order_type: 'market_order',
-      time_in_force: 'gtc',
-      stop_order_type: 'stop_loss_order',
-      stop_price: '73991.808',
-      stop_trigger_method: 'mark_price',
-      reduce_only: true,
-      client_order_id: expectedClientOrderId('live-auto:delta-notional-contract-conversion:stop_loss'),
-    },
-    userId: 'user-1',
-  });
-  assert.deepEqual(submittedPayloads[9], {
-    accountId: 'acct-1',
-    routePath: '/v2/orders',
-    payload: {
-      product_id: 45678,
-      size: 1,
-      side: 'sell',
-      order_type: 'market_order',
-      time_in_force: 'gtc',
-      stop_order_type: 'take_profit_order',
-      stop_price: '76233.984',
-      stop_trigger_method: 'mark_price',
-      reduce_only: true,
-      client_order_id: expectedClientOrderId('live-auto:delta-notional-contract-conversion:take_profit'),
-    },
-    userId: 'user-1',
-  });
-  assert.equal(convertedResponse.order_id, 'delta-order-8');
-  assert.equal(convertedResponse.stop_loss_order_id, 'delta-order-9');
-  assert.equal(convertedResponse.take_profit_order_id, 'delta-order-10');
+  assert.equal(convertedResponse.order_id, 'delta-order-4');
+  assert.equal(convertedResponse.protection_status, 'pending_confirmation');
+  assert.equal(convertedResponse.protection_mode, 'native_bracket');
+  assert.equal(convertedResponse.bracket_status, 'submitted');
+  assert.equal(convertedResponse.bracket_stop_loss_price, '73991.808');
+  assert.equal(convertedResponse.bracket_take_profit_price, '76233.984');
+  assert.equal(convertedResponse.bracket_stop_trigger_method, 'mark_price');
   assert.equal(convertedResponse.leverage, '15');
   assert.equal(convertedResponse.quantity, '1');
   assert.equal(convertedResponse.base_quantity, '0.001');
@@ -1712,14 +1641,26 @@ async function runDeltaLookupAssertions(): Promise<void> {
     },
   ]);
   assert.equal(indiaSubmittedPayloads[0].routePath, '/v2/orders');
-  assert.deepEqual(indiaSubmittedPayloads.map((payload) => (payload.payload as any).product_id), [
-    27,
-    27,
-    27,
-  ]);
+  assert.deepEqual(
+    indiaSubmittedPayloads.map((payload) => (payload.payload as any).product_id),
+    [27]
+  );
+  assert.equal(
+    (indiaSubmittedPayloads[0].payload as Record<string, unknown>).bracket_stop_loss_price,
+    '73991.808'
+  );
+  assert.equal(
+    (indiaSubmittedPayloads[0].payload as Record<string, unknown>).bracket_take_profit_price,
+    '76233.984'
+  );
+  assert.equal(
+    (indiaSubmittedPayloads[0].payload as Record<string, unknown>).bracket_stop_trigger_method,
+    'mark_price'
+  );
   assert.equal(indiaResponse.order_id, 'delta-india-order-1');
-  assert.equal(indiaResponse.stop_loss_order_id, 'delta-india-order-2');
-  assert.equal(indiaResponse.take_profit_order_id, 'delta-india-order-3');
+  assert.equal(indiaResponse.protection_status, 'pending_confirmation');
+  assert.equal(indiaResponse.protection_mode, 'native_bracket');
+  assert.equal(indiaResponse.bracket_status, 'submitted');
 
   await assert.rejects(
     () =>
@@ -2124,10 +2065,7 @@ function runPhase6Assertions(): void {
 
   const packageSource = read('package.json');
   ensureBrokerAssetsPackageWiring(packageSource, findings, 'package.json');
-  for (const marker of [
-    '"check:broker-assets-health"',
-    '"proof:broker-assets-live"',
-  ]) {
+  for (const marker of ['"check:broker-assets-health"', '"proof:broker-assets-live"']) {
     if (!packageSource.includes(marker)) {
       findings.push(`package.json: missing Phase 6 script ${marker}`);
     }
@@ -2143,7 +2081,9 @@ function runPhase6Assertions(): void {
     );
   }
   if (packageSource.includes('npm run test:broker-assets-history && npm run type-check')) {
-    findings.push('package.json: test:all should not depend on an archived broker-assets history chain');
+    findings.push(
+      'package.json: test:all should not depend on an archived broker-assets history chain'
+    );
   }
 
   const healthScript = read('scripts/checks/check-broker-assets-health.ts');
@@ -2171,7 +2111,7 @@ function runPhase6Assertions(): void {
       'connection.broker_id IS NOT NULL AND connection.broker_id = asset.broker_id',
       'account.user_id = :visibleUserId',
       'account.broker_id IS NOT NULL AND account.broker_id = asset.broker_id',
-      "asset.symbol IN (:...symbols)",
+      'asset.symbol IN (:...symbols)',
     ],
     findings,
     'ExchangeAssetRepository.ts'
@@ -2494,7 +2434,8 @@ async function runPhase7SourceMarkerAssertions(): Promise<void> {
     'operational audit must treat broker-assets signoff as a required workflow surface'
   );
   assert.equal(
-    packageSource.includes(`"${moduleTestCommand}"`) && packageSource.includes(moduleTestScriptPath),
+    packageSource.includes(`"${moduleTestCommand}"`) &&
+      packageSource.includes(moduleTestScriptPath),
     true,
     'package.json must include the consolidated broker-assets suite'
   );
@@ -2813,7 +2754,8 @@ async function runPhase8SourceMarkerAssertions(): Promise<void> {
     'operational audit must treat the broker-assets proof workflow as required'
   );
   assert.equal(
-    packageSource.includes(`"${moduleTestCommand}"`) && packageSource.includes(moduleTestScriptPath),
+    packageSource.includes(`"${moduleTestCommand}"`) &&
+      packageSource.includes(moduleTestScriptPath),
     true,
     'package.json must include the consolidated broker-assets suite'
   );
@@ -2866,7 +2808,8 @@ async function runPhase9Assertions(): Promise<void> {
     'package.json must expose the broker-assets evidence capture command in Phase 9'
   );
   assert.equal(
-    packageSource.includes(`"${moduleTestCommand}"`) && packageSource.includes(moduleTestScriptPath),
+    packageSource.includes(`"${moduleTestCommand}"`) &&
+      packageSource.includes(moduleTestScriptPath),
     true,
     'package.json must expose the consolidated broker-assets suite in Phase 9'
   );

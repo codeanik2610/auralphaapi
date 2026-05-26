@@ -67,7 +67,7 @@ export type MudrexOrderSnapshot = {
   payload: JsonRecord;
 };
 
-export type MudrexProtectionHealthIssue =
+export type MudrexProtectionGuardrailIssue =
   | 'missing_position_read_model'
   | 'missing_active_stop_loss'
   | 'missing_active_take_profit'
@@ -75,7 +75,7 @@ export type MudrexProtectionHealthIssue =
   | 'partial_fill_protection_mismatch'
   | 'unsafe_position_mismatch';
 
-export type MudrexProtectionHealthItem = {
+export type MudrexProtectionGuardrailItem = {
   suggestedTradeId: string;
   userId: string;
   accountId: string | null;
@@ -112,11 +112,11 @@ export type MudrexProtectionHealthItem = {
   expectedProtectionQuantityUnit: 'base' | 'unknown';
   expectedProtectionQuantityNotes: string[];
   sameSymbolOpenPositionCandidates: number;
-  issues: MudrexProtectionHealthIssue[];
+  issues: MudrexProtectionGuardrailIssue[];
   reasons: string[];
 };
 
-export type MudrexProtectionHealthReport = {
+export type MudrexProtectionGuardrailReport = {
   generatedAt: string;
   brokerKey: typeof MUDREX_BROKER;
   mutation: 'none_read_only';
@@ -139,8 +139,8 @@ export type MudrexProtectionHealthReport = {
     maxPartialFillProtectionMismatch: number;
     maxUnsafePositionMismatch: number;
   };
-  byIssue: Record<MudrexProtectionHealthIssue, number>;
-  items: MudrexProtectionHealthItem[];
+  byIssue: Record<MudrexProtectionGuardrailIssue, number>;
+  items: MudrexProtectionGuardrailItem[];
 };
 
 export type MudrexProtectionQuantityResolution = {
@@ -157,13 +157,14 @@ type NumberSource = {
 
 type ResolvedMudrexPosition = {
   position: MudrexPositionReadModel | null;
-  resolution: MudrexProtectionHealthItem['positionResolution'];
+  resolution: MudrexProtectionGuardrailItem['positionResolution'];
 };
 
 const MUDREX_BROKER = 'mudrex';
 const OUTPUT_FILE = String(
-  process.env.SUGGESTED_TRADES_MUDREX_PROTECTION_HEALTH_OUTPUT_FILE ||
-    'artifacts/suggested-trades-mudrex-protection-health.json'
+  process.env.SUGGESTED_TRADES_MUDREX_PROTECTION_GUARDRAIL_OUTPUT_FILE ||
+    process.env.SUGGESTED_TRADES_MUDREX_PROTECTION_HEALTH_OUTPUT_FILE ||
+    'artifacts/suggested-trades-mudrex-protection-guardrail.json'
 ).trim();
 const LOOKBACK_DAYS = Math.max(
   1,
@@ -603,9 +604,9 @@ function orderKey(userId: string, accountId: string | null, externalId: string |
 }
 
 function addIssue(
-  issues: Set<MudrexProtectionHealthIssue>,
+  issues: Set<MudrexProtectionGuardrailIssue>,
   reasons: string[],
-  issue: MudrexProtectionHealthIssue,
+  issue: MudrexProtectionGuardrailIssue,
   reason: string
 ): void {
   issues.add(issue);
@@ -802,12 +803,12 @@ function resolveProtectionContext(
 function evaluateExecution(input: {
   row: MudrexExecutionRow;
   position: MudrexPositionReadModel | null;
-  positionResolution: MudrexProtectionHealthItem['positionResolution'];
+  positionResolution: MudrexProtectionGuardrailItem['positionResolution'];
   sameSymbolOpenPositions: MudrexPositionReadModel[];
   orderByKey: Map<string, MudrexOrderSnapshot>;
-}): MudrexProtectionHealthItem | null {
+}): MudrexProtectionGuardrailItem | null {
   const { row, position, positionResolution, sameSymbolOpenPositions, orderByKey } = input;
-  const issues = new Set<MudrexProtectionHealthIssue>();
+  const issues = new Set<MudrexProtectionGuardrailIssue>();
   const reasons: string[] = [];
   const protection = resolveProtectionContext(row, position, orderByKey);
   const positionMissing = needsOpenPositionProtection(row, position) && !position;
@@ -957,15 +958,15 @@ function evaluateExecution(input: {
 }
 
 function countItemsWithIssue(
-  items: MudrexProtectionHealthItem[],
-  issue: MudrexProtectionHealthIssue
+  items: MudrexProtectionGuardrailItem[],
+  issue: MudrexProtectionGuardrailIssue
 ): number {
   return items.filter((item) => item.issues.includes(issue)).length;
 }
 
 function countByIssue(
-  items: MudrexProtectionHealthItem[]
-): Record<MudrexProtectionHealthIssue, number> {
+  items: MudrexProtectionGuardrailItem[]
+): Record<MudrexProtectionGuardrailIssue, number> {
   return {
     missing_position_read_model: countItemsWithIssue(items, 'missing_position_read_model'),
     missing_active_stop_loss: countItemsWithIssue(items, 'missing_active_stop_loss'),
@@ -982,7 +983,7 @@ function countByIssue(
   };
 }
 
-export async function buildMudrexProtectionHealthReport(): Promise<MudrexProtectionHealthReport> {
+export async function buildMudrexProtectionGuardrailReport(): Promise<MudrexProtectionGuardrailReport> {
   const generatedAt = new Date();
   const executions = await queryMudrexExecutions();
   const positions = await queryMudrexPositions();
@@ -1047,7 +1048,7 @@ export async function buildMudrexProtectionHealthReport(): Promise<MudrexProtect
         orderByKey,
       });
     })
-    .filter((item): item is MudrexProtectionHealthItem => Boolean(item));
+    .filter((item): item is MudrexProtectionGuardrailItem => Boolean(item));
   const byIssue = countByIssue(items);
 
   return {
@@ -1082,10 +1083,10 @@ async function run(): Promise<void> {
   await initializeCoreDataSource();
 
   try {
-    const report = await buildMudrexProtectionHealthReport();
+    const report = await buildMudrexProtectionGuardrailReport();
 
     await persistReport(report);
-    console.log('suggested-trades-mudrex-protection-health:', JSON.stringify(report));
+    console.log('suggested-trades-mudrex-protection-guardrail:', JSON.stringify(report));
 
     const failures = [
       [

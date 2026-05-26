@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { coreDataSource } from '../../src/database/data-source';
 import { initializeCoreDataSource } from '../../src/database/initializeCoreDataSource';
-import { buildMudrexProtectionHealthReport } from './check-suggested-trades-mudrex-protection-health';
+import { buildMudrexProtectionGuardrailReport } from './check-suggested-trades-mudrex-protection-guardrail';
 import {
   buildMudrexProtectionRepairPreviewReport,
   type MudrexProtectionRepairPreviewItem,
@@ -73,7 +73,7 @@ async function run(): Promise<void> {
   await initializeCoreDataSource();
 
   try {
-    const healthReport = await buildMudrexProtectionHealthReport();
+    const healthReport = await buildMudrexProtectionGuardrailReport();
     const previewReport = buildMudrexProtectionRepairPreviewReport(healthReport);
     const stalePreviewItems = previewReport.items.filter(
       (item) => item.remediation.action === STALE_CANCEL_ACTION
