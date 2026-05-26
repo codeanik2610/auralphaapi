@@ -1650,6 +1650,20 @@ export class SuggestedTradeRepository {
             )
           )
           OR (
+            LOWER(COALESCE(execution_record.protectionState, '')) = 'attached'
+            AND LOWER(
+              COALESCE(
+                JSON_UNQUOTE(JSON_EXTRACT(execution_record.protection_plan_json, '$.trailingStop.enabled')),
+                JSON_UNQUOTE(JSON_EXTRACT(execution_record.protection_plan_json, '$.trailing_stop.enabled')),
+                ''
+              )
+            ) IN ('true', '1')
+            AND (
+              execution_record.protection_checked_at IS NULL
+              OR execution_record.protection_checked_at <= :automaticStaleBefore
+            )
+          )
+          OR (
             LOWER(COALESCE(execution_record.protectionState, '')) = :manualState
             AND (
               execution_record.protection_checked_at IS NULL

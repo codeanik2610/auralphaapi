@@ -4892,12 +4892,24 @@ export class SuggestedTradesService {
     if (this.shouldStartLiveAutoLifecycleMonitor(protectionState)) {
       return true;
     }
+    if (protectionState === 'attached' && this.hasLiveExecutionTrailingStop(execution)) {
+      return true;
+    }
     return (
       protectionState === 'failed' &&
       (this.isRetriableProtectionFailure(execution) ||
         this.isDeltaReplacementProtectionFailure(execution) ||
         this.isDeltaMaxAttemptReplacementProtectionFailure(execution))
     );
+  }
+
+  private hasLiveExecutionTrailingStop(
+    execution: SuggestedTradeExecutionLink | null | undefined
+  ): boolean {
+    if (!execution || execution.executionMode !== 'live') {
+      return false;
+    }
+    return Boolean(resolveCustomRLadderTrailingStopConfigFromRecords(execution.protectionPlan));
   }
 
   private maybeStartLiveAutoLifecycleMonitorForExecution(
@@ -5284,6 +5296,9 @@ export class SuggestedTradesService {
         !this.isDeltaReplacementProtectionFailure(execution) &&
         !this.isDeltaMaxAttemptReplacementProtectionFailure(execution)
       );
+    }
+    if (protectionState === 'attached' && this.hasLiveExecutionTrailingStop(execution)) {
+      return false;
     }
     return (
       protectionState === 'attached' ||
@@ -9425,6 +9440,33 @@ export class SuggestedTradesService {
     );
   }
 
+  private canEvaluateLiveTrailingStop(
+    execution: SuggestedTradeExecutionLink,
+    brokerKey: string | null
+  ): boolean {
+    const protectionState = this.normalizeProtectionState(execution.protectionState);
+    if (protectionState === 'attached') {
+      return true;
+    }
+
+    if (brokerKey !== 'delta_exchange') {
+      return false;
+    }
+
+    if (
+      protectionState !== 'pending' &&
+      protectionState !== 'waiting_for_fill' &&
+      protectionState !== 'waiting_for_position' &&
+      protectionState !== 'attaching'
+    ) {
+      return false;
+    }
+
+    const plan = this.readRecordValue(execution.protectionPlan) ?? {};
+    const protectionMode = this.readStringValue(plan.protectionMode)?.toLowerCase();
+    return protectionMode === 'native_bracket';
+  }
+
   private async maybeApplyLiveTrailingStop(
     userId: string,
     trade: SuggestedTrade,
@@ -9434,11 +9476,11 @@ export class SuggestedTradesService {
     if (execution.executionMode !== 'live') {
       return execution;
     }
-    if (this.normalizeProtectionState(execution.protectionState) !== 'attached') {
+    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
+    if (!this.canEvaluateLiveTrailingStop(execution, brokerKey)) {
       return execution;
     }
 
-    const brokerKey = this.readStringValue(execution.brokerKey)?.toLowerCase() ?? null;
     const useTemplateTrailingConfig = brokerKey === 'mudrex' || brokerKey === 'delta_exchange';
     const resolvedTrailingConfig = useTemplateTrailingConfig
       ? await this.resolveTemplateTrailingStopConfig(userId, trade, execution)
@@ -9585,7 +9627,7 @@ export class SuggestedTradesService {
                   : move.profitR,
             })
           : undefined,
-        brokerKey === 'mudrex'
+        brokerKey === 'mudrex' || brokerKey === 'delta_exchange'
       );
     }
 
@@ -10103,8 +10145,18 @@ export class SuggestedTradesService {
       description: note,
     });
 
+    const shouldMarkDeltaTrailingAttached =
+      brokerKey === 'delta_exchange' &&
+      this.normalizeProtectionState(execution.protectionState) !== 'attached';
+
     return {
       ...execution,
+      ...(shouldMarkDeltaTrailingAttached
+        ? {
+            protectionState: 'attached' as const,
+            protectionAttachedAt: execution.protectionAttachedAt ?? nowIso,
+          }
+        : {}),
       stopLossPrice: appliedStopLossPrice,
       takeProfitPrice: execution.takeProfitPrice ?? appliedTakeProfitPrice,
       protectionCheckedAt: nowIso,

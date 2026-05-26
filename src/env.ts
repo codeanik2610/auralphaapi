@@ -532,12 +532,12 @@ export const env = {
         : !process.env.NODE_ENV || process.env.NODE_ENV !== 'test',
     pollIntervalMs: Math.max(
       5000,
-      getNumber('SUGGESTED_TRADE_EXECUTION_SYNC_POLL_INTERVAL_MS', 45000)
+      getNumber('SUGGESTED_TRADE_EXECUTION_SYNC_POLL_INTERVAL_MS', 5000)
     ),
     batchSize: Math.max(1, getNumber('SUGGESTED_TRADE_EXECUTION_SYNC_BATCH_SIZE', 100)),
     staleAfterMs: Math.max(
       30000,
-      getNumber('SUGGESTED_TRADE_EXECUTION_SYNC_STALE_AFTER_MS', 120000)
+      getNumber('SUGGESTED_TRADE_EXECUTION_SYNC_STALE_AFTER_MS', 30000)
     ),
   },
   suggestedTrades: {

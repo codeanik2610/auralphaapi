@@ -14087,6 +14087,45 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
     'no_rule_crossed'
   );
 
+  const deltaAttachedTrailingExecution = {
+    executionMode: 'live',
+    protectionState: 'attached',
+    protectionPlan: {
+      trailingStop: ema5PullbackConfig,
+    },
+  };
+  assert.equal(
+    service.shouldResumeLiveAutoLifecycleMonitor(deltaAttachedTrailingExecution),
+    true
+  );
+  assert.equal(service.isLiveAutoLifecycleMonitorSettled(deltaAttachedTrailingExecution), false);
+  assert.equal(
+    service.canEvaluateLiveTrailingStop(
+      {
+        executionMode: 'live',
+        protectionState: 'waiting_for_fill',
+        protectionPlan: {
+          protectionMode: 'native_bracket',
+        },
+      },
+      'delta_exchange'
+    ),
+    true
+  );
+  assert.equal(
+    service.canEvaluateLiveTrailingStop(
+      {
+        executionMode: 'live',
+        protectionState: 'waiting_for_fill',
+        protectionPlan: {
+          protectionMode: 'native_bracket',
+        },
+      },
+      'mudrex'
+    ),
+    false
+  );
+
   const pendingDeltaBracketAmendment = {
     stopLossPrice: '95',
     takeProfitPrice: '115',
