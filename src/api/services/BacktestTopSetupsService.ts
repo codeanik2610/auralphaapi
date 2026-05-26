@@ -72,12 +72,14 @@ export class BacktestTopSetupsService {
       .sort((left, right) => this.compareTopSetupItems(left, right));
 
     const deduped = this.dedupeTopSetupItems(filtered);
-    const page = deduped.slice(params.offset, params.offset + params.limit);
+    const page = params.allRecords
+      ? deduped.slice(params.offset)
+      : deduped.slice(params.offset, params.offset + params.limit);
 
     return {
       items: page,
       total: deduped.length,
-      limit: params.limit,
+      limit: params.allRecords ? page.length : params.limit,
       offset: params.offset,
     };
   }

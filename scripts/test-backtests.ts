@@ -851,6 +851,21 @@ function runBacktestTopSetupsServiceAssertions(): void {
   assert.equal(response.total, 1);
   assert.equal(response.items[0].backtestId, 'backtest-top-1');
 
+  const limitedResponse = service.buildResponse([primaryBacktest, duplicateBacktest], {
+    limit: '1',
+    offset: '0',
+  });
+  assert.equal(limitedResponse.total, 2);
+  assert.equal(limitedResponse.items.length, 1);
+
+  const allResponse = service.buildResponse([primaryBacktest, duplicateBacktest], {
+    limit: 'all',
+    offset: '0',
+  });
+  assert.equal(allResponse.total, 2);
+  assert.equal(allResponse.items.length, 2);
+  assert.equal(allResponse.limit, 2);
+
   const dogResponse = service.buildResponse([reviewBacktest], {
     limit: '10',
     offset: '0',

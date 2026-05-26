@@ -129,18 +129,19 @@ export interface ValidatedBacktestsQuery {
 }
 
 export interface BacktestTopSetupsQuery {
-  limit?: string;
-  offset?: string;
+  limit?: string | number;
+  offset?: string | number;
   search?: string;
   timeframe?: string;
-  minScore?: string;
-  minTrades?: string;
-  eligibleOnly?: string;
+  minScore?: string | number;
+  minTrades?: string | number;
+  eligibleOnly?: string | boolean;
 }
 
 export interface ValidatedBacktestTopSetupsQuery {
   limit: number;
   offset: number;
+  allRecords: boolean;
   search?: string;
   timeframe?: string;
   minScore?: number;
@@ -212,11 +213,15 @@ export const validateBacktestsQuery = (query: BacktestsQuery): ValidatedBacktest
 export const validateBacktestTopSetupsQuery = (
   query: BacktestTopSetupsQuery | ValidatedBacktestTopSetupsQuery
 ): ValidatedBacktestTopSetupsQuery => {
-  const limit = query.limit !== undefined ? Number(query.limit) : 24;
+  const rawLimit = query.limit !== undefined ? String(query.limit).trim() : '';
+  const allRecords =
+    (query as ValidatedBacktestTopSetupsQuery).allRecords === true ||
+    rawLimit.toLowerCase() === 'all';
+  const limit = allRecords ? Number.MAX_SAFE_INTEGER : rawLimit ? Number(rawLimit) : 24;
   const offset = query.offset !== undefined ? Number(query.offset) : 0;
 
-  if (!Number.isInteger(limit) || limit <= 0 || limit > 500) {
-    throw new BadRequestAppError('limit must be an integer between 1 and 500');
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new BadRequestAppError('limit must be a positive integer or all');
   }
 
   if (!Number.isInteger(offset) || offset < 0) {
@@ -251,6 +256,7 @@ export const validateBacktestTopSetupsQuery = (
   return {
     limit,
     offset,
+    allRecords,
     search: query.search?.trim() || undefined,
     timeframe: timeframe || undefined,
     minScore,
