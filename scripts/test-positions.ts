@@ -813,6 +813,16 @@ async function positionsGuard05(): Promise<void> {
               replacementSubmittedAt: '2026-04-09T09:00:00.000Z',
               stopLossOrderId: 'sl-1',
               takeProfitOrderId: 'tp-1',
+              trailingStop: {
+                enabled: true,
+                mode: 'custom_r_ladder',
+                timeframe: '1m',
+                originalStopLossPrice: 65500,
+                rules: [
+                  { whenProfitR: 1, moveStopToR: 0.3 },
+                  { whenProfitR: 3, moveStopToR: 2.2 },
+                ],
+              },
             },
             protectionAttempts: 1,
             protectionLastError: null,
@@ -1018,6 +1028,16 @@ async function positionsGuard05(): Promise<void> {
       assert.equal(response.relatedSuggestedTrades[0].protection?.stopLossPrice, 65600);
       assert.equal(response.relatedSuggestedTrades[0].protection?.takeProfitPrice, 68950);
       assert.equal(response.relatedSuggestedTrades[0].protection?.stopLossOrderId, 'sl-1');
+      assert.deepEqual(response.relatedSuggestedTrades[0].protection?.trailingStop, {
+        enabled: true,
+        mode: 'custom_r_ladder',
+        timeframe: '1m',
+        originalStopLossPrice: 65500,
+        rules: [
+          { whenProfitR: 1, moveStopToR: 0.3 },
+          { whenProfitR: 3, moveStopToR: 2.2 },
+        ],
+      });
       assert.equal(response.relatedSuggestedTrades[0].routeAttempts?.length, 2);
       assert.equal(
         response.relatedSuggestedTrades[0].routeAttempts?.[0]?.brokerKey,
@@ -1717,6 +1737,23 @@ async function positionsGuard09(): Promise<void> {
               protectionReplacementSubmittedAt: '2026-04-09T10:01:30.000Z',
               protectionStopLossOrderId: 'sl-eth',
               protectionTakeProfitOrderId: 'tp-eth',
+              protectionPlan: JSON.stringify({
+                attachedStopLossPrice: '3234.5',
+                attachedTakeProfitPrice: '3432.5',
+                replacementSubmittedAt: '2026-04-09T10:01:30.000Z',
+                stopLossOrderId: 'sl-eth',
+                takeProfitOrderId: 'tp-eth',
+                trailingStop: {
+                  enabled: true,
+                  mode: 'custom_r_ladder',
+                  timeframe: '1m',
+                  originalStopLossPrice: 3234,
+                  rules: [
+                    { whenProfitR: 1, moveStopToR: 0.3 },
+                    { whenProfitR: 3, moveStopToR: 2.2 },
+                  ],
+                },
+              }),
               traceMethod: 'position_id',
             },
           ];
@@ -1820,6 +1857,16 @@ async function positionsGuard09(): Promise<void> {
         '2026-04-09T10:01:30.000Z'
       );
       assert.equal(overview.items[0].executionProtection?.stopLossOrderId, 'sl-eth');
+      assert.deepEqual(overview.items[0].executionProtection?.trailingStop, {
+        enabled: true,
+        mode: 'custom_r_ladder',
+        timeframe: '1m',
+        originalStopLossPrice: 3234,
+        rules: [
+          { whenProfitR: 1, moveStopToR: 0.3 },
+          { whenProfitR: 3, moveStopToR: 2.2 },
+        ],
+      });
       assert.equal(overview.items[0].positionSummary?.executionProtection?.takeProfitPrice, 3432.5);
       assert.equal(overview.items[0].automationTrade?.routeAttempts?.[0]?.brokerKey, 'mudrex');
       assert.equal(

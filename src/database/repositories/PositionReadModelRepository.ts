@@ -59,6 +59,7 @@ type PositionSuggestedTradeContextRow = {
   protectionReplacementSubmittedAt?: Date | string | null;
   protectionStopLossOrderId?: string | null;
   protectionTakeProfitOrderId?: string | null;
+  protectionPlan?: unknown;
   routeAttempts?: unknown;
   sourceTemplateId?: string | null;
   sourceBacktestId?: string | null;
@@ -1768,6 +1769,7 @@ export class PositionReadModelRepository {
                    NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.replacementSubmittedAt')), 'null'), '') AS protectionReplacementSubmittedAt,
                    NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.stopLossOrderId')), 'null'), '') AS protectionStopLossOrderId,
                    NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.takeProfitOrderId')), 'null'), '') AS protectionTakeProfitOrderId,
+                   execution_row.protection_plan_json AS protectionPlan,
                    execution_row.route_attempts_json AS routeAttempts,
                    '${traceMethod}' AS traceMethod
               FROM suggested_trade_executions execution_row
@@ -1942,6 +1944,16 @@ export class PositionReadModelRepository {
     const checkedAt = this.toIsoString(row.protectionCheckedAt);
     const attachedAt = this.toIsoString(row.protectionAttachedAt);
     const replacementSubmittedAt = this.toIsoString(row.protectionReplacementSubmittedAt);
+    const protectionPlan = this.parseJsonValue(row.protectionPlan);
+    const protectionPlanRecord =
+      protectionPlan && typeof protectionPlan === 'object' && !Array.isArray(protectionPlan)
+        ? (protectionPlan as Record<string, unknown>)
+        : null;
+    const rawTrailingStop = protectionPlanRecord?.trailingStop;
+    const trailingStop =
+      rawTrailingStop && typeof rawTrailingStop === 'object' && !Array.isArray(rawTrailingStop)
+        ? (rawTrailingStop as Record<string, unknown>)
+        : null;
 
     if (
       !state &&
@@ -1956,7 +1968,8 @@ export class PositionReadModelRepository {
       plannedTakeProfitPrice === null &&
       !checkedAt &&
       !attachedAt &&
-      !replacementSubmittedAt
+      !replacementSubmittedAt &&
+      !trailingStop
     ) {
       return null;
     }
@@ -1975,6 +1988,7 @@ export class PositionReadModelRepository {
       plannedTakeProfitPrice,
       stopLossOrderId,
       takeProfitOrderId,
+      trailingStop,
     };
   }
 

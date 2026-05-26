@@ -65,6 +65,7 @@ export interface PositionExecutionProtectionContext {
   plannedTakeProfitPrice?: number | null;
   stopLossOrderId: string | null;
   takeProfitOrderId: string | null;
+  trailingStop?: Record<string, unknown> | null;
 }
 
 export type PositionLifecycleEventKind =

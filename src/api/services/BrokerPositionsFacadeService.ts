@@ -1964,6 +1964,7 @@ export class BrokerPositionsFacadeService {
       this.toNumber(protectionPlan.attachedTakeProfitPrice) ?? plannedTakeProfitPrice;
     const stopLossOrderId = this.readString(protectionPlan.stopLossOrderId) || null;
     const takeProfitOrderId = this.readString(protectionPlan.takeProfitOrderId) || null;
+    const trailingStop = this.toRecord(protectionPlan.trailingStop) || null;
 
     if (
       !state &&
@@ -1978,7 +1979,8 @@ export class BrokerPositionsFacadeService {
       plannedStopLossPrice === null &&
       plannedTakeProfitPrice === null &&
       !stopLossOrderId &&
-      !takeProfitOrderId
+      !takeProfitOrderId &&
+      !trailingStop
     ) {
       return null;
     }
@@ -1997,6 +1999,7 @@ export class BrokerPositionsFacadeService {
       plannedTakeProfitPrice,
       stopLossOrderId,
       takeProfitOrderId,
+      trailingStop,
     };
   }
 
