@@ -896,6 +896,7 @@ export class AutomationExecutionService {
           TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.fallback
       )
     );
+    const autoExecutionBatchSlots = new Set<string>();
 
     const candleSettings = this.resolveTradeSuggestionCandleSettings(config);
     const signalSelectionMode = this.resolveTradeSuggestionSignalSelectionMode(config);
@@ -1089,6 +1090,7 @@ export class AutomationExecutionService {
 
       for (const event of normalizedSignalEvents) {
         const { leg, signalTime, entryPrice, candleState, tradePlan } = event;
+        const side = leg.side === 'long' ? 'BUY' : 'SELL';
         const protection = this.resolveSuggestedTradeProtection(entryPrice, leg, tradePlan);
         const stopLossPrice = protection.stopLossPrice;
         const takeProfitTargets = protection.takeProfitTargets;
@@ -1122,7 +1124,7 @@ export class AutomationExecutionService {
           sourceSetupKey,
           symbol: item.symbol,
           timeframe,
-          side: leg.side === 'long' ? 'BUY' : 'SELL',
+          side,
           signalTime,
           confidence,
           score,
@@ -1213,14 +1215,30 @@ export class AutomationExecutionService {
         }
 
         if (!created.duplicate && created.item && autoPaperEnabled) {
-          const autoExecution =
-            await this.suggestedTradesService.attemptAutoPaperExecutionForAutomation(
-              automation.userId,
-              created.item.id,
-              {
-                placedInRun: autoPaperPlaced,
-              }
-            );
+          const batchSlot = this.reserveTradeSuggestionAutoExecutionBatchSlot(
+            autoExecutionBatchSlots,
+            {
+              timeframe,
+              side,
+              signalTime,
+            }
+          );
+          const autoExecution = batchSlot.allowed
+            ? await this.suggestedTradesService.attemptAutoPaperExecutionForAutomation(
+                automation.userId,
+                created.item.id,
+                {
+                  placedInRun: autoPaperPlaced,
+                }
+              )
+            : await this.suggestedTradesService.blockAutoExecutionForAutomation(
+                automation.userId,
+                created.item.id,
+                {
+                  executionMode: 'paper',
+                  reason: batchSlot.message,
+                }
+              );
 
           if (autoExecution.outcome === 'placed') {
             autoPaperPlaced += 1;
@@ -1262,22 +1280,38 @@ export class AutomationExecutionService {
         }
 
         if (!created.duplicate && created.item && autoLiveEnabled) {
-          const liveRollout =
-            await this.suggestedTradesService.attemptAutoLiveExecutionForAutomation(
-              automation.userId,
-              created.item.id,
-              {
-                createOrder: async (assetId, body, context) =>
-                  this.ordersService.createFuturesOrder(automation.userId, assetId, body, {
-                    suggestedTradeId: context?.suggestedTradeId ?? null,
-                  }),
-              },
-              {
-                placedInRun: autoLivePlaced,
-                freshnessEvaluatedAt: new Date(),
-                currentRunFreshnessFloorSeconds: resolveDefaultFreshnessGraceSeconds(timeframe),
-              }
-            );
+          const batchSlot = this.reserveTradeSuggestionAutoExecutionBatchSlot(
+            autoExecutionBatchSlots,
+            {
+              timeframe,
+              side,
+              signalTime,
+            }
+          );
+          const liveRollout = batchSlot.allowed
+            ? await this.suggestedTradesService.attemptAutoLiveExecutionForAutomation(
+                automation.userId,
+                created.item.id,
+                {
+                  createOrder: async (assetId, body, context) =>
+                    this.ordersService.createFuturesOrder(automation.userId, assetId, body, {
+                      suggestedTradeId: context?.suggestedTradeId ?? null,
+                    }),
+                },
+                {
+                  placedInRun: autoLivePlaced,
+                  freshnessEvaluatedAt: new Date(),
+                  currentRunFreshnessFloorSeconds: resolveDefaultFreshnessGraceSeconds(timeframe),
+                }
+              )
+            : await this.suggestedTradesService.blockAutoExecutionForAutomation(
+                automation.userId,
+                created.item.id,
+                {
+                  executionMode: 'live',
+                  reason: batchSlot.message,
+                }
+              );
 
           if (liveRollout.outcome === 'placed' || liveRollout.outcome === 'working') {
             autoLivePlaced += 1;
@@ -1463,6 +1497,45 @@ export class AutomationExecutionService {
       autoLiveSkipped,
       autoLiveDisabled,
       autoLiveFailed,
+    };
+  }
+
+  private reserveTradeSuggestionAutoExecutionBatchSlot(
+    slots: Set<string>,
+    input: {
+      timeframe: string;
+      side: string;
+      signalTime: Date;
+    }
+  ):
+    | {
+        allowed: true;
+      }
+    | {
+        allowed: false;
+        message: string;
+      } {
+    const timeframe = String(input.timeframe || '').trim() || 'unknown';
+    const side =
+      String(input.side || '')
+        .trim()
+        .toUpperCase() === 'SELL'
+        ? 'SELL'
+        : 'BUY';
+    const signalTime =
+      input.signalTime instanceof Date && !Number.isNaN(input.signalTime.getTime())
+        ? input.signalTime.toISOString()
+        : 'unknown';
+    const key = `${timeframe.toLowerCase()}:${side}:${signalTime}`;
+
+    if (!slots.has(key)) {
+      slots.add(key);
+      return { allowed: true };
+    }
+
+    return {
+      allowed: false,
+      message: `Auto execution blocked by batch cap: only one ${side} order per ${timeframe} signal batch can proceed. Another ${side} suggestion already used the ${signalTime} slot.`,
     };
   }
 

@@ -249,6 +249,21 @@ interface SuggestedTradeAutoLiveRolloutResult {
   liquidationRisk?: Record<string, unknown> | null;
 }
 
+interface SuggestedTradeAutoExecutionBlockResult {
+  outcome: 'blocked' | 'skipped';
+  message: string;
+  suggestedTradeId: string;
+  paperOrderId?: string | null;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  preTradeCheckId?: string | null;
+  orderId?: string | null;
+  protectionState?: SuggestedTradeProtectionState | null;
+  freshness?: SuggestedTradeAutoLiveFreshnessSnapshot | null;
+  blockReasonCode?: string | null;
+  liquidationRisk?: Record<string, unknown> | null;
+}
+
 interface SuggestedTradeAutoLiveFreshnessSnapshot {
   allowed: boolean;
   enabled: boolean;
@@ -2757,6 +2772,14 @@ export class SuggestedTradesService {
       };
     }
 
+    const batchCapMessage = await this.resolveAutoExecutionBatchCapBlockMessage(trade, 'paper');
+    if (batchCapMessage) {
+      return this.blockAutoExecutionForLoadedTrade(userId, trade, {
+        executionMode: 'paper',
+        reason: batchCapMessage,
+      });
+    }
+
     const placedInRun = Math.max(0, Math.floor(options.placedInRun ?? 0));
     if (placedInRun >= executionPolicy.maxOrdersPerRun) {
       return {
@@ -3066,6 +3089,126 @@ export class SuggestedTradesService {
     }
   }
 
+  async blockAutoExecutionForAutomation(
+    userId: string,
+    suggestedTradeId: string,
+    options: {
+      executionMode: 'paper' | 'live';
+      reason: string;
+    }
+  ): Promise<SuggestedTradeAutoExecutionBlockResult> {
+    const validatedTradeId = validateSuggestedTradeId(suggestedTradeId);
+    const trade = await this.suggestedTradeRepository.getSuggestedTradeById(
+      userId,
+      validatedTradeId
+    );
+    if (!trade) {
+      throw new NotFoundAppError('Suggested trade not found');
+    }
+
+    return this.blockAutoExecutionForLoadedTrade(userId, trade, options);
+  }
+
+  private async blockAutoExecutionForLoadedTrade(
+    userId: string,
+    trade: SuggestedTrade,
+    options: {
+      executionMode: 'paper' | 'live';
+      reason: string;
+    }
+  ): Promise<SuggestedTradeAutoExecutionBlockResult> {
+    const existingExecution = this.getExecutionLink(trade);
+    if (this.hasExecutionTracking(existingExecution)) {
+      return {
+        outcome: 'skipped',
+        message: 'Suggested trade already has tracked execution state',
+        suggestedTradeId: trade.id,
+        brokerKey: existingExecution?.brokerKey ?? null,
+        accountId: existingExecution?.accountId ?? null,
+        preTradeCheckId: existingExecution?.preTradeCheckId ?? null,
+      };
+    }
+
+    const message = String(options.reason || '').trim() || 'Auto execution blocked';
+    const checkedAt = new Date().toISOString();
+    await this.persistExecutionState(trade, {
+      executionMode: options.executionMode,
+      executionState: 'rejected',
+      preTradeState: 'blocked',
+      preTradeCheckedAt: checkedAt,
+      preTradeBlockedReason: message,
+      note: message,
+    });
+
+    await this.operationalEventService.logActivity(userId, {
+      type: 'Suggested Trade',
+      title: `Auto execution batch blocked: ${trade.symbol}`,
+      status: 'Warning',
+      route: 'Suggested Trades',
+      stream: 'Execution',
+      related: `${trade.symbol} · ${trade.timeframe}`,
+      referenceId: trade.id,
+      symbol: trade.symbol,
+      description: message,
+    });
+
+    return {
+      outcome: 'blocked',
+      message,
+      suggestedTradeId: trade.id,
+      preTradeCheckId: null,
+    };
+  }
+
+  private async resolveAutoExecutionBatchCapBlockMessage(
+    trade: SuggestedTrade,
+    executionMode: 'paper' | 'live'
+  ): Promise<string | null> {
+    const repository = this.suggestedTradeRepository as SuggestedTradeRepository & {
+      countAutoExecutionBatchSelections?: (query: {
+        userId: string;
+        executionMode: 'paper' | 'live';
+        timeframe: string;
+        side: string;
+        signalTime: Date | string;
+        excludeSuggestedTradeId?: string | null;
+      }) => Promise<number>;
+    };
+    if (typeof repository.countAutoExecutionBatchSelections !== 'function') {
+      return null;
+    }
+
+    const selectedCount = await repository.countAutoExecutionBatchSelections({
+      userId: trade.userId,
+      executionMode,
+      timeframe: trade.timeframe,
+      side: trade.side,
+      signalTime: trade.signalTime,
+      excludeSuggestedTradeId: trade.id,
+    });
+
+    if (selectedCount <= 0) {
+      return null;
+    }
+
+    return this.buildAutoExecutionBatchCapMessage(trade);
+  }
+
+  private buildAutoExecutionBatchCapMessage(trade: SuggestedTrade): string {
+    const timeframe = String(trade.timeframe || '').trim() || 'unknown';
+    const side =
+      String(trade.side || '')
+        .trim()
+        .toUpperCase() === 'SELL'
+        ? 'SELL'
+        : 'BUY';
+    const signalTime =
+      trade.signalTime instanceof Date && !Number.isNaN(trade.signalTime.getTime())
+        ? trade.signalTime.toISOString()
+        : String(trade.signalTime || '').trim() || 'unknown';
+    return `Auto execution blocked by batch cap: only one ${side} order per ${timeframe} signal batch can proceed. Another ${side} suggestion already used the ${signalTime} slot.`;
+  }
+
   async attemptAutoLiveExecutionForAutomation(
     userId: string,
     suggestedTradeId: string,
@@ -3136,6 +3279,19 @@ export class SuggestedTradesService {
         outcome: rolloutGuard.outcome,
         message: rolloutGuard.message,
         suggestedTradeId: trade.id,
+        brokerKey: rolloutGuard.brokerKey,
+        accountId: rolloutGuard.accountId,
+      };
+    }
+
+    const batchCapMessage = await this.resolveAutoExecutionBatchCapBlockMessage(trade, 'live');
+    if (batchCapMessage) {
+      const blocked = await this.blockAutoExecutionForLoadedTrade(userId, trade, {
+        executionMode: 'live',
+        reason: batchCapMessage,
+      });
+      return {
+        ...blocked,
         brokerKey: rolloutGuard.brokerKey,
         accountId: rolloutGuard.accountId,
       };

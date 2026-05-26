@@ -960,6 +960,151 @@ async function runSuggestedTradeTransitionAssertions(): Promise<void> {
 
   {
     const service = new SuggestedTradesService() as any;
+    let savedExecutionPayload: Record<string, unknown> | null = null;
+    const activityLogs: Array<Record<string, unknown>> = [];
+
+    service.suggestedTradeRepository = {
+      async getSuggestedTradeById() {
+        return {
+          id: 'st-batch-blocked',
+          automationId: 'auto-1',
+          automationRunId: 'run-1',
+          userId: 'user-1',
+          symbol: 'ETHUSDT',
+          timeframe: '5m',
+          side: 'SELL',
+          signalTime: new Date('2026-04-04T10:00:00.000Z'),
+          status: 'Open',
+          confidence: 0.82,
+          score: 82,
+          entryPrice: '200',
+          stopLossPrice: null,
+          takeProfitTargets: null,
+          entryRule: null,
+          exitRule: null,
+          rationale: null,
+          dedupeKey: 'dedupe-batch-blocked',
+          meta: null,
+          createdAt: new Date('2026-04-04T10:01:00.000Z'),
+          updatedAt: new Date('2026-04-04T10:02:00.000Z'),
+        };
+      },
+      async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+        savedExecutionPayload = { ...payload };
+        return {
+          ...payload,
+          createdAt: new Date('2026-04-04T10:03:00.000Z'),
+          updatedAt: new Date('2026-04-04T10:03:00.000Z'),
+        };
+      },
+    };
+    service.operationalEventService = {
+      async logActivity(_userId: string, payload: Record<string, unknown>) {
+        activityLogs.push(payload);
+        return undefined;
+      },
+    };
+
+    const result = await service.blockAutoExecutionForAutomation('user-1', 'st-batch-blocked', {
+      executionMode: 'live',
+      reason: 'Only one SELL order per 5m signal batch can proceed.',
+    });
+
+    assert.equal(result.outcome, 'blocked');
+    assert.equal(savedExecutionPayload?.['executionMode'], 'live');
+    assert.equal(savedExecutionPayload?.['executionState'], 'rejected');
+    assert.equal(savedExecutionPayload?.['preTradeState'], 'blocked');
+    assert.match(String(savedExecutionPayload?.['preTradeBlockedReason'] || ''), /one SELL order/);
+    assert.equal(activityLogs[0]?.title, 'Auto execution batch blocked: ETHUSDT');
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    let savedExecutionPayload: Record<string, unknown> | null = null;
+    let capturedBatchQuery: Record<string, unknown> | null = null;
+
+    service.suggestedTradeRepository = {
+      async getSuggestedTradeById() {
+        return {
+          id: 'st-live-batch-cap',
+          automationId: 'auto-1',
+          automationRunId: 'run-1',
+          userId: 'user-1',
+          symbol: 'SOLUSDT',
+          timeframe: '5m',
+          side: 'BUY',
+          signalTime: new Date('2026-04-04T10:00:00.000Z'),
+          status: 'Open',
+          confidence: 0.82,
+          score: 82,
+          entryPrice: '50',
+          stopLossPrice: '49',
+          takeProfitTargets: ['55'],
+          entryRule: null,
+          exitRule: null,
+          rationale: null,
+          dedupeKey: 'dedupe-live-batch-cap',
+          meta: null,
+          createdAt: new Date('2026-04-04T10:01:00.000Z'),
+          updatedAt: new Date('2026-04-04T10:02:00.000Z'),
+        };
+      },
+      async countAutoExecutionBatchSelections(query: Record<string, unknown>) {
+        capturedBatchQuery = { ...query };
+        return 1;
+      },
+      async saveSuggestedTradeExecution(payload: Record<string, unknown>) {
+        savedExecutionPayload = { ...payload };
+        return {
+          ...payload,
+          createdAt: new Date('2026-04-04T10:03:00.000Z'),
+          updatedAt: new Date('2026-04-04T10:03:00.000Z'),
+        };
+      },
+    };
+    service.loadTradeSuggestionExecutionPolicy = async () => ({
+      executionMode: 'live_trade_auto',
+      approvalMode: 'auto_if_safe',
+    });
+    service.evaluateLiveAutoRolloutGuard = () => ({
+      allowed: true,
+      outcome: 'disabled',
+      message: 'allowed',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+    });
+    service.operationalEventService = {
+      async logActivity() {
+        return undefined;
+      },
+      async emitFailureAlert() {
+        throw new Error('batch cap block should not emit a failure alert');
+      },
+    };
+
+    const result = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-batch-cap',
+      {
+        createOrder: async () => {
+          throw new Error('batch cap block should not create a live order');
+        },
+      }
+    );
+
+    assert.equal(result.outcome, 'blocked');
+    assert.equal(result.brokerKey, 'mudrex');
+    assert.equal(result.accountId, 'acc-1');
+    assert.equal(capturedBatchQuery?.['side'], 'BUY');
+    assert.equal(capturedBatchQuery?.['timeframe'], '5m');
+    assert.equal(savedExecutionPayload?.['executionMode'], 'live');
+    assert.equal(savedExecutionPayload?.['executionState'], 'rejected');
+    assert.equal(savedExecutionPayload?.['preTradeState'], 'blocked');
+    assert.match(String(result.message), /one BUY order per 5m/);
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
     service.suggestedTradeRepository = {
       async getSuggestedTradeById() {
         return {
@@ -14094,10 +14239,7 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
       trailingStop: ema5PullbackConfig,
     },
   };
-  assert.equal(
-    service.shouldResumeLiveAutoLifecycleMonitor(deltaAttachedTrailingExecution),
-    true
-  );
+  assert.equal(service.shouldResumeLiveAutoLifecycleMonitor(deltaAttachedTrailingExecution), true);
   assert.equal(service.isLiveAutoLifecycleMonitorSettled(deltaAttachedTrailingExecution), false);
   assert.equal(
     service.canEvaluateLiveTrailingStop(

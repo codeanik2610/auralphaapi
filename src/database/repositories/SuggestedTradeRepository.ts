@@ -1320,6 +1320,38 @@ export class SuggestedTradeRepository {
     return this.countActiveExecutionsForAutomation(automationId, 'paper');
   }
 
+  async countAutoExecutionBatchSelections(query: {
+    userId: string;
+    executionMode: 'paper' | 'live';
+    timeframe: string;
+    side: string;
+    signalTime: Date | string;
+    excludeSuggestedTradeId?: string | null;
+  }): Promise<number> {
+    const timeframe = query.timeframe.trim().toLowerCase();
+    const side = query.side.trim().toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+    const signalTime = normalizeDate(query.signalTime);
+    const builder = this.repository
+      .createQueryBuilder('suggested_trade')
+      .innerJoin('suggested_trade.executionRecord', 'execution_record')
+      .where('suggested_trade.userId = :userId', { userId: query.userId })
+      .andWhere("LOWER(COALESCE(execution_record.executionMode, '')) = :executionMode", {
+        executionMode: query.executionMode,
+      })
+      .andWhere('LOWER(suggested_trade.timeframe) = :timeframe', { timeframe })
+      .andWhere('suggested_trade.side = :side', { side })
+      .andWhere('suggested_trade.signalTime = :signalTime', { signalTime });
+
+    const excludeSuggestedTradeId = query.excludeSuggestedTradeId?.trim();
+    if (excludeSuggestedTradeId) {
+      builder.andWhere('suggested_trade.id <> :excludeSuggestedTradeId', {
+        excludeSuggestedTradeId,
+      });
+    }
+
+    return builder.getCount();
+  }
+
   private buildSymbolLookupValues(brokerKey: string, symbols: string[]): string[] {
     const normalizedBrokerKey = String(brokerKey || '')
       .trim()
