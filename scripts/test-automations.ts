@@ -2136,6 +2136,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
 
       assert.equal(result.inserted, 1);
       assert.equal(evaluatorCalls[0]?.signalSelectionMode, 'cursor_gap');
+      assert.equal(evaluatorCalls[0]?.includeOpenCandleSignals, true);
       assert.equal(result.autoLiveReady, 1);
       assert.equal(liveAutoOptions[0]?.currentRunFreshnessFloorSeconds, 900);
       assert.ok(liveAutoOptions[0]?.freshnessEvaluatedAt instanceof Date);
@@ -3838,7 +3839,35 @@ function runAutomationsScriptWiringAssertions(): void {
     'automation runtime must evaluate timeframe-aligned closed candle boundaries'
   );
   assert.equal(
-    runtimeEvaluatorSource.includes('df = df.reset_index(drop=True)') &&
+    runtimeEvaluatorSource.includes('includeOpenCandleSignals') &&
+      runtimeEvaluatorSource.includes('open_candidate_indexes') &&
+      runtimeEvaluatorSource.includes(
+        'candidate_pool_indexes = closed_candidate_indexes + open_candidate_indexes'
+      ),
+    true,
+    'automation runtime must optionally include the active higher-timeframe candle for live intrabar scans'
+  );
+  assert.equal(
+    runtimeEvaluatorSource.includes('if candidate_is_open and _trade_plan_entry_price') &&
+      runtimeEvaluatorSource.includes('"candleState": "open" if candidate_is_open else "closed"'),
+    true,
+    'open-candle automation signals must require an explicit planned entry price and expose candle state'
+  );
+  assert.equal(
+    executionSource.includes('resolveTradeSuggestionIncludeOpenCandleSignals') &&
+      executionSource.includes("executionMode === 'live_trade_auto'") &&
+      executionSource.includes('includeOpenCandleSignals'),
+    true,
+    'live trade-suggestion automations must enable intrabar open-candle signal evaluation by default'
+  );
+  assert.equal(
+    executionSource.includes('skippedAlreadyTriggeredSignalCount') &&
+      executionSource.includes('event.signalTime.getTime() > latestTriggeredSignalTimeMs'),
+    true,
+    'trade-suggestion automation must avoid replaying an already-triggered live candle'
+  );
+  assert.equal(
+    runtimeEvaluatorSource.includes('df = _resample_ohlcv(df, timeframe).reset_index(drop=True)') &&
       runtimeEvaluatorSource.includes('latest_index, previous_index, reason'),
     true,
     'automation runtime must reset candle indexes before position-based latest-closed lookup'

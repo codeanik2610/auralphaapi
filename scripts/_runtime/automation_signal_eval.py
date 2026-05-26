@@ -64,7 +64,17 @@ def _bool_at(series: Any, index: int | None) -> bool:
         return False
 
 
-def _planned_entry_price(trade_plan: Any, fallback: Any) -> float:
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
+
+
+def _trade_plan_entry_price(trade_plan: Any) -> float | None:
     if isinstance(trade_plan, dict):
         for key in ("entry_price", "entryPrice"):
             try:
@@ -73,6 +83,13 @@ def _planned_entry_price(trade_plan: Any, fallback: Any) -> float:
                 value = float("nan")
             if pd.notna(value) and value > 0:
                 return float(value)
+    return None
+
+
+def _planned_entry_price(trade_plan: Any, fallback: Any) -> float:
+    planned = _trade_plan_entry_price(trade_plan)
+    if planned is not None:
+        return planned
     return float(fallback)
 
 
@@ -255,6 +272,7 @@ async def _evaluate() -> dict[str, Any]:
     signal_selection_mode = str(payload.get("signalSelectionMode") or "latest_closed_only").strip().lower()
     if signal_selection_mode not in {"latest_closed_only", "cursor_gap"}:
         signal_selection_mode = "latest_closed_only"
+    include_open_candle_signals = _as_bool(payload.get("includeOpenCandleSignals"))
 
     bucket_seconds = _timeframe_to_seconds(timeframe)
     if bucket_seconds is None:
@@ -365,21 +383,36 @@ async def _evaluate() -> dict[str, Any]:
                 tz="UTC",
             )
             closed_candidate_indexes = list(timestamps[timestamps < current_bucket_start].index)
+            open_candidate_indexes: list[int] = []
+            if include_open_candle_signals and bucket_seconds > 60:
+                open_candidate_indexes = [
+                    int(idx) for idx in timestamps[timestamps == current_bucket_start].index
+                ][-1:]
+            candidate_pool_indexes = closed_candidate_indexes + open_candidate_indexes
             latest_closed_signal_time = pd.to_datetime(latest_row["timestamp"], utc=True).isoformat()
             latest_closed_datetime = pd.to_datetime(
                 latest_row["timestamp"], utc=True
             ).to_pydatetime()
-            if cursor_time is not None and latest_closed_datetime <= cursor_time:
-                candidate_indexes = []
-            elif signal_selection_mode == "latest_closed_only" or cursor_time is None:
+            if cursor_time is not None:
+                if signal_selection_mode == "cursor_gap":
+                    candidate_indexes = [
+                        int(idx)
+                        for idx in candidate_pool_indexes
+                        if pd.to_datetime(df.iloc[int(idx)]["timestamp"], utc=True).to_pydatetime()
+                        > cursor_time
+                    ]
+                elif open_candidate_indexes:
+                    candidate_indexes = open_candidate_indexes
+                elif latest_closed_datetime <= cursor_time:
+                    candidate_indexes = []
+                else:
+                    candidate_indexes = [latest_index]
+            elif open_candidate_indexes:
+                candidate_indexes = open_candidate_indexes
+            elif signal_selection_mode == "latest_closed_only":
                 candidate_indexes = [latest_index]
             else:
-                candidate_indexes = [
-                    int(idx)
-                    for idx in closed_candidate_indexes
-                    if pd.to_datetime(df.iloc[int(idx)]["timestamp"], utc=True).to_pydatetime()
-                    > cursor_time
-                ]
+                candidate_indexes = [latest_index]
 
             signal_events: list[dict[str, Any]] = []
             for candidate_index in candidate_indexes:
@@ -388,6 +421,7 @@ async def _evaluate() -> dict[str, Any]:
                 candidate_signal_time = pd.to_datetime(
                     candidate_row["timestamp"], utc=True
                 ).isoformat()
+                candidate_is_open = candidate_index in open_candidate_indexes
                 candidate_fallback_entry_price = float(candidate_row["close"])
                 long_entry = _bool_at(entry, candidate_index)
                 long_entry_previous = _bool_at(entry, previous_bar_index)
@@ -398,10 +432,13 @@ async def _evaluate() -> dict[str, Any]:
                         if entry_trade_plans is not None
                         else None
                     )
+                    if candidate_is_open and _trade_plan_entry_price(long_trade_plan) is None:
+                        continue
                     signal_events.append(
                         {
                             "side": "long",
                             "signalTime": candidate_signal_time,
+                            "candleState": "open" if candidate_is_open else "closed",
                             "entryPrice": _planned_entry_price(
                                 long_trade_plan, candidate_fallback_entry_price
                             ),
@@ -418,10 +455,13 @@ async def _evaluate() -> dict[str, Any]:
                         if entry_short_trade_plans is not None
                         else None
                     )
+                    if candidate_is_open and _trade_plan_entry_price(short_trade_plan) is None:
+                        continue
                     signal_events.append(
                         {
                             "side": "short",
                             "signalTime": candidate_signal_time,
+                            "candleState": "open" if candidate_is_open else "closed",
                             "entryPrice": _planned_entry_price(
                                 short_trade_plan, candidate_fallback_entry_price
                             ),
@@ -445,6 +485,17 @@ async def _evaluate() -> dict[str, Any]:
                     "shortEntryPrevious": _bool_at(entry_short, previous_index),
                     "shortExit": _bool_at(exit_short, latest_index),
                     "signalSelectionMode": signal_selection_mode,
+                    "includeOpenCandleSignals": include_open_candle_signals,
+                    "openSignalTime": (
+                        pd.to_datetime(df.iloc[open_candidate_indexes[-1]]["timestamp"], utc=True).isoformat()
+                        if open_candidate_indexes
+                        else None
+                    ),
+                    "signalEvaluationMode": (
+                        "live_intrabar_open_candle"
+                        if open_candidate_indexes
+                        else "latest_closed_candle"
+                    ),
                     "signals": signal_events,
                 }
             )

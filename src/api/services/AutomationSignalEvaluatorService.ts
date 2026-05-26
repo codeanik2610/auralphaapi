@@ -11,6 +11,7 @@ const log = new Logger('AutomationSignalEvaluatorService');
 export interface EvaluatedAutomationSignalEvent {
   side: 'long' | 'short';
   signalTime: string;
+  candleState?: 'closed' | 'open' | null;
   entryPrice: number | null;
   tradePlan: Record<string, unknown> | null;
 }
@@ -29,6 +30,9 @@ export interface EvaluatedAutomationSignalItem {
   shortEntry?: boolean;
   shortEntryPrevious?: boolean;
   shortExit?: boolean;
+  includeOpenCandleSignals?: boolean;
+  openSignalTime?: string | null;
+  signalEvaluationMode?: string | null;
   signals?: EvaluatedAutomationSignalEvent[];
 }
 
@@ -46,6 +50,7 @@ export interface EvaluateAutomationSignalsPayload {
   candlesMaxRows?: number | null;
   cursorBySymbol?: Record<string, string | Date | null> | null;
   signalSelectionMode?: 'latest_closed_only' | 'cursor_gap' | string | null;
+  includeOpenCandleSignals?: boolean | null;
 }
 
 export interface EvaluateAutomationSignalsResult {
@@ -131,6 +136,7 @@ export class AutomationSignalEvaluatorService {
           : undefined,
       cursorBySymbol: payload.cursorBySymbol || undefined,
       signalSelectionMode: this.normalizeSignalSelectionMode(payload.signalSelectionMode),
+      includeOpenCandleSignals: payload.includeOpenCandleSignals === true,
     });
 
     let parsed: Record<string, unknown>;
@@ -202,6 +208,11 @@ export class AutomationSignalEvaluatorService {
       shortEntry: Boolean(item.shortEntry),
       shortEntryPrevious: Boolean(item.shortEntryPrevious),
       shortExit: Boolean(item.shortExit),
+      ...(item.includeOpenCandleSignals === true ? { includeOpenCandleSignals: true } : {}),
+      ...(typeof item.openSignalTime === 'string' ? { openSignalTime: item.openSignalTime } : {}),
+      ...(typeof item.signalEvaluationMode === 'string'
+        ? { signalEvaluationMode: item.signalEvaluationMode }
+        : {}),
       signals: this.mapSignalEvents(item.signals),
     };
   }
@@ -211,29 +222,36 @@ export class AutomationSignalEvaluatorService {
       return [];
     }
 
-    return value
-      .map((item) => {
-        if (!item || typeof item !== 'object' || Array.isArray(item)) {
-          return null;
-        }
+    const events: EvaluatedAutomationSignalEvent[] = [];
+    for (const item of value) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        continue;
+      }
 
-        const record = item as Record<string, unknown>;
-        const side = String(record.side || '')
-          .trim()
-          .toLowerCase();
-        const signalTime = String(record.signalTime || '').trim();
-        if ((side !== 'long' && side !== 'short') || !signalTime) {
-          return null;
-        }
+      const record = item as Record<string, unknown>;
+      const side = String(record.side || '')
+        .trim()
+        .toLowerCase();
+      const signalTime = String(record.signalTime || '').trim();
+      if ((side !== 'long' && side !== 'short') || !signalTime) {
+        continue;
+      }
 
-        return {
-          side: side as 'long' | 'short',
-          signalTime,
-          entryPrice: this.readNumber(record.entryPrice),
-          tradePlan: this.parseRecord(record.tradePlan),
-        };
-      })
-      .filter((item): item is EvaluatedAutomationSignalEvent => Boolean(item));
+      const rawCandleState = String(record.candleState || '')
+        .trim()
+        .toLowerCase();
+      const candleState: EvaluatedAutomationSignalEvent['candleState'] =
+        rawCandleState === 'open' ? 'open' : rawCandleState === 'closed' ? 'closed' : null;
+
+      events.push({
+        side: side as 'long' | 'short',
+        signalTime,
+        ...(candleState ? { candleState } : {}),
+        entryPrice: this.readNumber(record.entryPrice),
+        tradePlan: this.parseRecord(record.tradePlan),
+      });
+    }
+    return events;
   }
 
   private parseRecord(value: unknown): Record<string, unknown> | null {

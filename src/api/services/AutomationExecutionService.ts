@@ -903,6 +903,11 @@ export class AutomationExecutionService {
       config,
       signalSelectionMode
     );
+    const includeOpenCandleSignals = this.resolveTradeSuggestionIncludeOpenCandleSignals(
+      config,
+      executionPolicy,
+      timeframe
+    );
     const existingCursors = await this.automationCursorRepository.listByAutomationAndScope(
       automation.id,
       automation.userId,
@@ -936,6 +941,7 @@ export class AutomationExecutionService {
         signalSelectionMode,
         cursorReplayCandles
       ),
+      includeOpenCandleSignals,
     });
 
     for (const item of evaluation.items) {
@@ -1004,6 +1010,7 @@ export class AutomationExecutionService {
             leg,
             signalTime,
             entryPrice,
+            candleState: event.candleState ?? null,
             tradePlan: this.parseRecord(event?.tradePlan),
           };
         })
@@ -1014,10 +1021,11 @@ export class AutomationExecutionService {
             leg: StrategyTemplateTradePlanLeg;
             signalTime: Date;
             entryPrice: number;
+            candleState: 'closed' | 'open' | null;
             tradePlan: Record<string, unknown> | null;
           } => Boolean(event)
         );
-      const normalizedSignalEvents =
+      const modeFilteredSignalEvents =
         signalSelectionMode === 'cursor_gap'
           ? validSignalEvents
           : validSignalEvents.filter(
@@ -1025,7 +1033,19 @@ export class AutomationExecutionService {
                 latestClosedSignalTimeMs === null ||
                 event.signalTime.getTime() === latestClosedSignalTimeMs
             );
-      const skippedHistoricalSignalCount = validSignalEvents.length - normalizedSignalEvents.length;
+      const latestTriggeredSignalTimeMs =
+        latestTriggeredSignalTime && !Number.isNaN(latestTriggeredSignalTime.getTime())
+          ? latestTriggeredSignalTime.getTime()
+          : null;
+      const normalizedSignalEvents = modeFilteredSignalEvents.filter(
+        (event) =>
+          latestTriggeredSignalTimeMs === null ||
+          event.signalTime.getTime() > latestTriggeredSignalTimeMs
+      );
+      const skippedHistoricalSignalCount =
+        validSignalEvents.length - modeFilteredSignalEvents.length;
+      const skippedAlreadyTriggeredSignalCount =
+        modeFilteredSignalEvents.length - normalizedSignalEvents.length;
 
       if (!normalizedSignalEvents.length) {
         await this.automationCursorRepository.upsertCursor({
@@ -1042,12 +1062,23 @@ export class AutomationExecutionService {
           lastStatus: 'ok',
           meta: {
             latestClosedSignalTime: latestClosedSignalTime?.toISOString() ?? null,
-            evaluationMode: 'latest-closed-candle',
+            evaluationMode: includeOpenCandleSignals
+              ? 'live-intrabar-open-candle'
+              : 'latest-closed-candle',
             signalSelectionMode,
+            ...(includeOpenCandleSignals
+              ? {
+                  includeOpenCandleSignals,
+                  openSignalTime: item.openSignalTime ?? null,
+                }
+              : {}),
             cursorPreviousSignalTime: currentCursor?.lastEvaluatedSignalTime?.toISOString() ?? null,
             cursorReplayCandles,
             signalCount: 0,
             skippedHistoricalSignalCount,
+            ...(skippedAlreadyTriggeredSignalCount > 0
+              ? { skippedAlreadyTriggeredSignalCount }
+              : {}),
           },
         });
         continue;
@@ -1056,7 +1087,7 @@ export class AutomationExecutionService {
       signalsDetected += normalizedSignalEvents.length;
 
       for (const event of normalizedSignalEvents) {
-        const { leg, signalTime, entryPrice, tradePlan } = event;
+        const { leg, signalTime, entryPrice, candleState, tradePlan } = event;
         const protection = this.resolveSuggestedTradeProtection(entryPrice, leg, tradePlan);
         const stopLossPrice = protection.stopLossPrice;
         const takeProfitTargets = protection.takeProfitTargets;
@@ -1108,8 +1139,14 @@ export class AutomationExecutionService {
             confidence,
             sourceBacktestId,
             sourceSetupKey,
-            evaluationMode: 'latest-closed-candle',
+            openSignalTime: item.openSignalTime ?? null,
+            evaluationMode: includeOpenCandleSignals
+              ? 'live-intrabar-open-candle'
+              : 'latest-closed-candle',
             signalSelectionMode,
+            includeOpenCandleSignals,
+            signalCandleState: candleState,
+            capturedAt: signalBaseTime.toISOString(),
             signalTradePlan: tradePlan,
             tradeManagementSnapshot,
             resolvedProtection: {
@@ -1150,6 +1187,8 @@ export class AutomationExecutionService {
             sourceTemplateId: profileInfo.sourceTemplateId,
             score,
             confidence,
+            signalCandleState: candleState,
+            includeOpenCandleSignals,
             ...(tradeManagementSnapshot ? { tradeManagementSnapshot } : {}),
           },
         });
@@ -1326,12 +1365,21 @@ export class AutomationExecutionService {
         lastStatus: 'signal',
         meta: {
           latestClosedSignalTime: latestClosedSignalTime?.toISOString() ?? null,
-          evaluationMode: 'latest-closed-candle',
+          evaluationMode: includeOpenCandleSignals
+            ? 'live-intrabar-open-candle'
+            : 'latest-closed-candle',
           signalSelectionMode,
+          ...(includeOpenCandleSignals
+            ? {
+                includeOpenCandleSignals,
+                openSignalTime: item.openSignalTime ?? null,
+              }
+            : {}),
           cursorPreviousSignalTime: currentCursor?.lastEvaluatedSignalTime?.toISOString() ?? null,
           cursorReplayCandles,
           signalCount: normalizedSignalEvents.length,
           skippedHistoricalSignalCount,
+          ...(skippedAlreadyTriggeredSignalCount > 0 ? { skippedAlreadyTriggeredSignalCount } : {}),
         },
       });
     }
@@ -2019,6 +2067,55 @@ export class AutomationExecutionService {
     return 2;
   }
 
+  private resolveTradeSuggestionIncludeOpenCandleSignals(
+    config: Record<string, unknown>,
+    executionPolicy: Record<string, unknown>,
+    timeframe: string
+  ): boolean {
+    const nestedConfig = this.parseRecord(config.config) ?? {};
+    const inputSnapshot = this.parseRecord(config.inputSnapshot) ?? {};
+    const tradeSuggestion = this.parseRecord(config.tradeSuggestion) ?? {};
+    const execution = this.parseRecord(tradeSuggestion.execution) ?? executionPolicy;
+    const explicit = this.readBoolean(
+      tradeSuggestion.includeOpenCandleSignals,
+      tradeSuggestion.intrabarSignals,
+      tradeSuggestion.liveIntrabarSignals,
+      execution.includeOpenCandleSignals,
+      execution.intrabarSignals,
+      execution.liveIntrabarSignals,
+      config.includeOpenCandleSignals,
+      config.intrabarSignals,
+      config.liveIntrabarSignals,
+      nestedConfig.includeOpenCandleSignals,
+      nestedConfig.intrabarSignals,
+      nestedConfig.liveIntrabarSignals,
+      inputSnapshot.includeOpenCandleSignals,
+      inputSnapshot.intrabarSignals,
+      inputSnapshot.liveIntrabarSignals
+    );
+
+    if (explicit !== null) {
+      return explicit;
+    }
+
+    const timeframeSeconds = parseTimeframeSeconds(timeframe);
+    if (!timeframeSeconds || timeframeSeconds <= 60) {
+      return false;
+    }
+
+    const executionMode = this.readString(
+      execution.executionMode,
+      tradeSuggestion.executionMode,
+      config.executionMode,
+      nestedConfig.executionMode,
+      inputSnapshot.executionMode
+    )
+      ?.trim()
+      .toLowerCase();
+
+    return executionMode === 'live_trade_auto' || executionMode === 'paper_trade_auto';
+  }
+
   private buildSignalEvaluationCursorBySymbol(
     cursorMap: Map<string, { lastEvaluatedSignalTime?: Date | null }>,
     timeframe: string,
@@ -2411,6 +2508,27 @@ export class AutomationExecutionService {
     for (const value of values) {
       if (typeof value === 'string' && value.trim()) {
         return value.trim();
+      }
+    }
+    return null;
+  }
+
+  private readBoolean(...values: unknown[]): boolean | null {
+    for (const value of values) {
+      if (typeof value === 'boolean') {
+        return value;
+      }
+      if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (['true', '1', 'yes', 'on'].includes(normalized)) {
+          return true;
+        }
+        if (['false', '0', 'no', 'off'].includes(normalized)) {
+          return false;
+        }
+      }
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value !== 0;
       }
     }
     return null;
