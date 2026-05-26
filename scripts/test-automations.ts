@@ -2136,6 +2136,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
 
       assert.equal(result.inserted, 1);
       assert.equal(evaluatorCalls[0]?.signalSelectionMode, 'cursor_gap');
+      assert.equal(evaluatorCalls[0]?.includeOpenCandleSignals, true);
       assert.equal(result.autoLiveReady, 1);
       assert.equal(liveAutoOptions[0]?.currentRunFreshnessFloorSeconds, 900);
       assert.ok(liveAutoOptions[0]?.freshnessEvaluatedAt instanceof Date);
@@ -2155,6 +2156,69 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       assert.equal(whatsappCalls[0]?.brokerKey, 'mudrex');
       assert.equal(whatsappCalls[0]?.accountId, 'account-1');
       assert.equal(whatsappCalls[0]?.automationName, 'Momentum Deployment');
+    }
+
+    {
+      const { service } = createService();
+      const retryDelays: number[] = [];
+      let evaluations = 0;
+
+      service.automationSignalEvaluatorService = {
+        evaluateLatestSignals: async (payload: Record<string, unknown>) => {
+          evaluations += 1;
+          assert.equal(payload.evaluatedAt, '2026-04-04T10:00:30.000Z');
+          if (evaluations === 1) {
+            return {
+              evaluatedSymbols: 1,
+              skippedSymbols: 1,
+              items: [
+                {
+                  symbol: 'ETHUSDT',
+                  timeframe: '1m',
+                  status: 'ok',
+                  latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+                  signals: [],
+                },
+                {
+                  symbol: 'BTCUSDT',
+                  timeframe: '1m',
+                  status: 'stale',
+                  reason: 'Latest closed candle is stale',
+                },
+              ],
+            };
+          }
+
+          return {
+            evaluatedSymbols: 1,
+            skippedSymbols: 0,
+            items: [
+              {
+                symbol: 'BTCUSDT',
+                timeframe: '1m',
+                status: 'ok',
+                latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+                signals: [],
+              },
+            ],
+          };
+        },
+      };
+      service.sleepForClosedCandleReadinessRetry = async (delayMs: number) => {
+        retryDelays.push(delayMs);
+      };
+
+      const result = await service.evaluateTradeSuggestionSignalsWithReadinessRetry({
+        templateConfig: {},
+        symbols: ['BTCUSDT'],
+        timeframe: '1m',
+        evaluatedAt: '2026-04-04T10:00:30.000Z',
+      });
+
+      assert.equal(evaluations, 2);
+      assert.deepEqual(retryDelays, [5000]);
+      assert.equal(result.evaluatedSymbols, 1);
+      assert.equal(result.items[0]?.status, 'ok');
     }
 
     {
@@ -3773,6 +3837,46 @@ function runAutomationsScriptWiringAssertions(): void {
       runtimeEvaluatorSource.includes('bucket_seconds'),
     true,
     'automation runtime must evaluate timeframe-aligned closed candle boundaries'
+  );
+  assert.equal(
+    runtimeEvaluatorSource.includes('includeOpenCandleSignals') &&
+      runtimeEvaluatorSource.includes('open_candidate_indexes') &&
+      runtimeEvaluatorSource.includes(
+        'candidate_pool_indexes = closed_candidate_indexes + open_candidate_indexes'
+      ),
+    true,
+    'automation runtime must optionally include the active higher-timeframe candle for live intrabar scans'
+  );
+  assert.equal(
+    runtimeEvaluatorSource.includes('if candidate_is_open and _trade_plan_entry_price') &&
+      runtimeEvaluatorSource.includes('"candleState": "open" if candidate_is_open else "closed"'),
+    true,
+    'open-candle automation signals must require an explicit planned entry price and expose candle state'
+  );
+  assert.equal(
+    executionSource.includes('resolveTradeSuggestionIncludeOpenCandleSignals') &&
+      executionSource.includes("executionMode === 'live_trade_auto'") &&
+      executionSource.includes('includeOpenCandleSignals'),
+    true,
+    'live trade-suggestion automations must enable intrabar open-candle signal evaluation by default'
+  );
+  assert.equal(
+    executionSource.includes('skippedAlreadyTriggeredSignalCount') &&
+      executionSource.includes('event.signalTime.getTime() > latestTriggeredSignalTimeMs'),
+    true,
+    'trade-suggestion automation must avoid replaying an already-triggered live candle'
+  );
+  assert.equal(
+    runtimeEvaluatorSource.includes('df = _resample_ohlcv(df, timeframe).reset_index(drop=True)') &&
+      runtimeEvaluatorSource.includes('latest_index, previous_index, reason'),
+    true,
+    'automation runtime must reset candle indexes before position-based latest-closed lookup'
+  );
+  assert.equal(
+    executionSource.includes('evaluateTradeSuggestionSignalsWithReadinessRetry') &&
+      executionSource.includes('sleepForClosedCandleReadinessRetry'),
+    true,
+    'trade-suggestion automation must retry briefly when 1m closed candles are still syncing'
   );
   assert.equal(
     executionSource.includes('suggestedTradeId: context?.suggestedTradeId ?? null'),

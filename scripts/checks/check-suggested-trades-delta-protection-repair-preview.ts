@@ -15,6 +15,7 @@ export type DeltaProtectionRepairAction =
   | 'would_attach_missing_protection'
   | 'would_cancel_stale_protection_orders'
   | 'would_replace_mismatched_partial_fill_protection'
+  | 'would_repair_or_close_missing_native_bracket_protection'
   | 'would_reconcile_native_bracket_protection'
   | 'manual_review_required';
 
@@ -254,6 +255,37 @@ export function buildDeltaProtectionRepairPreview(
       requiredPriceLegs,
       requireWholeContractQuantity: false,
     });
+    if (missingLegs.length > 0) {
+      return {
+        action: 'would_repair_or_close_missing_native_bracket_protection',
+        readiness: blockers.length ? 'blocked' : 'ready',
+        repairable: blockers.length === 0,
+        mutation: 'none_preview_only',
+        blockers,
+        notes: [
+          'Delta native bracket position is missing an active protection leg.',
+          'Apply mode must run a fresh position/protection read-back and route through live remediation.',
+          'If native bracket protection cannot be safely restored, the remaining residual position must be closed instead of left unprotected.',
+        ],
+        expectedMutation: {
+          ...commonMutation,
+          repairKind: 'repair_or_close_missing_native_bracket_protection',
+          protectionPath: 'native_bracket',
+          protectionMode: item.protectionMode,
+          bracketStatus: item.bracketStatus,
+          missingLegs,
+          attachDetachedOrders: false,
+          existingStopLossOrderId: item.stopLossOrderId,
+          existingTakeProfitOrderId: item.takeProfitOrderId,
+          createStopLoss: false,
+          createTakeProfit: false,
+          requiresFreshPositionReadback: true,
+          requiresFreshProtectionOrderReadback: true,
+          requiresNativeBracketReadback: true,
+          requiresUnsafeResidualCloseCheck: true,
+        },
+      };
+    }
     return {
       action: 'would_reconcile_native_bracket_protection',
       readiness: blockers.length ? 'blocked' : 'ready',
@@ -375,6 +407,10 @@ function countByAction(
     ).length,
     would_replace_mismatched_partial_fill_protection: items.filter(
       (item) => item.remediation.action === 'would_replace_mismatched_partial_fill_protection'
+    ).length,
+    would_repair_or_close_missing_native_bracket_protection: items.filter(
+      (item) =>
+        item.remediation.action === 'would_repair_or_close_missing_native_bracket_protection'
     ).length,
     would_reconcile_native_bracket_protection: items.filter(
       (item) => item.remediation.action === 'would_reconcile_native_bracket_protection'

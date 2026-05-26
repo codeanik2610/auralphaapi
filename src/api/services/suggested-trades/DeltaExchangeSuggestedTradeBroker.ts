@@ -438,6 +438,72 @@ function shouldCloseDeltaPositionForManualReason(message: string | null): boolea
   return normalized.includes('already crossed');
 }
 
+const DELTA_INACTIVE_PROTECTION_STATUSES = new Set([
+  'CANCELLED',
+  'CANCELED',
+  'CLOSED',
+  'EXPIRED',
+  'FAILED',
+  'FILLED',
+  'REJECTED',
+]);
+
+function normalizeProtectionStatus(value: unknown): string | null {
+  const normalized = readStringValue(value)?.toUpperCase() ?? null;
+  return normalized;
+}
+
+export function resolveDeltaUnsafeResidualProtectionReason(input: {
+  context: LiveProtectionOrderContextLike;
+  position: LivePositionSnapshotLike;
+  execution: SuggestedTradeExecutionLink;
+}): string | null {
+  const positionSize = resolveDeltaOpenPositionSize(input.position, input.execution);
+  if (!(positionSize && positionSize > 0)) {
+    return null;
+  }
+
+  const stopLossOrderId = input.context.stopLossOrderId;
+  const takeProfitOrderId = input.context.takeProfitOrderId;
+  const hasAnyProtectionReadBack = Boolean(
+    stopLossOrderId || takeProfitOrderId || input.context.activeOrderIds.length
+  );
+  if (!hasAnyProtectionReadBack) {
+    return null;
+  }
+
+  const stopLossActive = Boolean(
+    stopLossOrderId && input.context.activeOrderIds.includes(stopLossOrderId)
+  );
+  if (stopLossActive) {
+    return null;
+  }
+
+  const stopLossStatus =
+    normalizeProtectionStatus(input.context.stopLossStatus) ??
+    normalizeProtectionStatus(
+      stopLossOrderId ? input.context.orderDetails?.[stopLossOrderId]?.status : null
+    );
+  const takeProfitActive = Boolean(
+    takeProfitOrderId && input.context.activeOrderIds.includes(takeProfitOrderId)
+  );
+  const shouldFlagMissingStopLoss = Boolean(
+    !stopLossOrderId ||
+    takeProfitActive ||
+    input.context.activeOrderIds.length > 0 ||
+    (stopLossStatus && DELTA_INACTIVE_PROTECTION_STATUSES.has(stopLossStatus))
+  );
+  if (!shouldFlagMissingStopLoss) {
+    return null;
+  }
+
+  return `Delta Exchange attached protection is inactive or missing for an open residual position (${describeLiveProtectionOrderContext(
+    input.context
+  )}); active stop-loss is missing for remaining position size ${
+    formatNumericString(positionSize) ?? positionSize
+  }; replacement protection is required before this execution can be marked attached.`;
+}
+
 export function resolveDeltaProtectionPartialExecutionReason(
   context: LiveProtectionOrderContextLike
 ): string | null {
@@ -559,7 +625,7 @@ function resolveDeltaProtectionSizeMismatch(input: {
     positionSize,
     reason: `Delta Exchange linked protection size ${mismatches.join(
       ', '
-    )} does not match current partial-fill position size ${
+    )} does not match current open position size ${
       formatNumericString(positionSize) ?? positionSize
     }.`,
   };
@@ -780,6 +846,18 @@ export async function remediateDeltaLiveProtection(
       }
       return input.markProtectionFailed(input.execution, input.nowIso, closeResult.note);
     }
+    const protectionSizeMismatch = resolveDeltaProtectionSizeMismatch({
+      context: existingProtection,
+      position: input.position,
+      execution: input.execution,
+    });
+    if (protectionSizeMismatch && !isPartialEntryRemainderCleared(input.execution)) {
+      return input.markProtectionFailed(
+        input.execution,
+        input.nowIso,
+        `${protectionSizeMismatch.reason} Replacement protection is required before this execution can be marked attached.`
+      );
+    }
     if (input.hasUsableProtectionContext(existingProtection)) {
       return input.markProtectionAttached(
         input.trade,
@@ -793,31 +871,24 @@ export async function remediateDeltaLiveProtection(
         }
       );
     }
-    const partialFillSizeMismatch = isPartialEntryRemainderCleared(input.execution)
-      ? resolveDeltaProtectionSizeMismatch({
-          context: existingProtection,
-          position: input.position,
-          execution: input.execution,
-        })
-      : null;
-    if (partialFillSizeMismatch) {
+    if (protectionSizeMismatch) {
       if (!input.protectionRepairEnabled) {
         return input.markProtectionManualUnlinked(
           input.execution,
           input.nowIso,
-          `${partialFillSizeMismatch.reason} Automatic Delta protection replacement is disabled; manual cleanup is required.`
+          `${protectionSizeMismatch.reason} Automatic Delta protection replacement is disabled; manual cleanup is required.`
         );
       }
       if (!input.ordersAdapter?.cancelOrder) {
         return input.markProtectionManualUnlinked(
           input.execution,
           input.nowIso,
-          `${partialFillSizeMismatch.reason} Delta protection cancellation is unavailable; manual cleanup is required before replacement.`
+          `${protectionSizeMismatch.reason} Delta protection cancellation is unavailable; manual cleanup is required before replacement.`
         );
       }
       const cleanup = await cancelDeltaProtectionOrdersForReplacement({
         ordersAdapter: input.ordersAdapter,
-        orderIds: partialFillSizeMismatch.orderIds,
+        orderIds: protectionSizeMismatch.orderIds,
         userId: input.userId,
         brokerKey: input.brokerKey,
         accountId: input.accountId,
@@ -826,13 +897,13 @@ export async function remediateDeltaLiveProtection(
         return input.markProtectionFailed(
           input.execution,
           input.nowIso,
-          `${partialFillSizeMismatch.reason} Existing oversized protection could not be fully cancelled before replacement: ${cleanup.failedMessages.join(
+          `${protectionSizeMismatch.reason} Existing oversized protection could not be fully cancelled before replacement: ${cleanup.failedMessages.join(
             '; '
           )}.`
         );
       }
       replacementCleanup = {
-        reason: partialFillSizeMismatch.reason,
+        reason: protectionSizeMismatch.reason,
         requestedOrderIds: cleanup.requestedOrderIds,
         cancelledOrderIds: cleanup.cancelledOrderIds,
         alreadyTerminalOrderIds: cleanup.alreadyTerminalOrderIds,
@@ -843,12 +914,28 @@ export async function remediateDeltaLiveProtection(
       input.execution.protectionState === 'attaching' &&
       (existingProtection.stopLossOrderId || existingProtection.takeProfitOrderId)
     ) {
+      if (!input.allowTerminalReplacementRetry) {
+        const unsafeResidualProtectionReason = resolveDeltaUnsafeResidualProtectionReason({
+          context: existingProtection,
+          position: input.position,
+          execution: input.execution,
+        });
+        if (unsafeResidualProtectionReason) {
+          return input.markProtectionFailed(
+            input.execution,
+            input.nowIso,
+            unsafeResidualProtectionReason
+          );
+        }
+      }
       const hasTerminalSnapshot = [
         existingProtection.stopLossStatus,
         existingProtection.takeProfitStatus,
       ]
         .filter((status): status is string => Boolean(status))
-        .some((status) => ['CANCELLED', 'REJECTED', 'EXPIRED', 'FAILED'].includes(status));
+        .some((status) =>
+          DELTA_INACTIVE_PROTECTION_STATUSES.has(normalizeProtectionStatus(status) ?? '')
+        );
       if (hasTerminalSnapshot) {
         if (!input.allowTerminalReplacementRetry) {
           return input.markProtectionFailed(

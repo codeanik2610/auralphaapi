@@ -1356,6 +1356,8 @@ async function runOrdersSnapshotDisplayNormalizationAssertions(): Promise<void> 
       if (sql.includes('FROM scheduler_orders_snapshots') && sql.includes('account_id IN')) {
         assert.match(sql, /suggested_trade_executions cleared_execution/);
         assert.match(sql, /cleared_execution\.remaining_quantity <= 0/);
+        assert.match(sql, /unmanaged_mudrex_partial_execution/);
+        assert.match(sql, /DATE_SUB\(NOW\(\), INTERVAL 24 HOUR\)/);
         assert.deepEqual(params, ['user-1', 'acct-delta', 'acct-mudrex']);
         return [
           {
@@ -1470,6 +1472,8 @@ async function runOrdersSnapshotSourceRepositoryAssertions(): Promise<void> {
       assert.match(sql, /suggested_trade_executions cleared_execution/);
       assert.match(sql, /cleared_execution\.order_id/);
       assert.match(sql, /cleared_execution\.remaining_quantity <= 0/);
+      assert.match(sql, /unmanaged_mudrex_partial_execution/);
+      assert.match(sql, /DATE_SUB\(NOW\(\), INTERVAL 24 HOUR\)/);
       assert.deepEqual(params, ['user-1', 'acct-1']);
       return [
         {

@@ -109,6 +109,7 @@ const OUTPUT_FILE = String(
 const STANDARD_APPLY_ACTIONS = new Set<DeltaProtectionRepairAction>([
   'would_attach_missing_protection',
   'would_replace_mismatched_partial_fill_protection',
+  'would_repair_or_close_missing_native_bracket_protection',
   'would_reconcile_native_bracket_protection',
 ]);
 const STALE_CANCEL_ACTION: DeltaProtectionRepairAction = 'would_cancel_stale_protection_orders';
@@ -299,11 +300,7 @@ function resolveStaleCancelOrderIds(item: DeltaProtectionRepairPreviewItem): str
   const mutation = readRecord(item.remediation.expectedMutation);
   return Array.from(
     new Set(
-      [
-        ...readArray(mutation.cancelOrderIds),
-        item.stopLossOrderId,
-        item.takeProfitOrderId,
-      ]
+      [...readArray(mutation.cancelOrderIds), item.stopLossOrderId, item.takeProfitOrderId]
         .map((orderId) => readString(orderId))
         .filter((orderId) => orderId && orderId !== item.entryOrderId)
     )
@@ -597,11 +594,7 @@ async function applyCandidate(input: {
     };
   } catch (error) {
     return {
-      ...buildSkippedItem(
-        item,
-        'error',
-        error instanceof Error ? error.message : String(error)
-      ),
+      ...buildSkippedItem(item, 'error', error instanceof Error ? error.message : String(error)),
       before,
       after: null,
     };
@@ -705,9 +698,7 @@ async function applyStaleProtectionCancelCandidate(input: {
       }
       readbacks.push(validation.readback);
     } catch (error) {
-      unsafeReasons.push(
-        `${orderId}: ${error instanceof Error ? error.message : String(error)}`
-      );
+      unsafeReasons.push(`${orderId}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

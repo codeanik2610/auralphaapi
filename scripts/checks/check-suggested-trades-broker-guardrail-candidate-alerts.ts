@@ -201,6 +201,8 @@ function actionLabel(action: string): string {
       return 'stale protection cancel';
     case 'would_mark_terminal_protection_not_required':
       return 'terminal protection cleanup';
+    case 'would_repair_or_close_missing_native_bracket_protection':
+      return 'native bracket missing protection';
     case 'would_reconcile_native_bracket_protection':
       return 'native bracket reconcile';
     case 'manual_review_required':
