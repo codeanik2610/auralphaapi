@@ -80,6 +80,7 @@ import {
 import { OperationalEventService } from './OperationalEventService';
 import { PaperOrderExecutionService } from './PaperOrderExecutionService';
 import { BrokerReferenceDataService } from './BrokerReferenceDataService';
+import { BrokerPositionsFacadeService } from './BrokerPositionsFacadeService';
 import { MarketMetric, MarketMetricsService } from './MarketMetricsService';
 import { RiskPreTradeService } from './RiskPreTradeService';
 import { RiskKillSwitchService } from './RiskKillSwitchService';
@@ -123,6 +124,13 @@ type TradeSuggestionRouteMode = 'strategy_default' | 'user_default' | 'fixed';
 type TradeSuggestionOrderType = 'market' | 'limit';
 type TradeSuggestionQuantityMode = 'quantity' | 'notional' | 'risk_percent';
 type LiveAutoMinDistanceFromStopBasis = 'expected_fill' | 'order_entry' | 'market_price';
+type TradeSuggestionSideKey = 'long' | 'short';
+type TradeSuggestionOppositeSignalMode =
+  | 'skip'
+  | 'allow'
+  | 'close_then_open'
+  | 'reverse'
+  | 'hedge';
 type SuggestedTradePreTradeState = NonNullable<SuggestedTradeExecutionLink['preTradeState']>;
 type TrailingStopConfigSource =
   | 'strategy_template'
@@ -179,6 +187,13 @@ interface ResolvedTradeSuggestionExecutionPolicy {
   dedupeWindowSeconds: number;
   freshness: TradeSuggestionFreshnessPolicy;
   limitOrderExpiry?: TradeSuggestionLimitOrderExpiryPolicy;
+  oppositeSignalPolicy: {
+    enabled: boolean;
+    mode: TradeSuggestionOppositeSignalMode;
+    allowSameAssetOppositeSide: boolean;
+    blockSameSideDuplicate: boolean;
+    requireFreshSignal: boolean;
+  };
   preEntryGuards: {
     minDistanceFromStopR: {
       enabled: boolean;
@@ -439,6 +454,22 @@ interface LiveAutoBrokerRecordLookup {
   error?: string | null;
 }
 
+interface LiveAutoActiveAssetExposure {
+  assetKey: string;
+  source: 'recent_execution' | 'position' | 'open_order';
+  sideKey: TradeSuggestionSideKey | null;
+  symbol: string | null;
+  brokerKey: string | null;
+  accountId: string | null;
+  positionId: string | null;
+}
+
+interface LiveAutoDuplicateAssetDecision {
+  action: 'none' | 'skip' | 'close_then_open';
+  message?: string;
+  exposure?: LiveAutoActiveAssetExposure;
+}
+
 interface LiveAutoLifecycleMonitorInput {
   userId: string;
   suggestedTradeId: string;
@@ -608,6 +639,9 @@ export class SuggestedTradesService {
 
   @Inject(() => BrokerReferenceDataService)
   private brokerReferenceDataService!: BrokerReferenceDataService;
+
+  @Inject(() => BrokerPositionsFacadeService)
+  private brokerPositionsFacadeService!: BrokerPositionsFacadeService;
 
   @Inject(() => MarketMetricsService)
   private marketMetricsService!: MarketMetricsService;
@@ -2284,24 +2318,26 @@ export class SuggestedTradesService {
       : null;
   }
 
-  private async detectLiveAutoDuplicateAssetConflict(
+  private async resolveLiveAutoDuplicateAssetDecision(
     userId: string,
     trade: SuggestedTrade,
     executionPolicy: ResolvedTradeSuggestionExecutionPolicy
-  ): Promise<string | null> {
+  ): Promise<LiveAutoDuplicateAssetDecision> {
     const assetKey = this.resolveLiveAutoDuplicateAssetKey(trade.symbol);
     if (!assetKey) {
-      return null;
+      return { action: 'none' };
     }
+    const tradeSideKey = this.normalizeTradeSideKey(trade.side);
 
-    const recentExecutionConflict = await this.detectRecentLiveAutoDuplicateExecutionConflict(
+    const recentExecutionDecision = await this.resolveRecentLiveAutoDuplicateExecutionDecision(
       userId,
       trade,
       executionPolicy,
-      assetKey
+      assetKey,
+      tradeSideKey
     );
-    if (recentExecutionConflict) {
-      return recentExecutionConflict;
+    if (recentExecutionDecision.action !== 'none') {
+      return recentExecutionDecision;
     }
 
     if (
@@ -2309,7 +2345,7 @@ export class SuggestedTradesService {
       typeof this.positionReadModelRepository?.listLivePositionsForAccounts !== 'function' ||
       typeof this.ordersSnapshotSourceRepository?.listOpenOrdersForAccounts !== 'function'
     ) {
-      return null;
+      return { action: 'none' };
     }
 
     const connectedAccounts = await this.brokerAccountRepository.getConnectedBrokerAccounts(userId);
@@ -2321,7 +2357,7 @@ export class SuggestedTradesService {
       )
     );
     if (!accountIds.length) {
-      return null;
+      return { action: 'none' };
     }
 
     const positionsByAccount = await this.positionReadModelRepository.listLivePositionsForAccounts(
@@ -2336,7 +2372,29 @@ export class SuggestedTradesService {
           continue;
         }
         if (this.isLiveAutoDuplicateAssetMatch(positionSymbol, assetKey)) {
-          return `Active exposure already exists for asset ${assetKey}; skipping duplicate live-auto suggestion.`;
+          const exposure: LiveAutoActiveAssetExposure = {
+            assetKey,
+            source: 'position',
+            sideKey: this.normalizeTradeSideKey(
+              (position as { sideKey?: unknown; side?: unknown })?.sideKey ??
+                (position as { side?: unknown })?.side
+            ),
+            symbol: positionSymbol,
+            brokerKey: this.readStringValue((position as { brokerKey?: unknown })?.brokerKey),
+            accountId: this.readStringValue((position as { accountId?: unknown })?.accountId),
+            positionId:
+              this.readStringValue((position as { externalId?: unknown })?.externalId) ??
+              this.readStringValue((position as { external_id?: unknown })?.external_id) ??
+              this.readStringValue((position as { id?: unknown })?.id),
+          };
+          const decision = this.resolveLiveAutoExposureDecision(
+            tradeSideKey,
+            exposure,
+            executionPolicy
+          );
+          if (decision.action !== 'none') {
+            return decision;
+          }
         }
       }
     }
@@ -2349,27 +2407,44 @@ export class SuggestedTradesService {
       for (const order of orders) {
         const orderSymbol = this.extractLiveAutoOpenOrderSymbol(order?.payloadJson);
         if (this.isLiveAutoDuplicateAssetMatch(orderSymbol, assetKey)) {
-          return `Active exposure already exists for asset ${assetKey}; skipping duplicate live-auto suggestion.`;
+          return {
+            action: 'skip',
+            message: `Active exposure already exists for asset ${assetKey}; skipping duplicate live-auto suggestion.`,
+            exposure: {
+              assetKey,
+              source: 'open_order',
+              sideKey: null,
+              symbol: orderSymbol,
+              brokerKey: null,
+              accountId: null,
+              positionId: null,
+            },
+          };
         }
       }
     }
 
-    return null;
+    return { action: 'none' };
   }
 
-  private async detectRecentLiveAutoDuplicateExecutionConflict(
+  private async resolveRecentLiveAutoDuplicateExecutionDecision(
     userId: string,
     trade: SuggestedTrade,
     executionPolicy: ResolvedTradeSuggestionExecutionPolicy,
-    assetKey: string
-  ): Promise<string | null> {
+    assetKey: string,
+    tradeSideKey: TradeSuggestionSideKey | null
+  ): Promise<LiveAutoDuplicateAssetDecision> {
     if (!(executionPolicy.dedupeWindowSeconds > 0) || !coreDataSource.isInitialized) {
-      return null;
+      return { action: 'none' };
     }
 
     const cutoff = new Date(Date.now() - executionPolicy.dedupeWindowSeconds * 1000);
     const rows = (await coreDataSource.query(
-      `SELECT st.symbol AS symbol
+      `SELECT st.symbol AS symbol,
+              st.side AS side,
+              ste.broker_key AS brokerKey,
+              ste.account_id AS accountId,
+              ste.position_id AS positionId
          FROM suggested_trade_executions ste
          JOIN suggested_trades st
            ON st.id = ste.suggested_trade_id
@@ -2395,15 +2470,153 @@ export class SuggestedTradesService {
       [userId, trade.id, cutoff]
     )) as Array<{
       symbol?: string | null;
+      side?: string | null;
+      brokerKey?: string | null;
+      accountId?: string | null;
+      positionId?: string | null;
     }>;
 
-    const hasConflict = rows.some((row) =>
-      this.isLiveAutoDuplicateAssetMatch(row.symbol, assetKey)
-    );
+    for (const row of rows) {
+      if (!this.isLiveAutoDuplicateAssetMatch(row.symbol, assetKey)) {
+        continue;
+      }
+      const decision = this.resolveLiveAutoExposureDecision(
+        tradeSideKey,
+        {
+          assetKey,
+          source: 'recent_execution',
+          sideKey: this.normalizeTradeSideKey(row.side),
+          symbol: row.symbol ?? null,
+          brokerKey: this.readStringValue(row.brokerKey),
+          accountId: this.readStringValue(row.accountId),
+          positionId: this.readStringValue(row.positionId),
+        },
+        executionPolicy
+      );
+      if (decision.action !== 'none') {
+        return decision;
+      }
+    }
 
-    return hasConflict
-      ? `Active exposure already exists for asset ${assetKey}; skipping duplicate live-auto suggestion.`
-      : null;
+    return { action: 'none' };
+  }
+
+  private resolveLiveAutoExposureDecision(
+    tradeSideKey: TradeSuggestionSideKey | null,
+    exposure: LiveAutoActiveAssetExposure,
+    executionPolicy: ResolvedTradeSuggestionExecutionPolicy
+  ): LiveAutoDuplicateAssetDecision {
+    const policy = executionPolicy.oppositeSignalPolicy ?? {
+      enabled: false,
+      mode: 'skip',
+      allowSameAssetOppositeSide: false,
+      blockSameSideDuplicate: true,
+      requireFreshSignal: true,
+    };
+
+    if (!tradeSideKey || !exposure.sideKey) {
+      return {
+        action: 'skip',
+        message: `Active exposure already exists for asset ${exposure.assetKey}; skipping duplicate live-auto suggestion.`,
+        exposure,
+      };
+    }
+
+    if (tradeSideKey === exposure.sideKey) {
+      if (!policy.blockSameSideDuplicate) {
+        return { action: 'none' };
+      }
+      return {
+        action: 'skip',
+        message: `Active ${exposure.sideKey} exposure already exists for asset ${exposure.assetKey}; skipping same-side live-auto suggestion.`,
+        exposure,
+      };
+    }
+
+    if (!policy.enabled || !policy.allowSameAssetOppositeSide || policy.mode === 'skip') {
+      return {
+        action: 'skip',
+        message: `Opposite ${exposure.sideKey} exposure already exists for asset ${exposure.assetKey}; skipping live-auto suggestion until opposite-signal policy is enabled.`,
+        exposure,
+      };
+    }
+
+    if (policy.mode === 'close_then_open' || policy.mode === 'reverse') {
+      if (!exposure.positionId || !exposure.brokerKey || !exposure.accountId) {
+        return {
+          action: 'skip',
+          message: `Opposite ${exposure.sideKey} exposure exists for asset ${exposure.assetKey}, but it could not be closed automatically because broker/account/position context is incomplete.`,
+          exposure,
+        };
+      }
+      return { action: 'close_then_open', exposure };
+    }
+
+    return { action: 'none' };
+  }
+
+  private async prepareLiveAutoOppositeExposureAction(
+    userId: string,
+    trade: SuggestedTrade,
+    decision: LiveAutoDuplicateAssetDecision
+  ): Promise<{ ready: true } | { ready: false; message: string }> {
+    if (decision.action !== 'close_then_open') {
+      return { ready: true };
+    }
+
+    const exposure = decision.exposure;
+    const positionId = this.readStringValue(exposure?.positionId);
+    const brokerKey = this.readStringValue(exposure?.brokerKey)?.toLowerCase();
+    const accountId = this.readStringValue(exposure?.accountId);
+    if (!positionId || !brokerKey || !accountId) {
+      return {
+        ready: false,
+        message: `Opposite exposure exists for ${trade.symbol}, but broker/account/position context is incomplete.`,
+      };
+    }
+    if (typeof this.brokerPositionsFacadeService?.closePosition !== 'function') {
+      return {
+        ready: false,
+        message: `Opposite exposure exists for ${trade.symbol}, but automatic close-before-open is unavailable.`,
+      };
+    }
+
+    try {
+      await this.brokerPositionsFacadeService.closePosition(positionId, userId, brokerKey, accountId);
+      const description = `Closed opposite ${exposure?.sideKey ?? 'side'} exposure ${positionId} before routing ${trade.side} live-auto suggestion for ${trade.symbol}.`;
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Suggested Trade',
+        title: `Live auto opposite exposure closed: ${trade.symbol}`,
+        status: 'Success',
+        route: 'Suggested Trades',
+        stream: 'Execution',
+        related: `${trade.symbol} · ${trade.timeframe}`,
+        referenceId: trade.id,
+        symbol: trade.symbol,
+        description,
+      });
+      return { ready: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to close opposite exposure';
+      return {
+        ready: false,
+        message: `Failed to close opposite exposure for ${trade.symbol} before live-auto routing: ${message}`,
+      };
+    }
+  }
+
+  private normalizeTradeSideKey(value: unknown): TradeSuggestionSideKey | null {
+    const normalized = this.readStringValue(value)?.toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    if (['buy', 'long', 'bid'].includes(normalized)) {
+      return 'long';
+    }
+    if (['sell', 'short', 'ask'].includes(normalized)) {
+      return 'short';
+    }
+    return null;
   }
 
   private normalizeDeltaRouteSymbol(value: unknown): string {
@@ -3329,12 +3542,12 @@ export class SuggestedTradesService {
       };
     }
 
-    const duplicateAssetConflict = await this.detectLiveAutoDuplicateAssetConflict(
+    const duplicateAssetDecision = await this.resolveLiveAutoDuplicateAssetDecision(
       userId,
       trade,
       executionPolicy
     );
-    if (duplicateAssetConflict) {
+    if (duplicateAssetDecision.action === 'skip') {
       await this.operationalEventService.logActivity(userId, {
         type: 'Suggested Trade',
         title: `Live auto duplicate skipped: ${trade.symbol}`,
@@ -3344,12 +3557,16 @@ export class SuggestedTradesService {
         related: `${trade.symbol} · ${trade.timeframe}`,
         referenceId: trade.id,
         symbol: trade.symbol,
-        description: duplicateAssetConflict,
+        description:
+          duplicateAssetDecision.message ??
+          'Active exposure already exists; skipping duplicate live-auto suggestion.',
       });
 
       return {
         outcome: 'skipped',
-        message: duplicateAssetConflict,
+        message:
+          duplicateAssetDecision.message ??
+          'Active exposure already exists; skipping duplicate live-auto suggestion.',
         suggestedTradeId: trade.id,
         brokerKey: rolloutGuard.brokerKey,
         accountId: rolloutGuard.accountId,
@@ -3396,6 +3613,34 @@ export class SuggestedTradesService {
       return {
         outcome: 'skipped',
         message: `Concurrent live trade limit reached (${activeExecutions}/${executionPolicy.maxConcurrentOpenTrades})`,
+        suggestedTradeId: trade.id,
+        brokerKey: rolloutGuard.brokerKey,
+        accountId: rolloutGuard.accountId,
+        freshness: signalFreshnessSnapshot,
+      };
+    }
+
+    const oppositeExposureReady = await this.prepareLiveAutoOppositeExposureAction(
+      userId,
+      trade,
+      duplicateAssetDecision
+    );
+    if (!oppositeExposureReady.ready) {
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Suggested Trade',
+        title: `Live auto opposite exposure blocked: ${trade.symbol}`,
+        status: 'Warning',
+        route: 'Suggested Trades',
+        stream: 'Execution',
+        related: `${trade.symbol} · ${trade.timeframe}`,
+        referenceId: trade.id,
+        symbol: trade.symbol,
+        description: oppositeExposureReady.message,
+      });
+
+      return {
+        outcome: 'blocked',
+        message: oppositeExposureReady.message,
         suggestedTradeId: trade.id,
         brokerKey: rolloutGuard.brokerKey,
         accountId: rolloutGuard.accountId,
@@ -7033,12 +7278,15 @@ export class SuggestedTradesService {
     const freshness = this.readRecordValue(normalizedPolicy.freshness) ?? {};
     const limitOrderExpiry = this.readRecordValue(normalizedPolicy.limitOrderExpiry) ?? {};
     const preEntryGuards = this.readRecordValue(normalizedPolicy.preEntryGuards) ?? {};
+    const oppositeSignalPolicy =
+      this.readRecordValue(normalizedPolicy.oppositeSignalPolicy) ?? {};
     const minDistanceFromStopR = this.readRecordValue(preEntryGuards.minDistanceFromStopR) ?? {};
     const executionModeRaw = this.readStringValue(normalizedPolicy.executionMode)?.toLowerCase();
     const approvalModeRaw = this.readStringValue(normalizedPolicy.approvalMode)?.toLowerCase();
     const routeModeRaw = this.readStringValue(routing.routeMode)?.toLowerCase();
     const orderTypeRaw = this.readStringValue(orderTemplate.orderType)?.toLowerCase();
     const quantityModeRaw = this.readStringValue(orderTemplate.quantityMode)?.toLowerCase();
+    const oppositeSignalModeRaw = this.readStringValue(oppositeSignalPolicy.mode)?.toLowerCase();
     const brokerKey = this.readStringValue(routing.brokerKey)?.toLowerCase() ?? null;
     const minDistanceBasis = this.readStringValue(minDistanceFromStopR.basis)?.toLowerCase();
 
@@ -7108,6 +7356,21 @@ export class SuggestedTradesService {
       ),
       freshness: normalizeTradeSuggestionFreshnessPolicy(freshness),
       limitOrderExpiry: normalizeTradeSuggestionLimitOrderExpiryPolicy(limitOrderExpiry),
+      oppositeSignalPolicy: {
+        enabled: this.readBooleanValue(oppositeSignalPolicy.enabled) ?? false,
+        mode:
+          oppositeSignalModeRaw === 'allow' ||
+          oppositeSignalModeRaw === 'close_then_open' ||
+          oppositeSignalModeRaw === 'reverse' ||
+          oppositeSignalModeRaw === 'hedge'
+            ? oppositeSignalModeRaw
+            : 'skip',
+        allowSameAssetOppositeSide:
+          this.readBooleanValue(oppositeSignalPolicy.allowSameAssetOppositeSide) ?? false,
+        blockSameSideDuplicate:
+          this.readBooleanValue(oppositeSignalPolicy.blockSameSideDuplicate) ?? true,
+        requireFreshSignal: this.readBooleanValue(oppositeSignalPolicy.requireFreshSignal) ?? true,
+      },
       preEntryGuards: {
         minDistanceFromStopR: {
           enabled: this.readBooleanValue(minDistanceFromStopR.enabled) ?? false,

@@ -425,6 +425,24 @@ function runExecutionPolicyNormalizationTests(): void {
   );
   console.log('  ✓ Centralizes trade-suggestion execution limit normalization');
 
+  const oppositeSignalPolicy = normalizeTradeSuggestionExecutionPolicy({
+    executionMode: 'live_trade_auto',
+    approvalMode: 'auto_if_safe',
+    oppositeSignalPolicy: {
+      enabled: true,
+      mode: 'reverse',
+      allowSameAssetOppositeSide: true,
+      blockSameSideDuplicate: true,
+    },
+  });
+  const normalizedOppositeSignalPolicy =
+    (oppositeSignalPolicy.oppositeSignalPolicy as Record<string, unknown>) || {};
+  assert.equal(normalizedOppositeSignalPolicy.enabled, true);
+  assert.equal(normalizedOppositeSignalPolicy.mode, 'reverse');
+  assert.equal(normalizedOppositeSignalPolicy.allowSameAssetOppositeSide, true);
+  assert.equal(normalizedOppositeSignalPolicy.blockSameSideDuplicate, true);
+  console.log('  ✓ Normalizes same-asset opposite-signal execution policy');
+
   const freshness = (normalizedLimits.freshness as Record<string, unknown>) || {};
   const timeframeGraceSeconds = (freshness.timeframeGraceSeconds as Record<string, unknown>) || {};
   assert.equal(freshness.enabled, true);

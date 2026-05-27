@@ -1630,6 +1630,13 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
   let currentAccountId = 'acc-1';
   let currentAssetExternalId = 'mudrex-asset-1';
   let currentRemoteAssetId = 'mudrex-asset-remote';
+  let oppositeSignalPolicy: Record<string, unknown> = {
+    enabled: false,
+    mode: 'skip',
+    allowSameAssetOppositeSide: false,
+    blockSameSideDuplicate: true,
+    requireFreshSignal: true,
+  };
   let preEntryGuards: Record<string, unknown> = {
     minDistanceFromStopR: {
       enabled: false,
@@ -1771,6 +1778,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
         '1h': 600,
       },
     },
+    oppositeSignalPolicy,
     preEntryGuards,
   });
   service.runPreTradeGate = async () => {
@@ -2221,6 +2229,91 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
       'Active exposure already exists for asset SOL; skipping duplicate live-auto suggestion.'
     );
     assert.equal(preTradeGateCalls, preTradeCallsBeforeDuplicatePosition);
+
+    currentBrokerKey = 'mudrex';
+    currentAccountId = 'acc-1';
+    currentAssetExternalId = 'mudrex-asset-1';
+    currentRemoteAssetId = 'mudrex-asset-remote';
+    oppositeSignalPolicy = {
+      enabled: true,
+      mode: 'close_then_open',
+      allowSameAssetOppositeSide: true,
+      blockSameSideDuplicate: true,
+      requireFreshSignal: true,
+    };
+    const closedOppositePositions: Array<Record<string, unknown>> = [];
+    service.positionReadModelRepository = {
+      async listLivePositionsForAccounts() {
+        return new Map([
+          [
+            'acc-1',
+            [
+              {
+                externalId: 'short-pos-1',
+                brokerKey: 'mudrex',
+                accountId: 'acc-1',
+                symbol: 'SOLUSDT',
+                sideKey: 'short',
+                quantity: 2,
+              },
+            ],
+          ],
+        ]);
+      },
+    };
+    service.ordersSnapshotSourceRepository = {
+      async listOpenOrdersForAccounts() {
+        return new Map();
+      },
+    };
+    service.brokerPositionsFacadeService = {
+      async closePosition(
+        positionId: string,
+        userId: string,
+        brokerKey?: string,
+        accountId?: string
+      ) {
+        closedOppositePositions.push({ positionId, userId, brokerKey, accountId });
+        return { success: true };
+      },
+    };
+
+    const oppositeAllowed = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto',
+      {
+        async createOrder(assetId: string, body: Record<string, unknown>) {
+          assert.equal(assetId, 'mudrex-asset-1');
+          assert.equal(body.symbol, 'SOLUSDC');
+          assert.equal(body.side, 'long');
+          return {
+            success: true,
+            data: {
+              order_id: 'live-order-opposite',
+              status: 'OPEN',
+            },
+          };
+        },
+      }
+    );
+    assert.equal(oppositeAllowed.outcome, 'working', JSON.stringify(oppositeAllowed));
+    assert.equal(oppositeAllowed.orderId, 'live-order-opposite');
+    assert.deepEqual(closedOppositePositions, [
+      {
+        positionId: 'short-pos-1',
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+      },
+    ]);
+    assert.ok(loggedActivities.includes('Live auto opposite exposure closed: SOLUSDC'));
+    oppositeSignalPolicy = {
+      enabled: false,
+      mode: 'skip',
+      allowSameAssetOppositeSide: false,
+      blockSameSideDuplicate: true,
+      requireFreshSignal: true,
+    };
 
     service.positionReadModelRepository = {
       async listLivePositionsForAccounts() {
@@ -4245,7 +4338,7 @@ async function runSuggestedTradeDeltaProductPreflightAssertions(): Promise<void>
     dedupeWindowSeconds: 3600,
     freshness: { enabled: false, graceSeconds: null, timeframeGraceSeconds: {} },
   });
-  blockedService.detectLiveAutoDuplicateAssetConflict = async () => null;
+  blockedService.resolveLiveAutoDuplicateAssetDecision = async () => ({ action: 'none' });
   blockedService.runPreTradeGate = async () => ({
     result: {
       checkId: 'check-delta-tiny',

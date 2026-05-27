@@ -174,6 +174,13 @@ export const TRADE_SUGGESTION_PRE_ENTRY_MIN_DISTANCE_BASIS = [
   'order_entry',
   'market_price',
 ] as const;
+export const TRADE_SUGGESTION_OPPOSITE_SIGNAL_MODES = [
+  'skip',
+  'allow',
+  'close_then_open',
+  'reverse',
+  'hedge',
+] as const;
 
 export const TRADE_SUGGESTION_EXECUTION_LIMIT_RULES = {
   maxOrdersPerRun: {
@@ -274,6 +281,28 @@ export const normalizeTradeSuggestionPreEntryGuards = (value: unknown): Record<s
   };
 };
 
+export const normalizeTradeSuggestionOppositeSignalPolicy = (
+  value: unknown
+): Record<string, unknown> => {
+  const policy = parseRecord(value) ?? {};
+  const mode = normalizeEnum(
+    readString(policy.mode, policy.action),
+    TRADE_SUGGESTION_OPPOSITE_SIGNAL_MODES,
+    'skip'
+  );
+  const enabled = readBoolean(policy.enabled) ?? mode !== 'skip';
+
+  return {
+    enabled,
+    mode: enabled ? mode : 'skip',
+    allowSameAssetOppositeSide:
+      readBoolean(policy.allowSameAssetOppositeSide, policy.allowOppositeSide) ??
+      (enabled && mode !== 'skip'),
+    blockSameSideDuplicate: readBoolean(policy.blockSameSideDuplicate) ?? true,
+    requireFreshSignal: readBoolean(policy.requireFreshSignal) ?? true,
+  };
+};
+
 export const normalizeTradeSuggestionExecutionPolicy = (
   value: unknown
 ): Record<string, unknown> => {
@@ -292,6 +321,11 @@ export const normalizeTradeSuggestionExecutionPolicy = (
     parseRecord(root.preEntryGuards) ??
     readNestedRecord(root, 'guards', 'preEntry') ??
     parseRecord(root.entryGuards) ??
+    {};
+  const oppositeSignalPolicy =
+    parseRecord(root.oppositeSignalPolicy) ??
+    parseRecord(root.oppositeSignals) ??
+    parseRecord(root.sameAssetOppositeSignal) ??
     {};
 
   const executionMode = normalizeEnum(
@@ -384,6 +418,7 @@ export const normalizeTradeSuggestionExecutionPolicy = (
     },
     limits: normalizeTradeSuggestionExecutionLimits(root.limits),
     preEntryGuards: normalizeTradeSuggestionPreEntryGuards(preEntryGuards),
+    oppositeSignalPolicy: normalizeTradeSuggestionOppositeSignalPolicy(oppositeSignalPolicy),
     liveConsent: {
       enabled: liveConsentEnabled,
       confirmedByUserId: readString(liveConsent.confirmedByUserId),
