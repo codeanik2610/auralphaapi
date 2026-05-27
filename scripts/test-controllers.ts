@@ -1029,8 +1029,9 @@ async function runPositionsControllerAssertions(): Promise<void> {
     ]
   );
   assert.deepEqual(
-    (await controller.getFuturesPositionsForActiveAccounts(authReq, undefined)).data.args,
-    ['user-1', undefined]
+    (await controller.getFuturesPositionsForActiveAccounts(authReq, undefined, undefined, undefined))
+      .data.args,
+    ['user-1', undefined, undefined, undefined]
   );
   assert.deepEqual(
     (
@@ -1110,10 +1111,26 @@ async function runPositionsControllerAssertions(): Promise<void> {
     ]
   );
   assert.deepEqual(
-    (await controller.getPositionHistoryForActiveAccounts(authReq, undefined, undefined, undefined))
-      .data.args,
+    (
+      await controller.getPositionHistoryForActiveAccounts(
+        authReq,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined
+      )
+    ).data.args,
     [
-      { limit: undefined, brokerKey: undefined, startDate: undefined, endDate: undefined },
+      {
+        limit: undefined,
+        brokerKey: undefined,
+        accountId: undefined,
+        symbol: undefined,
+        startDate: undefined,
+        endDate: undefined,
+      },
       'user-1',
       undefined,
     ]

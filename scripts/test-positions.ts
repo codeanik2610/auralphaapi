@@ -16,6 +16,9 @@ async function positionsGuard01(): Promise<void> {
     Date.now = () => new Date('2026-04-09T10:03:00.000Z').getTime();
 
     try {
+      const liveAccountCalls: unknown[][] = [];
+      const historyAccountCalls: unknown[][] = [];
+      let marketRefreshCalls = 0;
       service.positionReadModelRepository = {
         ensureHydratedFromSnapshots: async () => undefined,
         getAccountFreshness: async () =>
@@ -63,8 +66,9 @@ async function positionsGuard01(): Promise<void> {
             }),
           }),
         ],
-        listLivePositionsForAccounts: async () =>
-          new Map([
+        listLivePositionsForAccounts: async (...args: unknown[]) => {
+          liveAccountCalls.push(args);
+          return new Map([
             [
               'acc-1',
               [
@@ -100,7 +104,8 @@ async function positionsGuard01(): Promise<void> {
                 }),
               ],
             ],
-          ]),
+          ]);
+        },
         listHistoryForAccount: async () => [
           buildPositionRecordFromReadModelRow({
             accountId: 'acc-1',
@@ -131,8 +136,9 @@ async function positionsGuard01(): Promise<void> {
             }),
           }),
         ],
-        listHistoryForAccounts: async () =>
-          new Map([
+        listHistoryForAccounts: async (...args: unknown[]) => {
+          historyAccountCalls.push(args);
+          return new Map([
             [
               'acc-1',
               [
@@ -166,7 +172,8 @@ async function positionsGuard01(): Promise<void> {
                 }),
               ],
             ],
-          ]),
+          ]);
+        },
       };
       service.brokerAccountRepository = {
         getActiveBrokerAccounts: async () => [
@@ -180,7 +187,9 @@ async function positionsGuard01(): Promise<void> {
         ],
       };
       service.marketPriceRefreshService = {
-        refreshPricesForUser: async () => undefined,
+        refreshPricesForUser: async () => {
+          marketRefreshCalls += 1;
+        },
       };
       service.marketPriceBinanceRepository = {
         getBySymbols: async () => [
@@ -217,6 +226,21 @@ async function positionsGuard01(): Promise<void> {
       assert.equal(live.items[0].data[0].freshness?.state, 'fresh');
       assert.equal(live.items[0].freshness?.account?.state, 'fresh');
       assert.equal(live.freshness?.freshAccounts, 1);
+      assert.deepEqual(liveAccountCalls[0], ['user-1', ['acc-1'], { symbol: undefined }]);
+      assert.equal(
+        marketRefreshCalls,
+        0,
+        'active grouped reads must not block on broker market price refresh'
+      );
+
+      const scopedLive = await service.getFuturesPositionsForActiveAccounts(
+        'user-1',
+        'mudrex',
+        'acc-1',
+        'DOGEUSDT'
+      );
+      assert.equal(scopedLive.totalActiveAccounts, 1);
+      assert.deepEqual(liveAccountCalls[1], ['user-1', ['acc-1'], { symbol: 'DOGEUSDT' }]);
 
       const history = await service.getPositionHistoryForActiveAccounts({}, 'user-1');
       assert.equal(history.items[0].history?.length, 1);
@@ -227,6 +251,14 @@ async function positionsGuard01(): Promise<void> {
       assert.equal(history.items[0].data[0].closed_price, 3550);
       assert.equal(history.items[0].data[0].realized_pnl, 437.5);
       assert.equal(history.items[0].data[0].accountKey, 'primary');
+      assert.equal((historyAccountCalls[0]?.[2] as { symbol?: string })?.symbol, undefined);
+
+      const scopedHistory = await service.getPositionHistoryForActiveAccounts(
+        { accountId: 'acc-1', symbol: 'DOGEUSDT' },
+        'user-1'
+      );
+      assert.equal(scopedHistory.totalActiveAccounts, 1);
+      assert.equal((historyAccountCalls[1]?.[2] as { symbol?: string })?.symbol, 'DOGEUSDT');
 
       const singleHistory = await service.getPositionHistory({}, 'user-1', 'mudrex', 'acc-1');
       assert.equal(singleHistory[0].accountId, 'acc-1');

@@ -9,6 +9,7 @@ export interface PositionsHistoryQuery {
   limit?: string;
   brokerKey?: string;
   accountId?: string;
+  symbol?: string;
   startDate?: string;
   endDate?: string;
 }
@@ -75,6 +76,7 @@ export const validatePositionsHistoryQuery = (
   limit: number;
   brokerKey?: string;
   accountId?: string;
+  symbol?: string;
   startDate?: string;
   endDate?: string;
 } => {
@@ -104,6 +106,7 @@ export const validatePositionsHistoryQuery = (
     limit,
     brokerKey: normalizeOptional(query.brokerKey),
     accountId: normalizeOptional(query.accountId),
+    symbol: normalizeOptional(query.symbol)?.toUpperCase(),
     startDate,
     endDate,
   };

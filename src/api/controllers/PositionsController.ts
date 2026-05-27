@@ -45,8 +45,18 @@ export class PositionsController {
   }
 
   @Get('/futures/active')
-  async getFuturesPositionsForActiveAccounts(@Req() request: Request, @QueryParam('brokerKey') brokerKey?: string): Promise<ApiSuccessResponse<PositionsGroupedResponse>> {
-    return this.positionsService.getFuturesPositionsForActiveAccounts(requireAuthUserId(request), brokerKey) as unknown as Promise<ApiSuccessResponse<PositionsGroupedResponse>>;
+  async getFuturesPositionsForActiveAccounts(
+    @Req() request: Request,
+    @QueryParam('brokerKey') brokerKey?: string,
+    @QueryParam('accountId') accountId?: string,
+    @QueryParam('symbol') symbol?: string
+  ): Promise<ApiSuccessResponse<PositionsGroupedResponse>> {
+    return this.positionsService.getFuturesPositionsForActiveAccounts(
+      requireAuthUserId(request),
+      brokerKey,
+      accountId,
+      symbol
+    ) as unknown as Promise<ApiSuccessResponse<PositionsGroupedResponse>>;
   }
 
   @Post('/futures/refresh')
@@ -130,8 +140,16 @@ export class PositionsController {
   }
 
   @Get('/futures/history/active')
-  async getPositionHistoryForActiveAccounts(@Req() request: Request, @QueryParam('limit') limit?: string, @QueryParam('brokerKey') brokerKey?: string, @QueryParam('startDate') startDate?: string, @QueryParam('endDate') endDate?: string): Promise<ApiSuccessResponse<PositionsGroupedResponse>> {
-    const query: PositionsHistoryQuery = { limit, brokerKey, startDate, endDate };
+  async getPositionHistoryForActiveAccounts(
+    @Req() request: Request,
+    @QueryParam('limit') limit?: string,
+    @QueryParam('brokerKey') brokerKey?: string,
+    @QueryParam('accountId') accountId?: string,
+    @QueryParam('symbol') symbol?: string,
+    @QueryParam('startDate') startDate?: string,
+    @QueryParam('endDate') endDate?: string
+  ): Promise<ApiSuccessResponse<PositionsGroupedResponse>> {
+    const query: PositionsHistoryQuery = { limit, brokerKey, accountId, symbol, startDate, endDate };
     return this.positionsService.getPositionHistoryForActiveAccounts(query, requireAuthUserId(request), brokerKey) as unknown as Promise<ApiSuccessResponse<PositionsGroupedResponse>>;
   }
 

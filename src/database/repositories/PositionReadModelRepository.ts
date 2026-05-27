@@ -960,22 +960,35 @@ export class PositionReadModelRepository {
 
   async listLivePositionsForAccounts(
     userId: string,
-    accountIds: string[]
+    accountIds: string[],
+    options: { symbol?: string } = {}
   ): Promise<Map<string, PositionRecord[]>> {
     const normalizedAccountIds = this.normalizeAccountIds(accountIds);
     if (!normalizedAccountIds.length) {
       return new Map();
     }
+    const normalizedSymbol = String(options.symbol || '')
+      .trim()
+      .toUpperCase();
+    const where = [
+      'user_id = ?',
+      `account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})`,
+      'status_rank > 0',
+      'status_rank <= 2',
+    ];
+    const params: Array<unknown> = [userId, ...normalizedAccountIds];
+
+    if (normalizedSymbol) {
+      where.push("UPPER(COALESCE(symbol, '')) = ?");
+      params.push(normalizedSymbol);
+    }
 
     const rows = (await coreDataSource.query(
       `${this.baseSelectSql()}
          FROM position_read_models
-        WHERE user_id = ?
-          AND account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})
-          AND status_rank > 0
-          AND status_rank <= 2
+        WHERE ${where.join(' AND ')}
         ORDER BY last_seen_at DESC`,
-      [userId, ...normalizedAccountIds]
+      params
     )) as PositionReadModelRow[];
 
     const grouped = this.groupRowsByAccount(rows);
@@ -1225,6 +1238,7 @@ export class PositionReadModelRepository {
       startUtc?: Date | null;
       endUtc?: Date | null;
       limit?: number;
+      symbol?: string;
     } = {}
   ): Promise<Map<string, PositionRecord[]>> {
     const normalizedAccountIds = this.normalizeAccountIds(accountIds);
@@ -1238,6 +1252,13 @@ export class PositionReadModelRepository {
       'status_rank >= 3',
     ];
     const params: Array<unknown> = [userId, ...normalizedAccountIds];
+    const normalizedSymbol = String(options.symbol || '')
+      .trim()
+      .toUpperCase();
+    if (normalizedSymbol) {
+      where.push("UPPER(COALESCE(symbol, '')) = ?");
+      params.push(normalizedSymbol);
+    }
     if (options.startUtc && Number.isFinite(options.startUtc.getTime())) {
       where.push('COALESCE(position_updated_at, position_created_at, last_seen_at) >= ?');
       params.push(options.startUtc);

@@ -2607,13 +2607,23 @@ export class BrokerPositionsFacadeService {
 
   async getFuturesPositionsForActiveAccounts(
     userId: string,
-    brokerKey?: string
+    brokerKey?: string,
+    accountId?: string,
+    symbol?: string
   ): Promise<PositionsGroupedResponse> {
     const activeAccounts = await this.brokerAccountRepository.getActiveBrokerAccounts(
       userId,
       brokerKey
     );
-    return this.getFuturesPositionsForActiveAccountsFromReadModel(userId, activeAccounts);
+    const normalizedAccountId = String(accountId || '').trim();
+    const scopedAccounts = normalizedAccountId
+      ? activeAccounts.filter((account) => account.id === normalizedAccountId)
+      : activeAccounts;
+    return this.getFuturesPositionsForActiveAccountsFromReadModel(
+      userId,
+      scopedAccounts,
+      symbol
+    );
   }
 
   async getPositionLifecycle(
@@ -2808,7 +2818,8 @@ export class BrokerPositionsFacadeService {
       accountKey: string;
       brokerKey: string;
       status: string;
-    }>
+    }>,
+    symbol?: string
   ): Promise<PositionsGroupedResponse> {
     if (!activeAccounts.length) {
       return {
@@ -2823,7 +2834,9 @@ export class BrokerPositionsFacadeService {
     const accountIds = activeAccounts.map((item) => item.id);
     await this.positionReadModelRepository.ensureHydratedFromSnapshots(userId, accountIds);
     const [grouped, freshnessByAccountId] = await Promise.all([
-      this.positionReadModelRepository.listLivePositionsForAccounts(userId, accountIds),
+      this.positionReadModelRepository.listLivePositionsForAccounts(userId, accountIds, {
+        symbol,
+      }),
       this.positionReadModelRepository.getAccountFreshness(userId, accountIds),
     ]);
 
@@ -2832,7 +2845,6 @@ export class BrokerPositionsFacadeService {
       flattened.push(...data);
     }
     if (flattened.length) {
-      await this.marketPriceRefreshService.refreshPricesForUser(userId);
       await this.enrichOpenPositionsWithMarketPnl(flattened);
     }
 
@@ -3109,7 +3121,10 @@ export class BrokerPositionsFacadeService {
       userId,
       brokerKey || params.brokerKey
     );
-    if (!activeAccounts.length) {
+    const scopedAccounts = params.accountId
+      ? activeAccounts.filter((account) => account.id === params.accountId)
+      : activeAccounts;
+    if (!scopedAccounts.length) {
       return {
         totalActiveAccounts: 0,
         successCount: 0,
@@ -3120,7 +3135,7 @@ export class BrokerPositionsFacadeService {
       };
     }
 
-    const accountIds = activeAccounts.map((item) => item.id);
+    const accountIds = scopedAccounts.map((item) => item.id);
     const timeZone = await this.userTimeZoneService.resolveUserTimeZone(userId);
     const { startUtc, endUtc } = getUtcDateRangeFromLocalDates(
       params.startDate,
@@ -3135,10 +3150,11 @@ export class BrokerPositionsFacadeService {
         startUtc,
         endUtc,
         limit: 50000,
+        symbol: params.symbol,
       }
     );
 
-    const items: PositionsAccountItem[] = activeAccounts.map((account) => {
+    const items: PositionsAccountItem[] = scopedAccounts.map((account) => {
       const data = this.withPositionFreshness(
         (grouped.get(account.id) || []).map((item) => ({
           ...item,
@@ -3169,7 +3185,7 @@ export class BrokerPositionsFacadeService {
     });
 
     return {
-      totalActiveAccounts: activeAccounts.length,
+      totalActiveAccounts: scopedAccounts.length,
       successCount: items.length,
       failureCount: 0,
       items,
