@@ -110,6 +110,7 @@ const DEFAULT_CHART_LIMIT = 120;
 const CHART_SOURCE = 'pg.market_candles_1m';
 const LIVE_CHART_SOURCE = 'binance.futures.live';
 const HYDRATED_CHART_SOURCE = 'binance.futures.live+pg.market_candles_1m';
+const ARCHIVE_LIVE_TAIL_LIMIT = DEFAULT_CHART_LIMIT;
 const OVERVIEW_CACHE_TTL_MS = 15_000;
 const OVERVIEW_STALE_CACHE_TTL_MS = 5 * 60_000;
 const OVERVIEW_CACHE_MAX_ENTRIES = 200;
@@ -426,16 +427,15 @@ export class MarketsOverviewService {
     );
     let chartSource = CHART_SOURCE;
 
-    if (!params.endTime) {
-      const hydrated = await this.hydrateChartCandlesWithLiveData(
-        params.symbol,
-        params.interval,
-        params.limit,
-        candles
-      );
-      candles = hydrated.candles;
-      chartSource = hydrated.source;
-    }
+    const hydrated = await this.hydrateChartCandlesWithLiveData(
+      params.symbol,
+      params.interval,
+      params.limit,
+      candles,
+      { preserveWarehouseWindow: Boolean(params.endTime) }
+    );
+    candles = hydrated.candles;
+    chartSource = hydrated.source;
 
     const startTime = candles[0]?.openTime ? new Date(candles[0].openTime).toISOString() : null;
     const endTime = candles[candles.length - 1]?.openTime
@@ -461,15 +461,19 @@ export class MarketsOverviewService {
     symbol: string,
     interval: string,
     limit: number,
-    warehouseCandles: BinanceMarketCandle[]
+    warehouseCandles: BinanceMarketCandle[],
+    options: { preserveWarehouseWindow?: boolean } = {}
   ): Promise<{ candles: BinanceMarketCandle[]; source: string }> {
     let liveCandles: BinanceMarketCandle[] = [];
+    const liveLimit = options.preserveWarehouseWindow
+      ? Math.max(1, Math.min(limit, ARCHIVE_LIVE_TAIL_LIMIT))
+      : limit;
 
     try {
       const response = await this.binanceMarketService.getCandles({
         symbol,
         interval,
-        limit: String(limit),
+        limit: String(liveLimit),
       });
       liveCandles = Array.isArray(response.data) ? response.data : [];
     } catch (error) {
@@ -484,11 +488,35 @@ export class MarketsOverviewService {
       return { candles: warehouseCandles, source: CHART_SOURCE };
     }
 
-    const candles = this.mergeChartCandles(warehouseCandles, liveCandles, limit);
+    const candles = options.preserveWarehouseWindow
+      ? this.mergeArchiveAndLiveChartCandles(warehouseCandles, liveCandles)
+      : this.mergeChartCandles(warehouseCandles, liveCandles, limit);
     return {
       candles,
       source: warehouseCandles.length ? HYDRATED_CHART_SOURCE : LIVE_CHART_SOURCE,
     };
+  }
+
+  private mergeArchiveAndLiveChartCandles(
+    archiveCandles: BinanceMarketCandle[],
+    liveCandles: BinanceMarketCandle[]
+  ): BinanceMarketCandle[] {
+    const byOpenTime = new Map<number, BinanceMarketCandle>();
+
+    [...archiveCandles, ...liveCandles].forEach((candle) => {
+      const openTime = Number(candle?.openTime);
+      if (!Number.isFinite(openTime)) {
+        return;
+      }
+      byOpenTime.set(openTime, {
+        ...candle,
+        openTime,
+      });
+    });
+
+    return Array.from(byOpenTime.values()).sort(
+      (left, right) => Number(left.openTime) - Number(right.openTime)
+    );
   }
 
   private mergeChartCandles(

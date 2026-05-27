@@ -459,6 +459,27 @@ async function runMarketsChartWarehouseSymbolResolutionAssertions(): Promise<voi
     );
     assert.equal(hydratedChart.data.candles[0].open, 'live-102');
     assert.equal(hydratedChart.data.range.endTime, '2026-04-13T03:10:00.000Z');
+
+    const archivePlusLiveChart = await service.getSymbolChart('DOGSUSDT', {
+      interval: '5m',
+      limit: '2',
+      endTime: '2026-04-13T03:05:00.000Z',
+    });
+
+    assert.equal(archivePlusLiveChart.data.source, 'binance.futures.live+pg.market_candles_1m');
+    assert.deepEqual(
+      (archivePlusLiveChart.data.candles as Array<{ openTime: number }>).map(
+        (candle) => candle.openTime
+      ),
+      [
+        Date.parse('2026-04-13T03:00:00.000Z'),
+        Date.parse('2026-04-13T03:05:00.000Z'),
+        Date.parse('2026-04-13T03:10:00.000Z'),
+      ]
+    );
+    assert.equal(archivePlusLiveChart.data.candles[1].open, 'live-102');
+    assert.equal(archivePlusLiveChart.data.range.startTime, '2026-04-13T03:00:00.000Z');
+    assert.equal(archivePlusLiveChart.data.range.endTime, '2026-04-13T03:10:00.000Z');
   } finally {
     (strategyDataSource as any).query = originalQuery;
     (strategyDataSource as any).isInitialized = originalInitialized;
