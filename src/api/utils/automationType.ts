@@ -192,7 +192,7 @@ export const TRADE_SUGGESTION_EXECUTION_LIMIT_RULES = {
   maxOrdersPerDay: {
     fallback: 3,
     min: 1,
-    max: 1000,
+    max: 3000,
     integer: true,
   },
   maxConcurrentOpenTrades: {
