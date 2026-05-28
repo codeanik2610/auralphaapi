@@ -1570,6 +1570,112 @@ async function runSuggestedTradeBrokerControlHelperAssertions(): Promise<void> {
   }
 }
 
+async function runSuggestedTradeBrokerPolicySizingAssertions(): Promise<void> {
+  const service = new SuggestedTradesService() as any;
+  service.riskPolicyRepository = {
+    async getEffectivePolicy() {
+      return {
+        scope: 'broker',
+        minLeverage: 15,
+        maxLeverage: 25,
+        tradeSizePctOfBalance: 5,
+      };
+    },
+  };
+  service.fundsSnapshotRepository = {
+    async getLatestSnapshot() {
+      return {
+        futures_funds_json: JSON.stringify({
+          balance: 1000,
+          locked_amount: 0,
+        }),
+        wallet_funds_json: null,
+      };
+    },
+  };
+  service.automationRepository = {
+    async getAutomationCoreById() {
+      return {
+        config: {
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'live_trade_auto',
+              orderTemplate: {
+                quantityMode: 'risk_percent',
+                riskPercent: 15,
+                leverage: 25,
+              },
+            },
+          },
+        },
+      };
+    },
+  };
+
+  const explicitPolicy = await service.loadTradeSuggestionExecutionPolicy('user-1', 'auto-1');
+  assert.deepEqual(explicitPolicy.explicitOrderTemplate, {
+    leverage: true,
+    sizing: true,
+  });
+
+  const request = {
+    suggestedTradeId: 'st-explicit-sizing',
+    automationId: 'auto-explicit-sizing',
+    automationRunId: 'run-explicit-sizing',
+    sourceType: 'suggested_trade_automation_live_rollout',
+    executionMode: 'live',
+    approvalMode: 'auto_if_safe',
+    routing: {
+      routeMode: 'fixed',
+      brokerKey: 'mudrex',
+      accountId: 'acc-1',
+    },
+    order: {
+      symbol: 'SOLUSDT',
+      timeframe: '3m',
+      side: 'BUY',
+      orderType: 'market',
+      quantityMode: 'risk_percent',
+      quantity: null,
+      notional: null,
+      riskPercent: 15,
+      entryPrice: 100,
+      stopLossPrice: 95,
+      takeProfitTargets: [108],
+      leverage: 25,
+      reduceOnly: false,
+    },
+  };
+
+  const preserved = await service.applyBrokerPolicyTradeSize(
+    'user-1',
+    request,
+    'suggested_trade_automation_live_rollout',
+    {
+      applyPolicyMinLeverage: false,
+      applyPolicyTradeSizePct: false,
+    }
+  );
+  assert.equal(preserved.order.leverage, 25);
+  assert.equal(preserved.order.quantityMode, 'risk_percent');
+  assert.equal(preserved.order.riskPercent, 15);
+  assert.equal(preserved.order.notional, null);
+
+  const policySized = await service.applyBrokerPolicyTradeSize(
+    'user-1',
+    request,
+    'suggested_trade_automation_live_rollout',
+    {
+      applyPolicyMinLeverage: true,
+      applyPolicyTradeSizePct: true,
+    }
+  );
+  assert.equal(policySized.order.leverage, 15);
+  assert.equal(policySized.order.quantityMode, 'notional');
+  assert.equal(policySized.order.notional, 750);
+  assert.equal(policySized.order.riskPercent, null);
+}
+
 async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
   const service = new SuggestedTradesService() as any;
   service.liveAutoLifecycleMonitorEnabled = false;
@@ -14818,6 +14924,7 @@ async function main(): Promise<void> {
   await runSuggestedTradeTransitionAssertions();
   await runSuggestedTradeExecutionPersistenceAssertions();
   await runSuggestedTradeBrokerControlHelperAssertions();
+  await runSuggestedTradeBrokerPolicySizingAssertions();
   await runSuggestedTradeLiveAutoRolloutAssertions();
   await runSuggestedTradeAdaptiveRouteSelectionAssertions();
   await runSuggestedTradeLiveAutoLifecycleMonitorAssertions();

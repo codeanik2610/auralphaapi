@@ -177,6 +177,10 @@ interface ResolvedTradeSuggestionExecutionPolicy {
   notional: number | null;
   riskPercent: number | null;
   leverage: number | null;
+  explicitOrderTemplate?: {
+    leverage: boolean;
+    sizing: boolean;
+  };
   reduceOnly: boolean;
   deltaProtectionMode: string | null;
   maxOrdersPerRun: number;
@@ -330,6 +334,11 @@ interface SuggestedTradePreTradeRequest {
     leverage?: number | null;
     reduceOnly: boolean;
   };
+}
+
+interface BrokerPolicyTradeSizeApplicationOptions {
+  applyPolicyMinLeverage?: boolean;
+  applyPolicyTradeSizePct?: boolean;
 }
 
 interface AdaptivePreTradeRouteDecision {
@@ -1687,10 +1696,17 @@ export class SuggestedTradesService {
         existingExecution,
         options.linkPayload
       ),
-      options.sourceType
+      options.sourceType,
+      this.resolveBrokerPolicyTradeSizeApplicationOptions(executionPolicy)
     );
     const adaptiveRoute = this.shouldUseAdaptivePreTradeRoute(options.sourceType, request)
-      ? await this.resolveAdaptivePreTradeRoute(userId, trade, request, options.sourceType)
+      ? await this.resolveAdaptivePreTradeRoute(
+          userId,
+          trade,
+          request,
+          options.sourceType,
+          this.resolveBrokerPolicyTradeSizeApplicationOptions(executionPolicy)
+        )
       : { request };
     const resolvedRequest = adaptiveRoute.request;
     const result =
@@ -1783,7 +1799,8 @@ export class SuggestedTradesService {
     userId: string,
     trade: SuggestedTrade,
     request: SuggestedTradePreTradeRequest,
-    sourceType: string
+    sourceType: string,
+    policyApplicationOptions: BrokerPolicyTradeSizeApplicationOptions = {}
   ): Promise<AdaptivePreTradeRouteDecision> {
     const adaptiveRoutingMode = this.resolveAdaptiveRoutingMode(request.executionMode, sourceType);
     const candidates = await this.listDefaultRouteCandidates(
@@ -1835,7 +1852,8 @@ export class SuggestedTradesService {
             ),
           },
         },
-        sourceType
+        sourceType,
+        policyApplicationOptions
       );
       const preview = (
         await this.riskPreTradeService.previewPreTradeCheck(userId, {
@@ -4401,9 +4419,11 @@ export class SuggestedTradesService {
         normalizedSizingNote: normalizedSizing.auditNote,
         deltaProtectionMode:
           brokerKey === 'delta_exchange' ? input.executionPolicy.deltaProtectionMode : null,
-        policyLeverageNote: `Using broker policy minimum leverage ${
-          this.formatNumericString(leverage) || leverage
-        }x.`,
+        policyLeverageNote: input.executionPolicy.explicitOrderTemplate?.leverage
+          ? `Using live automation leverage ${this.formatNumericString(leverage) || leverage}x.`
+          : `Using broker policy minimum leverage ${
+              this.formatNumericString(leverage) || leverage
+            }x.`,
         preTradeCheckId,
       },
     };
@@ -7159,10 +7179,20 @@ export class SuggestedTradesService {
     return null;
   }
 
+  private resolveBrokerPolicyTradeSizeApplicationOptions(
+    executionPolicy: ResolvedTradeSuggestionExecutionPolicy
+  ): BrokerPolicyTradeSizeApplicationOptions {
+    return {
+      applyPolicyMinLeverage: executionPolicy.explicitOrderTemplate?.leverage !== true,
+      applyPolicyTradeSizePct: executionPolicy.explicitOrderTemplate?.sizing !== true,
+    };
+  }
+
   private async applyBrokerPolicyTradeSize(
     userId: string,
     request: SuggestedTradePreTradeRequest,
-    sourceType: string
+    sourceType: string,
+    options: BrokerPolicyTradeSizeApplicationOptions = {}
   ): Promise<SuggestedTradePreTradeRequest> {
     if (!String(sourceType || '').startsWith('suggested_trade_automation_')) {
       return request;
@@ -7180,7 +7210,7 @@ export class SuggestedTradesService {
       sourceType === 'suggested_trade_automation_live_rollout'
         ? this.resolveLiveAutoPolicyMinLeverage(activePolicy)
         : null;
-    if (policyMinLeverage !== null) {
+    if (policyMinLeverage !== null && options.applyPolicyMinLeverage !== false) {
       nextOrder = {
         ...nextOrder,
         leverage: policyMinLeverage,
@@ -7188,7 +7218,10 @@ export class SuggestedTradesService {
     }
 
     const tradeSizePctOfBalance = this.readNumberValue(activePolicy?.tradeSizePctOfBalance);
-    if (!(tradeSizePctOfBalance && tradeSizePctOfBalance > 0)) {
+    if (
+      options.applyPolicyTradeSizePct === false ||
+      !(tradeSizePctOfBalance && tradeSizePctOfBalance > 0)
+    ) {
       return nextOrder === request.order
         ? request
         : {
@@ -7268,9 +7301,33 @@ export class SuggestedTradesService {
       : null;
     const automationConfig = this.readRecordValue(automation?.config) ?? {};
     const tradeSuggestion = this.readRecordValue(automationConfig.tradeSuggestion) ?? {};
-    const normalizedPolicy = normalizeTradeSuggestionExecutionPolicy(
-      tradeSuggestion.execution ?? automationConfig.config ?? null
-    );
+    const executionConfig = tradeSuggestion.execution ?? automationConfig.config ?? null;
+    const rawExecutionPolicy = this.readRecordValue(executionConfig) ?? {};
+    const rawOrderTemplate = this.readRecordValue(rawExecutionPolicy.orderTemplate) ?? {};
+    const rawOrderTemplateQuantityMode = this.readStringValue(
+      rawOrderTemplate.quantityMode
+    )?.toLowerCase();
+    const rawOrderTemplateQuantity = this.readNumberValue(rawOrderTemplate.quantity);
+    const rawOrderTemplateNotional = this.readNumberValue(rawOrderTemplate.notional);
+    const rawOrderTemplateRiskPercent = this.readNumberValue(rawOrderTemplate.riskPercent);
+    const explicitOrderTemplate = {
+      leverage: this.readNumberValue(rawOrderTemplate.leverage) !== null,
+      sizing:
+        (rawOrderTemplateQuantityMode === 'quantity' &&
+          rawOrderTemplateQuantity !== null &&
+          rawOrderTemplateQuantity > 0) ||
+        (rawOrderTemplateQuantityMode === 'notional' &&
+          rawOrderTemplateNotional !== null &&
+          rawOrderTemplateNotional > 0) ||
+        (rawOrderTemplateQuantityMode === 'risk_percent' &&
+          rawOrderTemplateRiskPercent !== null &&
+          rawOrderTemplateRiskPercent > 0) ||
+        (!rawOrderTemplateQuantityMode &&
+          ((rawOrderTemplateQuantity !== null && rawOrderTemplateQuantity > 0) ||
+            (rawOrderTemplateNotional !== null && rawOrderTemplateNotional > 0) ||
+            (rawOrderTemplateRiskPercent !== null && rawOrderTemplateRiskPercent > 0))),
+    };
+    const normalizedPolicy = normalizeTradeSuggestionExecutionPolicy(executionConfig);
     const routing = this.readRecordValue(normalizedPolicy.routing) ?? {};
     const orderTemplate = this.readRecordValue(normalizedPolicy.orderTemplate) ?? {};
     const limits = this.readRecordValue(normalizedPolicy.limits) ?? {};
@@ -7322,6 +7379,7 @@ export class SuggestedTradesService {
       notional: this.readNumberValue(orderTemplate.notional),
       riskPercent: this.readNumberValue(orderTemplate.riskPercent),
       leverage: this.readNumberValue(orderTemplate.leverage),
+      explicitOrderTemplate,
       reduceOnly: this.readBooleanValue(orderTemplate.reduceOnly) ?? false,
       deltaProtectionMode: this.readStringValue(orderTemplate.deltaProtectionMode),
       maxOrdersPerRun: Math.max(
