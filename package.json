@@ -102,6 +102,7 @@
     "smoke:automations-lifecycle": "node --import tsx scripts/smokes/smoke-automations-lifecycle.ts",
     "smoke:suggested-trades-lifecycle": "node --import tsx scripts/smokes/smoke-suggested-trades-lifecycle.ts",
     "proof:backtests-live": "node --import tsx scripts/proofs/proof-backtests-live.ts",
+    "proof:sol-smc-one-position": "node --import tsx scripts/proofs/proof-sol-smc-one-position-strategy.ts",
     "proof:suggested-trades-live": "node --import tsx scripts/proofs/proof-suggested-trades-live.ts",
     "proof:automations-live": "node --import tsx scripts/proofs/proof-automations-live.ts",
     "proof:orders-live": "node --import tsx scripts/proofs/proof-orders-live.ts",

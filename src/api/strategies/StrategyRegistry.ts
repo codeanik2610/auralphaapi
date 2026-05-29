@@ -1,11 +1,16 @@
 import { Inject, Service } from 'typedi';
 import { NotFoundAppError } from '../errors/AppError';
-import { StrategyCatalogItem, StrategyRunQuery, AlertConfirmStrategyResult } from '../contracts/Strategy';
+import {
+  StrategyCatalogItem,
+  StrategyExecutionResult,
+  StrategyRunQuery,
+} from '../contracts/Strategy';
 import { AlertConfirmStrategy } from './implementations/AlertConfirmStrategy';
+import { SolSmcOnePositionStrategy } from './implementations/SolSmcOnePositionStrategy';
 
 export interface StrategyHandler {
   readonly catalog: StrategyCatalogItem;
-  execute(query: StrategyRunQuery): Promise<AlertConfirmStrategyResult>;
+  execute(query: StrategyRunQuery): Promise<StrategyExecutionResult>;
 }
 
 @Service()
@@ -13,8 +18,11 @@ export class StrategyRegistry {
   @Inject(() => AlertConfirmStrategy)
   private alertConfirmStrategy!: AlertConfirmStrategy;
 
+  @Inject(() => SolSmcOnePositionStrategy)
+  private solSmcOnePositionStrategy!: SolSmcOnePositionStrategy;
+
   private get strategies(): StrategyHandler[] {
-    return [this.alertConfirmStrategy];
+    return [this.alertConfirmStrategy, this.solSmcOnePositionStrategy];
   }
 
   getStrategies(): StrategyCatalogItem[] {

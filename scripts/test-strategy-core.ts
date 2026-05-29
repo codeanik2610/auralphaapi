@@ -6,6 +6,10 @@ import { StrategyController } from '../src/api/controllers/StrategyController';
 import { StrategyService } from '../src/api/services/StrategyService';
 import { StrategyRegistry } from '../src/api/strategies/StrategyRegistry';
 import { AlertConfirmStrategy } from '../src/api/strategies/implementations/AlertConfirmStrategy';
+import {
+  SolSmcOnePositionStrategy,
+  SOL_SMC_ONE_POSITION_STRATEGY_ID,
+} from '../src/api/strategies/implementations/SolSmcOnePositionStrategy';
 import { validateStrategyRunRequest } from '../src/api/validators/strategy.validator';
 
 function createSuccess<T>(data: T) {
@@ -71,8 +75,14 @@ function runStrategyValidationAssertions(): void {
     }
   );
 
-  assert.throws(() => validateStrategyRunRequest({ symbols: 'BTCUSDT', interval: '1h' }), /strategyId is required/);
-  assert.throws(() => validateStrategyRunRequest({ strategyId: 'alert-confirm', interval: '1h' }), /symbols is required/);
+  assert.throws(
+    () => validateStrategyRunRequest({ symbols: 'BTCUSDT', interval: '1h' }),
+    /strategyId is required/
+  );
+  assert.throws(
+    () => validateStrategyRunRequest({ strategyId: 'alert-confirm', interval: '1h' }),
+    /symbols is required/
+  );
   assert.throws(
     () =>
       validateStrategyRunRequest({
@@ -86,16 +96,21 @@ function runStrategyValidationAssertions(): void {
 
 async function runStrategyRegistryAssertions(): Promise<void> {
   const strategy = new AlertConfirmStrategy();
+  const smcStrategy = new SolSmcOnePositionStrategy();
   const registry = new StrategyRegistry() as any;
   registry.alertConfirmStrategy = strategy;
+  registry.solSmcOnePositionStrategy = smcStrategy;
 
   const catalog = registry.getStrategies();
-  assert.equal(catalog.length, 1);
+  assert.equal(catalog.length, 2);
   assert.equal(catalog[0].strategyId, 'alert-confirm');
   assert.equal(catalog[0].name, 'Alert confirm');
+  assert.equal(catalog[1].strategyId, SOL_SMC_ONE_POSITION_STRATEGY_ID);
+  assert.equal(catalog[1].name, 'SOLUSDT 3m SMC one-position');
 
   const handler = registry.getStrategyOrThrow('alert-confirm');
   assert.equal(handler, strategy);
+  assert.equal(registry.getStrategyOrThrow(SOL_SMC_ONE_POSITION_STRATEGY_ID), smcStrategy);
 
   assert.throws(
     () => registry.getStrategyOrThrow('missing-strategy'),

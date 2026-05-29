@@ -1,7 +1,7 @@
 import { Body, Get, JsonController, Post } from 'routing-controllers';
 import { Inject, Service } from 'typedi';
 import type { ApiSuccessResponse } from '../contracts/ApiResponse';
-import type { AlertConfirmStrategyResult, StrategyCatalogItem } from '../contracts/Strategy';
+import type { StrategyExecutionResult, StrategyCatalogItem } from '../contracts/Strategy';
 import { StrategyService } from '../services/StrategyService';
 import type { StrategyRunRequest } from '../validators/strategy.validator';
 
@@ -17,9 +17,7 @@ export class StrategyController {
   }
 
   @Post('/get-trades')
-  async runStrategy(
-    @Body() body: unknown
-  ): Promise<ApiSuccessResponse<AlertConfirmStrategyResult>> {
+  async runStrategy(@Body() body: unknown): Promise<ApiSuccessResponse<StrategyExecutionResult>> {
     return this.strategyService.runStrategy(body as StrategyRunRequest);
   }
 }

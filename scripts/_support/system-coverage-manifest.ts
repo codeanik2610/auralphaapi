@@ -610,6 +610,9 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     controllers: ['StrategyController.ts'],
     services: ['StrategyService.ts'],
     tests: [script('test:strategy-core', 'scripts/test-strategy-core.ts')],
+    proofs: [
+      script('proof:sol-smc-one-position', 'scripts/proofs/proof-sol-smc-one-position-strategy.ts'),
+    ],
   },
   {
     key: 'strategy-library',

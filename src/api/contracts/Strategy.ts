@@ -70,3 +70,75 @@ export interface AlertConfirmStrategyResult {
   maxWaitBars: number;
   results: AlertConfirmStrategySymbolResult[];
 }
+
+export interface SmcStrategySummary {
+  trades: number;
+  targets: number;
+  stops: number;
+  breakeven: number;
+  expired: number;
+  winRate: number;
+  totalR: number;
+  avgR: number;
+  maxLosingStreak: number;
+}
+
+export interface SmcStrategyStats {
+  maxDrawdownR: number;
+  profitFactor: number;
+  maxOpenTrades: number;
+}
+
+export interface SmcStrategyTrade {
+  side: 'long' | 'short';
+  outcome: 'target' | 'stop' | 'breakeven' | 'expired';
+  realizedR: number;
+  sweepTime: string;
+  mssTime: string;
+  entryTime: string;
+  exitTime: string;
+  entryPrice: number;
+  stopLoss: number;
+  oneRStopMove: number;
+  rewardR: number;
+  targetR: number;
+  exitPrice: number;
+}
+
+export interface SmcStrategyComparisonMetric {
+  expected: number;
+  actual: number;
+  matches: boolean;
+}
+
+export interface SmcStrategyComparison {
+  expectedFrom: string;
+  metrics: Record<string, SmcStrategyComparisonMetric>;
+  matches: boolean;
+}
+
+export interface SolSmcOnePositionStrategyResult {
+  strategyId: string;
+  strategy: 'solusdt-3m-smc-one-position-sidehour';
+  symbol: 'SOLUSDT';
+  interval: '3m';
+  limit: number;
+  windowStart: string;
+  windowEnd: string;
+  validationStart: string;
+  candles: number;
+  settings: Record<string, unknown>;
+  full: SmcStrategySummary;
+  train: SmcStrategySummary;
+  validation: SmcStrategySummary;
+  stats: SmcStrategyStats;
+  comparison: SmcStrategyComparison;
+  trades: SmcStrategyTrade[];
+  charts: Record<string, string>;
+  artifacts: {
+    summaryPath: string | null;
+    strategyPath: string | null;
+  };
+}
+
+export type StrategyExecutionResult = AlertConfirmStrategyResult | SolSmcOnePositionStrategyResult;

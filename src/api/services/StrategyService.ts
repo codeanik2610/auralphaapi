@@ -1,7 +1,7 @@
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
 import {
-  AlertConfirmStrategyResult,
+  StrategyExecutionResult,
   StrategyCatalogItem,
   StrategyRunQuery,
 } from '../contracts/Strategy';
@@ -20,7 +20,7 @@ export class StrategyService {
 
   async runStrategy(
     request: StrategyRunRequest
-  ): Promise<ApiSuccessResponse<AlertConfirmStrategyResult>> {
+  ): Promise<ApiSuccessResponse<StrategyExecutionResult>> {
     const query = validateStrategyRunRequest(request);
     const strategy = this.strategyRegistry.getStrategyOrThrow(query.strategyId);
 
