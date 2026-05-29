@@ -1434,6 +1434,9 @@ async function runBacktestUpdateResultsAssertions(): Promise<void> {
 async function runBacktestAutomationSyncAssertions(): Promise<void> {
   const service = createBacktestsService();
 
+  service.backtestRepository = {
+    getBacktestByIdAny: async () => null,
+  };
   service.automationExecutionService = {
     syncBacktestRunnerLifecycleByBacktestId: async (backtestId: string) => {
       assert.equal(backtestId, 'backtest-sync-1');
@@ -1450,6 +1453,127 @@ async function runBacktestAutomationSyncAssertions(): Promise<void> {
   assert.equal(response.data.backtestId, 'backtest-sync-1');
   assert.equal(response.data.automationId, 'automation-1');
   assert.equal(response.data.automationRunId, 'run-1');
+}
+
+function runRegisteredSmcBacktestPayloadAssertions(): void {
+  const service = createBacktestsService();
+  const backtest = {
+    id: 'smc-backtest-1',
+    userId: 'user-1',
+    name: 'SMC - advanced - 3m',
+    strategy: 'SMC - advanced',
+    symbol: 'SOLUSDT',
+    parameter: 'SMC - advanced - 3m | SOLUSDT | 3m',
+  };
+  const config = {
+    templateName: 'SMC - advanced',
+    templateVersion: 4,
+    timeframes: ['3m'],
+    template: {
+      name: 'SMC - advanced',
+      config: {
+        codeDefinition: 'class SMCAdvanced(Strategy): pass',
+        notes: 'Same model, one-position only',
+      },
+    },
+  };
+  const result = {
+    strategyId: 'solusdt-smc-one-position',
+    strategy: 'solusdt-3m-smc-one-position-sidehour',
+    symbol: 'SOLUSDT',
+    interval: '3m',
+    limit: 0,
+    windowStart: '2026-04-29T08:24:00.000Z',
+    windowEnd: '2026-05-29T08:24:00.000Z',
+    validationStart: '2026-05-19T08:24:00.000Z',
+    candles: 14400,
+    settings: { rewardR: 8 },
+    full: {
+      trades: 29,
+      targets: 10,
+      stops: 19,
+      breakeven: 0,
+      expired: 0,
+      winRate: 0.3448,
+      totalR: 83.18,
+      avgR: 2.87,
+      maxLosingStreak: 3,
+    },
+    train: {
+      trades: 20,
+      targets: 7,
+      stops: 13,
+      breakeven: 0,
+      expired: 0,
+      winRate: 0.35,
+      totalR: 61.38,
+      avgR: 3.07,
+      maxLosingStreak: 3,
+    },
+    validation: {
+      trades: 9,
+      targets: 3,
+      stops: 6,
+      breakeven: 0,
+      expired: 0,
+      winRate: 0.3333,
+      totalR: 21.8,
+      avgR: 2.42,
+      maxLosingStreak: 2,
+    },
+    stats: {
+      maxDrawdownR: 3,
+      profitFactor: 4.04,
+      maxOpenTrades: 1,
+    },
+    comparison: {
+      matches: true,
+      expectedFrom: 'proof',
+      metrics: {
+        trades: { expected: 29, actual: 29, matches: true },
+      },
+    },
+    trades: [
+      {
+        side: 'long',
+        outcome: 'target',
+        realizedR: 8,
+        sweepTime: '2026-05-01T00:00:00.000Z',
+        mssTime: '2026-05-01T00:06:00.000Z',
+        entryTime: '2026-05-01T00:09:00.000Z',
+        exitTime: '2026-05-01T01:00:00.000Z',
+        entryPrice: 150,
+        stopLoss: 149,
+        oneRStopMove: 151,
+        rewardR: 8,
+        targetR: 158,
+        exitPrice: 158,
+      },
+    ],
+    charts: {},
+    artifacts: { summaryPath: null, strategyPath: null },
+  };
+
+  assert.equal(service.isSolSmcRegisteredBacktest(backtest, config), true);
+  assert.equal(service.resolveBacktestTimeframe(backtest, config), '3m');
+
+  const payload = service.buildRegisteredSolSmcResultPayload(backtest, config, result);
+  assert.equal(payload.status, 'Stable');
+  assert.equal(payload.trades, 29);
+  assert.equal(payload.cagr, 83.18);
+  assert.equal(payload.sharpe, 21.8);
+  assert.equal(payload.drawdown, 3);
+  assert.equal(payload.winRate, 34.48);
+  assert.equal(payload.config.registeredStrategyId, 'solusdt-smc-one-position');
+  assert.equal((payload.config.smcMetrics as any).actualOutput.maxOpenTrades, 1);
+  assert.equal((payload.performanceSurface.results as any[])[0].total_r, 83.18);
+  assert.equal((payload.performanceSurface.results as any[])[0].validation_r, 21.8);
+  assert.equal((payload.performanceSurface.results as any[])[0].units, 'R');
+
+  const trades = service.mapSmcTradesToBacktestTrades('user-1', 'smc-backtest-1', result);
+  assert.equal(trades.length, 1);
+  assert.equal(trades[0].side, 'BUY');
+  assert.equal(trades[0].entryPrice, 150);
 }
 
 async function runBacktestCreateFailureAlertAssertions(): Promise<void> {
@@ -2665,6 +2789,7 @@ async function main(): Promise<void> {
   await runBacktestRecoveryFailureAlertAssertions();
   await runBacktestUpdateResultsAssertions();
   await runBacktestAutomationSyncAssertions();
+  runRegisteredSmcBacktestPayloadAssertions();
   await runBacktestCreateFailureAlertAssertions();
   await runBacktestPromotionSnapshotAssertions();
   await runBacktestPromotionIdempotencyAssertions();

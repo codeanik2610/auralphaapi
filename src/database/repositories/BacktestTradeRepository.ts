@@ -114,4 +114,15 @@ export class BacktestTradeRepository {
 
     return Number(result?.rowCount || 0);
   }
+
+  async deleteTradesForBacktest(userId: string, backtestId: string): Promise<number> {
+    const result = await strategyDataSource.query(
+      `DELETE FROM backtest_trades
+       WHERE user_id = $1
+         AND backtest_id = $2`,
+      [userId, backtestId]
+    );
+
+    return Number(result?.rowCount || 0);
+  }
 }
