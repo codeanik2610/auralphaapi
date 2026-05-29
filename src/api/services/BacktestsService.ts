@@ -578,6 +578,10 @@ export class BacktestsService {
     backtest: Backtest,
     config: Record<string, unknown>
   ): boolean {
+    if (!this.isSingleSolSymbolScope(backtest, config)) {
+      return false;
+    }
+
     const template = this.parseRecord(config.template);
     const inputSnapshot = this.parseRecord(config.inputSnapshot);
     const snapshotTemplate = this.parseRecord(inputSnapshot?.template);
@@ -601,10 +605,53 @@ export class BacktestsService {
       .join(' ');
 
     return (
-      String(backtest.symbol || '').toUpperCase() === 'SOLUSDT' &&
       (haystack.includes('smc - advanced') ||
         haystack.includes('smcadvanced') ||
         haystack.includes(SOL_SMC_ONE_POSITION_STRATEGY_ID))
+    );
+  }
+
+  private isSingleSolSymbolScope(backtest: Backtest, config: Record<string, unknown>): boolean {
+    const inputSnapshot = this.parseRecord(config.inputSnapshot);
+    const scopedSymbolSets = [
+      this.normalizeSymbolScope(config.symbols),
+      this.normalizeSymbolScope(config.selectedAssets),
+      this.normalizeSymbolScope(config.assets),
+      this.normalizeSymbolScope(inputSnapshot?.symbols),
+      this.normalizeSymbolScope(inputSnapshot?.selectedAssets),
+      this.normalizeSymbolScope(inputSnapshot?.assets),
+    ].filter((symbols) => symbols.length > 0);
+
+    for (const symbols of scopedSymbolSets) {
+      if (symbols.length !== 1 || symbols[0] !== 'SOLUSDT') {
+        return false;
+      }
+    }
+
+    return String(backtest.symbol || '').trim().toUpperCase() === 'SOLUSDT';
+  }
+
+  private normalizeSymbolScope(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        value
+          .map((item) => {
+            if (typeof item === 'string') {
+              return item;
+            }
+            if (item && typeof item === 'object') {
+              const record = item as Record<string, unknown>;
+              return record.symbol ?? record.value ?? record.id ?? '';
+            }
+            return '';
+          })
+          .map((symbol) => String(symbol || '').trim().toUpperCase())
+          .filter(Boolean)
+      )
     );
   }
 

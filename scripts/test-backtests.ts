@@ -1556,6 +1556,29 @@ function runRegisteredSmcBacktestPayloadAssertions(): void {
 
   assert.equal(service.isSolSmcRegisteredBacktest(backtest, config), true);
   assert.equal(service.resolveBacktestTimeframe(backtest, config), '3m');
+  assert.equal(
+    service.isSolSmcRegisteredBacktest(backtest, {
+      ...config,
+      symbols: ['SOLUSDT', 'BTCUSDT'],
+    }),
+    false
+  );
+  assert.equal(
+    service.isSolSmcRegisteredBacktest(backtest, {
+      ...config,
+      symbols: ['SOLUSDT'],
+    }),
+    true
+  );
+  assert.equal(
+    service.isSolSmcRegisteredBacktest(backtest, {
+      ...config,
+      inputSnapshot: {
+        selectedAssets: [{ symbol: 'SOLUSDT' }, { symbol: 'ETHUSDT' }],
+      },
+    }),
+    false
+  );
 
   const payload = service.buildRegisteredSolSmcResultPayload(backtest, config, result);
   assert.equal(payload.status, 'Stable');
