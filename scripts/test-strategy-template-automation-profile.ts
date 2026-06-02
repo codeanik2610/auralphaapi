@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { buildTwoStageCandleBreakoutTemplateConfig } from '../src/api/strategies/templates/TwoStageCandleBreakoutTemplate';
 import { buildStrategyTemplateAutomationProfile } from '../src/api/utils/strategyTemplateAutomation';
 import {
   First60TemplateSimulationCandle,
@@ -171,6 +172,42 @@ assert.equal(
 );
 assert.equal(first60Managed.tradeManagement?.first60?.short?.decisionGate.managementEnabled, false);
 assert.equal(first60Managed.tradeManagement?.first60?.short?.decisionGate.diagnosticsEnabled, true);
+
+const twoStageConfig = buildTwoStageCandleBreakoutTemplateConfig();
+const twoStageProfile = buildStrategyTemplateAutomationProfile(twoStageConfig);
+const twoStageRisk = twoStageConfig.risk as Record<string, unknown>;
+const twoStageParameters = twoStageConfig.parameters as Record<string, unknown>;
+
+assert.equal(twoStageProfile.automationReady, true);
+assert.deepEqual(twoStageProfile.supports, {
+  long: true,
+  short: true,
+  customPython: true,
+  ruleBased: false,
+});
+assert.equal(twoStageProfile.tradePlan.long?.stopLossMode, 'dynamic_first_stage_candle');
+assert.equal(twoStageProfile.tradePlan.short?.stopLossMode, 'dynamic_first_stage_candle');
+assert.equal(twoStageProfile.tradePlan.long?.takeProfitMode, 'dynamic_r_multiple');
+assert.equal(twoStageProfile.tradePlan.short?.takeProfitMode, 'dynamic_r_multiple');
+assert.equal(twoStageProfile.tradePlan.long?.riskRewardRatio, 6);
+assert.equal(twoStageProfile.tradePlan.short?.riskRewardRatio, 6);
+assert.deepEqual(twoStageProfile.tradePlan.long?.takeProfitTargetsPct, []);
+assert.equal(twoStageProfile.execution.useClosedCandlesOnly, true);
+assert.equal(twoStageProfile.execution.evaluationTimeframe, 'automation');
+assert.equal(twoStageProfile.tradeManagement?.trailingStop?.timeframe, '1m');
+assert.deepEqual(twoStageProfile.tradeManagement?.trailingStop?.rules, [
+  { whenProfitR: 1, moveStopToR: 0 },
+  { whenProfitR: 3, moveStopToR: 1 },
+  { whenProfitR: 4, moveStopToR: 2 },
+  { whenProfitR: 5, moveStopToR: 3 },
+]);
+assert.equal(twoStageRisk.riskRewardRatio, 6);
+assert.equal(twoStageParameters.rewardR, 6);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /class TwoStageCandleBreakout16\(Strategy\):/
+);
+assert.match(String(twoStageConfig.codeDefinition || ''), /def entry_short_plan\(self, ctx\):/);
 
 const first60Report = simulateFirst60TemplateProfile(
   first60Managed,

@@ -52,6 +52,7 @@ import { StrategyLibraryService } from '../src/api/services/StrategyLibraryServi
 import { StrategyLabService } from '../src/api/services/StrategyLabService';
 import { StrategyService } from '../src/api/services/StrategyService';
 import { StrategyTemplatesService } from '../src/api/services/StrategyTemplatesService';
+import { buildTwoStageCandleBreakoutTemplateConfig } from '../src/api/strategies/templates/TwoStageCandleBreakoutTemplate';
 import { WhatsappNotificationsService } from '../src/api/services/WhatsappNotificationsService';
 import { DeltaExchangeOrdersAdapter } from '../src/brokers/capabilities/orders';
 import { EmailDeliveryWorker } from '../src/email/EmailDeliveryWorker';
@@ -7702,6 +7703,47 @@ class BreakoutRisk(Strategy):
   assert.equal(normalizedPythonRisk.risk.stop_loss_pct, 1.2);
   assert.equal(normalizedPythonRisk.risk.take_profit_pct, 2.6);
   assert.equal(normalizedPythonRisk.risk.maxRisk, '1.5');
+
+  const normalizedTwoStage = service.coerceTemplateConfigToPython(
+    buildTwoStageCandleBreakoutTemplateConfig(),
+    'Two-Stage Candle Breakout 1:6'
+  );
+  const normalizedTwoStageRisk = normalizedTwoStage.risk as Record<string, unknown>;
+  const normalizedTwoStageParameters = normalizedTwoStage.parameters as Record<string, unknown>;
+  const normalizedTwoStageAutomation = normalizedTwoStage.automation as Record<string, unknown>;
+  const normalizedTwoStageAutomationProfile = normalizedTwoStage.automationProfile as Record<
+    string,
+    unknown
+  >;
+  const normalizedTwoStageTradeManagement = normalizedTwoStage.tradeManagement as Record<
+    string,
+    unknown
+  >;
+  assert.equal(normalizedTwoStageRisk.stopLossMode, 'dynamic_first_stage_candle');
+  assert.equal(normalizedTwoStageRisk.takeProfitMode, 'dynamic_r_multiple');
+  assert.equal(normalizedTwoStageRisk.riskRewardRatio, 6);
+  assert.equal(normalizedTwoStageParameters.rewardR, 6);
+  assert.equal(normalizedTwoStageParameters.stopBufferPct, 0);
+  assert.equal(
+    (normalizedTwoStageAutomation.timeframePolicy as Record<string, unknown>)?.useClosedCandlesOnly,
+    true
+  );
+  assert.equal(
+    (
+      (normalizedTwoStageTradeManagement.trailingStop as Record<string, unknown>)
+        ?.rules as unknown[]
+    ).length,
+    4
+  );
+  assert.equal(
+    (
+      (normalizedTwoStageAutomationProfile.tradePlan as Record<string, unknown>)?.long as Record<
+        string,
+        unknown
+      >
+    )?.riskRewardRatio,
+    6
+  );
 
   const normalizedShort = service.coerceTemplateConfigToPython(
     {

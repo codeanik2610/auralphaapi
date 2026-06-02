@@ -477,6 +477,12 @@ export class StrategyTemplatesService {
       !Array.isArray(mutable.tradeManagement)
         ? (mutable.tradeManagement as Record<string, unknown>)
         : null;
+    const automation =
+      mutable.automation &&
+      typeof mutable.automation === 'object' &&
+      !Array.isArray(mutable.automation)
+        ? (mutable.automation as Record<string, unknown>)
+        : null;
     const maxRisk = this.cleanText(risk.maxRisk ?? risk.max_per_trade);
     const sizingNotes = this.cleanText(risk.sizingNotes);
     const executionRisk = this.extractExecutionRiskFromCodeDefinition(rawCode);
@@ -576,11 +582,13 @@ export class StrategyTemplatesService {
       exitShortLogic,
       shortEnabled: hasShortLogic,
       risk: {
+        ...risk,
         maxRisk: maxRisk || '',
         sizingNotes: sizingNotes || '',
         ...executionRisk,
       },
       parameters: {
+        ...parameters,
         signalThreshold: signalThreshold || '',
       },
       notes: notes || '',
@@ -590,6 +598,7 @@ export class StrategyTemplatesService {
         paperTradeFirst: Boolean(filters.paperTradeFirst),
       },
       ...(tradeManagement ? { tradeManagement } : {}),
+      ...(automation ? { automation } : {}),
       description: description || '',
     };
 

@@ -54,6 +54,7 @@
     "test:suggested-trades": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-suggested-trades.ts",
     "test:signals": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-signals.ts",
     "test:strategy-template-automation-profile": "node --import tsx scripts/test-strategy-template-automation-profile.ts",
+    "strategy:install:two-stage-candle-breakout": "node --import tsx scripts/strategies/install-two-stage-candle-breakout-template.ts",
     "test:watchlists": "node --import tsx scripts/_support/run-doc-aware-test.ts scripts/test-watchlists.ts",
     "test:orders": "node --import tsx scripts/test-orders.ts",
     "test:broker-canary-monitor": "node --import tsx scripts/test-broker-canary-monitor.ts",
