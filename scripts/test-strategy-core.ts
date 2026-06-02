@@ -107,6 +107,11 @@ async function runStrategyRegistryAssertions(): Promise<void> {
   assert.equal(catalog[0].name, 'Alert confirm');
   assert.equal(catalog[1].strategyId, SOL_SMC_ONE_POSITION_STRATEGY_ID);
   assert.equal(catalog[1].name, 'SOLUSDT 3m SMC one-position');
+  const smcWindowEndParam = catalog[1].paramsSchema.find(
+    (param: { key?: string }) => param.key === 'windowEnd'
+  );
+  assert.equal(smcWindowEndParam?.defaultValue, 'latest');
+  assert.match(String(smcWindowEndParam?.description || ''), /latest/);
 
   const handler = registry.getStrategyOrThrow('alert-confirm');
   assert.equal(handler, strategy);

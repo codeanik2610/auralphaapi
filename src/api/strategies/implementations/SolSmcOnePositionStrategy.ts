@@ -16,9 +16,7 @@ const SOURCE = 'https://fapi.binance.com/fapi/v1/klines';
 const WINDOW_DAYS = 30;
 const WARMUP_DAYS = 7;
 const VALIDATION_DAYS = 10;
-const DEFAULT_WINDOW_END_ISO = '2026-05-29T08:24:00.000Z';
-const WINDOW_END_ISO = process.env.SMC_WINDOW_END ?? DEFAULT_WINDOW_END_ISO;
-const FIXED_WINDOW_END = Date.parse(WINDOW_END_ISO);
+const ENV_WINDOW_END_ISO = String(process.env.SMC_WINDOW_END || '').trim();
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TIMEFRAMES = [{ timeframe: '3m', intervalMs: 3 * 60 * 1000, htfMs: 60 * 60 * 1000 }];
 
@@ -154,8 +152,30 @@ const normalizeCandles = (rows) =>
     .filter((item, index, array) => index === 0 || item.openTime !== array[index - 1].openTime)
     .map((item, index) => ({ ...item, index }));
 
-const fetchCandles = async ({ timeframe, intervalMs, fixedWindowEnd = FIXED_WINDOW_END }) => {
-  let windowEnd = fixedWindowEnd;
+const resolveWindowEndOption = (rawValue) => {
+  const raw = String(rawValue || '').trim();
+  if (!raw || raw.toLowerCase() === 'latest' || raw.toLowerCase() === 'dynamic') {
+    return {
+      fixedWindowEnd: null,
+      requestedWindowEnd: raw || 'latest',
+      windowEndMode: 'latest',
+    };
+  }
+
+  const fixedWindowEnd = Date.parse(raw);
+  if (!Number.isFinite(fixedWindowEnd)) {
+    throw new Error(`SMC windowEnd must be an ISO timestamp or "latest". Received: ${raw}`);
+  }
+
+  return {
+    fixedWindowEnd,
+    requestedWindowEnd: raw,
+    windowEndMode: 'fixed',
+  };
+};
+
+const fetchCandles = async ({ timeframe, intervalMs, fixedWindowEnd = null }) => {
+  let windowEnd = Number(fixedWindowEnd);
   if (!Number.isFinite(windowEnd)) {
     const latestUrl = `${SOURCE}?symbol=${SYMBOL}&interval=${timeframe}&limit=1`;
     const latestRows = await fetchJson(latestUrl);
@@ -1194,14 +1214,10 @@ export const buildSolSmcOnePositionStrategySpec = () => ({
 
 export const runSolSmcOnePositionBacktest = async (options = {}) => {
   const outputDir = path.resolve(String(options.outputDir || DEFAULT_OUT_DIR));
-  const requestedWindowEnd = String(options.windowEndIso || WINDOW_END_ISO);
-  const fixedWindowEnd = Date.parse(requestedWindowEnd);
+  const windowEndOption = resolveWindowEndOption(options.windowEndIso ?? ENV_WINDOW_END_ISO);
+  const { requestedWindowEnd, fixedWindowEnd, windowEndMode } = windowEndOption;
   const writeArtifacts = options.writeArtifacts !== false;
   const writeCharts = writeArtifacts && options.writeCharts !== false;
-
-  if (!Number.isFinite(fixedWindowEnd)) {
-    throw new Error(`SMC windowEnd must be an ISO timestamp. Received: ${requestedWindowEnd}`);
-  }
 
   if (writeArtifacts) {
     fs.mkdirSync(outputDir, { recursive: true });
@@ -1214,7 +1230,7 @@ export const runSolSmcOnePositionBacktest = async (options = {}) => {
     validationDays: VALIDATION_DAYS,
     generatedAt: new Date().toISOString(),
     source: SOURCE,
-    windowEndMode: 'fixed',
+    windowEndMode,
     requestedWindowEnd,
     strategy: strategySpec,
     results: [],
@@ -1326,14 +1342,15 @@ export class SolSmcOnePositionStrategy implements StrategyHandler {
     strategyId: SOL_SMC_ONE_POSITION_STRATEGY_ID,
     name: 'SOLUSDT 3m SMC one-position',
     description:
-      'Runs the fixed SOLUSDT 3m SMC side-hour model with one-position-only execution and compares it with the mined baseline.',
+      'Runs the SOLUSDT 3m SMC side-hour model with one-position-only execution and a dynamic latest-candle backtest window unless a fixed windowEnd is supplied.',
     paramsSchema: [
       {
         key: 'windowEnd',
         type: 'string',
         required: false,
-        description: 'Fixed ISO end timestamp for the 30-day backtest window.',
-        defaultValue: DEFAULT_WINDOW_END_ISO,
+        description:
+          'ISO end timestamp for the 30-day backtest window, or "latest" for the newest available candle.',
+        defaultValue: 'latest',
       },
       {
         key: 'writeArtifacts',
@@ -1361,7 +1378,7 @@ export class SolSmcOnePositionStrategy implements StrategyHandler {
     const windowEndIso =
       typeof rawWindowEnd === 'string' && rawWindowEnd.trim()
         ? rawWindowEnd.trim()
-        : DEFAULT_WINDOW_END_ISO;
+        : undefined;
     const writeArtifacts = parseBooleanParam(query.params.writeArtifacts, true);
     const outputDir =
       typeof query.params.outputDir === 'string' && query.params.outputDir.trim()
