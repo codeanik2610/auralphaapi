@@ -7706,7 +7706,7 @@ class BreakoutRisk(Strategy):
 
   const normalizedTwoStage = service.coerceTemplateConfigToPython(
     buildTwoStageCandleBreakoutTemplateConfig(),
-    'Two-Stage Candle Breakout 1:6'
+    'Two-Stage Candle Breakout 1:4'
   );
   const normalizedTwoStageRisk = normalizedTwoStage.risk as Record<string, unknown>;
   const normalizedTwoStageParameters = normalizedTwoStage.parameters as Record<string, unknown>;
@@ -7715,26 +7715,16 @@ class BreakoutRisk(Strategy):
     string,
     unknown
   >;
-  const normalizedTwoStageTradeManagement = normalizedTwoStage.tradeManagement as Record<
-    string,
-    unknown
-  >;
   assert.equal(normalizedTwoStageRisk.stopLossMode, 'dynamic_first_stage_candle');
   assert.equal(normalizedTwoStageRisk.takeProfitMode, 'dynamic_r_multiple');
-  assert.equal(normalizedTwoStageRisk.riskRewardRatio, 6);
-  assert.equal(normalizedTwoStageParameters.rewardR, 6);
+  assert.equal(normalizedTwoStageRisk.riskRewardRatio, 4);
+  assert.equal(normalizedTwoStageParameters.rewardR, 4);
   assert.equal(normalizedTwoStageParameters.stopBufferPct, 0);
   assert.equal(
     (normalizedTwoStageAutomation.timeframePolicy as Record<string, unknown>)?.useClosedCandlesOnly,
     true
   );
-  assert.equal(
-    (
-      (normalizedTwoStageTradeManagement.trailingStop as Record<string, unknown>)
-        ?.rules as unknown[]
-    ).length,
-    4
-  );
+  assert.equal(normalizedTwoStage.tradeManagement, undefined);
   assert.equal(
     (
       (normalizedTwoStageAutomationProfile.tradePlan as Record<string, unknown>)?.long as Record<
@@ -7742,7 +7732,7 @@ class BreakoutRisk(Strategy):
         unknown
       >
     )?.riskRewardRatio,
-    6
+    4
   );
 
   const normalizedShort = service.coerceTemplateConfigToPython(

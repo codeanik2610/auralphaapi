@@ -1,20 +1,24 @@
 import { buildStrategyTemplateAutomationProfile } from '../../utils/strategyTemplateAutomation';
 
-export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_NAME = 'Two-Stage Candle Breakout 1:6';
+export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_NAME = 'Two-Stage Candle Breakout 1:4';
+
+export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_LEGACY_NAMES = [
+  'Two-Stage Candle Breakout 1:6',
+] as const;
 
 export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION =
-  'Two-stage red/green or green/red candle flow. Entry is on the second confirmation candle close, stop is anchored to the first setup candle, target is 1:6, and trailing uses an R ladder.';
+  'Two-stage red/green or green/red candle flow. Entry is on the second confirmation candle close, stop is anchored to the first setup candle, and target is 1:4.';
 
 export const TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE = String.raw`from auralpha import Strategy
 
 
-class TwoStageCandleBreakout16(Strategy):
-    name = "Two-Stage Candle Breakout 1:6"
+class TwoStageCandleBreakout14(Strategy):
+    name = "Two-Stage Candle Breakout 1:4"
     market = "crypto-futures"
     timeframe = "automation"
 
     params = {
-        "reward_r": 6,
+        "reward_r": 4,
         "stop_buffer_pct": 0.0,
     }
 
@@ -23,7 +27,7 @@ class TwoStageCandleBreakout16(Strategy):
         "signal_threshold": 0.65,
         "stopLossMode": "dynamic_first_stage_candle",
         "takeProfitMode": "dynamic_r_multiple",
-        "risk_reward_ratio": 6,
+        "risk_reward_ratio": 4,
     }
 
     def prepare(self, df):
@@ -81,9 +85,9 @@ class TwoStageCandleBreakout16(Strategy):
         return self._close(df, index) > self._open(df, index)
 
     def _reward_r(self):
-        value = float(self.params.get("reward_r", 6))
+        value = float(self.params.get("reward_r", 4))
         if value <= 0:
-            return 6.0
+            return 4.0
         return value
 
     def _stop_buffer_pct(self):
@@ -224,7 +228,7 @@ class TwoStageCandleBreakout16(Strategy):
                 "second_red_index": second_red_index,
                 "entry_index": entry_index,
                 "stop_basis": "first_red_low",
-                "target_basis": "entry_plus_6r",
+                "target_basis": "entry_plus_4r",
             },
         }
         return True
@@ -261,25 +265,11 @@ class TwoStageCandleBreakout16(Strategy):
                 "second_green_index": second_green_index,
                 "entry_index": entry_index,
                 "stop_basis": "first_green_high",
-                "target_basis": "entry_minus_6r",
+                "target_basis": "entry_minus_4r",
             },
         }
         return True
 `;
-
-export const TWO_STAGE_CANDLE_BREAKOUT_TRAILING_STOP = {
-  enabled: true,
-  mode: 'custom_r_ladder',
-  basis: 'actual_fill',
-  timeframe: '1m',
-  updateOnlyInProfitDirection: true,
-  rules: [
-    { whenProfitR: 1, moveStopToR: 0 },
-    { whenProfitR: 3, moveStopToR: 1 },
-    { whenProfitR: 4, moveStopToR: 2 },
-    { whenProfitR: 5, moveStopToR: 3 },
-  ],
-} as const;
 
 export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unknown> {
   const config: Record<string, unknown> = {
@@ -292,12 +282,10 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
     market: 'crypto-futures',
     entryLogic:
       'Buy: red candle, immediate next green does not break that red low and closes above the red high, then a second red/green hold pair triggers entry at green close.',
-    exitLogic:
-      'Long exit is managed by dynamic first-red stop, 1:6 target, and R-ladder trailing stop.',
+    exitLogic: 'Long exit is managed by dynamic first-red stop and 1:4 target.',
     entryShortLogic:
       'Sell: inverse flow with green candle, immediate next red does not break that green high and closes below the green low, then a second green/red hold pair triggers entry at red close.',
-    exitShortLogic:
-      'Short exit is managed by dynamic first-green stop, 1:6 target, and R-ladder trailing stop.',
+    exitShortLogic: 'Short exit is managed by dynamic first-green stop and 1:4 target.',
     shortEnabled: true,
     risk: {
       maxRisk: '1',
@@ -307,16 +295,16 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       stop_loss_mode: 'dynamic_first_stage_candle',
       takeProfitMode: 'dynamic_r_multiple',
       take_profit_mode: 'dynamic_r_multiple',
-      riskRewardRatio: 6,
-      risk_reward_ratio: 6,
+      riskRewardRatio: 4,
+      risk_reward_ratio: 4,
       sizingNotes:
-        'Per-trade stop and target are emitted by the Python entry plan: long stop below first red low, short stop above first green high, target at 6R.',
+        'Per-trade stop and target are emitted by the Python entry plan: long stop below first red low, short stop above first green high, target at 4R.',
     },
     parameters: {
       signalThreshold: '0.65',
       signal_threshold: 0.65,
-      rewardR: 6,
-      reward_r: 6,
+      rewardR: 4,
+      reward_r: 4,
       stopBufferPct: 0,
       stop_buffer_pct: 0,
     },
@@ -327,9 +315,6 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
         initialStopLossTimeframe: 'evaluation',
         targetTimeframe: 'evaluation',
       },
-    },
-    tradeManagement: {
-      trailingStop: TWO_STAGE_CANDLE_BREAKOUT_TRAILING_STOP,
     },
     filters: {
       useAiFilter: false,

@@ -189,25 +189,19 @@ assert.equal(twoStageProfile.tradePlan.long?.stopLossMode, 'dynamic_first_stage_
 assert.equal(twoStageProfile.tradePlan.short?.stopLossMode, 'dynamic_first_stage_candle');
 assert.equal(twoStageProfile.tradePlan.long?.takeProfitMode, 'dynamic_r_multiple');
 assert.equal(twoStageProfile.tradePlan.short?.takeProfitMode, 'dynamic_r_multiple');
-assert.equal(twoStageProfile.tradePlan.long?.riskRewardRatio, 6);
-assert.equal(twoStageProfile.tradePlan.short?.riskRewardRatio, 6);
+assert.equal(twoStageProfile.tradePlan.long?.riskRewardRatio, 4);
+assert.equal(twoStageProfile.tradePlan.short?.riskRewardRatio, 4);
 assert.deepEqual(twoStageProfile.tradePlan.long?.takeProfitTargetsPct, []);
 assert.equal(twoStageProfile.execution.useClosedCandlesOnly, true);
 assert.equal(twoStageProfile.execution.evaluationTimeframe, 'automation');
-assert.equal(twoStageProfile.tradeManagement?.trailingStop?.timeframe, '1m');
-assert.deepEqual(twoStageProfile.tradeManagement?.trailingStop?.rules, [
-  { whenProfitR: 1, moveStopToR: 0 },
-  { whenProfitR: 3, moveStopToR: 1 },
-  { whenProfitR: 4, moveStopToR: 2 },
-  { whenProfitR: 5, moveStopToR: 3 },
-]);
-assert.equal(twoStageRisk.riskRewardRatio, 6);
-assert.equal(twoStageParameters.rewardR, 6);
+assert.equal(twoStageProfile.tradeManagement, undefined);
+assert.equal(twoStageRisk.riskRewardRatio, 4);
+assert.equal(twoStageParameters.rewardR, 4);
 assert.match(String(twoStageConfig.entryLogic || ''), /immediate next green/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /immediate next red/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
-  /class TwoStageCandleBreakout16\(Strategy\):/
+  /class TwoStageCandleBreakout14\(Strategy\):/
 );
 assert.match(
   String(twoStageConfig.codeDefinition || ''),

@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { EntityManager } from 'typeorm';
 import {
   buildTwoStageCandleBreakoutTemplatePayload,
+  TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_LEGACY_NAMES,
   TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_NAME,
 } from '../../src/api/strategies/templates/TwoStageCandleBreakoutTemplate';
 import { StrategyTemplate, StrategyTemplateVersion } from '../../src/database';
@@ -83,12 +84,19 @@ const installTemplate = async (): Promise<InstallResult> => {
 
   return strategyDataSource.transaction(async (manager) => {
     const templateRepository = manager.getRepository(StrategyTemplate);
-    const existing = await templateRepository.findOne({
-      where: {
-        userId,
-        name: TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_NAME,
-      },
-    });
+    const templateNames = [
+      TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_NAME,
+      ...TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_LEGACY_NAMES,
+    ];
+    const existingRows = await templateRepository
+      .createQueryBuilder('template')
+      .where('template.user_id = :userId', { userId })
+      .andWhere('template.name IN (:...templateNames)', { templateNames })
+      .orderBy(`CASE WHEN template.name = :currentName THEN 0 ELSE 1 END`, 'ASC')
+      .addOrderBy('template.updated_at', 'DESC')
+      .setParameter('currentName', TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_NAME)
+      .getMany();
+    const existing = existingRows[0] ?? null;
 
     if (!existing) {
       const created = await templateRepository.save(
@@ -114,7 +122,9 @@ const installTemplate = async (): Promise<InstallResult> => {
     const nextDescription = payload.description ?? null;
     const nextStatus = payload.status;
     const nextConfig = payload.config;
+    const nextName = payload.name;
     const hasChanges =
+      existing.name !== nextName ||
       existing.description !== nextDescription ||
       existing.status !== nextStatus ||
       serializeConfig(existing.config) !== serializeConfig(nextConfig);
@@ -129,6 +139,7 @@ const installTemplate = async (): Promise<InstallResult> => {
       };
     }
 
+    existing.name = nextName;
     existing.description = nextDescription;
     existing.status = nextStatus;
     existing.config = nextConfig;
