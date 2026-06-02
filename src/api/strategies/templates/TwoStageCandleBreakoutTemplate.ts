@@ -16,7 +16,6 @@ class TwoStageCandleBreakout16(Strategy):
     params = {
         "reward_r": 6,
         "stop_buffer_pct": 0.0,
-        "invalidate_on_first_candle_break": True,
     }
 
     risk = {
@@ -93,9 +92,6 @@ class TwoStageCandleBreakout16(Strategy):
             return 0.0
         return value
 
-    def _invalidates_on_break(self):
-        return bool(self.params.get("invalidate_on_first_candle_break", True))
-
     def _build_long_signals(self, df):
         total = len(df)
         index = 0
@@ -114,26 +110,12 @@ class TwoStageCandleBreakout16(Strategy):
                 first_green_index >= total
                 or not self._is_green(df, first_green_index)
                 or self._low(df, first_green_index) < first_red_low
+                or self._close(df, first_green_index) <= first_red_high
             ):
                 index += 1
                 continue
 
-            alert_index = None
-            scan_index = first_green_index + 1
-            while scan_index < total - 2:
-                if self._invalidates_on_break() and self._low(df, scan_index) < first_red_low:
-                    break
-                if self._close(df, scan_index) > first_red_high:
-                    alert_index = scan_index
-                    break
-                scan_index += 1
-
-            if alert_index is None:
-                if scan_index >= total - 2:
-                    break
-                index = scan_index
-                continue
-
+            alert_index = first_green_index
             second_red_index = alert_index + 1
             found_entry = False
 
@@ -178,26 +160,12 @@ class TwoStageCandleBreakout16(Strategy):
                 first_red_index >= total
                 or not self._is_red(df, first_red_index)
                 or self._high(df, first_red_index) > first_green_high
+                or self._close(df, first_red_index) >= first_green_low
             ):
                 index += 1
                 continue
 
-            alert_index = None
-            scan_index = first_red_index + 1
-            while scan_index < total - 2:
-                if self._invalidates_on_break() and self._high(df, scan_index) > first_green_high:
-                    break
-                if self._close(df, scan_index) < first_green_low:
-                    alert_index = scan_index
-                    break
-                scan_index += 1
-
-            if alert_index is None:
-                if scan_index >= total - 2:
-                    break
-                index = scan_index
-                continue
-
+            alert_index = first_red_index
             second_green_index = alert_index + 1
             found_entry = False
 
@@ -323,11 +291,11 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
     compiledCodeDefinition: TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE,
     market: 'crypto-futures',
     entryLogic:
-      'Buy: red candle, next green does not break that red low, later alert closes above the red high, then a second red/green hold pair triggers entry at green close.',
+      'Buy: red candle, immediate next green does not break that red low and closes above the red high, then a second red/green hold pair triggers entry at green close.',
     exitLogic:
       'Long exit is managed by dynamic first-red stop, 1:6 target, and R-ladder trailing stop.',
     entryShortLogic:
-      'Sell: inverse flow with green candle, next red does not break that green high, later alert closes below the green low, then a second green/red hold pair triggers entry at red close.',
+      'Sell: inverse flow with green candle, immediate next red does not break that green high and closes below the green low, then a second green/red hold pair triggers entry at red close.',
     exitShortLogic:
       'Short exit is managed by dynamic first-green stop, 1:6 target, and R-ladder trailing stop.',
     shortEnabled: true,
@@ -351,8 +319,6 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       reward_r: 6,
       stopBufferPct: 0,
       stop_buffer_pct: 0,
-      invalidateOnFirstCandleBreak: true,
-      invalidate_on_first_candle_break: true,
     },
     automation: {
       timeframePolicy: {
@@ -371,7 +337,7 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       paperTradeFirst: true,
     },
     notes:
-      'Signals require closed candles. The first setup invalidates if price breaks the first anchor candle before the alert.',
+      'Signals require closed candles. The first confirmation candle must also be the alert candle.',
     description: TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION,
   };
 

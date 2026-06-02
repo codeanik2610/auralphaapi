@@ -203,9 +203,19 @@ assert.deepEqual(twoStageProfile.tradeManagement?.trailingStop?.rules, [
 ]);
 assert.equal(twoStageRisk.riskRewardRatio, 6);
 assert.equal(twoStageParameters.rewardR, 6);
+assert.match(String(twoStageConfig.entryLogic || ''), /immediate next green/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /immediate next red/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /class TwoStageCandleBreakout16\(Strategy\):/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /self\._close\(df, first_green_index\) <= first_red_high/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /self\._close\(df, first_red_index\) >= first_green_low/
 );
 assert.match(String(twoStageConfig.codeDefinition || ''), /def entry_short_plan\(self, ctx\):/);
 
