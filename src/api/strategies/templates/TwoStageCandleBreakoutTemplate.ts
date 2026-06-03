@@ -7,7 +7,7 @@ export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_LEGACY_NAMES = [
 ] as const;
 
 export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION =
-  'Two-stage red/green or green/red candle flow. Entry is on the second confirmation candle close, stop is anchored to the first setup candle, and target is 1:4.';
+  'Two-stage red/green or green/red candle flow. Entry is on the second confirmation candle midpoint, stop is anchored to the second setup candle, and target is 1:4.';
 
 export const TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE = String.raw`from auralpha import Strategy
 
@@ -25,7 +25,7 @@ class TwoStageCandleBreakout14(Strategy):
     risk = {
         "max_per_trade": 1,
         "signal_threshold": 0.65,
-        "stopLossMode": "dynamic_first_stage_candle",
+        "stopLossMode": "dynamic_second_stage_candle",
         "takeProfitMode": "dynamic_r_multiple",
         "risk_reward_ratio": 4,
     }
@@ -78,6 +78,9 @@ class TwoStageCandleBreakout14(Strategy):
     def _close(self, df, index):
         return float(df["close"].iloc[index])
 
+    def _mid(self, df, index):
+        return (self._high(df, index) + self._low(df, index)) / 2.0
+
     def _is_red(self, df, index):
         return self._close(df, index) < self._open(df, index)
 
@@ -126,9 +129,10 @@ class TwoStageCandleBreakout14(Strategy):
             while second_red_index < total - 1:
                 if self._is_red(df, second_red_index):
                     second_green_index = second_red_index + 1
+                    second_red_low = self._low(df, second_red_index)
                     if (
                         self._is_green(df, second_green_index)
-                        and self._low(df, second_green_index) >= self._low(df, second_red_index)
+                        and self._low(df, second_green_index) >= second_red_low
                     ):
                         if self._set_long_plan(
                             df,
@@ -176,9 +180,10 @@ class TwoStageCandleBreakout14(Strategy):
             while second_green_index < total - 1:
                 if self._is_green(df, second_green_index):
                     second_red_index = second_green_index + 1
+                    second_green_high = self._high(df, second_green_index)
                     if (
                         self._is_red(df, second_red_index)
-                        and self._high(df, second_red_index) <= self._high(df, second_green_index)
+                        and self._high(df, second_red_index) <= second_green_high
                     ):
                         if self._set_short_plan(
                             df,
@@ -205,8 +210,8 @@ class TwoStageCandleBreakout14(Strategy):
         alert_index,
         second_red_index,
     ):
-        entry_price = self._close(df, entry_index)
-        stop_loss_price = self._low(df, first_red_index) * (1.0 - self._stop_buffer_pct())
+        entry_price = self._mid(df, entry_index)
+        stop_loss_price = self._low(df, second_red_index) * (1.0 - self._stop_buffer_pct())
         risk_distance = entry_price - stop_loss_price
         if risk_distance <= 0:
             return False
@@ -227,7 +232,8 @@ class TwoStageCandleBreakout14(Strategy):
                 "alert_index": alert_index,
                 "second_red_index": second_red_index,
                 "entry_index": entry_index,
-                "stop_basis": "first_red_low",
+                "entry_basis": "second_green_midpoint",
+                "stop_basis": "second_red_low",
                 "target_basis": "entry_plus_4r",
             },
         }
@@ -242,8 +248,8 @@ class TwoStageCandleBreakout14(Strategy):
         alert_index,
         second_green_index,
     ):
-        entry_price = self._close(df, entry_index)
-        stop_loss_price = self._high(df, first_green_index) * (1.0 + self._stop_buffer_pct())
+        entry_price = self._mid(df, entry_index)
+        stop_loss_price = self._high(df, second_green_index) * (1.0 + self._stop_buffer_pct())
         risk_distance = stop_loss_price - entry_price
         if risk_distance <= 0:
             return False
@@ -264,7 +270,8 @@ class TwoStageCandleBreakout14(Strategy):
                 "alert_index": alert_index,
                 "second_green_index": second_green_index,
                 "entry_index": entry_index,
-                "stop_basis": "first_green_high",
+                "entry_basis": "second_red_midpoint",
+                "stop_basis": "second_green_high",
                 "target_basis": "entry_minus_4r",
             },
         }
@@ -281,24 +288,24 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
     compiledCodeDefinition: TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE,
     market: 'crypto-futures',
     entryLogic:
-      'Buy: red candle, immediate next green does not break that red low and closes above the red high, then a second red/green hold pair triggers entry at green close.',
-    exitLogic: 'Long exit is managed by dynamic first-red stop and 1:4 target.',
+      'Buy: red candle, immediate next green does not break that red low and closes above the red high, then a second red with immediate green that does not break the second red low triggers entry at the second green midpoint.',
+    exitLogic: 'Long exit is managed by dynamic second-red stop and 1:4 target.',
     entryShortLogic:
-      'Sell: inverse flow with green candle, immediate next red does not break that green high and closes below the green low, then a second green/red hold pair triggers entry at red close.',
-    exitShortLogic: 'Short exit is managed by dynamic first-green stop and 1:4 target.',
+      'Sell: green candle, immediate next red does not break that green high and closes below the green low, then a second green with immediate red that does not break the second green high triggers entry at the second red midpoint.',
+    exitShortLogic: 'Short exit is managed by dynamic second-green stop and 1:4 target.',
     shortEnabled: true,
     risk: {
       maxRisk: '1',
       max_per_trade: 1,
       signal_threshold: 0.65,
-      stopLossMode: 'dynamic_first_stage_candle',
-      stop_loss_mode: 'dynamic_first_stage_candle',
+      stopLossMode: 'dynamic_second_stage_candle',
+      stop_loss_mode: 'dynamic_second_stage_candle',
       takeProfitMode: 'dynamic_r_multiple',
       take_profit_mode: 'dynamic_r_multiple',
       riskRewardRatio: 4,
       risk_reward_ratio: 4,
       sizingNotes:
-        'Per-trade stop and target are emitted by the Python entry plan: long stop below first red low, short stop above first green high, target at 4R.',
+        'Per-trade stop and target are emitted by the Python entry plan: long entry at second green midpoint with stop below second red low, short entry at second red midpoint with stop above second green high, target at 4R.',
     },
     parameters: {
       signalThreshold: '0.65',

@@ -7715,7 +7715,7 @@ class BreakoutRisk(Strategy):
     string,
     unknown
   >;
-  assert.equal(normalizedTwoStageRisk.stopLossMode, 'dynamic_first_stage_candle');
+  assert.equal(normalizedTwoStageRisk.stopLossMode, 'dynamic_second_stage_candle');
   assert.equal(normalizedTwoStageRisk.takeProfitMode, 'dynamic_r_multiple');
   assert.equal(normalizedTwoStageRisk.riskRewardRatio, 4);
   assert.equal(normalizedTwoStageParameters.rewardR, 4);

@@ -185,8 +185,8 @@ assert.deepEqual(twoStageProfile.supports, {
   customPython: true,
   ruleBased: false,
 });
-assert.equal(twoStageProfile.tradePlan.long?.stopLossMode, 'dynamic_first_stage_candle');
-assert.equal(twoStageProfile.tradePlan.short?.stopLossMode, 'dynamic_first_stage_candle');
+assert.equal(twoStageProfile.tradePlan.long?.stopLossMode, 'dynamic_second_stage_candle');
+assert.equal(twoStageProfile.tradePlan.short?.stopLossMode, 'dynamic_second_stage_candle');
 assert.equal(twoStageProfile.tradePlan.long?.takeProfitMode, 'dynamic_r_multiple');
 assert.equal(twoStageProfile.tradePlan.short?.takeProfitMode, 'dynamic_r_multiple');
 assert.equal(twoStageProfile.tradePlan.long?.riskRewardRatio, 4);
@@ -211,6 +211,21 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /self\._close\(df, first_red_index\) >= first_green_low/
 );
+assert.match(String(twoStageConfig.codeDefinition || ''), /def _mid\(self, df, index\):/);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /entry_price = self\._mid\(df, entry_index\)/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /self\._low\(df, second_green_index\) >= second_red_low/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /self\._high\(df, second_red_index\) <= second_green_high/
+);
+assert.match(String(twoStageConfig.codeDefinition || ''), /"stop_basis": "second_red_low"/);
+assert.match(String(twoStageConfig.codeDefinition || ''), /"stop_basis": "second_green_high"/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /def entry_short_plan\(self, ctx\):/);
 
 const first60Report = simulateFirst60TemplateProfile(
