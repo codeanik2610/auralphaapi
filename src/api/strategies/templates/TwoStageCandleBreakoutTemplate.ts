@@ -7,7 +7,7 @@ export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_LEGACY_NAMES = [
 ] as const;
 
 export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION =
-  'Two-stage red/green or green/red candle flow. Entry is on the second confirmation candle midpoint, stop is anchored to the second setup candle, and target is 1:4.';
+  'Strict four-candle red/green or green/red flow. Entry is on the second confirmation candle midpoint, stop is anchored to the second setup candle, and target is 1:4.';
 
 export const TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE = String.raw`from auralpha import Strategy
 
@@ -87,6 +87,28 @@ class TwoStageCandleBreakout14(Strategy):
     def _is_green(self, df, index):
         return self._close(df, index) > self._open(df, index)
 
+    def _time_ms(self, df, index):
+        if "timestamp" not in df:
+            return None
+
+        value = df["timestamp"].iloc[index]
+        try:
+            return int(value.timestamp() * 1000)
+        except Exception:
+            return None
+
+    def _setup_marker(self, df, label, role, candle_index, price):
+        marker = {
+            "label": label,
+            "role": role,
+            "candle_index": candle_index,
+            "price": price,
+        }
+        time_ms = self._time_ms(df, candle_index)
+        if time_ms is not None:
+            marker["time"] = time_ms
+        return marker
+
     def _reward_r(self):
         value = float(self.params.get("reward_r", 4))
         if value <= 0:
@@ -124,31 +146,25 @@ class TwoStageCandleBreakout14(Strategy):
 
             alert_index = first_green_index
             second_red_index = alert_index + 1
-            found_entry = False
+            second_green_index = second_red_index + 1
+            second_red_low = self._low(df, second_red_index)
+            if (
+                self._is_red(df, second_red_index)
+                and self._is_green(df, second_green_index)
+                and self._low(df, second_green_index) >= second_red_low
+                and self._set_long_plan(
+                    df,
+                    second_green_index,
+                    first_red_index,
+                    first_green_index,
+                    alert_index,
+                    second_red_index,
+                )
+            ):
+                index = second_green_index + 1
+                continue
 
-            while second_red_index < total - 1:
-                if self._is_red(df, second_red_index):
-                    second_green_index = second_red_index + 1
-                    second_red_low = self._low(df, second_red_index)
-                    if (
-                        self._is_green(df, second_green_index)
-                        and self._low(df, second_green_index) >= second_red_low
-                    ):
-                        if self._set_long_plan(
-                            df,
-                            second_green_index,
-                            first_red_index,
-                            first_green_index,
-                            alert_index,
-                            second_red_index,
-                        ):
-                            found_entry = True
-                            index = second_green_index + 1
-                            break
-                second_red_index += 1
-
-            if not found_entry:
-                break
+            index += 1
 
     def _build_short_signals(self, df):
         total = len(df)
@@ -175,31 +191,25 @@ class TwoStageCandleBreakout14(Strategy):
 
             alert_index = first_red_index
             second_green_index = alert_index + 1
-            found_entry = False
+            second_red_index = second_green_index + 1
+            second_green_high = self._high(df, second_green_index)
+            if (
+                self._is_green(df, second_green_index)
+                and self._is_red(df, second_red_index)
+                and self._high(df, second_red_index) <= second_green_high
+                and self._set_short_plan(
+                    df,
+                    second_red_index,
+                    first_green_index,
+                    first_red_index,
+                    alert_index,
+                    second_green_index,
+                )
+            ):
+                index = second_red_index + 1
+                continue
 
-            while second_green_index < total - 1:
-                if self._is_green(df, second_green_index):
-                    second_red_index = second_green_index + 1
-                    second_green_high = self._high(df, second_green_index)
-                    if (
-                        self._is_red(df, second_red_index)
-                        and self._high(df, second_red_index) <= second_green_high
-                    ):
-                        if self._set_short_plan(
-                            df,
-                            second_red_index,
-                            first_green_index,
-                            first_red_index,
-                            alert_index,
-                            second_green_index,
-                        ):
-                            found_entry = True
-                            index = second_red_index + 1
-                            break
-                second_green_index += 1
-
-            if not found_entry:
-                break
+            index += 1
 
     def _set_long_plan(
         self,
@@ -236,18 +246,20 @@ class TwoStageCandleBreakout14(Strategy):
                 "stop_basis": "second_red_low",
                 "target_basis": "entry_plus_4r",
                 "setup_markers": [
-                    {
-                        "label": "1",
-                        "role": "candle_1",
-                        "candle_index": first_red_index,
-                        "price": self._low(df, first_red_index),
-                    },
-                    {
-                        "label": "2",
-                        "role": "candle_2",
-                        "candle_index": second_red_index,
-                        "price": self._low(df, second_red_index),
-                    },
+                    self._setup_marker(
+                        df,
+                        "1",
+                        "candle_1",
+                        first_red_index,
+                        self._low(df, first_red_index),
+                    ),
+                    self._setup_marker(
+                        df,
+                        "2",
+                        "candle_2",
+                        second_red_index,
+                        self._low(df, second_red_index),
+                    ),
                 ],
             },
         }
@@ -288,18 +300,20 @@ class TwoStageCandleBreakout14(Strategy):
                 "stop_basis": "second_green_high",
                 "target_basis": "entry_minus_4r",
                 "setup_markers": [
-                    {
-                        "label": "1",
-                        "role": "candle_1",
-                        "candle_index": first_green_index,
-                        "price": self._high(df, first_green_index),
-                    },
-                    {
-                        "label": "2",
-                        "role": "candle_2",
-                        "candle_index": second_green_index,
-                        "price": self._high(df, second_green_index),
-                    },
+                    self._setup_marker(
+                        df,
+                        "1",
+                        "candle_1",
+                        first_green_index,
+                        self._high(df, first_green_index),
+                    ),
+                    self._setup_marker(
+                        df,
+                        "2",
+                        "candle_2",
+                        second_green_index,
+                        self._high(df, second_green_index),
+                    ),
                 ],
             },
         }
@@ -316,10 +330,10 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
     compiledCodeDefinition: TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE,
     market: 'crypto-futures',
     entryLogic:
-      'Buy: red candle, immediate next green does not break that red low and closes above the red high, then a second red with immediate green that does not break the second red low triggers entry at the second green midpoint.',
+      'Buy: strict four-candle flow: red candle, immediate next green does not break that red low and closes above the red high, immediate second red, then immediate green that does not break the second red low triggers entry at the second green midpoint.',
     exitLogic: 'Long exit is managed by dynamic second-red stop and 1:4 target.',
     entryShortLogic:
-      'Sell: green candle, immediate next red does not break that green high and closes below the green low, then a second green with immediate red that does not break the second green high triggers entry at the second red midpoint.',
+      'Sell: strict four-candle flow: green candle, immediate next red does not break that green high and closes below the green low, immediate second green, then immediate red that does not break the second green high triggers entry at the second red midpoint.',
     exitShortLogic: 'Short exit is managed by dynamic second-green stop and 1:4 target.',
     shortEnabled: true,
     risk: {
@@ -357,7 +371,7 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       paperTradeFirst: true,
     },
     notes:
-      'Signals require closed candles. The first confirmation candle must also be the alert candle.',
+      'Signals require closed candles. The setup must be four consecutive candles: candle 1, alert, candle 2, entry candle.',
     description: TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION,
   };
 

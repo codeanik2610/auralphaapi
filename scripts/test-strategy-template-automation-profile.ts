@@ -211,11 +211,22 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /self\._close\(df, first_red_index\) >= first_green_low/
 );
+assert.match(String(twoStageConfig.codeDefinition || ''), /def _setup_marker\(self, df, label, role, candle_index, price\):/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /def _mid\(self, df, index\):/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /entry_price = self\._mid\(df, entry_index\)/
 );
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /second_red_index = alert_index \+ 1\s+second_green_index = second_red_index \+ 1/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /second_green_index = alert_index \+ 1\s+second_red_index = second_green_index \+ 1/
+);
+assert.doesNotMatch(String(twoStageConfig.codeDefinition || ''), /while second_red_index/);
+assert.doesNotMatch(String(twoStageConfig.codeDefinition || ''), /while second_green_index/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /self\._low\(df, second_green_index\) >= second_red_low/
