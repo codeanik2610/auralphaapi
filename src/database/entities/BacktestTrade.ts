@@ -49,6 +49,9 @@ export class BacktestTrade {
   @Column({ name: 'exit_price', type: 'numeric', precision: 30, scale: 12, nullable: true })
   exitPrice!: string | null;
 
+  @Column({ type: 'jsonb', nullable: true })
+  metadata!: Record<string, unknown> | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 

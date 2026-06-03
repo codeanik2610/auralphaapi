@@ -118,6 +118,7 @@ $function$;`,
     entry_price numeric(30,12) NOT NULL,
     exit_time timestamp with time zone,
     exit_price numeric(30,12),
+    metadata jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );`,
@@ -327,7 +328,7 @@ $function$;`,
     `ALTER TABLE ONLY public.strategy_library
     ADD CONSTRAINT fk_strategy_library_user_template_owner FOREIGN KEY (user_id, template_id) REFERENCES public.strategy_templates(user_id, id) ON DELETE CASCADE;`,
     `ALTER TABLE ONLY public.strategy_template_versions
-    ADD CONSTRAINT fk_strategy_template_versions_template_id FOREIGN KEY (strategy_template_id) REFERENCES public.strategy_templates(id) ON DELETE CASCADE;`
+    ADD CONSTRAINT fk_strategy_template_versions_template_id FOREIGN KEY (strategy_template_id) REFERENCES public.strategy_templates(id) ON DELETE CASCADE;`,
   ];
 
   private readonly dropStatements = [
@@ -344,7 +345,7 @@ $function$;`,
     `DROP FUNCTION IF EXISTS public.enforce_strategy_template_config();`,
     `DROP FUNCTION IF EXISTS public.normalize_strategy_template_config(jsonb);`,
     `DROP TYPE IF EXISTS public.aiapproach;`,
-    `DROP TYPE IF EXISTS public.risktolerance;`
+    `DROP TYPE IF EXISTS public.risktolerance;`,
   ];
 
   public async up(queryRunner: QueryRunner): Promise<void> {

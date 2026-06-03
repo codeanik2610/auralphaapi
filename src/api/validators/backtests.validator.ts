@@ -1,5 +1,6 @@
 import {
   BacktestRunStatus,
+  BacktestTradeSetupMarker,
   CreateBacktestBody,
   PromoteBacktestBatchBody,
   PromoteBacktestBody,
@@ -21,12 +22,7 @@ const VALID_STATUSES: Array<BacktestRunStatus | 'Stable' | 'Review'> = [
   'Running',
   'Completed',
 ];
-const VALID_AUTOMATION_STATUSES: AutomationStatus[] = [
-  'Running',
-  'Paused',
-  'Failed',
-  'Draft',
-];
+const VALID_AUTOMATION_STATUSES: AutomationStatus[] = ['Running', 'Paused', 'Failed', 'Draft'];
 
 const VALID_INTERVALS = new Set([
   '1m',
@@ -198,7 +194,7 @@ export const validateBacktestsQuery = (query: BacktestsQuery): ValidatedBacktest
   }
 
   const status = query.status?.trim();
-  if (status && !VALID_STATUSES.includes(status as (BacktestRunStatus | 'Stable' | 'Review'))) {
+  if (status && !VALID_STATUSES.includes(status as BacktestRunStatus | 'Stable' | 'Review')) {
     throw new BadRequestAppError(`status must be one of: ${VALID_STATUSES.join(', ')}`);
   }
 
@@ -235,21 +231,21 @@ export const validateBacktestTopSetupsQuery = (
     );
   }
 
-  const minScore = query.minScore !== undefined && query.minScore !== ''
-    ? Number(query.minScore)
-    : undefined;
+  const minScore =
+    query.minScore !== undefined && query.minScore !== '' ? Number(query.minScore) : undefined;
   if (minScore !== undefined && (!Number.isFinite(minScore) || minScore < 0)) {
     throw new BadRequestAppError('minScore must be a non-negative number');
   }
 
-  const minTrades = query.minTrades !== undefined && query.minTrades !== ''
-    ? Number(query.minTrades)
-    : undefined;
+  const minTrades =
+    query.minTrades !== undefined && query.minTrades !== '' ? Number(query.minTrades) : undefined;
   if (minTrades !== undefined && (!Number.isInteger(minTrades) || minTrades < 0)) {
     throw new BadRequestAppError('minTrades must be a non-negative integer');
   }
 
-  const eligibleOnlyRaw = String(query.eligibleOnly || '').trim().toLowerCase();
+  const eligibleOnlyRaw = String(query.eligibleOnly || '')
+    .trim()
+    .toLowerCase();
   const eligibleOnly =
     eligibleOnlyRaw === 'true' || eligibleOnlyRaw === '1' || eligibleOnlyRaw === 'yes';
 
@@ -377,20 +373,14 @@ export const validateCreateBacktestBody = (
     body.fillPolicy === undefined || body.fillPolicy === null || body.fillPolicy === ''
       ? undefined
       : String(body.fillPolicy).trim();
-  if (
-    fillPolicy &&
-    !['conservative-stop-first', 'optimistic-target-first'].includes(fillPolicy)
-  ) {
+  if (fillPolicy && !['conservative-stop-first', 'optimistic-target-first'].includes(fillPolicy)) {
     throw new BadRequestAppError(
       'fillPolicy must be conservative-stop-first or optimistic-target-first'
     );
   }
 
   const participationPct = parseOptionalNumber(body.participationPct, 'participationPct');
-  if (
-    participationPct !== undefined &&
-    (participationPct <= 0 || participationPct > 100)
-  ) {
+  if (participationPct !== undefined && (participationPct <= 0 || participationPct > 100)) {
     throw new BadRequestAppError('participationPct must be greater than 0 and at most 100');
   }
 
@@ -402,9 +392,7 @@ export const validateCreateBacktestBody = (
     capitalUtilizationPct !== undefined &&
     (capitalUtilizationPct <= 0 || capitalUtilizationPct > 100)
   ) {
-    throw new BadRequestAppError(
-      'capitalUtilizationPct must be greater than 0 and at most 100'
-    );
+    throw new BadRequestAppError('capitalUtilizationPct must be greater than 0 and at most 100');
   }
 
   const leverage = parseOptionalNumber(body.leverage, 'leverage');
@@ -462,6 +450,58 @@ const parseRequiredNumber = (value: unknown, field: string): number => {
   return parsed;
 };
 
+const validateTradeEventSetupMarkers = (
+  value: unknown,
+  field: string
+): BacktestTradeSetupMarker[] | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new BadRequestAppError(`${field} must be an array`);
+  }
+
+  return value.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new BadRequestAppError(`${field}[${index}] must be an object`);
+    }
+    const marker = item as Record<string, unknown>;
+    const label = String(marker.label ?? marker.name ?? '').trim();
+    if (!label) {
+      throw new BadRequestAppError(`${field}[${index}].label is required`);
+    }
+    if (label.length > 32) {
+      throw new BadRequestAppError(`${field}[${index}].label must be 32 characters or fewer`);
+    }
+
+    const role =
+      marker.role === undefined || marker.role === null
+        ? undefined
+        : String(marker.role).trim().slice(0, 64) || undefined;
+    const time = parseOptionalNumber(
+      marker.time ?? marker.openTime ?? marker.timestamp,
+      `${field}[${index}].time`
+    );
+    const price = parseOptionalNumber(marker.price, `${field}[${index}].price`);
+    const candleIndex = parseOptionalNumber(
+      marker.candleIndex ?? marker.candle_index ?? marker.index,
+      `${field}[${index}].candleIndex`
+    );
+
+    if (candleIndex !== undefined && !Number.isInteger(candleIndex)) {
+      throw new BadRequestAppError(`${field}[${index}].candleIndex must be an integer`);
+    }
+
+    return {
+      label,
+      ...(role ? { role } : {}),
+      ...(time !== undefined ? { time } : {}),
+      ...(price !== undefined ? { price } : {}),
+      ...(candleIndex !== undefined ? { candleIndex } : {}),
+    };
+  });
+};
+
 export const validateUpdateBacktestResultBody = (
   body: UpdateBacktestResultBody
 ): UpdateBacktestResultBody => {
@@ -471,10 +511,11 @@ export const validateUpdateBacktestResultBody = (
     throw new BadRequestAppError('status must be a non-empty string');
   }
 
-  const rawStability =
-    body.assessmentStatus !== undefined ? body.assessmentStatus : body.stability;
+  const rawStability = body.assessmentStatus !== undefined ? body.assessmentStatus : body.stability;
   const stability =
-    rawStability === null || rawStability === undefined ? rawStability : String(rawStability).trim();
+    rawStability === null || rawStability === undefined
+      ? rawStability
+      : String(rawStability).trim();
 
   if (rawStability !== undefined && rawStability !== null && !stability) {
     throw new BadRequestAppError('stability must be a non-empty string or null');
@@ -508,9 +549,13 @@ export const validateUpdateBacktestResultBody = (
       if (!event || typeof event !== 'object') {
         throw new BadRequestAppError(`tradeEvents[${index}] must be an object`);
       }
-      const symbol = String(event.symbol || '').trim().toUpperCase();
+      const symbol = String(event.symbol || '')
+        .trim()
+        .toUpperCase();
       const interval = String(event.interval || '').trim();
-      const side = String(event.side || '').trim().toUpperCase();
+      const side = String(event.side || '')
+        .trim()
+        .toUpperCase();
 
       if (!symbol) {
         throw new BadRequestAppError(`tradeEvents[${index}].symbol is required`);
@@ -532,6 +577,21 @@ export const validateUpdateBacktestResultBody = (
       const entryPrice = parseRequiredNumber(event.entryPrice, `tradeEvents[${index}].entryPrice`);
       const exitTime = parseOptionalNumber(event.exitTime, `tradeEvents[${index}].exitTime`);
       const exitPrice = parseOptionalNumber(event.exitPrice, `tradeEvents[${index}].exitPrice`);
+      const metadata = parseRecord(event.metadata);
+      if (event.metadata !== undefined && event.metadata !== null && !metadata) {
+        throw new BadRequestAppError(`tradeEvents[${index}].metadata must be an object or null`);
+      }
+      const setupMarkers = validateTradeEventSetupMarkers(
+        event.setupMarkers ?? metadata?.setupMarkers ?? metadata?.setup_markers,
+        `tradeEvents[${index}].setupMarkers`
+      );
+      const normalizedMetadata =
+        metadata || setupMarkers
+          ? {
+              ...(metadata || {}),
+              ...(setupMarkers ? { setupMarkers } : {}),
+            }
+          : undefined;
 
       return {
         symbol,
@@ -541,6 +601,8 @@ export const validateUpdateBacktestResultBody = (
         entryPrice,
         exitTime,
         exitPrice,
+        ...(normalizedMetadata ? { metadata: normalizedMetadata } : {}),
+        ...(setupMarkers ? { setupMarkers } : {}),
       };
     });
   }
@@ -571,7 +633,11 @@ export const validatePromoteBacktestBody = (
   const symbol = body.symbol !== undefined ? String(body.symbol).trim().toUpperCase() : undefined;
   const timeframe = body.timeframe !== undefined ? String(body.timeframe).trim() : undefined;
   const timeZone =
-    body.timeZone === undefined ? undefined : body.timeZone === null ? null : String(body.timeZone).trim();
+    body.timeZone === undefined
+      ? undefined
+      : body.timeZone === null
+        ? null
+        : String(body.timeZone).trim();
   const executionPolicy = validatePromoteExecutionPolicy(body.executionPolicy);
 
   let schedule: Record<string, unknown> | null | undefined = undefined;
@@ -597,10 +663,11 @@ export const validatePromoteBacktestBody = (
   if (body.riskMode !== undefined && !riskMode) {
     throw new BadRequestAppError('riskMode must be a non-empty string');
   }
-  if (body.status !== undefined && (!status || !VALID_AUTOMATION_STATUSES.includes(status as AutomationStatus))) {
-    throw new BadRequestAppError(
-      `status must be one of: ${VALID_AUTOMATION_STATUSES.join(', ')}`
-    );
+  if (
+    body.status !== undefined &&
+    (!status || !VALID_AUTOMATION_STATUSES.includes(status as AutomationStatus))
+  ) {
+    throw new BadRequestAppError(`status must be one of: ${VALID_AUTOMATION_STATUSES.join(', ')}`);
   }
   if (body.symbol !== undefined && !symbol) {
     throw new BadRequestAppError('symbol must be a non-empty string');
@@ -650,7 +717,9 @@ export const validatePromoteBacktestBatchBody = (
       throw new BadRequestAppError(`items[${index}] must be an object`);
     }
 
-    const symbol = String(item.symbol || '').trim().toUpperCase();
+    const symbol = String(item.symbol || '')
+      .trim()
+      .toUpperCase();
     const timeframe = String(item.timeframe || '').trim();
     const name = item.name !== undefined ? String(item.name).trim() : undefined;
     const itemBacktestId =

@@ -235,6 +235,20 @@ class TwoStageCandleBreakout14(Strategy):
                 "entry_basis": "second_green_midpoint",
                 "stop_basis": "second_red_low",
                 "target_basis": "entry_plus_4r",
+                "setup_markers": [
+                    {
+                        "label": "1",
+                        "role": "candle_1",
+                        "candle_index": first_red_index,
+                        "price": self._low(df, first_red_index),
+                    },
+                    {
+                        "label": "2",
+                        "role": "candle_2",
+                        "candle_index": second_red_index,
+                        "price": self._low(df, second_red_index),
+                    },
+                ],
             },
         }
         return True
@@ -273,6 +287,20 @@ class TwoStageCandleBreakout14(Strategy):
                 "entry_basis": "second_red_midpoint",
                 "stop_basis": "second_green_high",
                 "target_basis": "entry_minus_4r",
+                "setup_markers": [
+                    {
+                        "label": "1",
+                        "role": "candle_1",
+                        "candle_index": first_green_index,
+                        "price": self._high(df, first_green_index),
+                    },
+                    {
+                        "label": "2",
+                        "role": "candle_2",
+                        "candle_index": second_green_index,
+                        "price": self._high(df, second_green_index),
+                    },
+                ],
             },
         }
         return True

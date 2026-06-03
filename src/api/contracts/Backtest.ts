@@ -274,6 +274,16 @@ export interface BacktestTradeEvent {
   entryPrice: number;
   exitTime?: number | null;
   exitPrice?: number | null;
+  metadata?: Record<string, unknown> | null;
+  setupMarkers?: BacktestTradeSetupMarker[];
+}
+
+export interface BacktestTradeSetupMarker {
+  label: string;
+  role?: string | null;
+  time?: number | null;
+  price?: number | null;
+  candleIndex?: number | null;
 }
 
 export interface BacktestChartWindow {

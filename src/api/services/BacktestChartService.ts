@@ -1,6 +1,6 @@
 import { Inject, Service } from 'typedi';
 import { ApiSuccessResponse } from '../contracts/ApiResponse';
-import { BacktestChartResponse } from '../contracts/Backtest';
+import { BacktestChartResponse, BacktestTradeSetupMarker } from '../contracts/Backtest';
 import { ServiceUnavailableAppError, NotFoundAppError } from '../errors/AppError';
 import { successResponse } from '../utils/response';
 import {
@@ -8,11 +8,7 @@ import {
   validateBacktestChartQuery,
   validateBacktestId,
 } from '../validators/backtests.validator';
-import {
-  Backtest,
-  BacktestRepository,
-  BacktestTradeRepository,
-} from '../../database';
+import { Backtest, BacktestRepository, BacktestTradeRepository } from '../../database';
 import { strategyDataSource } from '../../database/pg-data-source';
 import { env } from '../../env';
 
@@ -96,16 +92,19 @@ export class BacktestChartService {
     entryPrice: string | number;
     exitTime: Date | string | null;
     exitPrice: string | number | null;
+    metadata?: Record<string, unknown> | null;
   }): BacktestChartResponse['trades'][number] {
+    const entryTime =
+      trade.entryTime instanceof Date
+        ? trade.entryTime.getTime()
+        : new Date(trade.entryTime).getTime();
+
     return {
       id: trade.id,
       symbol: trade.symbol,
       interval: trade.interval,
       side: trade.side as 'BUY' | 'SELL',
-      entryTime:
-        trade.entryTime instanceof Date
-          ? trade.entryTime.getTime()
-          : new Date(trade.entryTime).getTime(),
+      entryTime,
       entryPrice: Number(trade.entryPrice),
       exitTime:
         trade.exitTime !== null && trade.exitTime !== undefined
@@ -114,10 +113,72 @@ export class BacktestChartService {
             : new Date(trade.exitTime).getTime()
           : null,
       exitPrice:
-        trade.exitPrice !== null && trade.exitPrice !== undefined
-          ? Number(trade.exitPrice)
-          : null,
+        trade.exitPrice !== null && trade.exitPrice !== undefined ? Number(trade.exitPrice) : null,
+      setupMarkers: this.buildTradeSetupMarkers(trade.metadata, {
+        entryTime,
+        interval: trade.interval,
+      }),
     };
+  }
+
+  private buildTradeSetupMarkers(
+    metadata: Record<string, unknown> | null | undefined,
+    context: {
+      entryTime: number;
+      interval: string;
+    }
+  ): BacktestTradeSetupMarker[] {
+    const record = this.parseConfig(metadata) ?? {};
+    const rawMarkers =
+      this.parseArray(record.setupMarkers) ??
+      this.parseArray(record.setup_markers) ??
+      this.parseArray(record.markers) ??
+      [];
+    if (!rawMarkers.length) {
+      return [];
+    }
+
+    const intervalMs = this.intervalToSeconds(context.interval) * 1000;
+    const entryIndex = this.readNumber(record.entryIndex, record.entry_index);
+
+    return rawMarkers
+      .map((item): BacktestTradeSetupMarker | null => {
+        const marker = this.parseConfig(item);
+        if (!marker) {
+          return null;
+        }
+
+        const label = this.readText(marker.label, marker.name);
+        if (!label) {
+          return null;
+        }
+
+        const role = this.readText(marker.role, marker.kind);
+        const candleIndex = this.readNumber(marker.candleIndex, marker.candle_index, marker.index);
+        const explicitTime = this.readNumber(
+          marker.time,
+          marker.openTime,
+          marker.open_time,
+          marker.timestamp
+        );
+        const inferredTime =
+          explicitTime ??
+          (entryIndex !== null && candleIndex !== null && intervalMs > 0
+            ? context.entryTime - (entryIndex - candleIndex) * intervalMs
+            : null);
+        const price = this.readNumber(marker.price);
+
+        return {
+          label,
+          role,
+          time: inferredTime,
+          price,
+          candleIndex,
+        };
+      })
+      .filter((item: BacktestTradeSetupMarker | null): item is BacktestTradeSetupMarker =>
+        Boolean(item)
+      );
   }
 
   private isTradeInsideWindow(
@@ -152,8 +213,12 @@ export class BacktestChartService {
     interval: string
   ): number | null {
     const config = this.parseConfig(backtest.result?.config) ?? {};
-    const normalizedSymbol = String(symbol || '').trim().toUpperCase();
-    const normalizedInterval = String(interval || '').trim().toLowerCase();
+    const normalizedSymbol = String(symbol || '')
+      .trim()
+      .toUpperCase();
+    const normalizedInterval = String(interval || '')
+      .trim()
+      .toLowerCase();
     const surface = this.parseConfig(config.performanceSurface);
     const results = Array.isArray(surface?.results) ? surface.results : [];
     let total = 0;
@@ -164,7 +229,9 @@ export class BacktestChartService {
         return;
       }
       const row = item as Record<string, unknown>;
-      const rowSymbol = String(row.symbol || '').trim().toUpperCase();
+      const rowSymbol = String(row.symbol || '')
+        .trim()
+        .toUpperCase();
       const rowInterval = String(row.timeframe ?? row.interval ?? '')
         .trim()
         .toLowerCase();
@@ -198,8 +265,38 @@ export class BacktestChartService {
     return null;
   }
 
+  private parseArray(value: unknown): unknown[] | null {
+    return Array.isArray(value) ? value : null;
+  }
+
+  private readText(...values: unknown[]): string | null {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    return null;
+  }
+
+  private readNumber(...values: unknown[]): number | null {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+      if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+    }
+    return null;
+  }
+
   private intervalToSeconds(interval: string): number {
-    const normalized = String(interval || '').trim().toLowerCase();
+    const normalized = String(interval || '')
+      .trim()
+      .toLowerCase();
     const match = normalized.match(/^(\d+)([mhdw])$/);
     if (!match) return 60;
     const value = Number(match[1]);
@@ -314,7 +411,9 @@ export class BacktestChartService {
   private async resolveWarehouseSymbol(symbol: string, endTime: Date): Promise<string> {
     const candidates = this.buildMarketSymbolCandidates(symbol);
     if (!candidates.length) {
-      return String(symbol || '').trim().toUpperCase();
+      return String(symbol || '')
+        .trim()
+        .toUpperCase();
     }
 
     const rows = await strategyDataSource.query(
@@ -328,12 +427,16 @@ export class BacktestChartService {
       [candidates, endTime, candidates[0]]
     );
 
-    const resolved = String(rows?.[0]?.symbol || '').trim().toUpperCase();
+    const resolved = String(rows?.[0]?.symbol || '')
+      .trim()
+      .toUpperCase();
     return resolved || candidates[0];
   }
 
   private buildMarketSymbolCandidates(value: unknown): string[] {
-    const normalized = String(value || '').trim().toUpperCase();
+    const normalized = String(value || '')
+      .trim()
+      .toUpperCase();
     if (!normalized) {
       return [];
     }
@@ -342,7 +445,11 @@ export class BacktestChartService {
     if (normalized.endsWith('USD') && !normalized.endsWith('USDT')) {
       candidates.add(`${normalized.slice(0, -3)}USDT`);
     }
-    if (normalized.endsWith('USDC') || normalized.endsWith('BUSD') || normalized.endsWith('FDUSD')) {
+    if (
+      normalized.endsWith('USDC') ||
+      normalized.endsWith('BUSD') ||
+      normalized.endsWith('FDUSD')
+    ) {
       candidates.add(`${normalized.replace(/(USDC|BUSD|FDUSD)$/u, '')}USDT`);
     }
     if (
@@ -373,8 +480,7 @@ export class BacktestChartService {
       this.parseOptionalDate(config.end) ??
       new Date();
     const resolvedStartTime =
-      this.parseOptionalDate(inputSnapshot.start) ??
-      this.parseOptionalDate(config.start);
+      this.parseOptionalDate(inputSnapshot.start) ?? this.parseOptionalDate(config.start);
 
     if (resolvedStartTime) {
       const msPerDay = 24 * 60 * 60 * 1000;

@@ -319,9 +319,33 @@ function runBacktestStatusMappingAssertions(): void {
     runStatus: 'Completed',
     assessmentStatus: 'Review',
     trades: 10,
+    tradeEvents: [
+      {
+        symbol: 'btcusdt',
+        interval: '5m',
+        side: 'SELL',
+        entryTime: Date.parse('2026-04-02T00:15:00.000Z'),
+        entryPrice: 100,
+        setupMarkers: [
+          { label: '1', role: 'candle_1', candleIndex: 1 },
+          { label: '2', role: 'candle_2', candleIndex: 3 },
+        ],
+      },
+    ],
   });
   assert.equal(validated.status, 'Completed');
   assert.equal(validated.stability, 'Review');
+  assert.equal(validated.tradeEvents?.[0]?.symbol, 'BTCUSDT');
+  assert.deepEqual(
+    validated.tradeEvents?.[0]?.setupMarkers?.map((marker) => marker.label),
+    ['1', '2']
+  );
+  assert.deepEqual(
+    (validated.tradeEvents?.[0]?.metadata?.setupMarkers as Array<Record<string, unknown>>).map(
+      (marker) => marker.candleIndex
+    ),
+    [1, 3]
+  );
 }
 
 async function runBacktestChartServiceAssertions(): Promise<void> {
@@ -379,6 +403,13 @@ async function runBacktestChartServiceAssertions(): Promise<void> {
           entryPrice: '100.5',
           exitTime: new Date('2026-04-01T06:00:00.000Z'),
           exitPrice: '105.5',
+          metadata: {
+            entry_index: 4,
+            setup_markers: [
+              { label: '1', role: 'candle_1', candle_index: 1, price: 98 },
+              { label: '2', role: 'candle_2', candle_index: 3, price: 101 },
+            ],
+          },
         },
         {
           id: 'trade-2',
@@ -441,6 +472,18 @@ async function runBacktestChartServiceAssertions(): Promise<void> {
   assert.equal(response.data.tradeCoverage.missingTradeEvents, 2);
   assert.equal(response.data.tradeCoverage.hasIncompleteTradeHistory, true);
   assert.equal(response.data.trades.length, 2);
+  assert.deepEqual(
+    response.data.trades[0]?.setupMarkers?.map((marker: { label: string }) => marker.label),
+    ['1', '2']
+  );
+  assert.equal(
+    response.data.trades[0]?.setupMarkers?.[0]?.time,
+    Date.parse('2026-04-01T01:00:00.000Z')
+  );
+  assert.equal(
+    response.data.trades[0]?.setupMarkers?.[1]?.time,
+    Date.parse('2026-04-01T03:00:00.000Z')
+  );
 }
 
 async function runBacktestChartWarehouseSymbolResolutionAssertions(): Promise<void> {
@@ -1406,6 +1449,10 @@ async function runBacktestUpdateResultsAssertions(): Promise<void> {
       entryPrice: 100,
       exitTime: Date.parse('2026-04-04T01:00:00.000Z'),
       exitPrice: 104,
+      setupMarkers: [
+        { label: '1', role: 'candle_1', time: Date.parse('2026-04-03T23:50:00.000Z') },
+        { label: '2', role: 'candle_2', time: Date.parse('2026-04-03T23:55:00.000Z') },
+      ],
     },
     {
       symbol: 'BTCUSDT',
@@ -1428,6 +1475,14 @@ async function runBacktestUpdateResultsAssertions(): Promise<void> {
   assert.equal(insertedTrades.length, 2);
   assert.equal(insertedTrades[0].userId, 'user-1');
   assert.equal(insertedTrades[0].backtestId, 'backtest-update-1');
+  assert.deepEqual(
+    (
+      (insertedTrades[0].metadata as Record<string, unknown>).setupMarkers as Array<
+        Record<string, unknown>
+      >
+    ).map((marker) => marker.label),
+    ['1', '2']
+  );
   assert.equal(syncedBacktestId, 'backtest-update-1');
 }
 

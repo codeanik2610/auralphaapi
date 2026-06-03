@@ -13,6 +13,7 @@ export interface BacktestTradeInsertPayload {
   entryPrice: number;
   exitTime?: number | null;
   exitPrice?: number | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 @Service()
@@ -66,10 +67,7 @@ export class BacktestTradeRepository {
     )) as Array<{ backtest_id?: string; count?: string | number }>;
 
     return new Map(
-      rows.map((row) => [
-        String(row.backtest_id || '').trim(),
-        Number(row.count ?? 0),
-      ])
+      rows.map((row) => [String(row.backtest_id || '').trim(), Number(row.count ?? 0)])
     );
   }
 
@@ -86,9 +84,9 @@ export class BacktestTradeRepository {
     };
 
     trades.forEach((trade, index) => {
-      const base = index * 9;
+      const base = index * 10;
       placeholders.push(
-        `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9})`
+        `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}::jsonb)`
       );
       values.push(
         trade.backtestId,
@@ -99,16 +97,19 @@ export class BacktestTradeRepository {
         toDate(trade.entryTime) as Date,
         trade.entryPrice,
         toDate(trade.exitTime ?? null),
-        trade.exitPrice ?? null
+        trade.exitPrice ?? null,
+        trade.metadata ? JSON.stringify(trade.metadata) : null
       );
     });
 
     const result = await strategyDataSource.query(
       `INSERT INTO backtest_trades
-        (backtest_id, user_id, symbol, interval, side, entry_time, entry_price, exit_time, exit_price)
+        (backtest_id, user_id, symbol, interval, side, entry_time, entry_price, exit_time, exit_price, metadata)
        VALUES ${placeholders.join(',')}
        ON CONFLICT (backtest_id, symbol, interval, side, entry_time, exit_time)
-       DO NOTHING`,
+       DO UPDATE SET
+         metadata = COALESCE(EXCLUDED.metadata, backtest_trades.metadata),
+         updated_at = now()`,
       values
     );
 
