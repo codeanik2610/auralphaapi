@@ -212,12 +212,14 @@ assert.match(String(twoStageConfig.entryLogic || ''), /same-direction continuati
 assert.match(String(twoStageConfig.entryLogic || ''), /alert-low guard/);
 assert.match(String(twoStageConfig.entryLogic || ''), /intentionally not used/);
 assert.match(String(twoStageConfig.entryLogic || ''), /first green after that red pullback/);
+assert.match(String(twoStageConfig.entryLogic || ''), /must not be inside the alert candle/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /green candle 1/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /immediate red alert/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /same-direction continuation before pullback/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /alert-high guard/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /intentionally not used/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /first red after that green pullback/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /must not be inside the alert candle/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /class TwoStageCandleBreakout11Ladder\(Strategy\):/
@@ -232,6 +234,10 @@ assert.match(
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /self\._close\(df, first_red_index\) >= first_green_low/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /def _is_inside_candle\(self, df, inner_index, outer_index\):/
 );
 assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
@@ -291,6 +297,14 @@ assert.match(
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /self\._high\(df, scan_index\) <= self\._high\(df, second_green_index\)/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /not self\._is_inside_candle\(df, scan_index, alert_index\)/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /"entry_alert_inside_guard": "entry_not_inside_alert_candle"/
 );
 assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
