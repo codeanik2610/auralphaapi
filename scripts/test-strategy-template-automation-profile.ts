@@ -209,17 +209,17 @@ assert.equal(twoStageParameters.stop_buffer_pct, 0.0005);
 assert.match(String(twoStageConfig.entryLogic || ''), /red candle 1/);
 assert.match(String(twoStageConfig.entryLogic || ''), /immediate green alert/);
 assert.match(String(twoStageConfig.entryLogic || ''), /same-direction continuation before pullback/);
-assert.match(String(twoStageConfig.entryLogic || ''), /alert-low guard/);
+assert.match(String(twoStageConfig.entryLogic || ''), /no candle may break the alert low/);
 assert.match(String(twoStageConfig.entryLogic || ''), /intentionally not used/);
 assert.match(String(twoStageConfig.entryLogic || ''), /first green after that red pullback/);
-assert.match(String(twoStageConfig.entryLogic || ''), /must not be inside the alert candle/);
+assert.match(String(twoStageConfig.entryLogic || ''), /Entry candles may be inside the alert candle/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /green candle 1/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /immediate red alert/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /same-direction continuation before pullback/);
-assert.match(String(twoStageConfig.entryShortLogic || ''), /alert-high guard/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /no candle may break the alert high/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /intentionally not used/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /first red after that green pullback/);
-assert.match(String(twoStageConfig.entryShortLogic || ''), /must not be inside the alert candle/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /Entry candles may be inside the alert candle/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /class TwoStageCandleBreakout11Ladder\(Strategy\):/
@@ -235,7 +235,7 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /self\._close\(df, first_red_index\) >= first_green_low/
 );
-assert.match(
+assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /def _is_inside_candle\(self, df, inner_index, outer_index\):/
 );
@@ -260,7 +260,7 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /alert_low = self\._low\(df, alert_index\)/
 );
-assert.doesNotMatch(
+assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /if self\._low\(df, scan_index\) < alert_low:/
 );
@@ -272,7 +272,7 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /alert_high = self\._high\(df, alert_index\)/
 );
-assert.doesNotMatch(
+assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /if self\._high\(df, scan_index\) > alert_high:/
 );
@@ -298,11 +298,19 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /self\._high\(df, scan_index\) <= self\._high\(df, second_green_index\)/
 );
-assert.match(
+assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /not self\._is_inside_candle\(df, scan_index, alert_index\)/
 );
 assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /"post_alert_guard": "no_candle_breaks_alert_low_before_entry"/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /"post_alert_guard": "no_candle_breaks_alert_high_before_entry"/
+);
+assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /"entry_alert_inside_guard": "entry_not_inside_alert_candle"/
 );
