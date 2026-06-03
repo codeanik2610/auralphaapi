@@ -7,7 +7,7 @@ export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_LEGACY_NAMES = [
 ] as const;
 
 export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION =
-  'Strict four-candle red/green or green/red flow. Entry is on the second confirmation candle midpoint, stop is anchored to the second setup candle, and target is 1:4.';
+  'Alert-guarded red/green or green/red pullback flow. Entry is on the pullback confirmation candle midpoint, stop is buffered beyond the second setup candle, and target is 1:4.';
 
 export const TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE = String.raw`from auralpha import Strategy
 
@@ -19,7 +19,7 @@ class TwoStageCandleBreakout14(Strategy):
 
     params = {
         "reward_r": 4,
-        "stop_buffer_pct": 0.0,
+        "stop_buffer_pct": 0.0005,
     }
 
     risk = {
@@ -145,26 +145,43 @@ class TwoStageCandleBreakout14(Strategy):
                 continue
 
             alert_index = first_green_index
-            second_red_index = alert_index + 1
-            second_green_index = second_red_index + 1
-            second_red_low = self._low(df, second_red_index)
-            if (
-                self._is_red(df, second_red_index)
-                and self._is_green(df, second_green_index)
-                and self._low(df, second_green_index) >= second_red_low
-                and self._set_long_plan(
-                    df,
-                    second_green_index,
-                    first_red_index,
-                    first_green_index,
-                    alert_index,
-                    second_red_index,
-                )
-            ):
-                index = second_green_index + 1
-                continue
+            alert_low = self._low(df, alert_index)
+            second_red_index = None
+            scan_index = alert_index + 1
+            found_entry = False
 
-            index += 1
+            while scan_index < total:
+                if self._low(df, scan_index) < alert_low:
+                    break
+
+                if self._is_red(df, scan_index):
+                    second_red_index = scan_index
+                    scan_index += 1
+                    continue
+
+                if second_red_index is not None:
+                    if (
+                        self._is_green(df, scan_index)
+                        and self._low(df, scan_index) >= self._low(df, second_red_index)
+                        and self._set_long_plan(
+                            df,
+                            scan_index,
+                            first_red_index,
+                            first_green_index,
+                            alert_index,
+                            second_red_index,
+                        )
+                    ):
+                        found_entry = True
+                        index = scan_index + 1
+                        break
+
+                    second_red_index = None
+
+                scan_index += 1
+
+            if not found_entry:
+                index += 1
 
     def _build_short_signals(self, df):
         total = len(df)
@@ -190,26 +207,43 @@ class TwoStageCandleBreakout14(Strategy):
                 continue
 
             alert_index = first_red_index
-            second_green_index = alert_index + 1
-            second_red_index = second_green_index + 1
-            second_green_high = self._high(df, second_green_index)
-            if (
-                self._is_green(df, second_green_index)
-                and self._is_red(df, second_red_index)
-                and self._high(df, second_red_index) <= second_green_high
-                and self._set_short_plan(
-                    df,
-                    second_red_index,
-                    first_green_index,
-                    first_red_index,
-                    alert_index,
-                    second_green_index,
-                )
-            ):
-                index = second_red_index + 1
-                continue
+            alert_high = self._high(df, alert_index)
+            second_green_index = None
+            scan_index = alert_index + 1
+            found_entry = False
 
-            index += 1
+            while scan_index < total:
+                if self._high(df, scan_index) > alert_high:
+                    break
+
+                if self._is_green(df, scan_index):
+                    second_green_index = scan_index
+                    scan_index += 1
+                    continue
+
+                if second_green_index is not None:
+                    if (
+                        self._is_red(df, scan_index)
+                        and self._high(df, scan_index) <= self._high(df, second_green_index)
+                        and self._set_short_plan(
+                            df,
+                            scan_index,
+                            first_green_index,
+                            first_red_index,
+                            alert_index,
+                            second_green_index,
+                        )
+                    ):
+                        found_entry = True
+                        index = scan_index + 1
+                        break
+
+                    second_green_index = None
+
+                scan_index += 1
+
+            if not found_entry:
+                index += 1
 
     def _set_long_plan(
         self,
@@ -236,7 +270,7 @@ class TwoStageCandleBreakout14(Strategy):
             "risk_reward_ratio": reward_r,
             "label": "two_stage_candle_breakout_long",
             "metadata": {
-                "pattern": "red_green_alert_red_green",
+                "pattern": "red_green_alert_guarded_pullback_green",
                 "first_red_index": first_red_index,
                 "first_green_index": first_green_index,
                 "alert_index": alert_index,
@@ -245,6 +279,8 @@ class TwoStageCandleBreakout14(Strategy):
                 "entry_basis": "second_green_midpoint",
                 "stop_basis": "second_red_low",
                 "target_basis": "entry_plus_4r",
+                "structure_guard": "alert_low",
+                "alert_low": self._low(df, alert_index),
                 "setup_markers": [
                     self._setup_marker(
                         df,
@@ -290,7 +326,7 @@ class TwoStageCandleBreakout14(Strategy):
             "risk_reward_ratio": reward_r,
             "label": "two_stage_candle_breakout_short",
             "metadata": {
-                "pattern": "green_red_alert_green_red",
+                "pattern": "green_red_alert_guarded_pullback_red",
                 "first_green_index": first_green_index,
                 "first_red_index": first_red_index,
                 "alert_index": alert_index,
@@ -299,6 +335,8 @@ class TwoStageCandleBreakout14(Strategy):
                 "entry_basis": "second_red_midpoint",
                 "stop_basis": "second_green_high",
                 "target_basis": "entry_minus_4r",
+                "structure_guard": "alert_high",
+                "alert_high": self._high(df, alert_index),
                 "setup_markers": [
                     self._setup_marker(
                         df,
@@ -330,10 +368,10 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
     compiledCodeDefinition: TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE,
     market: 'crypto-futures',
     entryLogic:
-      'Buy: strict four-candle flow: red candle, immediate next green does not break that red low and closes above the red high, immediate second red, then immediate green that does not break the second red low triggers entry at the second green midpoint.',
+      'Buy: red candle, immediate green alert that does not break the red low and closes above the red high, then pullback remains valid while alert low holds; the next green after a red pullback that does not break that red low triggers entry at the green midpoint.',
     exitLogic: 'Long exit is managed by dynamic second-red stop and 1:4 target.',
     entryShortLogic:
-      'Sell: strict four-candle flow: green candle, immediate next red does not break that green high and closes below the green low, immediate second green, then immediate red that does not break the second green high triggers entry at the second red midpoint.',
+      'Sell: green candle, immediate red alert that does not break the green high and closes below the green low, then pullback remains valid while alert high holds; the next red after a green pullback that does not break that green high triggers entry at the red midpoint.',
     exitShortLogic: 'Short exit is managed by dynamic second-green stop and 1:4 target.',
     shortEnabled: true,
     risk: {
@@ -347,15 +385,15 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       riskRewardRatio: 4,
       risk_reward_ratio: 4,
       sizingNotes:
-        'Per-trade stop and target are emitted by the Python entry plan: long entry at second green midpoint with stop below second red low, short entry at second red midpoint with stop above second green high, target at 4R.',
+        'Per-trade stop and target are emitted by the Python entry plan: long entry at second green midpoint with stop buffered below second red low, short entry at second red midpoint with stop buffered above second green high, target at 4R.',
     },
     parameters: {
       signalThreshold: '0.65',
       signal_threshold: 0.65,
       rewardR: 4,
       reward_r: 4,
-      stopBufferPct: 0,
-      stop_buffer_pct: 0,
+      stopBufferPct: 0.0005,
+      stop_buffer_pct: 0.0005,
     },
     automation: {
       timeframePolicy: {
@@ -371,7 +409,7 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       paperTradeFirst: true,
     },
     notes:
-      'Signals require closed candles. The setup must be four consecutive candles: candle 1, alert, candle 2, entry candle.',
+      'Signals require closed candles. Candle 1 and alert must be immediate. After alert, buy setups are guarded by alert low and sell setups are guarded by alert high; the old four-candle setup remains valid as the fastest case. Default stop buffer is 0.05% beyond candle 2.',
     description: TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION,
   };
 
