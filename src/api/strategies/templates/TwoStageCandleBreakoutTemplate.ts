@@ -8,7 +8,7 @@ export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_LEGACY_NAMES = [
 ] as const;
 
 export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION =
-  'Alert-guarded red/green or green/red pullback flow. Entry is on the pullback confirmation candle midpoint, stop is buffered beyond the second setup candle, target is 1:11, and SL ladders from 4R to 1R, 9R to 4R, and 11R to 9R.';
+  'Loose red/green or green/red pullback flow. Entry is on the pullback confirmation candle midpoint, stop is buffered beyond the second setup candle, target is 1:11, and SL ladders from 4R to 1R, 9R to 4R, and 11R to 9R.';
 
 export const TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE = String.raw`from auralpha import Strategy
 
@@ -132,10 +132,6 @@ class TwoStageCandleBreakout11Ladder(Strategy):
                 continue
 
             first_red_index = index
-            if first_red_index > 0 and self._is_red(df, first_red_index - 1):
-                index += 1
-                continue
-
             first_red_low = self._low(df, first_red_index)
             first_red_high = self._high(df, first_red_index)
             first_green_index = first_red_index + 1
@@ -156,12 +152,6 @@ class TwoStageCandleBreakout11Ladder(Strategy):
             found_entry = False
 
             while scan_index < total:
-                if self._low(df, scan_index) < alert_low:
-                    break
-
-                if second_red_index is None and self._is_green(df, scan_index):
-                    break
-
                 if self._is_red(df, scan_index):
                     second_red_index = scan_index
                     scan_index += 1
@@ -200,10 +190,6 @@ class TwoStageCandleBreakout11Ladder(Strategy):
                 continue
 
             first_green_index = index
-            if first_green_index > 0 and self._is_green(df, first_green_index - 1):
-                index += 1
-                continue
-
             first_green_high = self._high(df, first_green_index)
             first_green_low = self._low(df, first_green_index)
             first_red_index = first_green_index + 1
@@ -224,12 +210,6 @@ class TwoStageCandleBreakout11Ladder(Strategy):
             found_entry = False
 
             while scan_index < total:
-                if self._high(df, scan_index) > alert_high:
-                    break
-
-                if second_green_index is None and self._is_red(df, scan_index):
-                    break
-
                 if self._is_green(df, scan_index):
                     second_green_index = scan_index
                     scan_index += 1
@@ -381,11 +361,11 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
     compiledCodeDefinition: TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE,
     market: 'crypto-futures',
     entryLogic:
-      'Buy: fresh red candle 1 that is not part of an existing red run, immediate green alert that does not break the red low and closes above the red high, then the next pullback must start before any extra green continuation candle appears and remains valid while alert low holds; the first green after a red pullback must not break that red low and triggers entry at the green midpoint. If candle 1 is a continuation candle, continuation appears before pullback, or that first green breaks the red low, the setup is cancelled.',
+      'Buy: red candle 1, immediate green alert that does not break the red low and closes above the red high, then any later red pullback may form; the first green after that red pullback must not break that red low and triggers entry at the green midpoint. Candle 1 freshness, same-direction continuation before pullback, and alert-low guard are intentionally not used.',
     exitLogic:
       'Long exit is managed by dynamic second-red stop, 1:11 target, and custom SL ladder: 4R locks 1R, 9R locks 4R, 11R locks 9R.',
     entryShortLogic:
-      'Sell: fresh green candle 1 that is not part of an existing green run, immediate red alert that does not break the green high and closes below the green low, then the next pullback must start before any extra red continuation candle appears and remains valid while alert high holds; the first red after a green pullback must not break that green high and triggers entry at the red midpoint. If candle 1 is a continuation candle, continuation appears before pullback, or that first red breaks the green high, the setup is cancelled.',
+      'Sell: green candle 1, immediate red alert that does not break the green high and closes below the green low, then any later green pullback may form; the first red after that green pullback must not break that green high and triggers entry at the red midpoint. Candle 1 freshness, same-direction continuation before pullback, and alert-high guard are intentionally not used.',
     exitShortLogic:
       'Short exit is managed by dynamic second-green stop, 1:11 target, and custom SL ladder: 4R locks 1R, 9R locks 4R, 11R locks 9R.',
     shortEnabled: true,
@@ -438,7 +418,7 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       paperTradeFirst: true,
     },
     notes:
-      'Signals require closed candles. Candle 1 and alert must be immediate, and Candle 1 must be fresh: buy rejects a red candle that is already inside a red run, sell rejects a green candle that is already inside a green run. After alert, the pullback must start before any same-direction continuation candle: buy cancels on an extra green before red pullback, sell cancels on an extra red before green pullback. Buy setups are guarded by alert low and sell setups are guarded by alert high; once a pullback exists, the first opposite-color candidate must pass or the setup is cancelled. The old four-candle setup remains valid as the fastest case. Default stop buffer is 0.05% beyond candle 2. SL ladder: at 4R move SL to 1R, at 9R move SL to 4R, and at 11R move SL to 9R.',
+      'Signals require closed candles. Candle 1 and alert must be immediate, but Candle 1 freshness is intentionally disabled. After alert, same-direction continuation before pullback is allowed and alert high/low guard is intentionally disabled. Once a pullback exists, the first opposite-color candidate must pass or the setup is cancelled. The old four-candle setup remains valid as the fastest case. Default stop buffer is 0.05% beyond candle 2. SL ladder: at 4R move SL to 1R, at 9R move SL to 4R, and at 11R move SL to 9R.',
     description: TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION,
   };
 

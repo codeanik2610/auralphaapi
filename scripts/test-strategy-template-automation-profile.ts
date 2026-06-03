@@ -206,18 +206,18 @@ assert.equal(twoStageRisk.riskRewardRatio, 11);
 assert.equal(twoStageParameters.rewardR, 11);
 assert.equal(twoStageParameters.stopBufferPct, 0.0005);
 assert.equal(twoStageParameters.stop_buffer_pct, 0.0005);
-assert.match(String(twoStageConfig.entryLogic || ''), /fresh red candle 1/);
+assert.match(String(twoStageConfig.entryLogic || ''), /red candle 1/);
 assert.match(String(twoStageConfig.entryLogic || ''), /immediate green alert/);
-assert.match(String(twoStageConfig.entryLogic || ''), /alert low holds/);
-assert.match(String(twoStageConfig.entryLogic || ''), /continuation appears before pullback/);
-assert.match(String(twoStageConfig.entryLogic || ''), /first green after a red pullback/);
-assert.match(String(twoStageConfig.entryLogic || ''), /setup is cancelled/);
-assert.match(String(twoStageConfig.entryShortLogic || ''), /fresh green candle 1/);
+assert.match(String(twoStageConfig.entryLogic || ''), /same-direction continuation before pullback/);
+assert.match(String(twoStageConfig.entryLogic || ''), /alert-low guard/);
+assert.match(String(twoStageConfig.entryLogic || ''), /intentionally not used/);
+assert.match(String(twoStageConfig.entryLogic || ''), /first green after that red pullback/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /green candle 1/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /immediate red alert/);
-assert.match(String(twoStageConfig.entryShortLogic || ''), /alert high holds/);
-assert.match(String(twoStageConfig.entryShortLogic || ''), /continuation appears before pullback/);
-assert.match(String(twoStageConfig.entryShortLogic || ''), /first red after a green pullback/);
-assert.match(String(twoStageConfig.entryShortLogic || ''), /setup is cancelled/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /same-direction continuation before pullback/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /alert-high guard/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /intentionally not used/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /first red after that green pullback/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /class TwoStageCandleBreakout11Ladder\(Strategy\):/
@@ -233,11 +233,11 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /self\._close\(df, first_red_index\) >= first_green_low/
 );
-assert.match(
+assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /if first_red_index > 0 and self\._is_red\(df, first_red_index - 1\):/
 );
-assert.match(
+assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /if first_green_index > 0 and self\._is_green\(df, first_green_index - 1\):/
 );
@@ -254,11 +254,11 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /alert_low = self\._low\(df, alert_index\)/
 );
-assert.match(
+assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /if self\._low\(df, scan_index\) < alert_low:/
 );
-assert.match(
+assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /if second_red_index is None and self\._is_green\(df, scan_index\):/
 );
@@ -266,11 +266,11 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /alert_high = self\._high\(df, alert_index\)/
 );
-assert.match(
+assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /if self\._high\(df, scan_index\) > alert_high:/
 );
-assert.match(
+assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /if second_green_index is None and self\._is_red\(df, scan_index\):/
 );
