@@ -159,10 +159,9 @@ class TwoStageCandleBreakout14(Strategy):
                     scan_index += 1
                     continue
 
-                if second_red_index is not None:
+                if second_red_index is not None and self._is_green(df, scan_index):
                     if (
-                        self._is_green(df, scan_index)
-                        and self._low(df, scan_index) >= self._low(df, second_red_index)
+                        self._low(df, scan_index) >= self._low(df, second_red_index)
                         and self._set_long_plan(
                             df,
                             scan_index,
@@ -176,7 +175,7 @@ class TwoStageCandleBreakout14(Strategy):
                         index = scan_index + 1
                         break
 
-                    second_red_index = None
+                    break
 
                 scan_index += 1
 
@@ -221,10 +220,9 @@ class TwoStageCandleBreakout14(Strategy):
                     scan_index += 1
                     continue
 
-                if second_green_index is not None:
+                if second_green_index is not None and self._is_red(df, scan_index):
                     if (
-                        self._is_red(df, scan_index)
-                        and self._high(df, scan_index) <= self._high(df, second_green_index)
+                        self._high(df, scan_index) <= self._high(df, second_green_index)
                         and self._set_short_plan(
                             df,
                             scan_index,
@@ -238,7 +236,7 @@ class TwoStageCandleBreakout14(Strategy):
                         index = scan_index + 1
                         break
 
-                    second_green_index = None
+                    break
 
                 scan_index += 1
 
@@ -368,10 +366,10 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
     compiledCodeDefinition: TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE,
     market: 'crypto-futures',
     entryLogic:
-      'Buy: red candle, immediate green alert that does not break the red low and closes above the red high, then pullback remains valid while alert low holds; the next green after a red pullback that does not break that red low triggers entry at the green midpoint.',
+      'Buy: red candle, immediate green alert that does not break the red low and closes above the red high, then pullback remains valid while alert low holds; the first green after a red pullback must not break that red low and triggers entry at the green midpoint. If that first green breaks the red low, the setup is cancelled.',
     exitLogic: 'Long exit is managed by dynamic second-red stop and 1:4 target.',
     entryShortLogic:
-      'Sell: green candle, immediate red alert that does not break the green high and closes below the green low, then pullback remains valid while alert high holds; the next red after a green pullback that does not break that green high triggers entry at the red midpoint.',
+      'Sell: green candle, immediate red alert that does not break the green high and closes below the green low, then pullback remains valid while alert high holds; the first red after a green pullback must not break that green high and triggers entry at the red midpoint. If that first red breaks the green high, the setup is cancelled.',
     exitShortLogic: 'Short exit is managed by dynamic second-green stop and 1:4 target.',
     shortEnabled: true,
     risk: {
@@ -409,7 +407,7 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       paperTradeFirst: true,
     },
     notes:
-      'Signals require closed candles. Candle 1 and alert must be immediate. After alert, buy setups are guarded by alert low and sell setups are guarded by alert high; the old four-candle setup remains valid as the fastest case. Default stop buffer is 0.05% beyond candle 2.',
+      'Signals require closed candles. Candle 1 and alert must be immediate. After alert, buy setups are guarded by alert low and sell setups are guarded by alert high; once a pullback exists, the first opposite-color candidate must pass or the setup is cancelled. The old four-candle setup remains valid as the fastest case. Default stop buffer is 0.05% beyond candle 2.',
     description: TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION,
   };
 

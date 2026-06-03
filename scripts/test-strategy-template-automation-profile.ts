@@ -201,8 +201,12 @@ assert.equal(twoStageParameters.stopBufferPct, 0.0005);
 assert.equal(twoStageParameters.stop_buffer_pct, 0.0005);
 assert.match(String(twoStageConfig.entryLogic || ''), /immediate green alert/);
 assert.match(String(twoStageConfig.entryLogic || ''), /alert low holds/);
+assert.match(String(twoStageConfig.entryLogic || ''), /first green after a red pullback/);
+assert.match(String(twoStageConfig.entryLogic || ''), /setup is cancelled/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /immediate red alert/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /alert high holds/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /first red after a green pullback/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /setup is cancelled/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /class TwoStageCandleBreakout14\(Strategy\):/
@@ -238,6 +242,14 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /if self\._high\(df, scan_index\) > alert_high:/
 );
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /if second_red_index is not None and self\._is_green\(df, scan_index\):/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /if second_green_index is not None and self\._is_red\(df, scan_index\):/
+);
 assert.doesNotMatch(String(twoStageConfig.codeDefinition || ''), /while second_red_index/);
 assert.doesNotMatch(String(twoStageConfig.codeDefinition || ''), /while second_green_index/);
 assert.match(
@@ -247,6 +259,14 @@ assert.match(
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /self\._high\(df, scan_index\) <= self\._high\(df, second_green_index\)/
+);
+assert.doesNotMatch(
+  String(twoStageConfig.codeDefinition || ''),
+  /second_red_index = None\s*\n\s*scan_index \+= 1/
+);
+assert.doesNotMatch(
+  String(twoStageConfig.codeDefinition || ''),
+  /second_green_index = None\s*\n\s*scan_index \+= 1/
 );
 assert.match(String(twoStageConfig.codeDefinition || ''), /"structure_guard": "alert_low"/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /"structure_guard": "alert_high"/);
