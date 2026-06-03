@@ -189,28 +189,41 @@ assert.equal(twoStageProfile.tradePlan.long?.stopLossMode, 'dynamic_second_stage
 assert.equal(twoStageProfile.tradePlan.short?.stopLossMode, 'dynamic_second_stage_candle');
 assert.equal(twoStageProfile.tradePlan.long?.takeProfitMode, 'dynamic_r_multiple');
 assert.equal(twoStageProfile.tradePlan.short?.takeProfitMode, 'dynamic_r_multiple');
-assert.equal(twoStageProfile.tradePlan.long?.riskRewardRatio, 4);
-assert.equal(twoStageProfile.tradePlan.short?.riskRewardRatio, 4);
+assert.equal(twoStageProfile.tradePlan.long?.riskRewardRatio, 11);
+assert.equal(twoStageProfile.tradePlan.short?.riskRewardRatio, 11);
 assert.deepEqual(twoStageProfile.tradePlan.long?.takeProfitTargetsPct, []);
 assert.equal(twoStageProfile.execution.useClosedCandlesOnly, true);
 assert.equal(twoStageProfile.execution.evaluationTimeframe, 'automation');
-assert.equal(twoStageProfile.tradeManagement, undefined);
-assert.equal(twoStageRisk.riskRewardRatio, 4);
-assert.equal(twoStageParameters.rewardR, 4);
+assert.equal(twoStageProfile.tradeManagement?.trailingStop?.mode, 'custom_r_ladder');
+assert.equal(twoStageProfile.tradeManagement?.trailingStop?.basis, 'actual_fill');
+assert.equal(twoStageProfile.tradeManagement?.trailingStop?.timeframe, '1m');
+assert.deepEqual(twoStageProfile.tradeManagement?.trailingStop?.rules, [
+  { whenProfitR: 4, moveStopToR: 1 },
+  { whenProfitR: 9, moveStopToR: 4 },
+  { whenProfitR: 11, moveStopToR: 9 },
+]);
+assert.equal(twoStageRisk.riskRewardRatio, 11);
+assert.equal(twoStageParameters.rewardR, 11);
 assert.equal(twoStageParameters.stopBufferPct, 0.0005);
 assert.equal(twoStageParameters.stop_buffer_pct, 0.0005);
+assert.match(String(twoStageConfig.entryLogic || ''), /fresh red candle 1/);
 assert.match(String(twoStageConfig.entryLogic || ''), /immediate green alert/);
 assert.match(String(twoStageConfig.entryLogic || ''), /alert low holds/);
+assert.match(String(twoStageConfig.entryLogic || ''), /continuation appears before pullback/);
 assert.match(String(twoStageConfig.entryLogic || ''), /first green after a red pullback/);
 assert.match(String(twoStageConfig.entryLogic || ''), /setup is cancelled/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /fresh green candle 1/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /immediate red alert/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /alert high holds/);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /continuation appears before pullback/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /first red after a green pullback/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /setup is cancelled/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
-  /class TwoStageCandleBreakout14\(Strategy\):/
+  /class TwoStageCandleBreakout11Ladder\(Strategy\):/
 );
+assert.match(String(twoStageConfig.codeDefinition || ''), /"reward_r": 11/);
+assert.match(String(twoStageConfig.codeDefinition || ''), /"risk_reward_ratio": 11/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /"stop_buffer_pct": 0\.0005/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
@@ -220,7 +233,18 @@ assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /self\._close\(df, first_red_index\) >= first_green_low/
 );
-assert.match(String(twoStageConfig.codeDefinition || ''), /def _setup_marker\(self, df, label, role, candle_index, price\):/);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /if first_red_index > 0 and self\._is_red\(df, first_red_index - 1\):/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /if first_green_index > 0 and self\._is_green\(df, first_green_index - 1\):/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /def _setup_marker\(self, df, label, role, candle_index, price\):/
+);
 assert.match(String(twoStageConfig.codeDefinition || ''), /def _mid\(self, df, index\):/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
@@ -236,11 +260,19 @@ assert.match(
 );
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
+  /if second_red_index is None and self\._is_green\(df, scan_index\):/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
   /alert_high = self\._high\(df, alert_index\)/
 );
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /if self\._high\(df, scan_index\) > alert_high:/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /if second_green_index is None and self\._is_red\(df, scan_index\):/
 );
 assert.match(
   String(twoStageConfig.codeDefinition || ''),

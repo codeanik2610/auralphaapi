@@ -7706,7 +7706,7 @@ class BreakoutRisk(Strategy):
 
   const normalizedTwoStage = service.coerceTemplateConfigToPython(
     buildTwoStageCandleBreakoutTemplateConfig(),
-    'Two-Stage Candle Breakout 1:4'
+    'Two-Stage Candle Breakout 1:11 SL Ladder'
   );
   const normalizedTwoStageRisk = normalizedTwoStage.risk as Record<string, unknown>;
   const normalizedTwoStageParameters = normalizedTwoStage.parameters as Record<string, unknown>;
@@ -7717,14 +7717,26 @@ class BreakoutRisk(Strategy):
   >;
   assert.equal(normalizedTwoStageRisk.stopLossMode, 'dynamic_second_stage_candle');
   assert.equal(normalizedTwoStageRisk.takeProfitMode, 'dynamic_r_multiple');
-  assert.equal(normalizedTwoStageRisk.riskRewardRatio, 4);
-  assert.equal(normalizedTwoStageParameters.rewardR, 4);
+  assert.equal(normalizedTwoStageRisk.riskRewardRatio, 11);
+  assert.equal(normalizedTwoStageParameters.rewardR, 11);
   assert.equal(normalizedTwoStageParameters.stopBufferPct, 0);
   assert.equal(
     (normalizedTwoStageAutomation.timeframePolicy as Record<string, unknown>)?.useClosedCandlesOnly,
     true
   );
-  assert.equal(normalizedTwoStage.tradeManagement, undefined);
+  const normalizedTwoStageTradeManagement = normalizedTwoStage.tradeManagement as Record<
+    string,
+    unknown
+  >;
+  const normalizedTwoStageTrailingStop = normalizedTwoStageTradeManagement?.trailingStop as Record<
+    string,
+    unknown
+  >;
+  assert.deepEqual(normalizedTwoStageTrailingStop?.rules, [
+    { whenProfitR: 4, moveStopToR: 1 },
+    { whenProfitR: 9, moveStopToR: 4 },
+    { whenProfitR: 11, moveStopToR: 9 },
+  ]);
   assert.equal(
     (
       (normalizedTwoStageAutomationProfile.tradePlan as Record<string, unknown>)?.long as Record<
@@ -7732,7 +7744,15 @@ class BreakoutRisk(Strategy):
         unknown
       >
     )?.riskRewardRatio,
-    4
+    11
+  );
+  const normalizedTwoStageProfileTradeManagement =
+    normalizedTwoStageAutomationProfile.tradeManagement as Record<string, unknown>;
+  const normalizedTwoStageProfileTrailingStop =
+    normalizedTwoStageProfileTradeManagement?.trailingStop as Record<string, unknown>;
+  assert.deepEqual(
+    normalizedTwoStageProfileTrailingStop?.rules,
+    normalizedTwoStageTrailingStop?.rules
   );
 
   const normalizedShort = service.coerceTemplateConfigToPython(
