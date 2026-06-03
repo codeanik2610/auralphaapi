@@ -387,10 +387,10 @@ function runExecutionPolicyNormalizationTests(): void {
   });
   assert.equal(
     ((liveAutoPolicy.orderTemplate as Record<string, unknown>) || {}).leverage,
-    1,
-    'Live auto should default to 1x leverage when no safe leverage is supplied'
+    null,
+    'Live auto should leave leverage unset so risk policy can resolve it'
   );
-  console.log('  ✓ Defaults live-auto leverage to 1x');
+  console.log('  ✓ Leaves live-auto leverage unset for risk-policy resolution');
 
   const normalizedLimits = normalizeTradeSuggestionExecutionPolicy({
     executionMode: 'live_trade_auto',

@@ -363,8 +363,6 @@ export const normalizeTradeSuggestionExecutionPolicy = (
     'risk_percent'
   );
   const leverage = normalizeNullableNumeric(readNumber(orderTemplate.leverage), { min: 0 });
-  const liveAutoLeverage =
-    executionMode === 'live_trade_auto' && (!leverage || leverage <= 0) ? 1 : leverage;
   const liveConsentEnabled =
     executionMode === 'live_trade_auto' ? (readBoolean(liveConsent.enabled) ?? false) : false;
 
@@ -408,7 +406,7 @@ export const normalizeTradeSuggestionExecutionPolicy = (
         min: 0,
         max: 100,
       }),
-      leverage: liveAutoLeverage,
+      leverage,
       reduceOnly: readBoolean(orderTemplate.reduceOnly) ?? false,
       deltaProtectionMode,
       slippageBps: normalizeNullableNumeric(readNumber(orderTemplate.slippageBps), {
