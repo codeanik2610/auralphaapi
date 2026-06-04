@@ -1206,6 +1206,55 @@ async function risk_centerGuard01(): Promise<void> {
     assert.equal(service.resolveEffectivePositionLeverage(brokerObservedPosition), 12);
   }
 
+  async function runPreTradeActivityStopLossMarginAssertions(): Promise<void> {
+    const service = createRiskService() as any;
+    const activityCalls: Array<Record<string, unknown>> = [];
+    const stopLossMarginMessage =
+      'Planned stop-loss risk is 20% of money used, above the configured 10% cap.';
+
+    service.operationalEventService = {
+      async logActivity(_userId: string, payload: Record<string, unknown>) {
+        activityCalls.push(payload);
+      },
+    };
+
+    await service.logPreTradeActivity('user-1', 'pretrade-sl-cap-1', {
+      blocked: true,
+      warningRuleCount: 0,
+      summary: 'Pre-trade check blocked by configured risk policy.',
+      request: {
+        order: {
+          symbol: 'BTCUSDT',
+        },
+      },
+      route: {
+        brokerKey: 'mudrex',
+        accountId: 'acct-1',
+      },
+      ruleDrafts: [
+        {
+          ruleCode: 'order_stop_loss_pct_of_margin',
+          blocking: true,
+          message: stopLossMarginMessage,
+        },
+      ],
+    });
+
+    assert.equal(activityCalls.length, 1);
+    assert.deepEqual(activityCalls[0], {
+      type: 'Risk pre-trade',
+      title: 'Pre-trade check blocked: BTCUSDT',
+      status: 'Blocked',
+      route: 'Risk',
+      stream: 'Pre-trade',
+      related: 'mudrex · acct-1',
+      referenceId: 'pretrade-sl-cap-1',
+      correlationId: 'pretrade-sl-cap-1',
+      symbol: 'BTCUSDT',
+      description: `Pre-trade check blocked by configured risk policy. SL cap: ${stopLossMarginMessage}`,
+    });
+  }
+
   async function main(): Promise<void> {
     await runRepositoryAssertions();
     await runCreatePolicyAssertions();
@@ -1217,6 +1266,7 @@ async function risk_centerGuard01(): Promise<void> {
     await runDeltaProtectiveOrderInferenceAssertions();
     await runDeltaPreferredMarginAssertions();
     await runPositionLeverageTruthAssertions();
+    await runPreTradeActivityStopLossMarginAssertions();
     console.log('Risk Center Phase 1 assertions passed.');
   }
 

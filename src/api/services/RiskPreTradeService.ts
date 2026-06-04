@@ -349,6 +349,12 @@ export class RiskPreTradeService {
       return;
     }
     const symbol = evaluation.request.order.symbol;
+    const stopLossMarginBlock = evaluation.ruleDrafts.find(
+      (item) => item.ruleCode === 'order_stop_loss_pct_of_margin' && item.blocking
+    );
+    const description = stopLossMarginBlock
+      ? `${evaluation.summary} SL cap: ${stopLossMarginBlock.message}`
+      : evaluation.summary;
     await this.operationalEventService.logActivity(userId, {
       type: 'Risk pre-trade',
       title: `Pre-trade check ${evaluation.blocked ? 'blocked' : 'created'}: ${symbol}`,
@@ -365,7 +371,7 @@ export class RiskPreTradeService {
       referenceId: checkId,
       correlationId: checkId,
       symbol,
-      description: evaluation.summary,
+      description,
     });
   }
 
