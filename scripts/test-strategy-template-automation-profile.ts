@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { buildTwoStageCandleBreakoutTemplateConfig } from '../src/api/strategies/templates/TwoStageCandleBreakoutTemplate';
 import { buildStrategyTemplateAutomationProfile } from '../src/api/utils/strategyTemplateAutomation';
 import {
@@ -207,19 +208,39 @@ assert.equal(twoStageParameters.rewardR, 11);
 assert.equal(twoStageParameters.stopBufferPct, 0.0005);
 assert.equal(twoStageParameters.stop_buffer_pct, 0.0005);
 assert.match(String(twoStageConfig.entryLogic || ''), /red candle 1/);
-assert.match(String(twoStageConfig.entryLogic || ''), /immediate green alert/);
-assert.match(String(twoStageConfig.entryLogic || ''), /same-direction continuation before pullback/);
+assert.match(
+  String(twoStageConfig.entryLogic || ''),
+  /internal candles that stay inside Candle 1 range/
+);
+assert.match(String(twoStageConfig.entryLogic || ''), /first green candle/);
+assert.match(
+  String(twoStageConfig.entryLogic || ''),
+  /same-direction continuation before pullback/
+);
 assert.match(String(twoStageConfig.entryLogic || ''), /no candle may break the alert low/);
 assert.match(String(twoStageConfig.entryLogic || ''), /intentionally not used/);
 assert.match(String(twoStageConfig.entryLogic || ''), /first green after that red pullback/);
-assert.match(String(twoStageConfig.entryLogic || ''), /Entry candles may be inside the alert candle/);
+assert.match(
+  String(twoStageConfig.entryLogic || ''),
+  /Entry candles may be inside the alert candle/
+);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /green candle 1/);
-assert.match(String(twoStageConfig.entryShortLogic || ''), /immediate red alert/);
-assert.match(String(twoStageConfig.entryShortLogic || ''), /same-direction continuation before pullback/);
+assert.match(
+  String(twoStageConfig.entryShortLogic || ''),
+  /internal candles that stay inside Candle 1 range/
+);
+assert.match(String(twoStageConfig.entryShortLogic || ''), /first red candle/);
+assert.match(
+  String(twoStageConfig.entryShortLogic || ''),
+  /same-direction continuation before pullback/
+);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /no candle may break the alert high/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /intentionally not used/);
 assert.match(String(twoStageConfig.entryShortLogic || ''), /first red after that green pullback/);
-assert.match(String(twoStageConfig.entryShortLogic || ''), /Entry candles may be inside the alert candle/);
+assert.match(
+  String(twoStageConfig.entryShortLogic || ''),
+  /Entry candles may be inside the alert candle/
+);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /class TwoStageCandleBreakout11Ladder\(Strategy\):/
@@ -229,11 +250,27 @@ assert.match(String(twoStageConfig.codeDefinition || ''), /"risk_reward_ratio": 
 assert.match(String(twoStageConfig.codeDefinition || ''), /"stop_buffer_pct": 0\.0005/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
-  /self\._close\(df, first_green_index\) <= first_red_high/
+  /def _find_long_alert\(self, df, first_red_index\):/
 );
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
-  /self\._close\(df, first_red_index\) >= first_green_low/
+  /def _find_short_alert\(self, df, first_green_index\):/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /self\._is_green\(df, scan_index\) and self\._close\(df, scan_index\) > first_red_high/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /self\._is_red\(df, scan_index\) and self\._close\(df, scan_index\) < first_green_low/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /"pre_alert_inside_indexes": pre_alert_inside_indexes/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /"candle_1_guard": "pre_alert_candles_stay_inside_candle_1_range"/
 );
 assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
@@ -243,6 +280,114 @@ assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /if first_red_index > 0 and self\._is_red\(df, first_red_index - 1\):/
 );
+
+const behaviorHarness = String.raw`
+import json
+import sys
+import types
+
+auralpha = types.ModuleType("auralpha")
+
+class Strategy:
+    pass
+
+auralpha.Strategy = Strategy
+sys.modules["auralpha"] = auralpha
+
+namespace = {}
+exec(sys.stdin.read(), namespace)
+StrategyClass = namespace["TwoStageCandleBreakout11Ladder"]
+
+class FakeSeries:
+    def __init__(self, values):
+        self.values = values
+        self.iloc = self
+
+    def __getitem__(self, index):
+        return self.values[index]
+
+class FakeFrame:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __contains__(self, key):
+        return key in self.rows[0]
+
+    def __getitem__(self, key):
+        return FakeSeries([row[key] for row in self.rows])
+
+def run(rows):
+    strategy = StrategyClass()
+    df = FakeFrame(rows)
+    strategy.prepare(df)
+    return {
+        "long_signals": strategy._long_signals,
+        "short_signals": strategy._short_signals,
+        "long_plans": strategy._long_plans,
+        "short_plans": strategy._short_plans,
+    }
+
+long_with_inside = run([
+    {"open": 105, "high": 106, "low": 99, "close": 100},
+    {"open": 101, "high": 105, "low": 100, "close": 103},
+    {"open": 104, "high": 105, "low": 100, "close": 102},
+    {"open": 103, "high": 107, "low": 100, "close": 106.5},
+    {"open": 104, "high": 105, "low": 101, "close": 102},
+    {"open": 103, "high": 106, "low": 102, "close": 105},
+])
+
+short_with_inside = run([
+    {"open": 100, "high": 106, "low": 99, "close": 105},
+    {"open": 104, "high": 105, "low": 100, "close": 102},
+    {"open": 102, "high": 105, "low": 100, "close": 104},
+    {"open": 104, "high": 105, "low": 98, "close": 98.5},
+    {"open": 100, "high": 103, "low": 99, "close": 102},
+    {"open": 101, "high": 102, "low": 97, "close": 98},
+])
+
+long_immediate = run([
+    {"open": 105, "high": 106, "low": 99, "close": 100},
+    {"open": 101, "high": 107, "low": 100, "close": 106.5},
+    {"open": 104, "high": 105, "low": 101, "close": 102},
+    {"open": 103, "high": 106, "low": 102, "close": 105},
+])
+
+short_immediate = run([
+    {"open": 100, "high": 106, "low": 99, "close": 105},
+    {"open": 104, "high": 105, "low": 98, "close": 98.5},
+    {"open": 100, "high": 103, "low": 99, "close": 102},
+    {"open": 101, "high": 102, "low": 97, "close": 98},
+])
+
+print(json.dumps({
+    "longInsideEntry": long_with_inside["long_signals"][5],
+    "longInsidePreAlert": long_with_inside["long_plans"][5]["metadata"]["pre_alert_inside_indexes"],
+    "shortInsideEntry": short_with_inside["short_signals"][5],
+    "shortInsidePreAlert": short_with_inside["short_plans"][5]["metadata"]["pre_alert_inside_indexes"],
+    "longImmediateEntry": long_immediate["long_signals"][3],
+    "shortImmediateEntry": short_immediate["short_signals"][3],
+}))
+`;
+
+const behaviorResult = spawnSync('python3', ['-c', behaviorHarness], {
+  input: String(twoStageConfig.codeDefinition || ''),
+  encoding: 'utf8',
+});
+assert.equal(
+  behaviorResult.status,
+  0,
+  behaviorResult.stderr || behaviorResult.stdout || 'Two-stage Python behavior harness failed'
+);
+const behavior = JSON.parse(behaviorResult.stdout) as Record<string, unknown>;
+assert.equal(behavior.longInsideEntry, true);
+assert.deepEqual(behavior.longInsidePreAlert, [1, 2]);
+assert.equal(behavior.shortInsideEntry, true);
+assert.deepEqual(behavior.shortInsidePreAlert, [1, 2]);
+assert.equal(behavior.longImmediateEntry, true);
+assert.equal(behavior.shortImmediateEntry, true);
 assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /if first_green_index > 0 and self\._is_green\(df, first_green_index - 1\):/
