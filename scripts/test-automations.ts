@@ -103,7 +103,17 @@ async function runAutomationsControllerAssertions(): Promise<void> {
 
   assert.deepEqual(
     (await controller.getAutomations(authReq, undefined, undefined, 'Running', 'BTC')).data.args,
-    ['user-1', { limit: undefined, offset: undefined, status: 'Running', search: 'BTC' }]
+    [
+      'user-1',
+      {
+        limit: undefined,
+        offset: undefined,
+        status: 'Running',
+        search: 'BTC',
+        automationType: undefined,
+        view: undefined,
+      },
+    ]
   );
   assert.deepEqual((await controller.getAutomationsSummary(authReq)).data, { ok: true });
   assert.deepEqual((await controller.getAutomationById(authReq, 'bot-1')).data.args, [

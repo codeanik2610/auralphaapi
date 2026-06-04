@@ -16,6 +16,8 @@ export interface AutomationListQuery {
   userId: string;
   status?: string;
   search?: string;
+  automationType?: string;
+  view?: 'full' | 'options';
 }
 
 export interface AutomationListResult {
@@ -67,8 +69,33 @@ export class AutomationRepository {
       .skip(query.offset)
       .take(query.limit);
 
+    if (query.view === 'options') {
+      builder.select([
+        'automation.id',
+        'automation.automationType',
+        'automation.name',
+        'automation.strategy',
+        'automation.broker',
+        'automation.market',
+        'automation.trigger',
+        'automation.status',
+        'automation.lastRun',
+        'automation.nextRun',
+        'automation.timeZone',
+        'automation.accounts',
+        'automation.riskMode',
+        'automation.updatedAt',
+      ]);
+    }
+
     if (query.status) {
       builder.andWhere('automation.status = :status', { status: query.status });
+    }
+
+    if (query.automationType) {
+      builder.andWhere('automation.automationType = :automationType', {
+        automationType: query.automationType,
+      });
     }
 
     if (query.search) {

@@ -117,7 +117,11 @@ export class AutomationsService {
     });
 
     return successResponse({
-      items: data.map((automation) => this.mapAutomation(automation)),
+      items: data.map((automation) =>
+        params.view === 'options'
+          ? this.mapAutomationOption(automation)
+          : this.mapAutomation(automation)
+      ),
       total,
       limit: params.limit,
       offset: params.offset,
@@ -1567,6 +1571,27 @@ export class AutomationsService {
         status: alert.status,
         lineage: extractAutomationLineage(alert.meta?.lineage ?? alert.meta),
       })),
+    };
+  }
+
+  private mapAutomationOption(automation: Automation): AutomationItem {
+    const automationType = normalizeAutomationType(automation.automationType, null);
+
+    return {
+      id: automation.id,
+      automationType,
+      name: automation.name,
+      strategy: automation.strategy,
+      broker: automation.broker,
+      market: automation.market,
+      trigger: automation.trigger,
+      status: automation.status as AutomationItem['status'],
+      lastRun: automation.lastRun ? automation.lastRun.toISOString() : '--',
+      nextRun: automation.nextRun ? automation.nextRun.toISOString() : 'Paused',
+      timeZone: automation.timeZone ?? null,
+      accounts: automation.accounts,
+      riskMode: automation.riskMode ?? '--',
+      updatedAt: automation.updatedAt?.toISOString(),
     };
   }
 

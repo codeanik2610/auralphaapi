@@ -12,12 +12,16 @@ import {
 
 const VALID_STATUSES: AutomationStatus[] = ['Running', 'Paused', 'Failed', 'Draft'];
 const VALID_TYPES: AutomationType[] = CANONICAL_AUTOMATION_TYPES;
+const VALID_LIST_VIEWS = ['full', 'options'] as const;
+export type AutomationListView = (typeof VALID_LIST_VIEWS)[number];
 
 export interface AutomationsQuery {
   limit?: string;
   offset?: string;
   status?: string;
   search?: string;
+  automationType?: string;
+  view?: string;
 }
 
 export interface CreateAutomationBody {
@@ -99,6 +103,8 @@ export interface ValidatedAutomationsQuery {
   offset: number;
   status?: AutomationStatus;
   search?: string;
+  automationType?: AutomationType;
+  view: AutomationListView;
 }
 
 const sanitizeRecord = (
@@ -251,11 +257,23 @@ export const validateAutomationsQuery = (query: AutomationsQuery): ValidatedAuto
     throw new BadRequestAppError(`status must be one of: ${VALID_STATUSES.join(', ')}`);
   }
 
+  const automationType = query.automationType?.trim();
+  if (automationType && !VALID_TYPES.includes(automationType as AutomationType)) {
+    throw new BadRequestAppError(`automationType must be one of: ${VALID_TYPES.join(', ')}`);
+  }
+
+  const view = query.view?.trim() || 'full';
+  if (!VALID_LIST_VIEWS.includes(view as AutomationListView)) {
+    throw new BadRequestAppError(`view must be one of: ${VALID_LIST_VIEWS.join(', ')}`);
+  }
+
   return {
     limit,
     offset,
     status: status as AutomationStatus | undefined,
     search: query.search?.trim() || undefined,
+    automationType: automationType as AutomationType | undefined,
+    view: view as AutomationListView,
   };
 };
 

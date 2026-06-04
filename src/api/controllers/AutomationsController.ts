@@ -43,13 +43,17 @@ export class AutomationsController {
     @QueryParam('limit') limit?: string,
     @QueryParam('offset') offset?: string,
     @QueryParam('status') status?: string,
-    @QueryParam('search') search?: string
+    @QueryParam('search') search?: string,
+    @QueryParam('automationType') automationType?: string,
+    @QueryParam('view') view?: string
   ): Promise<ApiSuccessResponse<AutomationsListResponse>> {
     return this.automationsService.getAutomations(requireAuthUserId(request), {
       limit,
       offset,
       status,
       search,
+      automationType,
+      view,
     });
   }
 
