@@ -116,6 +116,43 @@ export interface SuggestedTradeRouteAttempt {
   note?: string | null;
 }
 
+export interface SuggestedTradeRiskAuditSnapshot {
+  schemaVersion: 'suggested-trade-risk-audit.v1';
+  source: 'risk_pre_trade_check';
+  preTradeCheckId?: string | null;
+  preTradeState?: SuggestedTradeExecutionPreTradeState | null;
+  checkedAt?: string | null;
+  decisionSummary?: string | null;
+  status?: string | null;
+  symbol?: string | null;
+  timeframe?: string | null;
+  side?: string | null;
+  executionMode?: string | null;
+  approvalMode?: string | null;
+  brokerKey?: string | null;
+  accountId?: string | null;
+  entryPrice?: number | null;
+  stopLossPrice?: number | null;
+  takeProfitPrice?: number | null;
+  quantity?: number | null;
+  leverage?: number | null;
+  accountBalance?: number | null;
+  portfolioEquity?: number | null;
+  moneyUsed?: number | null;
+  plannedStopLossLoss?: number | null;
+  maxAllowedStopLossLoss?: number | null;
+  stopLossPctOfMoneyUsed?: number | null;
+  stopLossPctCap?: number | null;
+  targetAmount?: number | null;
+  targetRiskReward?: number | null;
+  slLadder?: Record<string, unknown> | null;
+  slLadderSource?: Record<string, unknown> | null;
+  appliedPolicies?: Array<Record<string, unknown>>;
+  riskPolicyVersions?: Array<Record<string, unknown>>;
+  rules?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
 export interface SuggestedTradeExecutionLink {
   executionMode?: 'live' | 'paper' | null;
   preTradeCheckId?: string | null;
@@ -154,6 +191,7 @@ export interface SuggestedTradeExecutionLink {
   protectionState?: SuggestedTradeProtectionState | null;
   protectionSource?: string | null;
   protectionPlan?: Record<string, unknown> | null;
+  riskAudit?: SuggestedTradeRiskAuditSnapshot | Record<string, unknown> | null;
   protectionAttempts?: number | null;
   protectionLastError?: string | null;
   protectionCheckedAt?: string | null;

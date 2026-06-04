@@ -871,6 +871,202 @@ async function runSuggestedTradesSummaryFilterAssertions(): Promise<void> {
 async function runSuggestedTradeTransitionAssertions(): Promise<void> {
   {
     const service = new SuggestedTradesService() as any;
+    service.riskPolicyRepository = {
+      async listPolicyVersions() {
+        return [
+          {
+            id: 'version-1',
+            createdAt: new Date('2026-04-04T09:59:00.000Z'),
+          },
+        ];
+      },
+    };
+
+    const trade = {
+      id: 'st-audit',
+      userId: 'user-1',
+      automationId: 'auto-1',
+      automationRunId: 'run-1',
+      symbol: 'BTCUSDT',
+      timeframe: '5m',
+      side: 'BUY',
+      entryPrice: '100',
+      stopLossPrice: '96',
+      takeProfitTargets: [111],
+      sourceTemplateId: 'template-1',
+      meta: {
+        tradeManagementSnapshot: {
+          sourceTemplateId: 'template-1',
+          sourceTemplateName: 'SMC - advanced',
+          sourceTemplateVersion: 4,
+          capturedAt: '2026-04-04T09:58:00.000Z',
+          trailingStop: {
+            enabled: true,
+            mode: 'custom_r_ladder',
+            basis: 'planned_entry',
+            timeframe: '5m',
+            updateOnlyInProfitDirection: true,
+            rules: [
+              { whenProfitR: 4, moveStopToR: 1 },
+              { whenProfitR: 9, moveStopToR: 4 },
+              { whenProfitR: 11, moveStopToR: 9 },
+            ],
+          },
+        },
+      },
+    };
+    const request = {
+      suggestedTradeId: 'st-audit',
+      automationId: 'auto-1',
+      automationRunId: 'run-1',
+      sourceType: 'suggested_trade_automation_live_rollout',
+      executionMode: 'live',
+      approvalMode: 'auto_if_safe',
+      routing: {
+        routeMode: 'fixed',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+      },
+      order: {
+        symbol: 'BTCUSDT',
+        timeframe: '5m',
+        side: 'BUY',
+        orderType: 'limit',
+        quantityMode: 'quantity',
+        quantity: 1,
+        entryPrice: 100,
+        stopLossPrice: 96,
+        takeProfitTargets: [111],
+        leverage: 5,
+        reduceOnly: false,
+      },
+    };
+    const result = {
+      checkId: 'risk-check-1',
+      status: 'passed',
+      checkedAt: '2026-04-04T10:00:00.000Z',
+      request,
+      snapshot: { freshnessState: 'fresh' },
+      decision: {
+        allowed: true,
+        blocked: false,
+        approvalRequired: false,
+        blockingRuleCount: 0,
+        warningRuleCount: 0,
+        summary: 'Pre-trade passed',
+      },
+      before: { brokers: [], assets: [], brokerAssets: [] },
+      delta: { reservedOrderMarginDelta: 10 },
+      after: { brokers: [], assets: [], brokerAssets: [] },
+      scopeImpacts: [],
+      blockingRules: [],
+      warningRules: [],
+      evaluatedRules: [
+        {
+          id: 'rule-sl',
+          checkId: 'risk-check-1',
+          scopeType: 'order',
+          scopeKey: 'st-audit',
+          ruleCode: 'order_stop_loss_pct_of_margin',
+          metricName: 'stopLossPctOfMargin',
+          actualValue: 10,
+          basisValue: 10,
+          criticalThresholdValue: 10,
+          status: 'ok',
+          blocking: false,
+          message: 'Stop loss is inside the margin cap.',
+          sortOrder: 1,
+          createdAt: '2026-04-04T10:00:00.000Z',
+        },
+        {
+          id: 'rule-account',
+          checkId: 'risk-check-1',
+          scopeType: 'account',
+          scopeKey: 'acc-1',
+          accountId: 'acc-1',
+          brokerKey: 'mudrex',
+          ruleCode: 'account_margin_usage',
+          metricName: 'marginUsagePct',
+          actualValue: 10,
+          basisValue: 100,
+          criticalThresholdValue: 80,
+          status: 'ok',
+          blocking: false,
+          message: 'Projected account margin usage remains within tolerance.',
+          sortOrder: 2,
+          createdAt: '2026-04-04T10:00:00.000Z',
+        },
+      ],
+      appliedPolicies: [
+        {
+          policyContextId: 'context-1',
+          policyId: 'policy-1',
+          scope: 'account',
+          scopeKey: 'acc-1',
+          monitorOnly: false,
+          enforceHardBlock: true,
+        },
+      ],
+    };
+
+    const audit = await service.buildSuggestedTradeRiskAuditSnapshot(
+      'user-1',
+      trade,
+      request,
+      result,
+      {},
+      'passed'
+    );
+    assert.equal(audit.moneyUsed, 10);
+    assert.equal(audit.plannedStopLossLoss, 1);
+    assert.equal(audit.maxAllowedStopLossLoss, 1);
+    assert.equal(audit.targetAmount, 11);
+    assert.equal(audit.targetRiskReward, 11);
+    assert.equal(audit.accountBalance, 100);
+    assert.equal(audit.riskPolicyVersions?.[0]?.versionId, 'version-1');
+    assert.equal(
+      (audit.slLadder?.rules as Array<Record<string, unknown>> | undefined)?.[2]?.moveStopToR as
+        | number
+        | undefined,
+      9
+    );
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
+    const activityLogs: Array<Record<string, unknown>> = [];
+    service.suggestedTradeRepository = {
+      async getSuggestedTradeById() {
+        return {
+          id: 'st-no-pretrade',
+          automationId: 'auto-1',
+          userId: 'user-1',
+          symbol: 'BTCUSDT',
+          timeframe: '5m',
+          side: 'BUY',
+          signalTime: new Date(),
+          executionRecord: null,
+        };
+      },
+    };
+    service.loadTradeSuggestionExecutionPolicy = async () => ({
+      freshness: { enabled: false, graceSeconds: null, timeframeGraceSeconds: {} },
+    });
+    service.operationalEventService = {
+      async logActivity(_userId: string, payload: Record<string, unknown>) {
+        activityLogs.push(payload);
+      },
+    };
+
+    await assert.rejects(
+      () => service.assertLiveOrderFreshnessForSuggestedTrade('user-1', 'st-no-pretrade'),
+      /no persisted passed pre-trade check/
+    );
+    assert.equal(activityLogs[0]?.status, 'Blocked');
+  }
+
+  {
+    const service = new SuggestedTradesService() as any;
     let savedTrade: Record<string, unknown> | null = null;
     let lookupCount = 0;
 

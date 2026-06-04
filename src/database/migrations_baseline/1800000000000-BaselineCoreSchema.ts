@@ -1437,6 +1437,7 @@ export class BaselineCoreSchema1800000000000 implements MigrationInterface {
   \`protection_source\` varchar(64) DEFAULT NULL,
   \`protection_plan_json\` json DEFAULT NULL,
   \`route_attempts_json\` json DEFAULT NULL,
+  \`risk_audit_json\` json DEFAULT NULL,
   \`protection_attempts\` int unsigned NOT NULL DEFAULT '0',
   \`protection_last_error\` text,
   \`protection_checked_at\` timestamp NULL DEFAULT NULL,

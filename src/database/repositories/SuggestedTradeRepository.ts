@@ -192,6 +192,7 @@ export interface SuggestedTradeExecutionUpsertPayload {
   protectionSource?: string | null;
   protectionPlan?: Record<string, unknown> | null;
   routeAttempts?: unknown[] | null;
+  riskAudit?: Record<string, unknown> | null;
   protectionAttempts?: number | null;
   protectionLastError?: string | null;
   protectionCheckedAt?: Date | string | null;
@@ -398,6 +399,7 @@ export class SuggestedTradeRepository {
         normalizeOptionalString(safePayload.protectionSource)?.toLowerCase() ?? null,
       protectionPlan: normalizeOptionalRecord(safePayload.protectionPlan),
       routeAttempts: normalizeOptionalRecordArray(safePayload.routeAttempts),
+      riskAudit: normalizeOptionalRecord(safePayload.riskAudit),
       protectionAttempts: normalizeOptionalUnsignedInteger(safePayload.protectionAttempts),
       protectionLastError: normalizeOptionalString(safePayload.protectionLastError),
       protectionCheckedAt: normalizeOptionalDate(safePayload.protectionCheckedAt),
@@ -465,6 +467,7 @@ export class SuggestedTradeRepository {
         payload.protectionPlan,
         existing.protectionPlan
       ),
+      riskAudit: normalizeOptionalRecord(payload.riskAudit) ?? existing.riskAudit,
       protectionLastError: preferExistingTrailingState
         ? existing.protectionLastError
         : payload.protectionLastError,

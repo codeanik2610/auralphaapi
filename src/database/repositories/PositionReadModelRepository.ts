@@ -61,6 +61,7 @@ type PositionSuggestedTradeContextRow = {
   protectionTakeProfitOrderId?: string | null;
   protectionPlan?: unknown;
   routeAttempts?: unknown;
+  riskAudit?: unknown;
   sourceTemplateId?: string | null;
   sourceBacktestId?: string | null;
   traceMethod?: PositionAutomationTradeContext['traceMethod'];
@@ -1792,6 +1793,7 @@ export class PositionReadModelRepository {
                    NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(execution_row.protection_plan_json, '$.takeProfitOrderId')), 'null'), '') AS protectionTakeProfitOrderId,
                    execution_row.protection_plan_json AS protectionPlan,
                    execution_row.route_attempts_json AS routeAttempts,
+                   execution_row.risk_audit_json AS riskAudit,
                    '${traceMethod}' AS traceMethod
               FROM suggested_trade_executions execution_row
               INNER JOIN suggested_trades suggested_trade
@@ -1888,6 +1890,7 @@ export class PositionReadModelRepository {
     record.entry_order_id = context?.entryOrderId ?? null;
     record.entryOrderId = context?.entryOrderId ?? null;
     record.executionProtection = context?.protection ?? null;
+    record.riskAudit = context?.riskAudit ?? null;
     record.suggested_trade_id = context?.suggestedTradeId ?? null;
     record.suggestedTradeId = context?.suggestedTradeId ?? null;
     record.automation_id = context?.automationId ?? null;
@@ -1908,6 +1911,7 @@ export class PositionReadModelRepository {
       record.positionSummary.entryFilledAt = entryFilledAt;
       record.positionSummary.entryOrderId = context?.entryOrderId ?? null;
       record.positionSummary.executionProtection = context?.protection ?? null;
+      record.positionSummary.riskAudit = context?.riskAudit ?? null;
       record.positionSummary.suggestedTradeId = context?.suggestedTradeId ?? null;
       record.positionSummary.automationId = context?.automationId ?? null;
       record.positionSummary.automationRunId = context?.automationRunId ?? null;
@@ -1939,6 +1943,7 @@ export class PositionReadModelRepository {
       executionState: String(row.executionState || '').trim() || null,
       positionStatus: String(row.positionStatus || '').trim() || null,
       protection: this.mapPositionProtectionContext(row),
+      riskAudit: this.mapPositionRiskAuditContext(row.riskAudit),
       routeAttempts: this.mapPositionRouteAttempts(row.routeAttempts),
       operatorTimeline: this.buildPositionOperatorTimeline(row),
       sourceTemplateId: String(row.sourceTemplateId || '').trim() || null,
@@ -2011,6 +2016,14 @@ export class PositionReadModelRepository {
       takeProfitOrderId,
       trailingStop,
     };
+  }
+
+  private mapPositionRiskAuditContext(value: unknown): PositionAutomationTradeContext['riskAudit'] {
+    const parsed = this.parseJsonValue(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
   }
 
   private mapPositionRouteAttempts(

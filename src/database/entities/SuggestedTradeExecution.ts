@@ -126,6 +126,9 @@ export class SuggestedTradeExecution {
   @Column({ name: 'route_attempts_json', type: 'json', nullable: true })
   routeAttempts!: Array<Record<string, unknown>> | null;
 
+  @Column({ name: 'risk_audit_json', type: 'json', nullable: true })
+  riskAudit!: Record<string, unknown> | null;
+
   @Column({ name: 'protection_attempts', type: 'int', unsigned: true, default: 0 })
   protectionAttempts!: number;
 

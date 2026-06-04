@@ -19,6 +19,7 @@ import {
   SuggestedTradeStatusActionResult,
   SuggestedTradesSummary,
   SuggestedTradesFreshnessAudit,
+  SuggestedTradeRiskAuditSnapshot,
 } from '../contracts/SuggestedTrade';
 import { successResponse } from '../utils/response';
 import { BadRequestAppError, NotFoundAppError } from '../errors/AppError';
@@ -125,12 +126,7 @@ type TradeSuggestionOrderType = 'market' | 'limit';
 type TradeSuggestionQuantityMode = 'quantity' | 'notional' | 'risk_percent';
 type LiveAutoMinDistanceFromStopBasis = 'expected_fill' | 'order_entry' | 'market_price';
 type TradeSuggestionSideKey = 'long' | 'short';
-type TradeSuggestionOppositeSignalMode =
-  | 'skip'
-  | 'allow'
-  | 'close_then_open'
-  | 'reverse'
-  | 'hedge';
+type TradeSuggestionOppositeSignalMode = 'skip' | 'allow' | 'close_then_open' | 'reverse' | 'hedge';
 type SuggestedTradePreTradeState = NonNullable<SuggestedTradeExecutionLink['preTradeState']>;
 type TrailingStopConfigSource =
   | 'strategy_template'
@@ -140,6 +136,7 @@ type TrailingStopConfigSource =
   | null;
 const SUGGESTED_TRADES_FRESHNESS_AUDIT_LOOKBACK_DAYS = 7;
 const SUGGESTED_TRADES_FRESHNESS_AUDIT_LIMIT = 5000;
+const SUGGESTED_TRADE_RISK_AUDIT_SCHEMA_VERSION = 'suggested-trade-risk-audit.v1';
 const LIVE_AUTO_LIFECYCLE_MONITOR_INTERVAL_MS = 1500;
 const LIVE_AUTO_LIFECYCLE_MONITOR_DEFAULT_DURATION_MS = 5 * 60 * 1000;
 const LIVE_AUTO_LIFECYCLE_MONITOR_MAX_DURATION_MS = 15 * 60 * 1000;
@@ -1435,22 +1432,51 @@ export class SuggestedTradesService {
       throw new NotFoundAppError('Suggested trade not found');
     }
 
+    const execution = this.getExecutionLink(trade);
     const executionPolicy = await this.loadTradeSuggestionExecutionPolicy(
       userId,
       trade.automationId
     );
     const freshness = this.evaluateSuggestedTradeFreshness(trade, executionPolicy);
-    if (freshness.allowed) {
+    if (!freshness.allowed) {
+      const message = this.buildLiveExecutionFreshnessBlockedMessage(freshness);
+      await this.operationalEventService.logActivity(userId, {
+        type: 'Suggested Trade',
+        title: `Stale suggested trade blocked: ${trade.symbol}`,
+        status: 'Warning',
+        route: 'Orders',
+        stream: 'Execution',
+        related: `${trade.symbol} · ${trade.timeframe}`,
+        referenceId: trade.id,
+        symbol: trade.symbol,
+        description: message,
+      });
+
+      throw new BadRequestAppError(message);
+    }
+
+    const preTradeState = String(execution?.preTradeState || '')
+      .trim()
+      .toLowerCase();
+    const hasPassedPreTradeCheck =
+      preTradeState === 'passed' && Boolean(this.readStringValue(execution?.preTradeCheckId));
+    if (hasPassedPreTradeCheck) {
       return;
     }
 
-    const message = this.buildLiveExecutionFreshnessBlockedMessage(freshness);
+    const blockedReason = this.readStringValue(execution?.preTradeBlockedReason);
+    const message =
+      preTradeState || blockedReason
+        ? `Live order blocked: suggested trade pre-trade state is ${preTradeState || 'missing'}${
+            blockedReason ? ` (${blockedReason})` : ''
+          }.`
+        : 'Live order blocked: suggested trade has no persisted passed pre-trade check.';
     await this.operationalEventService.logActivity(userId, {
-      type: 'Suggested Trade',
-      title: `Stale suggested trade blocked: ${trade.symbol}`,
-      status: 'Warning',
-      route: 'Orders',
-      stream: 'Execution',
+      type: 'Risk pre-trade',
+      title: `Suggested trade risk gate blocked: ${trade.symbol}`,
+      status: 'Blocked',
+      route: 'Risk',
+      stream: 'Pre-trade',
       related: `${trade.symbol} · ${trade.timeframe}`,
       referenceId: trade.id,
       symbol: trade.symbol,
@@ -1731,6 +1757,14 @@ export class SuggestedTradesService {
 
     const preTradeState = this.resolvePreTradeState(result.status);
     const ready = preTradeState === 'passed';
+    const riskAudit = await this.buildSuggestedTradeRiskAuditSnapshot(
+      userId,
+      trade,
+      resolvedRequest,
+      result,
+      existingExecution,
+      preTradeState
+    );
     const nextExecution: SuggestedTradeExecutionLink = {
       ...existingExecution,
       executionMode: resolvedRequest.executionMode,
@@ -1763,6 +1797,7 @@ export class SuggestedTradesService {
         this.formatNumericString(resolvedRequest.order.takeProfitTargets?.[0] ?? null) ??
         existingExecution.takeProfitPrice ??
         null,
+      riskAudit,
     };
 
     await this.persistExecutionState(trade, nextExecution);
@@ -2600,7 +2635,12 @@ export class SuggestedTradesService {
     }
 
     try {
-      await this.brokerPositionsFacadeService.closePosition(positionId, userId, brokerKey, accountId);
+      await this.brokerPositionsFacadeService.closePosition(
+        positionId,
+        userId,
+        brokerKey,
+        accountId
+      );
       const description = `Closed opposite ${exposure?.sideKey ?? 'side'} exposure ${positionId} before routing ${trade.side} live-auto suggestion for ${trade.symbol}.`;
       await this.operationalEventService.logActivity(userId, {
         type: 'Suggested Trade',
@@ -4117,7 +4157,8 @@ export class SuggestedTradesService {
     const preTradeState = this.resolvePreTradeState(result.status);
     const ready = preTradeState === 'passed';
     const existingExecution = this.getExecutionLink(trade) ?? {};
-    const execution = this.buildExecutionFromPreTradeResult(
+    const execution = await this.buildExecutionFromPreTradeResult(
+      userId,
       trade,
       candidate.request,
       result,
@@ -4136,18 +4177,20 @@ export class SuggestedTradesService {
     };
   }
 
-  private buildExecutionFromPreTradeResult(
+  private async buildExecutionFromPreTradeResult(
+    userId: string,
     trade: SuggestedTrade,
     request: SuggestedTradePreTradeRequest,
     result: RiskPreTradeCheckResult,
     existingExecution: SuggestedTradeExecutionLink,
     ready: boolean
-  ): SuggestedTradeExecutionLink {
+  ): Promise<SuggestedTradeExecutionLink> {
+    const preTradeState = this.resolvePreTradeState(result.status);
     return {
       ...existingExecution,
       executionMode: request.executionMode,
       preTradeCheckId: result.checkId,
-      preTradeState: this.resolvePreTradeState(result.status),
+      preTradeState,
       preTradeCheckedAt: result.checkedAtIso ?? result.checkedAt,
       preTradeBlockedReason: ready ? null : result.decision.summary,
       brokerKey:
@@ -4173,7 +4216,293 @@ export class SuggestedTradesService {
         this.formatNumericString(request.order.takeProfitTargets?.[0] ?? null) ??
         existingExecution.takeProfitPrice ??
         null,
+      riskAudit: await this.buildSuggestedTradeRiskAuditSnapshot(
+        userId,
+        trade,
+        request,
+        result,
+        existingExecution,
+        preTradeState
+      ),
     };
+  }
+
+  private async buildSuggestedTradeRiskAuditSnapshot(
+    userId: string,
+    trade: SuggestedTrade,
+    request: SuggestedTradePreTradeRequest,
+    result: RiskPreTradeCheckResult,
+    existingExecution: SuggestedTradeExecutionLink,
+    preTradeState: SuggestedTradePreTradeState
+  ): Promise<SuggestedTradeRiskAuditSnapshot> {
+    const order = result.request?.order ?? request.order;
+    const routing = result.request?.routing ?? request.routing;
+    const entryPrice =
+      this.readNumberValue(order.entryPrice) ??
+      this.readNumberValue(request.order.entryPrice) ??
+      this.readNumberValue(existingExecution.entryPrice) ??
+      this.readNumberValue(trade.entryPrice);
+    const stopLossPrice =
+      this.readNumberValue(order.stopLossPrice) ??
+      this.readNumberValue(request.order.stopLossPrice) ??
+      this.readNumberValue(existingExecution.stopLossPrice) ??
+      this.readNumberValue(trade.stopLossPrice);
+    const takeProfitPrice =
+      this.readNumberValue(order.takeProfitTargets?.[0]) ??
+      this.readNumberValue(request.order.takeProfitTargets?.[0]) ??
+      this.readNumberValue(existingExecution.takeProfitPrice) ??
+      this.readNumberValue(
+        Array.isArray(trade.takeProfitTargets) ? trade.takeProfitTargets[0] : null
+      );
+    const quantity =
+      this.readNumberValue(order.quantity) ??
+      this.readNumberValue(request.order.quantity) ??
+      this.resolveAuditQuantityFromNotional(order.notional ?? request.order.notional, entryPrice);
+    const leverage =
+      this.readNumberValue(order.leverage) ??
+      this.readNumberValue(request.order.leverage) ??
+      this.readNumberValue(existingExecution.leverage);
+    const stopLossRule = this.findPreTradeRule(result, 'order_stop_loss_pct_of_margin');
+    const accountMarginRule = this.findPreTradeRule(result, 'account_margin_usage');
+    const portfolioMarginRule = this.findPreTradeRule(result, 'portfolio_margin_usage');
+    const brokerAllocationRule = this.findPreTradeRule(result, 'broker_total_allocation');
+    const moneyUsed =
+      this.readNumberValue(stopLossRule?.basisValue) ??
+      this.readNumberValue(result.delta?.reservedOrderMarginDelta);
+    const stopLossPctOfMoneyUsed = this.readNumberValue(stopLossRule?.actualValue);
+    const stopLossPctCap = this.readNumberValue(stopLossRule?.criticalThresholdValue);
+    const plannedStopLossLoss =
+      moneyUsed !== null && stopLossPctOfMoneyUsed !== null
+        ? this.roundAuditNumber((moneyUsed * stopLossPctOfMoneyUsed) / 100)
+        : this.calculateAuditPriceDistanceAmount(entryPrice, stopLossPrice, quantity);
+    const maxAllowedStopLossLoss =
+      moneyUsed !== null && stopLossPctCap !== null
+        ? this.roundAuditNumber((moneyUsed * stopLossPctCap) / 100)
+        : null;
+    const targetAmount = this.calculateAuditPriceDistanceAmount(
+      entryPrice,
+      takeProfitPrice,
+      quantity
+    );
+    const targetRiskReward =
+      plannedStopLossLoss !== null && plannedStopLossLoss > 0 && targetAmount !== null
+        ? this.roundAuditNumber(targetAmount / plannedStopLossLoss, 4)
+        : null;
+    const executionContext: SuggestedTradeExecutionLink = {
+      ...existingExecution,
+      executionMode: request.executionMode,
+      brokerKey:
+        this.readStringValue(routing.brokerKey)?.toLowerCase() ??
+        existingExecution.brokerKey ??
+        null,
+      accountId: this.readStringValue(routing.accountId) ?? existingExecution.accountId ?? null,
+      orderType: this.readStringValue(order.orderType) ?? existingExecution.orderType ?? null,
+      leverage,
+      quantity,
+      entryPrice: this.formatNumericString(entryPrice) ?? existingExecution.entryPrice ?? null,
+      stopLossPrice:
+        this.formatNumericString(stopLossPrice) ?? existingExecution.stopLossPrice ?? null,
+      takeProfitPrice:
+        this.formatNumericString(takeProfitPrice) ?? existingExecution.takeProfitPrice ?? null,
+    };
+    const trailingConfig = this.resolveExecutionTrailingStopConfigWithSource(
+      trade,
+      executionContext
+    );
+
+    return {
+      schemaVersion: SUGGESTED_TRADE_RISK_AUDIT_SCHEMA_VERSION,
+      source: 'risk_pre_trade_check',
+      preTradeCheckId: result.checkId ?? null,
+      preTradeState,
+      checkedAt: result.checkedAtIso ?? result.checkedAt ?? null,
+      decisionSummary: this.readStringValue(result.decision?.summary),
+      status: result.status ?? null,
+      symbol: this.readStringValue(order.symbol) ?? trade.symbol ?? null,
+      timeframe: this.readStringValue(order.timeframe) ?? trade.timeframe ?? null,
+      side: this.readStringValue(order.side) ?? trade.side ?? null,
+      executionMode: result.request?.executionMode ?? request.executionMode,
+      approvalMode: result.request?.approvalMode ?? request.approvalMode,
+      brokerKey:
+        this.readStringValue(routing.brokerKey)?.toLowerCase() ??
+        existingExecution.brokerKey ??
+        null,
+      accountId: this.readStringValue(routing.accountId) ?? existingExecution.accountId ?? null,
+      entryPrice,
+      stopLossPrice,
+      takeProfitPrice,
+      quantity,
+      leverage,
+      accountBalance: this.readNumberValue(accountMarginRule?.basisValue),
+      portfolioEquity:
+        this.readNumberValue(portfolioMarginRule?.basisValue) ??
+        this.readNumberValue(brokerAllocationRule?.basisValue),
+      moneyUsed,
+      plannedStopLossLoss,
+      maxAllowedStopLossLoss,
+      stopLossPctOfMoneyUsed,
+      stopLossPctCap,
+      targetAmount,
+      targetRiskReward,
+      slLadder: this.summarizeRiskAuditTrailingStop(trailingConfig.config),
+      slLadderSource: this.summarizeRiskAuditTrailingStopSource(trailingConfig),
+      appliedPolicies: this.summarizeRiskAuditAppliedPolicies(result.appliedPolicies),
+      riskPolicyVersions: await this.resolveRiskAuditPolicyVersions(userId, result.appliedPolicies),
+      rules: (result.evaluatedRules || []).map((rule) => this.summarizeRiskAuditRule(rule)),
+    };
+  }
+
+  private resolveAuditQuantityFromNotional(
+    notional: unknown,
+    entryPrice: number | null
+  ): number | null {
+    const numericNotional = this.readNumberValue(notional);
+    if (
+      numericNotional === null ||
+      numericNotional <= 0 ||
+      entryPrice === null ||
+      entryPrice <= 0
+    ) {
+      return null;
+    }
+    return this.roundAuditNumber(numericNotional / entryPrice, 12);
+  }
+
+  private calculateAuditPriceDistanceAmount(
+    firstPrice: number | null,
+    secondPrice: number | null,
+    quantity: number | null
+  ): number | null {
+    if (
+      firstPrice === null ||
+      secondPrice === null ||
+      quantity === null ||
+      firstPrice <= 0 ||
+      secondPrice <= 0 ||
+      quantity <= 0
+    ) {
+      return null;
+    }
+    return this.roundAuditNumber(Math.abs(firstPrice - secondPrice) * quantity);
+  }
+
+  private findPreTradeRule(
+    result: RiskPreTradeCheckResult,
+    ruleCode: string
+  ): RiskPreTradeCheckResult['evaluatedRules'][number] | null {
+    return (result.evaluatedRules || []).find((rule) => rule.ruleCode === ruleCode) ?? null;
+  }
+
+  private summarizeRiskAuditAppliedPolicies(
+    policies: RiskPreTradeCheckResult['appliedPolicies']
+  ): Array<Record<string, unknown>> {
+    return (policies || []).map((policy) => ({
+      policyContextId: policy.policyContextId ?? null,
+      policyId: policy.policyId ?? null,
+      scope: policy.scope,
+      scopeKey: policy.scopeKey,
+      monitorOnly: policy.monitorOnly,
+      enforceHardBlock: policy.enforceHardBlock,
+    }));
+  }
+
+  private async resolveRiskAuditPolicyVersions(
+    userId: string,
+    policies: RiskPreTradeCheckResult['appliedPolicies']
+  ): Promise<Array<Record<string, unknown>>> {
+    const policyIds = Array.from(
+      new Set(
+        (policies || [])
+          .map((policy) => this.readStringValue(policy.policyId))
+          .filter((policyId): policyId is string => Boolean(policyId))
+      )
+    );
+    const summaries: Array<Record<string, unknown>> = [];
+    for (const policyId of policyIds) {
+      try {
+        const versions =
+          (await this.riskPolicyRepository?.listPolicyVersions?.(userId, policyId)) ?? [];
+        const latest = versions[0] as { id?: string; createdAt?: Date | string | null } | undefined;
+        summaries.push({
+          policyId,
+          versionId: this.readStringValue(latest?.id),
+          versionCreatedAt: this.toIsoString(latest?.createdAt),
+        });
+      } catch {
+        summaries.push({
+          policyId,
+          versionId: null,
+          versionCreatedAt: null,
+        });
+      }
+    }
+    return summaries;
+  }
+
+  private summarizeRiskAuditRule(
+    rule: RiskPreTradeCheckResult['evaluatedRules'][number]
+  ): Record<string, unknown> {
+    return {
+      ruleCode: rule.ruleCode,
+      metricName: rule.metricName ?? null,
+      scopeType: rule.scopeType,
+      scopeKey: rule.scopeKey,
+      brokerKey: rule.brokerKey ?? null,
+      accountId: rule.accountId ?? null,
+      symbol: rule.symbol ?? null,
+      actualValue: rule.actualValue ?? null,
+      basisValue: rule.basisValue ?? null,
+      warnThresholdValue: rule.warnThresholdValue ?? null,
+      criticalThresholdValue: rule.criticalThresholdValue ?? null,
+      status: rule.status,
+      blocking: rule.blocking,
+      message: rule.message,
+    };
+  }
+
+  private summarizeRiskAuditTrailingStop(
+    config: CustomRLadderTrailingStopConfig | null
+  ): Record<string, unknown> | null {
+    if (!config) {
+      return null;
+    }
+    return {
+      enabled: config.enabled,
+      mode: config.mode,
+      basis: config.basis,
+      timeframe: config.timeframe,
+      updateOnlyInProfitDirection: config.updateOnlyInProfitDirection,
+      rules: config.rules.map((rule) => ({
+        whenProfitR: rule.whenProfitR,
+        moveStopToR: rule.moveStopToR,
+        trailDistanceR: rule.trailDistanceR ?? null,
+      })),
+    };
+  }
+
+  private summarizeRiskAuditTrailingStopSource(
+    resolved: ResolvedTrailingStopConfig
+  ): Record<string, unknown> | null {
+    if (!resolved.config && !resolved.source && !resolved.sourceTemplateId) {
+      return null;
+    }
+    return {
+      source: resolved.source,
+      sourceTemplateId: resolved.sourceTemplateId,
+      sourceTemplateName: resolved.sourceTemplateName,
+      sourceTemplateVersion: resolved.sourceTemplateVersion,
+      sourceTemplateStatus: resolved.sourceTemplateStatus,
+      sourceTemplateUpdatedAt: resolved.sourceTemplateUpdatedAt,
+      snapshotCapturedAt: resolved.snapshotCapturedAt,
+      unavailableReason: resolved.unavailableReason,
+    };
+  }
+
+  private roundAuditNumber(value: number | null, precision = 8): number | null {
+    if (value === null || !Number.isFinite(value)) {
+      return null;
+    }
+    return Number(value.toFixed(precision));
   }
 
   private async prepareLiveAutoRoute(input: {
@@ -7335,8 +7664,7 @@ export class SuggestedTradesService {
     const freshness = this.readRecordValue(normalizedPolicy.freshness) ?? {};
     const limitOrderExpiry = this.readRecordValue(normalizedPolicy.limitOrderExpiry) ?? {};
     const preEntryGuards = this.readRecordValue(normalizedPolicy.preEntryGuards) ?? {};
-    const oppositeSignalPolicy =
-      this.readRecordValue(normalizedPolicy.oppositeSignalPolicy) ?? {};
+    const oppositeSignalPolicy = this.readRecordValue(normalizedPolicy.oppositeSignalPolicy) ?? {};
     const minDistanceFromStopR = this.readRecordValue(preEntryGuards.minDistanceFromStopR) ?? {};
     const executionModeRaw = this.readStringValue(normalizedPolicy.executionMode)?.toLowerCase();
     const approvalModeRaw = this.readStringValue(normalizedPolicy.approvalMode)?.toLowerCase();
@@ -14836,6 +15164,8 @@ export class SuggestedTradesService {
       protectionPlan:
         this.readRecordValue(execution.protectionPlan) ??
         this.parseJsonRecord(execution.protectionPlan),
+      riskAudit:
+        this.readRecordValue(execution.riskAudit) ?? this.parseJsonRecord(execution.riskAudit),
       protectionAttempts: this.readNumberValue(execution.protectionAttempts),
       protectionLastError: this.readStringValue(execution.protectionLastError),
       protectionCheckedAt: this.toIsoString(execution.protectionCheckedAt),
@@ -14912,6 +15242,7 @@ export class SuggestedTradesService {
       protectionSource: protection.protectionSource,
       protectionPlan: protection.protectionPlan,
       routeAttempts: this.normalizeRouteAttempts(execution.routeAttempts),
+      riskAudit: this.readRecordValue(execution.riskAudit),
       protectionAttempts: protection.protectionAttempts,
       protectionLastError: protection.protectionLastError,
       protectionCheckedAt: protection.protectionCheckedAt,
@@ -15109,6 +15440,8 @@ export class SuggestedTradesService {
       protectionPlan:
         this.readRecordValue(execution.protectionPlan) ??
         this.parseJsonRecord(execution.protectionPlan),
+      riskAudit:
+        this.readRecordValue(execution.riskAudit) ?? this.parseJsonRecord(execution.riskAudit),
       protectionAttempts: readNumber(execution.protectionAttempts),
       protectionLastError: readString(execution.protectionLastError),
       protectionCheckedAt: readString(execution.protectionCheckedAt),

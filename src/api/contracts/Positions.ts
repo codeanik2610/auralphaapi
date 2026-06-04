@@ -1,4 +1,4 @@
-import type { SuggestedTradeRouteAttempt } from './SuggestedTrade';
+import type { SuggestedTradeRiskAuditSnapshot, SuggestedTradeRouteAttempt } from './SuggestedTrade';
 
 export type PositionsFreshnessState = 'fresh' | 'stale' | 'critical' | 'unknown';
 
@@ -43,6 +43,7 @@ export interface PositionSummary {
   entryFilledAt?: string | null;
   entryOrderId?: string | null;
   executionProtection?: PositionExecutionProtectionContext | null;
+  riskAudit?: SuggestedTradeRiskAuditSnapshot | Record<string, unknown> | null;
   suggestedTradeId?: string | null;
   automationId?: string | null;
   automationRunId?: string | null;
@@ -109,6 +110,7 @@ export interface PositionAutomationTradeContext {
   executionState: string | null;
   positionStatus: string | null;
   protection: PositionExecutionProtectionContext | null;
+  riskAudit?: SuggestedTradeRiskAuditSnapshot | Record<string, unknown> | null;
   routeAttempts?: SuggestedTradeRouteAttempt[] | null;
   operatorTimeline?: PositionLifecycleEventItem[];
   sourceTemplateId: string | null;
@@ -168,6 +170,7 @@ export interface PositionRecord extends Record<string, unknown> {
   entry_order_id?: string | null;
   entryOrderId?: string | null;
   executionProtection?: PositionExecutionProtectionContext | null;
+  riskAudit?: SuggestedTradeRiskAuditSnapshot | Record<string, unknown> | null;
   suggested_trade_id?: string | null;
   suggestedTradeId?: string | null;
   automation_id?: string | null;

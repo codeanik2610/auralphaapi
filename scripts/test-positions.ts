@@ -1769,6 +1769,15 @@ async function positionsGuard09(): Promise<void> {
               protectionReplacementSubmittedAt: '2026-04-09T10:01:30.000Z',
               protectionStopLossOrderId: 'sl-eth',
               protectionTakeProfitOrderId: 'tp-eth',
+              riskAudit: JSON.stringify({
+                schemaVersion: 'suggested-trade-risk-audit.v1',
+                moneyUsed: 10,
+                plannedStopLossLoss: 1,
+                maxAllowedStopLossLoss: 1,
+                stopLossPctOfMoneyUsed: 10,
+                stopLossPctCap: 10,
+                riskPolicyVersions: [{ policyId: 'policy-1', versionId: 'version-1' }],
+              }),
               protectionPlan: JSON.stringify({
                 attachedStopLossPrice: '3234.5',
                 attachedTakeProfitPrice: '3432.5',
@@ -1889,6 +1898,18 @@ async function positionsGuard09(): Promise<void> {
         '2026-04-09T10:01:30.000Z'
       );
       assert.equal(overview.items[0].executionProtection?.stopLossOrderId, 'sl-eth');
+      assert.equal(overview.items[0].riskAudit?.moneyUsed, 10);
+      assert.equal(overview.items[0].automationTrade?.riskAudit?.plannedStopLossLoss, 1);
+      const summaryRiskAudit = overview.items[0].positionSummary?.riskAudit as
+        | Record<string, unknown>
+        | undefined;
+      const summaryPolicyVersions = Array.isArray(summaryRiskAudit?.riskPolicyVersions)
+        ? summaryRiskAudit.riskPolicyVersions
+        : [];
+      assert.equal(
+        (summaryPolicyVersions[0] as Record<string, unknown> | undefined)?.versionId,
+        'version-1'
+      );
       assert.deepEqual(overview.items[0].executionProtection?.trailingStop, {
         enabled: true,
         mode: 'custom_r_ladder',
