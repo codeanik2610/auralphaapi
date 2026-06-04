@@ -1571,12 +1571,13 @@ export class PositionReadModelRepository {
     }
 
     for (const record of records) {
-      const exactKey = this.buildPositionContextKey(
-        record.brokerKey,
-        record.accountId,
-        record.externalId || record.external_id || record.id
-      );
-      const exact = exactKey ? exactByPosition.get(exactKey) : undefined;
+      const exact = this.getPositionContextIdentifiers(record)
+        .map((positionId) =>
+          this.buildPositionContextKey(record.brokerKey, record.accountId, positionId)
+        )
+        .filter((key): key is string => Boolean(key))
+        .map((key) => exactByPosition.get(key))
+        .find((row): row is PositionSuggestedTradeContextRow => Boolean(row));
       const fallback = exact
         ? undefined
         : this.pickFallbackSuggestedTradeContext(record, fallbackBySymbol);
@@ -1589,13 +1590,7 @@ export class PositionReadModelRepository {
     records: PositionRecord[]
   ): Promise<PositionSuggestedTradeContextRow[]> {
     const positionIds = Array.from(
-      new Set(
-        records
-          .map((record) =>
-            String(record.externalId || record.external_id || record.id || '').trim()
-          )
-          .filter(Boolean)
-      )
+      new Set(records.flatMap((record) => this.getPositionContextIdentifiers(record)))
     );
     if (!positionIds.length) {
       return [];
@@ -1637,6 +1632,40 @@ export class PositionReadModelRepository {
       }
       throw error;
     }
+  }
+
+  private getPositionContextIdentifiers(record: PositionRecord): string[] {
+    const rawPayload =
+      record.rawPayload && typeof record.rawPayload === 'object' && !Array.isArray(record.rawPayload)
+        ? (record.rawPayload as Record<string, unknown>)
+        : null;
+    const rawSummary =
+      record.positionSummary &&
+      typeof record.positionSummary === 'object' &&
+      !Array.isArray(record.positionSummary)
+        ? (record.positionSummary as unknown as Record<string, unknown>)
+        : null;
+
+    return Array.from(
+      new Set(
+        [
+          record.externalId,
+          record.external_id,
+          record.id,
+          record.position_id,
+          record.positionId,
+          rawPayload?.id,
+          rawPayload?.position_id,
+          rawPayload?.positionId,
+          rawPayload?.external_id,
+          rawPayload?.externalId,
+          rawSummary?.id,
+          rawSummary?.externalId,
+        ]
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+      )
+    );
   }
 
   private sortSuggestedTradeContextRows(

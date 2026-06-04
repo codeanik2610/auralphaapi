@@ -2653,6 +2653,7 @@ export class BrokerPositionsFacadeService {
       throw new NotFoundAppError('Position not found');
     }
 
+    const positionIdentifiers = Array.from(this.getPositionLifecycleIdentifiers(position));
     const [
       account,
       accountFreshnessById,
@@ -2689,7 +2690,7 @@ export class BrokerPositionsFacadeService {
         userId,
         resolvedBrokerKey,
         resolvedAccountId,
-        [validatedPositionId]
+        positionIdentifiers.length ? positionIdentifiers : [validatedPositionId]
       ),
       position.symbol
         ? this.suggestedTradeRepository.findRecentTradesBySymbol(

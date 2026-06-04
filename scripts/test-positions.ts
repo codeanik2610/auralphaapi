@@ -1668,6 +1668,7 @@ async function positionsGuard09(): Promise<void> {
             positionUpdatedAt: '2026-04-09T11:15:00.000Z',
             lastSeenAt: '2026-04-09T11:59:00.000Z',
             payloadJson: JSON.stringify({
+              id: 'raw-btc-position',
               symbol: 'BTCUSDT',
               side: 'buy',
               quantity: '0.2',
@@ -1795,6 +1796,42 @@ async function positionsGuard09(): Promise<void> {
                   ],
                 },
               }),
+              traceMethod: 'position_id',
+            },
+            {
+              suggestedTradeId: 'trade-btc-exact',
+              automationId: 'automation-5m',
+              automationRunId: 'run-5m',
+              timeframe: '5m',
+              signalTime: '2026-04-09T08:55:00.000Z',
+              side: 'BUY',
+              symbol: 'BTCUSDT',
+              sourceTemplateId: 'template-2',
+              sourceBacktestId: 'backtest-2',
+              brokerKey: 'mudrex',
+              accountId: 'acc-1',
+              positionId: 'raw-btc-position',
+              orderId: 'order-btc',
+              orderType: 'limit',
+              triggerType: 'GTC',
+              entryPrice: '70000',
+              filledPrice: '70000',
+              submittedAt: '2026-04-09T08:59:00.000Z',
+              filledAt: '2026-04-09T09:00:00.000Z',
+              executionState: 'filled',
+              positionStatus: 'OPEN',
+              protectionState: 'attached',
+              protectionSource: 'suggested_trade_execution',
+              protectionAttempts: 1,
+              protectionLastError: null,
+              protectionCheckedAt: '2026-04-09T09:02:00.000Z',
+              protectionAttachedAt: '2026-04-09T09:02:00.000Z',
+              protectionStopLossPrice: '68600',
+              protectionTakeProfitPrice: '72100',
+              protectionAttachedStopLossPrice: '68650',
+              protectionAttachedTakeProfitPrice: '72150',
+              protectionStopLossOrderId: 'sl-btc',
+              protectionTakeProfitOrderId: 'tp-btc',
               traceMethod: 'position_id',
             },
           ];
@@ -1950,13 +1987,12 @@ async function positionsGuard09(): Promise<void> {
       assert.equal(overview.items[1].id, 'pos-1');
       assert.equal(overview.items[1].positionSummary?.unrealizedPnl, 100);
       assert.equal(overview.items[1].timeframe, '5m');
-      assert.equal(overview.items[1].tradeContextSource, 'symbol_entry');
-      assert.equal(overview.items[1].suggestedTradeId, 'trade-btc');
-      assert.equal(overview.items[1].automationTrade?.protection?.state, 'failed');
-      assert.match(
-        String(overview.items[1].executionProtection?.lastError || ''),
-        /position not found/
-      );
+      assert.equal(overview.items[1].tradeContextSource, 'position_id');
+      assert.equal(overview.items[1].suggestedTradeId, 'trade-btc-exact');
+      assert.equal(overview.items[1].automationTrade?.positionStatus, 'OPEN');
+      assert.equal(overview.items[1].executionProtection?.state, 'attached');
+      assert.equal(overview.items[1].executionProtection?.stopLossPrice, 68650);
+      assert.equal(overview.items[1].executionProtection?.stopLossOrderId, 'sl-btc');
 
       const summaryCall = capturedCalls.find((call) =>
         call.sql.includes('COUNT(*) AS openPositions')
@@ -1987,6 +2023,16 @@ async function positionsGuard09(): Promise<void> {
         'long',
         2,
         1,
+      ]);
+
+      const exactContextCall = capturedCalls.find((call) =>
+        call.sql.includes("COALESCE(execution_row.position_id, '') IN")
+      );
+      assert.deepEqual(exactContextCall?.params, [
+        'user-1',
+        'pos-2',
+        'pos-1',
+        'raw-btc-position',
       ]);
 
       console.log('Positions phase 9 assertions passed.');
