@@ -314,6 +314,18 @@ export function evaluateCustomRLadderTrailingStopMove(
   const lockedProfitR = crossedRule.trailDistanceR
     ? Math.max(crossedRule.moveStopToR, peakProfitR - crossedRule.trailDistanceR)
     : crossedRule.moveStopToR;
+  const targetStopLossPrice =
+    input.side === 'short'
+      ? input.entryPrice - lockedProfitR * riskPerUnit
+      : input.entryPrice + lockedProfitR * riskPerUnit;
+  const currentStopLossPrice =
+    typeof input.currentStopLossPrice === 'number' && Number.isFinite(input.currentStopLossPrice)
+      ? input.currentStopLossPrice
+      : input.originalStopLossPrice;
+  const currentStopLossAtTarget =
+    input.side === 'short'
+      ? currentStopLossPrice <= targetStopLossPrice + EPSILON
+      : currentStopLossPrice >= targetStopLossPrice - EPSILON;
   const lastAppliedMoveStopToR =
     typeof input.lastAppliedMoveStopToR === 'number' &&
     Number.isFinite(input.lastAppliedMoveStopToR)
@@ -324,19 +336,11 @@ export function evaluateCustomRLadderTrailingStopMove(
     Number.isFinite(lastApplied) &&
     lastApplied + EPSILON >= crossedRule.whenProfitR &&
     (!crossedRule.trailDistanceR ||
-      (lastAppliedMoveStopToR !== null && lastAppliedMoveStopToR + EPSILON >= lockedProfitR))
+      (lastAppliedMoveStopToR !== null && lastAppliedMoveStopToR + EPSILON >= lockedProfitR)) &&
+    currentStopLossAtTarget
   ) {
     return { action: 'none', reason: 'already_applied', profitR };
   }
-
-  const targetStopLossPrice =
-    input.side === 'short'
-      ? input.entryPrice - lockedProfitR * riskPerUnit
-      : input.entryPrice + lockedProfitR * riskPerUnit;
-  const currentStopLossPrice =
-    typeof input.currentStopLossPrice === 'number' && Number.isFinite(input.currentStopLossPrice)
-      ? input.currentStopLossPrice
-      : input.originalStopLossPrice;
 
   if (input.config.updateOnlyInProfitDirection) {
     const movesForward =

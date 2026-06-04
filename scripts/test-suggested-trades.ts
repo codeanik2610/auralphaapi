@@ -13559,6 +13559,34 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
     assert.equal(alreadyApplied.reason, 'already_applied');
   }
 
+  const staleLongAppliedState = evaluateCustomRLadderTrailingStopMove({
+    side: 'long',
+    config,
+    entryPrice: 100,
+    originalStopLossPrice: 95,
+    currentStopLossPrice: 100,
+    currentPrice: 110.5,
+    lastAppliedWhenProfitR: 2,
+  });
+  assert.equal(staleLongAppliedState.action, 'move');
+  if (staleLongAppliedState.action === 'move') {
+    assert.equal(staleLongAppliedState.targetStopLossPrice, 105);
+  }
+
+  const staleShortAppliedState = evaluateCustomRLadderTrailingStopMove({
+    side: 'short',
+    config,
+    entryPrice: 100,
+    originalStopLossPrice: 105,
+    currentStopLossPrice: 100,
+    currentPrice: 89.5,
+    lastAppliedWhenProfitR: 2,
+  });
+  assert.equal(staleShortAppliedState.action, 'move');
+  if (staleShortAppliedState.action === 'move') {
+    assert.equal(staleShortAppliedState.targetStopLossPrice, 95);
+  }
+
   const riskRewardConfig = normalizeCustomRLadderTrailingStopConfig({
     enabled: true,
     mode: 'custom_r_ladder',
