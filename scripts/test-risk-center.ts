@@ -478,6 +478,7 @@ async function risk_centerGuard01(): Promise<void> {
       monthlyLossLimitPct: 20,
       minLeverage: 2,
       maxLeverage: 5,
+      maxStopLossPctOfMargin: 10,
       minNotionalPerTrade: 250,
       maxOrderAllocation: null,
       maxTotalAllocation: 70,
@@ -561,6 +562,15 @@ async function risk_centerGuard01(): Promise<void> {
     );
     assert.equal(maxLeverageRule?.status, 'ok');
     assert.equal(maxLeverageRule?.blocking, false);
+
+    const stopLossMarginPassRule = ruleDrafts.find(
+      (item: Record<string, unknown>) => item.ruleCode === 'order_stop_loss_pct_of_margin'
+    );
+    assert.equal(stopLossMarginPassRule?.status, 'ok');
+    assert.equal(stopLossMarginPassRule?.blocking, false);
+    assert.equal(stopLossMarginPassRule?.actualValue, 5);
+    assert.equal(stopLossMarginPassRule?.basisValue, 100);
+    assert.equal(stopLossMarginPassRule?.criticalThresholdValue, 10);
 
     const futuresRuleDrafts = service.buildRuleEvaluationDrafts({
       snapshot: {
@@ -691,6 +701,15 @@ async function risk_centerGuard01(): Promise<void> {
     assert.equal(brokerAssetConcentrationRule?.blocking, false);
     assert.equal(brokerAssetConcentrationRule?.metricName, 'marginConcentrationPct');
     assert.equal(brokerAssetConcentrationRule?.actualValue, 2.1);
+
+    const stopLossMarginBlockRule = futuresRuleDrafts.find(
+      (item: Record<string, unknown>) => item.ruleCode === 'order_stop_loss_pct_of_margin'
+    );
+    assert.equal(stopLossMarginBlockRule?.status, 'critical');
+    assert.equal(stopLossMarginBlockRule?.blocking, true);
+    assert.equal(stopLossMarginBlockRule?.actualValue, 50);
+    assert.equal(stopLossMarginBlockRule?.basisValue, 10);
+    assert.equal(stopLossMarginBlockRule?.criticalThresholdValue, 10);
 
     const marginBlockedRuleDrafts = service.buildRuleEvaluationDrafts({
       snapshot: {

@@ -21,6 +21,7 @@ export interface ComputedRiskSnapshotPolicyContextPayload {
   minLeverage: number | null;
   maxLeverage: number | null;
   tradeSizePctOfBalance: number | null;
+  maxStopLossPctOfMargin: number | null;
   minNotionalPerTrade: number | null;
   maxOrderAllocation: number | null;
   maxTotalAllocation: number | null;
@@ -63,6 +64,7 @@ export class RiskSnapshotPolicyContextRepository {
         minLeverage: payload.minLeverage,
         maxLeverage: payload.maxLeverage,
         tradeSizePctOfBalance: payload.tradeSizePctOfBalance,
+        maxStopLossPctOfMargin: payload.maxStopLossPctOfMargin,
         minNotionalPerTrade: payload.minNotionalPerTrade,
         maxOrderAllocation: payload.maxOrderAllocation,
         maxTotalAllocation: payload.maxTotalAllocation,

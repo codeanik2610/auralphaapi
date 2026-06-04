@@ -55,6 +55,7 @@ interface ThresholdProfile {
   minLeverage: number | null;
   maxLeverage: number;
   tradeSizePctOfBalance: number | null;
+  maxStopLossPctOfMargin: number | null;
   minNotionalPerTrade: number | null;
   maxOrderAllocation: number | null;
   maxTotalAllocation: number;
@@ -769,6 +770,7 @@ export class RiskPreTradeService {
           minLeverage?: number | null;
           maxLeverage?: number | null;
           tradeSizePctOfBalance?: number | null;
+          maxStopLossPctOfMargin?: number | null;
           minNotionalPerTrade?: number | null;
           maxOrderAllocation?: number | null;
           maxTotalAllocation?: number | null;
@@ -788,6 +790,7 @@ export class RiskPreTradeService {
       minLeverage: this.toFiniteNumber(value?.minLeverage, null),
       maxLeverage: this.toFiniteNumber(value?.maxLeverage, 5) ?? 5,
       tradeSizePctOfBalance: this.toFiniteNumber(value?.tradeSizePctOfBalance, null),
+      maxStopLossPctOfMargin: this.toFiniteNumber(value?.maxStopLossPctOfMargin, null),
       minNotionalPerTrade: this.toFiniteNumber(value?.minNotionalPerTrade, null),
       maxOrderAllocation: this.toFiniteNumber(value?.maxOrderAllocation, null),
       maxTotalAllocation: this.toFiniteNumber(value?.maxTotalAllocation, 80) ?? 80,
@@ -832,6 +835,12 @@ export class RiskPreTradeService {
             : next.tradeSizePctOfBalance === null
               ? accumulator.tradeSizePctOfBalance
               : Math.min(accumulator.tradeSizePctOfBalance, next.tradeSizePctOfBalance),
+        maxStopLossPctOfMargin:
+          accumulator.maxStopLossPctOfMargin === null
+            ? next.maxStopLossPctOfMargin
+            : next.maxStopLossPctOfMargin === null
+              ? accumulator.maxStopLossPctOfMargin
+              : Math.min(accumulator.maxStopLossPctOfMargin, next.maxStopLossPctOfMargin),
         minNotionalPerTrade:
           accumulator.minNotionalPerTrade === null
             ? next.minNotionalPerTrade
@@ -1564,6 +1573,92 @@ export class RiskPreTradeService {
       }
     }
 
+    const maxStopLossPctOfMargin = input.routeThresholds.maxStopLossPctOfMargin;
+    if (maxStopLossPctOfMargin !== null) {
+      const entryPrice = this.toFiniteNumber(input.order.entryPrice, null);
+      const stopLossPrice = this.toFiniteNumber(input.order.stopLossPrice, null);
+      const quantity = this.resolveStopLossRiskQuantity(input.order, input.notional);
+      const moneyUsed = this.toFiniteNumber(input.reservedOrderMarginDelta, null);
+      const missingInputs: string[] = [];
+      if (!(entryPrice && entryPrice > 0)) missingInputs.push('entry price');
+      if (!(stopLossPrice && stopLossPrice > 0)) missingInputs.push('stop loss');
+      if (!(quantity && quantity > 0)) missingInputs.push('quantity');
+      if (!(moneyUsed && moneyUsed > 0)) missingInputs.push('money used');
+
+      if (missingInputs.length) {
+        pushRule({
+          scopeType: input.route.brokerKey ? 'broker_asset' : 'asset',
+          scopeKey: input.route.brokerKey
+            ? `${input.route.brokerKey}|${input.order.symbol}`
+            : input.order.symbol,
+          scopeLabel: input.route.brokerKey
+            ? `${input.route.brokerKey} / ${input.order.symbol}`
+            : input.order.symbol,
+          brokerKey: input.route.brokerKey,
+          accountId: input.route.accountId,
+          symbol: input.order.symbol,
+          policyContextId: input.routePolicyContext?.id ?? null,
+          ruleCode: 'order_stop_loss_pct_of_margin',
+          metricName: 'stopLossPctOfMargin',
+          actualValue: null,
+          basisValue: moneyUsed,
+          warnThresholdValue: null,
+          criticalThresholdValue: maxStopLossPctOfMargin,
+          status: 'critical',
+          blocking: true,
+          message: `Configured max SL risk could not be verified because ${missingInputs.join(
+            ', '
+          )} is missing.`,
+        });
+      } else {
+        const verifiedEntryPrice = entryPrice!;
+        const verifiedStopLossPrice = stopLossPrice!;
+        const verifiedQuantity = quantity!;
+        const verifiedMoneyUsed = moneyUsed!;
+        const stopLossAmount =
+          Math.abs(verifiedEntryPrice - verifiedStopLossPrice) * verifiedQuantity;
+        const stopLossPctOfMargin = this.roundNumber(
+          (stopLossAmount / verifiedMoneyUsed) * 100,
+          4
+        );
+        const status =
+          stopLossPctOfMargin > maxStopLossPctOfMargin ? 'critical' : 'ok';
+        pushRule({
+          scopeType: input.route.brokerKey ? 'broker_asset' : 'asset',
+          scopeKey: input.route.brokerKey
+            ? `${input.route.brokerKey}|${input.order.symbol}`
+            : input.order.symbol,
+          scopeLabel: input.route.brokerKey
+            ? `${input.route.brokerKey} / ${input.order.symbol}`
+            : input.order.symbol,
+          brokerKey: input.route.brokerKey,
+          accountId: input.route.accountId,
+          symbol: input.order.symbol,
+          policyContextId: input.routePolicyContext?.id ?? null,
+          ruleCode: 'order_stop_loss_pct_of_margin',
+          metricName: 'stopLossPctOfMargin',
+          actualValue: stopLossPctOfMargin,
+          basisValue: this.roundNumber(verifiedMoneyUsed, 4),
+          warnThresholdValue: null,
+          criticalThresholdValue: maxStopLossPctOfMargin,
+          status,
+          blocking: status === 'critical',
+          message:
+            status === 'critical'
+              ? `Planned stop-loss risk is ${this.formatPercent(
+                  stopLossPctOfMargin
+                )} of money used, above the configured ${this.formatPercent(
+                  maxStopLossPctOfMargin
+                )} cap.`
+              : `Planned stop-loss risk is ${this.formatPercent(
+                  stopLossPctOfMargin
+                )} of money used, within the configured ${this.formatPercent(
+                  maxStopLossPctOfMargin
+                )} cap.`,
+        });
+      }
+    }
+
     if (input.order.leverage !== null) {
       if (input.routeThresholds.minLeverage !== null) {
         const minStatus =
@@ -2206,6 +2301,28 @@ export class RiskPreTradeService {
       return Number.isFinite(numeric) ? numeric : null;
     }
     return null;
+  }
+
+  private resolveStopLossRiskQuantity(
+    order: ResolvedPreTradeOrder,
+    notional: number
+  ): number | null {
+    const directQuantity = this.toFiniteNumber(order.quantity, null);
+    if (directQuantity && directQuantity > 0) {
+      return directQuantity;
+    }
+
+    const entryPrice = this.toFiniteNumber(order.entryPrice, null);
+    const normalizedNotional = this.toFiniteNumber(notional, null);
+    if (entryPrice && entryPrice > 0 && normalizedNotional && normalizedNotional > 0) {
+      return normalizedNotional / entryPrice;
+    }
+
+    return null;
+  }
+
+  private formatPercent(value: number): string {
+    return `${this.roundNumber(value, 2)}%`;
   }
 
   private toRatioPct(numerator: unknown, denominator: unknown): number | null {

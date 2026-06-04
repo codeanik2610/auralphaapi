@@ -371,6 +371,7 @@ export interface RiskPolicyContextItem {
   minLeverage?: number | null;
   maxLeverage?: number | null;
   tradeSizePctOfBalance?: number | null;
+  maxStopLossPctOfMargin?: number | null;
   minNotionalPerTrade?: number | null;
   maxOrderAllocation?: number | null;
   maxTotalAllocation?: number | null;
@@ -844,6 +845,7 @@ export interface RiskPolicy {
   minLeverage?: number;
   maxLeverage?: number;
   tradeSizePctOfBalance?: number;
+  maxStopLossPctOfMargin?: number;
   minNotionalPerTrade?: number;
   maxOrderAllocation?: number;
   maxTotalAllocation?: number;
@@ -921,6 +923,7 @@ export interface UpsertRiskPolicyBody {
   minLeverage?: number;
   maxLeverage?: number;
   tradeSizePctOfBalance?: number;
+  maxStopLossPctOfMargin?: number;
   minNotionalPerTrade?: number;
   maxOrderAllocation?: number;
   maxTotalAllocation?: number;

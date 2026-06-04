@@ -206,6 +206,7 @@ interface RiskThresholdProfile {
   minLeverage: number | null;
   maxLeverage: number;
   tradeSizePctOfBalance: number | null;
+  maxStopLossPctOfMargin: number | null;
   minNotionalPerTrade: number | null;
   maxOrderAllocation: number | null;
   maxTotalAllocation: number;
@@ -223,6 +224,7 @@ interface RiskThresholdProfileInput {
   minLeverage?: number | null;
   maxLeverage?: number | null;
   tradeSizePctOfBalance?: number | null;
+  maxStopLossPctOfMargin?: number | null;
   minNotionalPerTrade?: number | null;
   maxOrderAllocation?: number | null;
   maxTotalAllocation?: number | null;
@@ -294,6 +296,7 @@ interface EffectiveRiskPolicyContext {
   minLeverage: number | null;
   maxLeverage: number | null;
   tradeSizePctOfBalance: number | null;
+  maxStopLossPctOfMargin: number | null;
   minNotionalPerTrade: number | null;
   maxOrderAllocation: number | null;
   maxTotalAllocation: number | null;
@@ -3187,6 +3190,7 @@ export class RiskService {
         minLeverage: thresholds.minLeverage,
         maxLeverage: thresholds.maxLeverage,
         tradeSizePctOfBalance: thresholds.tradeSizePctOfBalance,
+        maxStopLossPctOfMargin: thresholds.maxStopLossPctOfMargin,
         minNotionalPerTrade: thresholds.minNotionalPerTrade,
         maxOrderAllocation: thresholds.maxOrderAllocation,
         maxTotalAllocation: thresholds.maxTotalAllocation,
@@ -3213,6 +3217,7 @@ export class RiskService {
         minLeverage: thresholds.minLeverage,
         maxLeverage: thresholds.maxLeverage,
         tradeSizePctOfBalance: thresholds.tradeSizePctOfBalance,
+        maxStopLossPctOfMargin: thresholds.maxStopLossPctOfMargin,
         minNotionalPerTrade: thresholds.minNotionalPerTrade,
         maxOrderAllocation: thresholds.maxOrderAllocation,
         maxTotalAllocation: thresholds.maxTotalAllocation,
@@ -3238,6 +3243,7 @@ export class RiskService {
       minLeverage: thresholds.minLeverage,
       maxLeverage: thresholds.maxLeverage,
       tradeSizePctOfBalance: thresholds.tradeSizePctOfBalance,
+      maxStopLossPctOfMargin: thresholds.maxStopLossPctOfMargin,
       minNotionalPerTrade: thresholds.minNotionalPerTrade,
       maxOrderAllocation: thresholds.maxOrderAllocation,
       maxTotalAllocation: thresholds.maxTotalAllocation,
@@ -3274,6 +3280,7 @@ export class RiskService {
         minLeverage: context.minLeverage,
         maxLeverage: context.maxLeverage,
         tradeSizePctOfBalance: context.tradeSizePctOfBalance,
+        maxStopLossPctOfMargin: context.maxStopLossPctOfMargin,
         minNotionalPerTrade: context.minNotionalPerTrade,
         maxOrderAllocation: context.maxOrderAllocation,
         maxTotalAllocation: context.maxTotalAllocation,
@@ -4001,6 +4008,7 @@ export class RiskService {
       minLeverage: this.toFiniteNumber(policy?.minLeverage, null),
       maxLeverage: this.toFiniteNumber(policy?.maxLeverage, 5),
       tradeSizePctOfBalance: this.toFiniteNumber(policy?.tradeSizePctOfBalance, null),
+      maxStopLossPctOfMargin: this.toFiniteNumber(policy?.maxStopLossPctOfMargin, null),
       minNotionalPerTrade: this.toFiniteNumber(policy?.minNotionalPerTrade, null),
       maxOrderAllocation: this.toFiniteNumber(policy?.maxOrderAllocation, null),
       maxTotalAllocation: this.toFiniteNumber(policy?.maxTotalAllocation, 80),
@@ -4888,6 +4896,15 @@ export class RiskService {
                   accumulator.tradeSizePctOfBalance,
                   account.thresholds.tradeSizePctOfBalance
                 ),
+        maxStopLossPctOfMargin:
+          accumulator.maxStopLossPctOfMargin === null
+            ? account.thresholds.maxStopLossPctOfMargin
+            : account.thresholds.maxStopLossPctOfMargin === null
+              ? accumulator.maxStopLossPctOfMargin
+              : Math.min(
+                  accumulator.maxStopLossPctOfMargin,
+                  account.thresholds.maxStopLossPctOfMargin
+                ),
         minNotionalPerTrade:
           accumulator.minNotionalPerTrade === null
             ? account.thresholds.minNotionalPerTrade
@@ -5686,6 +5703,7 @@ export class RiskService {
       minLeverage: policy.minLeverage ?? undefined,
       maxLeverage: policy.maxLeverage ?? undefined,
       tradeSizePctOfBalance: policy.tradeSizePctOfBalance ?? undefined,
+      maxStopLossPctOfMargin: policy.maxStopLossPctOfMargin ?? undefined,
       minNotionalPerTrade: policy.minNotionalPerTrade ?? undefined,
       maxOrderAllocation: policy.maxOrderAllocation ?? undefined,
       maxTotalAllocation: policy.maxTotalAllocation ?? undefined,
@@ -5721,6 +5739,7 @@ export class RiskService {
       minLeverage: policy.minLeverage,
       maxLeverage: policy.maxLeverage,
       tradeSizePctOfBalance: policy.tradeSizePctOfBalance,
+      maxStopLossPctOfMargin: policy.maxStopLossPctOfMargin,
       minNotionalPerTrade: policy.minNotionalPerTrade,
       maxOrderAllocation: policy.maxOrderAllocation,
       maxTotalAllocation: policy.maxTotalAllocation,
@@ -5925,6 +5944,7 @@ export class RiskService {
       minLeverage: this.readNullableNumber(rawSnapshot.minLeverage),
       maxLeverage: this.readNullableNumber(rawSnapshot.maxLeverage),
       tradeSizePctOfBalance: this.readNullableNumber(rawSnapshot.tradeSizePctOfBalance),
+      maxStopLossPctOfMargin: this.readNullableNumber(rawSnapshot.maxStopLossPctOfMargin),
       minNotionalPerTrade: this.readNullableNumber(rawSnapshot.minNotionalPerTrade),
       maxOrderAllocation: this.readNullableNumber(rawSnapshot.maxOrderAllocation),
       maxTotalAllocation: this.readNullableNumber(rawSnapshot.maxTotalAllocation),
@@ -5980,6 +6000,7 @@ export class RiskService {
         minLeverage: validatedSnapshot.minLeverage,
         maxLeverage: validatedSnapshot.maxLeverage,
         tradeSizePctOfBalance: validatedSnapshot.tradeSizePctOfBalance,
+        maxStopLossPctOfMargin: validatedSnapshot.maxStopLossPctOfMargin,
         minNotionalPerTrade: validatedSnapshot.minNotionalPerTrade,
         maxOrderAllocation: validatedSnapshot.maxOrderAllocation,
         maxTotalAllocation: validatedSnapshot.maxTotalAllocation,
@@ -6098,6 +6119,11 @@ export class RiskService {
         previous.tradeSizePctOfBalance ?? null,
       ],
       [
+        'Max SL risk (% of money used)',
+        current.maxStopLossPctOfMargin ?? null,
+        previous.maxStopLossPctOfMargin ?? null,
+      ],
+      [
         'Min notional per trade',
         current.minNotionalPerTrade ?? null,
         previous.minNotionalPerTrade ?? null,
@@ -6182,6 +6208,10 @@ export class RiskService {
       this.hasTighterConstraint(current.maxLeverage, next.maxLeverage),
       this.toFiniteNumber(current.tradeSizePctOfBalance, null) !==
         this.toFiniteNumber(next.tradeSizePctOfBalance, null),
+      this.hasTighterConstraint(
+        current.maxStopLossPctOfMargin,
+        next.maxStopLossPctOfMargin
+      ),
       this.hasHigherTighterConstraint(current.minNotionalPerTrade, next.minNotionalPerTrade),
       this.hasTighterConstraint(current.maxOrderAllocation, next.maxOrderAllocation),
       this.hasTighterConstraint(current.maxTotalAllocation, next.maxTotalAllocation),

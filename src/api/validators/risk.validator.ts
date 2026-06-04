@@ -487,6 +487,15 @@ export const validateUpsertRiskPolicyBody = (
     max: 1000,
     allowNull: true,
   });
+  const maxStopLossPctOfMargin = coerceNumber(
+    body.maxStopLossPctOfMargin,
+    'maxStopLossPctOfMargin',
+    {
+      min: 0,
+      max: 100,
+      allowNull: true,
+    }
+  );
   const minNotionalPerTrade = coerceNumber(body.minNotionalPerTrade, 'minNotionalPerTrade', {
     min: 0,
     allowNull: true,
@@ -498,6 +507,12 @@ export const validateUpsertRiskPolicyBody = (
 
   if (tradeSizePctOfBalance !== undefined && tradeSizePctOfBalance <= 0) {
     throw new BadRequestAppError('tradeSizePctOfBalance must be greater than 0 when provided');
+  }
+
+  if (maxStopLossPctOfMargin !== undefined && maxStopLossPctOfMargin <= 0) {
+    throw new BadRequestAppError(
+      'maxStopLossPctOfMargin must be greater than 0 when provided'
+    );
   }
 
   if (tradeSizePctOfBalance !== undefined && tradeSizePctOfBalance !== null && scope !== 'broker') {
@@ -530,6 +545,7 @@ export const validateUpsertRiskPolicyBody = (
     minLeverage,
     maxLeverage,
     tradeSizePctOfBalance,
+    maxStopLossPctOfMargin,
     minNotionalPerTrade,
     maxOrderAllocation: coerceNumber(body.maxOrderAllocation, 'maxOrderAllocation', {
       min: 0,

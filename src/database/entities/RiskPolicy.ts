@@ -69,6 +69,9 @@ export class RiskPolicy {
   @Column({ name: 'trade_size_pct_of_balance', type: 'double', nullable: true })
   tradeSizePctOfBalance!: number | null;
 
+  @Column({ name: 'max_stop_loss_pct_of_margin', type: 'double', nullable: true })
+  maxStopLossPctOfMargin!: number | null;
+
   @Column({ name: 'min_notional_per_trade', type: 'double', nullable: true })
   minNotionalPerTrade!: number | null;
 
