@@ -1343,7 +1343,29 @@ export class SuggestedTradeRepository {
       })
       .andWhere('LOWER(suggested_trade.timeframe) = :timeframe', { timeframe })
       .andWhere('suggested_trade.side = :side', { side })
-      .andWhere('suggested_trade.signalTime = :signalTime', { signalTime });
+      .andWhere('suggested_trade.signalTime = :signalTime', { signalTime })
+      .andWhere(
+        `(
+          LOWER(COALESCE(execution_record.executionState, '')) IN (
+            'queued',
+            'submitting',
+            'linked',
+            'working',
+            'filled',
+            'closed',
+            'cancelled',
+            'canceled',
+            'expired'
+          )
+          OR (
+            LOWER(COALESCE(execution_record.preTradeState, '')) = 'passed'
+            AND LOWER(COALESCE(execution_record.executionState, '')) NOT IN (
+              'failed',
+              'rejected'
+            )
+          )
+        )`
+      );
 
     const excludeSuggestedTradeId = query.excludeSuggestedTradeId?.trim();
     if (excludeSuggestedTradeId) {

@@ -1215,7 +1215,7 @@ export class AutomationExecutionService {
         }
 
         if (!created.duplicate && created.item && autoPaperEnabled) {
-          const batchSlot = this.reserveTradeSuggestionAutoExecutionBatchSlot(
+          const batchSlot = this.checkTradeSuggestionAutoExecutionBatchSlot(
             autoExecutionBatchSlots,
             {
               timeframe,
@@ -1241,6 +1241,11 @@ export class AutomationExecutionService {
               );
 
           if (autoExecution.outcome === 'placed') {
+            this.commitTradeSuggestionAutoExecutionBatchSlot(autoExecutionBatchSlots, {
+              timeframe,
+              side,
+              signalTime,
+            });
             autoPaperPlaced += 1;
           } else if (autoExecution.outcome === 'blocked') {
             autoPaperBlocked += 1;
@@ -1280,7 +1285,7 @@ export class AutomationExecutionService {
         }
 
         if (!created.duplicate && created.item && autoLiveEnabled) {
-          const batchSlot = this.reserveTradeSuggestionAutoExecutionBatchSlot(
+          const batchSlot = this.checkTradeSuggestionAutoExecutionBatchSlot(
             autoExecutionBatchSlots,
             {
               timeframe,
@@ -1314,8 +1319,18 @@ export class AutomationExecutionService {
               );
 
           if (liveRollout.outcome === 'placed' || liveRollout.outcome === 'working') {
+            this.commitTradeSuggestionAutoExecutionBatchSlot(autoExecutionBatchSlots, {
+              timeframe,
+              side,
+              signalTime,
+            });
             autoLivePlaced += 1;
           } else if (liveRollout.outcome === 'ready') {
+            this.commitTradeSuggestionAutoExecutionBatchSlot(autoExecutionBatchSlots, {
+              timeframe,
+              side,
+              signalTime,
+            });
             autoLiveReady += 1;
           } else if (liveRollout.outcome === 'blocked') {
             autoLiveBlocked += 1;
@@ -1500,7 +1515,27 @@ export class AutomationExecutionService {
     };
   }
 
-  private reserveTradeSuggestionAutoExecutionBatchSlot(
+  private buildTradeSuggestionAutoExecutionBatchSlotKey(input: {
+    timeframe: string;
+    side: string;
+    signalTime: Date;
+  }): { key: string; timeframe: string; side: string; signalTime: string } {
+    const timeframe = String(input.timeframe || '').trim() || 'unknown';
+    const side =
+      String(input.side || '')
+        .trim()
+        .toUpperCase() === 'SELL'
+        ? 'SELL'
+        : 'BUY';
+    const signalTime =
+      input.signalTime instanceof Date && !Number.isNaN(input.signalTime.getTime())
+        ? input.signalTime.toISOString()
+        : 'unknown';
+    const key = `${timeframe.toLowerCase()}:${side}:${signalTime}`;
+    return { key, timeframe, side, signalTime };
+  }
+
+  private checkTradeSuggestionAutoExecutionBatchSlot(
     slots: Set<string>,
     input: {
       timeframe: string;
@@ -1515,28 +1550,27 @@ export class AutomationExecutionService {
         allowed: false;
         message: string;
       } {
-    const timeframe = String(input.timeframe || '').trim() || 'unknown';
-    const side =
-      String(input.side || '')
-        .trim()
-        .toUpperCase() === 'SELL'
-        ? 'SELL'
-        : 'BUY';
-    const signalTime =
-      input.signalTime instanceof Date && !Number.isNaN(input.signalTime.getTime())
-        ? input.signalTime.toISOString()
-        : 'unknown';
-    const key = `${timeframe.toLowerCase()}:${side}:${signalTime}`;
+    const slot = this.buildTradeSuggestionAutoExecutionBatchSlotKey(input);
 
-    if (!slots.has(key)) {
-      slots.add(key);
+    if (!slots.has(slot.key)) {
       return { allowed: true };
     }
 
     return {
       allowed: false,
-      message: `Auto execution blocked by batch cap: only one ${side} order per ${timeframe} signal batch can proceed. Another ${side} suggestion already used the ${signalTime} slot.`,
+      message: `Auto execution blocked by batch cap: only one ${slot.side} order per ${slot.timeframe} signal batch can proceed. Another ${slot.side} suggestion already used the ${slot.signalTime} slot.`,
     };
+  }
+
+  private commitTradeSuggestionAutoExecutionBatchSlot(
+    slots: Set<string>,
+    input: {
+      timeframe: string;
+      side: string;
+      signalTime: Date;
+    }
+  ): void {
+    slots.add(this.buildTradeSuggestionAutoExecutionBatchSlotKey(input).key);
   }
 
   private async tryQueueLiveTradeSuggestionWhatsappNotification(payload: {

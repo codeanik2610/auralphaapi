@@ -2406,6 +2406,195 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
 
     {
       const { service } = createService();
+      const attemptedLiveIds: string[] = [];
+      const blockedLive: Array<Record<string, unknown>> = [];
+      const outputs: Array<Record<string, unknown>> = [];
+      const automationTradeSuggestion = {
+        ...automation,
+        automationType: 'trade-suggestion',
+      };
+
+      service.resolveTradeSuggestionProfile = async () => ({
+        sourceTemplateId: 'template-1',
+        templateConfig: {},
+        profile: {
+          automationReady: true,
+          readinessReasons: [],
+          contractVersion: 'v1',
+          market: 'crypto-futures',
+          signalThreshold: 0.81,
+          tradePlan: {
+            long: {
+              enabled: true,
+              side: 'long',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              riskRewardRatio: 5,
+              rationale: 'Trend continuation',
+              entryRule: 'Break above range high',
+              exitRule: 'Stop at invalidation',
+            },
+            short: {
+              enabled: false,
+              side: 'short',
+              stopLossPct: 2,
+              takeProfitTargetsPct: [4],
+              riskRewardRatio: 5,
+              rationale: 'Disabled',
+              entryRule: 'Disabled',
+              exitRule: 'Disabled',
+            },
+          },
+        },
+      });
+      service.automationCursorRepository = {
+        listByAutomationAndScope: async () => [],
+        upsertCursor: async () => undefined,
+      };
+      service.automationSignalEvaluatorService = {
+        evaluateLatestSignals: async () => ({
+          evaluatedSymbols: 3,
+          items: [
+            {
+              symbol: 'BTCUSDT',
+              status: 'ok',
+              latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+              signals: [
+                {
+                  side: 'long',
+                  signalTime: '2026-04-04T10:00:00.000Z',
+                  entryPrice: 100,
+                },
+              ],
+            },
+            {
+              symbol: 'ETHUSDT',
+              status: 'ok',
+              latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+              signals: [
+                {
+                  side: 'long',
+                  signalTime: '2026-04-04T10:00:00.000Z',
+                  entryPrice: 200,
+                },
+              ],
+            },
+            {
+              symbol: 'SOLUSDT',
+              status: 'ok',
+              latestClosedSignalTime: '2026-04-04T10:00:00.000Z',
+              signals: [
+                {
+                  side: 'long',
+                  signalTime: '2026-04-04T10:00:00.000Z',
+                  entryPrice: 50,
+                },
+              ],
+            },
+          ],
+        }),
+      };
+      service.suggestedTradeRepository = {
+        createSuggestedTrade: async (payload: Record<string, unknown>) => ({
+          duplicate: false,
+          item: { id: `st-${payload.symbol}-${payload.side}` },
+        }),
+      };
+      service.suggestedTradesService = {
+        attemptAutoLiveExecutionForAutomation: async (
+          _userId: string,
+          suggestedTradeId: string
+        ) => {
+          attemptedLiveIds.push(suggestedTradeId);
+          if (suggestedTradeId === 'st-BTCUSDT-BUY') {
+            return {
+              outcome: 'skipped',
+              message: 'Opposite short exposure already exists for asset BTC',
+              brokerKey: 'mudrex',
+              accountId: 'account-1',
+            };
+          }
+          if (suggestedTradeId === 'st-ETHUSDT-BUY') {
+            return {
+              outcome: 'blocked',
+              message: 'Pre-trade check blocked this suggestion',
+              brokerKey: 'mudrex',
+              accountId: 'account-1',
+              preTradeCheckId: 'check-eth',
+            };
+          }
+          return {
+            outcome: 'placed',
+            message: 'Order accepted',
+            brokerKey: 'mudrex',
+            accountId: 'account-1',
+            orderId: `order-${suggestedTradeId}`,
+          };
+        },
+        blockAutoExecutionForAutomation: async (
+          _userId: string,
+          suggestedTradeId: string,
+          options: Record<string, unknown>
+        ) => {
+          blockedLive.push({ suggestedTradeId, ...options });
+          return {
+            outcome: 'blocked',
+            message: String(options.reason),
+            suggestedTradeId,
+            brokerKey: null,
+            accountId: null,
+            preTradeCheckId: null,
+          };
+        },
+      };
+      service.automationRunOutputRepository = {
+        createOutput: async (payload: Record<string, unknown>) => {
+          outputs.push(payload);
+          return payload;
+        },
+      };
+      service.operationalEventService = {
+        logActivity: async () => undefined,
+        emitNotificationAlert: async () => null,
+      };
+
+      const result = await service.generateTradeSuggestions(
+        automationTradeSuggestion,
+        'run-trade-skipped-before-batch-slot',
+        {
+          symbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
+          timeframe: '5m',
+          tradeSuggestion: {
+            execution: {
+              executionMode: 'live_trade_auto',
+              approvalMode: 'auto_if_safe',
+            },
+          },
+        },
+        new Date('2026-04-04T10:05:00.000Z')
+      );
+
+      assert.equal(result.inserted, 3);
+      assert.equal(result.autoLivePlaced, 1);
+      assert.equal(result.autoLiveBlocked, 1);
+      assert.equal(result.autoLiveSkipped, 1);
+      assert.deepEqual(attemptedLiveIds, [
+        'st-BTCUSDT-BUY',
+        'st-ETHUSDT-BUY',
+        'st-SOLUSDT-BUY',
+      ]);
+      assert.deepEqual(blockedLive, []);
+      const liveOutputs = outputs.filter(
+        (output) => output.outputType === 'trade-suggestion.live-auto'
+      );
+      assert.equal(liveOutputs.length, 3);
+      assert.equal(liveOutputs[0]?.status, 'Skipped');
+      assert.equal(liveOutputs[1]?.status, 'Blocked');
+      assert.equal(liveOutputs[2]?.status, 'Created');
+    }
+
+    {
+      const { service } = createService();
       const retryDelays: number[] = [];
       let evaluations = 0;
 
