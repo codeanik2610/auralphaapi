@@ -35,7 +35,11 @@ import {
   validateStrategyLibraryUpdateBody,
 } from '../validators/strategy-library.validator';
 import { StrategyLibrary, StrategyTemplate } from '../../database';
-import { BacktestRepository, StrategyLibraryRepository, StrategyTemplateRepository } from '../../database';
+import {
+  BacktestRepository,
+  StrategyLibraryRepository,
+  StrategyTemplateRepository,
+} from '../../database';
 import { OperationalEventService } from './OperationalEventService';
 
 @Service()
@@ -58,11 +62,9 @@ export class StrategyLibraryService {
   ): Promise<ApiSuccessResponse<StrategyLibraryListResponse>> {
     const params = validateStrategyLibraryQuery(query);
     const useDerivedListPipeline = this.shouldUseDerivedListPipeline(params);
-    const { data, total } = await this.strategyLibraryRepository.listLibrary(
-      userId,
-      params,
-      { paginate: !useDerivedListPipeline }
-    );
+    const { data, total } = await this.strategyLibraryRepository.listLibrary(userId, params, {
+      paginate: !useDerivedListPipeline,
+    });
     const templateById = await this.getTemplateMap(userId, data);
     const latestRunsByLibraryId = await this.backtestRepository.getLatestStrategyLibraryBacktests(
       userId,
@@ -98,8 +100,10 @@ export class StrategyLibraryService {
     });
   }
 
-
-  async getLibraryById(userId: string, libraryId: string): Promise<ApiSuccessResponse<StrategyLibraryItem>> {
+  async getLibraryById(
+    userId: string,
+    libraryId: string
+  ): Promise<ApiSuccessResponse<StrategyLibraryItem>> {
     const validatedId = validateStrategyLibraryId(libraryId);
     const record = await this.strategyLibraryRepository.getById(userId, validatedId);
 
@@ -113,11 +117,7 @@ export class StrategyLibraryService {
     ]);
 
     return successResponse(
-      this.mapLibrary(
-        record,
-        template,
-        latestRunsByLibraryId.get(record.id) ?? null
-      )
+      this.mapLibrary(record, template, latestRunsByLibraryId.get(record.id) ?? null)
     );
   }
 
@@ -134,7 +134,11 @@ export class StrategyLibraryService {
       throw new NotFoundAppError('Strategy library entry not found');
     }
 
-    const recentRunsByLibraryId = await this.getRecentRunsByLibraryId(userId, [validatedId], params.limit);
+    const recentRunsByLibraryId = await this.getRecentRunsByLibraryId(
+      userId,
+      [validatedId],
+      params.limit
+    );
     const recentRuns = this.mapRecentRuns(recentRunsByLibraryId.get(validatedId) ?? []) ?? [];
 
     return successResponse({
@@ -168,7 +172,11 @@ export class StrategyLibraryService {
         );
       }
 
-      const record = await this.strategyLibraryRepository.updateLibrary(userId, validatedId, validated);
+      const record = await this.strategyLibraryRepository.updateLibrary(
+        userId,
+        validatedId,
+        validated
+      );
 
       if (!record) {
         throw new NotFoundAppError('Strategy library entry not found');
@@ -190,11 +198,7 @@ export class StrategyLibraryService {
       });
 
       return successResponse(
-        this.mapLibrary(
-          record,
-          template,
-          latestRunsByLibraryId.get(record.id) ?? null
-        )
+        this.mapLibrary(record, template, latestRunsByLibraryId.get(record.id) ?? null)
       );
     } catch (error) {
       const mappedError = this.mapPersistenceError(error, validated.name);
@@ -232,9 +236,7 @@ export class StrategyLibraryService {
       }
 
       const currentStatus = normalizeStrategyLibraryStatus(existingRecord.status);
-      if (
-        !isStrategyLibraryStatusTransitionAllowed(currentStatus, validated.status)
-      ) {
+      if (!isStrategyLibraryStatusTransitionAllowed(currentStatus, validated.status)) {
         throw new BadRequestAppError(
           `Strategy library entries cannot move from ${currentStatus} to ${validated.status}`
         );
@@ -268,11 +270,7 @@ export class StrategyLibraryService {
       }
 
       return successResponse(
-        this.mapLibrary(
-          record,
-          template,
-          latestRunsByLibraryId.get(record.id) ?? null
-        )
+        this.mapLibrary(record, template, latestRunsByLibraryId.get(record.id) ?? null)
       );
     } catch (error) {
       await this.operationalEventService.logActivity(userId, {
@@ -296,7 +294,10 @@ export class StrategyLibraryService {
     }
   }
 
-  async deleteLibrary(userId: string, libraryId: string): Promise<ApiSuccessResponse<{ id: string }>> {
+  async deleteLibrary(
+    userId: string,
+    libraryId: string
+  ): Promise<ApiSuccessResponse<{ id: string }>> {
     const validatedId = validateStrategyLibraryId(libraryId);
     try {
       const deleted = await this.strategyLibraryRepository.deleteLibrary(userId, validatedId);
@@ -467,16 +468,17 @@ export class StrategyLibraryService {
 
       const primaryAsset = resolvedAssets[0] as Record<string, unknown> | undefined;
       const rawSymbol = primaryAsset
-        ? String(
-            primaryAsset['symbol'] ||
-              primaryAsset['label'] ||
-              primaryAsset['id'] ||
-              ''
-          ).trim()
+        ? String(primaryAsset['symbol'] || primaryAsset['label'] || primaryAsset['id'] || '').trim()
         : '';
-      const symbol = rawSymbol || (resolvedAssets.length > 1 ? 'Multi-asset' : 'Unknown');
+      const assetSymbols = resolvedAssets
+        .map((asset) => String(asset?.symbol || asset?.label || asset?.id || '').trim())
+        .filter(Boolean);
+      const symbol =
+        resolvedAssets.length > 1 ? 'Multi-asset' : rawSymbol || assetSymbols[0] || 'Unknown';
+      const parameterAssetLabel =
+        resolvedAssets.length > 1 ? assetSymbols.join(', ') || symbol : symbol;
       const strategyName = template?.name || record.name;
-      const parameterParts = [record.name, symbol];
+      const parameterParts = [record.name, parameterAssetLabel];
       if (resolvedTimeframes.length) {
         parameterParts.push(resolvedTimeframes.join(', '));
       }
@@ -655,14 +657,12 @@ export class StrategyLibraryService {
   }
 
   private mapLatestRun(
-    latestRun:
-      | {
-          backtestId: string;
-          status: string;
-          createdAt: Date;
-          updatedAt: Date;
-        }
-      | null
+    latestRun: {
+      backtestId: string;
+      status: string;
+      createdAt: Date;
+      updatedAt: Date;
+    } | null
   ): StrategyLibraryLatestRun | null {
     if (!latestRun) {
       return null;
@@ -696,14 +696,10 @@ export class StrategyLibraryService {
       backtestId: run.backtestId,
       status: run.status,
       queuedAt: this.formatDate(run.createdAt),
-      completedAt: this.isFinalBacktestStatus(run.status)
-        ? this.formatDate(run.updatedAt)
-        : null,
+      completedAt: this.isFinalBacktestStatus(run.status) ? this.formatDate(run.updatedAt) : null,
       updatedAt: this.formatDate(run.updatedAt),
       parameter:
-        typeof run.parameter === 'string' && run.parameter.trim()
-          ? run.parameter.trim()
-          : null,
+        typeof run.parameter === 'string' && run.parameter.trim() ? run.parameter.trim() : null,
     }));
   }
 
@@ -734,7 +730,9 @@ export class StrategyLibraryService {
   }
 
   private isFinalBacktestStatus(status: string): boolean {
-    const normalized = String(status || '').trim().toLowerCase();
+    const normalized = String(status || '')
+      .trim()
+      .toLowerCase();
     return !['queued', 'running', 'started', 'processing', 'in_progress', 'in-progress'].includes(
       normalized
     );
@@ -779,9 +777,9 @@ export class StrategyLibraryService {
   ): boolean {
     return Boolean(
       params.scopeReady !== undefined ||
-        params.automationReady !== undefined ||
-        params.lastRunFailed !== undefined ||
-        params.sort !== 'updated_desc'
+      params.automationReady !== undefined ||
+      params.lastRunFailed !== undefined ||
+      params.sort !== 'updated_desc'
     );
   }
 
@@ -896,20 +894,24 @@ export class StrategyLibraryService {
   private isAutomationReady(item: StrategyLibraryItem): boolean {
     return Boolean(
       item.templateAutomationReady &&
-        this.isScopeReady(item) &&
-        item.lifecycle?.scheduledSignalsEnabled &&
-        !item.lifecycle?.isReadOnly
+      this.isScopeReady(item) &&
+      item.lifecycle?.scheduledSignalsEnabled &&
+      !item.lifecycle?.isReadOnly
     );
   }
 
   private isFailedLatestRun(status: string | null | undefined): boolean {
     return ['failed', 'error', 'cancelled', 'canceled'].includes(
-      String(status || '').trim().toLowerCase()
+      String(status || '')
+        .trim()
+        .toLowerCase()
     );
   }
 
   private normalizeLibraryName(name: string): string {
-    return String(name || '').trim().toLowerCase();
+    return String(name || '')
+      .trim()
+      .toLowerCase();
   }
 
   private buildDuplicateNameConflictMessage(name: string): string {
@@ -938,24 +940,22 @@ export class StrategyLibraryService {
   }
 
   private isDuplicateNameConstraintError(error: unknown): boolean {
-    return this.matchesConstraintError(error, ['23505', 'ER_DUP_ENTRY'], [
-      'uidx_strategy_library_user_template_name_ci',
-      'strategy_library_user_template_name_ci',
-    ]);
+    return this.matchesConstraintError(
+      error,
+      ['23505', 'ER_DUP_ENTRY'],
+      ['uidx_strategy_library_user_template_name_ci', 'strategy_library_user_template_name_ci']
+    );
   }
 
   private isOwnedTemplateConstraintError(error: unknown): boolean {
-    return this.matchesConstraintError(error, ['23503'], [
-      'fk_strategy_library_user_template_owner',
-      'strategy_library_user_template_owner',
-    ]);
+    return this.matchesConstraintError(
+      error,
+      ['23503'],
+      ['fk_strategy_library_user_template_owner', 'strategy_library_user_template_owner']
+    );
   }
 
-  private matchesConstraintError(
-    error: unknown,
-    codes: string[],
-    markers: string[]
-  ): boolean {
+  private matchesConstraintError(error: unknown, codes: string[], markers: string[]): boolean {
     if (!error || typeof error !== 'object') {
       return false;
     }
@@ -981,9 +981,7 @@ export class StrategyLibraryService {
     }
 
     if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-      return boundary === 'start'
-        ? `${trimmed}T00:00:00.000Z`
-        : `${trimmed}T23:59:59.999Z`;
+      return boundary === 'start' ? `${trimmed}T00:00:00.000Z` : `${trimmed}T23:59:59.999Z`;
     }
 
     return trimmed;

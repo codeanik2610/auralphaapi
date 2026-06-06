@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { buildDisplacementPullbackContinuationTemplateConfig } from '../src/api/strategies/templates/DisplacementPullbackContinuationTemplate';
 import { buildTwoStageCandleBreakoutTemplateConfig } from '../src/api/strategies/templates/TwoStageCandleBreakoutTemplate';
 import { buildStrategyTemplateAutomationProfile } from '../src/api/utils/strategyTemplateAutomation';
 import {
@@ -472,6 +473,243 @@ assert.match(String(twoStageConfig.codeDefinition || ''), /"structure_guard": "a
 assert.match(String(twoStageConfig.codeDefinition || ''), /"stop_basis": "second_red_low"/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /"stop_basis": "second_green_high"/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /def entry_short_plan\(self, ctx\):/);
+
+const displacementConfig = buildDisplacementPullbackContinuationTemplateConfig();
+const displacementProfile = buildStrategyTemplateAutomationProfile(displacementConfig);
+const displacementRisk = displacementConfig.risk as Record<string, unknown>;
+const displacementParameters = displacementConfig.parameters as Record<string, unknown>;
+
+assert.equal(displacementProfile.automationReady, true);
+assert.deepEqual(displacementProfile.supports, {
+  long: true,
+  short: true,
+  customPython: true,
+  ruleBased: false,
+});
+assert.equal(displacementProfile.tradePlan.long?.stopLossMode, 'dynamic_pullback_extreme');
+assert.equal(displacementProfile.tradePlan.short?.stopLossMode, 'dynamic_pullback_extreme');
+assert.equal(displacementProfile.tradePlan.long?.takeProfitMode, 'dynamic_r_multiple');
+assert.equal(displacementProfile.tradePlan.short?.takeProfitMode, 'dynamic_r_multiple');
+assert.equal(displacementProfile.tradePlan.long?.riskRewardRatio, 5);
+assert.equal(displacementProfile.tradePlan.short?.riskRewardRatio, 5);
+assert.equal(displacementProfile.execution.useClosedCandlesOnly, true);
+assert.equal(displacementProfile.tradeManagement?.trailingStop?.mode, 'custom_r_ladder');
+assert.deepEqual(displacementProfile.tradeManagement?.trailingStop?.rules, [
+  { whenProfitR: 5, moveStopToR: 3 },
+  { whenProfitR: 6, moveStopToR: 4 },
+]);
+assert.equal(displacementRisk.riskRewardRatio, 5);
+assert.equal(displacementParameters.displacementBodyMult, 2.0);
+assert.equal(displacementParameters.breakoutLookbackBars, 3);
+assert.equal(displacementParameters.minDisplacementRangeMult, 1.3);
+assert.equal(displacementParameters.minDisplacementBodyToRange, 0.55);
+assert.equal(displacementParameters.minBreakoutCloseRangeMult, 0.15);
+assert.equal(displacementParameters.requireContinuationStructureBreak, true);
+assert.equal(displacementParameters.maxPullbackBars, 10);
+assert.equal(displacementParameters.trendContextBars, 28);
+assert.equal(displacementParameters.trendMinSlopeR, 1.2);
+assert.equal(displacementParameters.trendMinDirectionalCloses, 0.45);
+assert.equal(displacementParameters.minTrendRangeR, 3.0);
+assert.equal(displacementParameters.compressionBars, 5);
+assert.equal(displacementParameters.compressionMinSmallBodies, 2);
+assert.equal(displacementParameters.maxChopDirectionChangeRatio, 0.75);
+assert.equal(displacementParameters.minTargetRoomR, 2.0);
+assert.match(String(displacementConfig.entryLogic || ''), /clean uptrend context/);
+assert.match(String(displacementConfig.entryShortLogic || ''), /clean downtrend context/);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /class DisplacementPullbackContinuation\(Strategy\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _is_bearish_displacement\(self, df, index\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _breakout_lookback_bars\(self\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _breakout_range\(self, df, index\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _displacement_quality_ok\(self, df, index\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _trend_context_ok_for_short\(self, df, index\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _compression_ok\(self, df, index\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _no_chop_context_ok\(self, df, index\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _target_room_r\(self, df, entry_index, risk_distance\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _apply_one_position_filter\(self, df\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _require_continuation_structure_break\(self\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /def _scan_short_entry_after_pullback\(self, df, pullback_start_index\):/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /"pullback_guard": "pullback_stays_inside_trend_context_high"/
+);
+assert.match(
+  String(displacementConfig.codeDefinition || ''),
+  /"pullback_guard": "pullback_stays_inside_trend_context_low"/
+);
+assert.match(String(displacementConfig.codeDefinition || ''), /"target_room"/);
+
+const displacementBehaviorHarness = String.raw`
+import json
+import sys
+import types
+
+auralpha = types.ModuleType("auralpha")
+
+class Strategy:
+    pass
+
+auralpha.Strategy = Strategy
+sys.modules["auralpha"] = auralpha
+
+namespace = {}
+exec(sys.stdin.read(), namespace)
+StrategyClass = namespace["DisplacementPullbackContinuation"]
+
+class FakeSeries:
+    def __init__(self, values):
+        self.values = values
+        self.iloc = self
+
+    def __getitem__(self, index):
+        return self.values[index]
+
+class FakeFrame:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __contains__(self, key):
+        return key in self.rows[0]
+
+    def __getitem__(self, key):
+        return FakeSeries([row[key] for row in self.rows])
+
+def run(rows):
+    strategy = StrategyClass()
+    df = FakeFrame(rows)
+    strategy.prepare(df)
+    return {
+        "long_signals": strategy._long_signals,
+        "short_signals": strategy._short_signals,
+        "long_plans": strategy._long_plans,
+        "short_plans": strategy._short_plans,
+    }
+
+short_setup = run([
+    {"open": 100.4, "high": 100.6, "low": 100.0, "close": 100.2},
+    {"open": 100.2, "high": 100.4, "low": 99.8, "close": 100.0},
+    {"open": 100.0, "high": 100.3, "low": 99.7, "close": 99.9},
+    {"open": 99.9, "high": 100.1, "low": 99.6, "close": 99.7},
+    {"open": 99.7, "high": 100.0, "low": 99.5, "close": 99.8},
+    {"open": 99.8, "high": 99.9, "low": 99.4, "close": 99.6},
+    {"open": 99.6, "high": 99.7, "low": 97.6, "close": 97.9},
+    {"open": 97.9, "high": 98.6, "low": 97.8, "close": 98.3},
+    {"open": 98.3, "high": 98.4, "low": 97.1, "close": 97.3},
+])
+
+long_setup = run([
+    {"open": 99.6, "high": 100.0, "low": 99.4, "close": 99.8},
+    {"open": 99.8, "high": 100.2, "low": 99.6, "close": 100.0},
+    {"open": 100.0, "high": 100.3, "low": 99.8, "close": 100.1},
+    {"open": 100.1, "high": 100.4, "low": 100.0, "close": 100.3},
+    {"open": 100.3, "high": 100.5, "low": 100.1, "close": 100.2},
+    {"open": 100.2, "high": 100.6, "low": 100.1, "close": 100.4},
+    {"open": 100.4, "high": 102.4, "low": 100.3, "close": 102.1},
+    {"open": 102.1, "high": 102.2, "low": 101.4, "close": 101.7},
+    {"open": 101.7, "high": 102.9, "low": 101.6, "close": 102.7},
+])
+
+local_breakout_short_setup = run([
+    {"open": 102.0, "high": 102.5, "low": 98.0, "close": 101.8},
+    {"open": 101.8, "high": 102.0, "low": 101.4, "close": 101.6},
+    {"open": 101.6, "high": 101.8, "low": 101.2, "close": 101.4},
+    {"open": 101.4, "high": 101.6, "low": 101.0, "close": 101.2},
+    {"open": 101.2, "high": 101.5, "low": 100.9, "close": 101.0},
+    {"open": 101.0, "high": 101.2, "low": 100.7, "close": 100.9},
+    {"open": 100.9, "high": 101.1, "low": 100.6, "close": 100.8},
+    {"open": 100.8, "high": 101.0, "low": 100.5, "close": 100.7},
+    {"open": 100.7, "high": 100.8, "low": 98.2, "close": 98.5},
+    {"open": 98.5, "high": 99.2, "low": 98.4, "close": 98.9},
+    {"open": 98.9, "high": 99.0, "low": 97.9, "close": 98.1},
+])
+
+local_breakout_long_setup = run([
+    {"open": 98.0, "high": 102.5, "low": 97.5, "close": 98.2},
+    {"open": 98.2, "high": 98.6, "low": 98.0, "close": 98.4},
+    {"open": 98.4, "high": 98.8, "low": 98.2, "close": 98.6},
+    {"open": 98.6, "high": 99.0, "low": 98.4, "close": 98.8},
+    {"open": 98.8, "high": 99.2, "low": 98.6, "close": 99.0},
+    {"open": 99.0, "high": 99.3, "low": 98.8, "close": 99.1},
+    {"open": 99.1, "high": 99.4, "low": 98.9, "close": 99.2},
+    {"open": 99.2, "high": 99.5, "low": 99.0, "close": 99.3},
+    {"open": 99.3, "high": 101.8, "low": 99.2, "close": 101.5},
+    {"open": 101.5, "high": 101.6, "low": 100.8, "close": 101.1},
+    {"open": 101.1, "high": 102.1, "low": 101.0, "close": 101.9},
+])
+
+print(json.dumps({
+    "shortEntry": short_setup["short_signals"][8],
+    "shortPattern": short_setup["short_plans"][8]["metadata"]["pattern"],
+    "shortPullback": short_setup["short_plans"][8]["metadata"]["pullback_indexes"],
+    "longEntry": long_setup["long_signals"][8],
+    "longPattern": long_setup["long_plans"][8]["metadata"]["pattern"],
+    "longPullback": long_setup["long_plans"][8]["metadata"]["pullback_indexes"],
+    "localBreakoutShortEntry": local_breakout_short_setup["short_signals"][10],
+    "localBreakoutLongEntry": local_breakout_long_setup["long_signals"][10],
+}))
+`;
+
+const displacementBehaviorResult = spawnSync('python3', ['-c', displacementBehaviorHarness], {
+  input: String(displacementConfig.codeDefinition || ''),
+  encoding: 'utf8',
+});
+assert.equal(
+  displacementBehaviorResult.status,
+  0,
+  displacementBehaviorResult.stderr ||
+    displacementBehaviorResult.stdout ||
+    'Displacement pullback Python behavior harness failed'
+);
+const displacementBehavior = JSON.parse(displacementBehaviorResult.stdout) as Record<
+  string,
+  unknown
+>;
+assert.equal(displacementBehavior.shortEntry, true);
+assert.equal(displacementBehavior.shortPattern, 'bearish_visual_trend_pullback_short_continuation');
+assert.deepEqual(displacementBehavior.shortPullback, [7]);
+assert.equal(displacementBehavior.longEntry, true);
+assert.equal(displacementBehavior.longPattern, 'bullish_visual_trend_pullback_long_continuation');
+assert.deepEqual(displacementBehavior.longPullback, [7]);
+assert.equal(displacementBehavior.localBreakoutShortEntry, true);
+assert.equal(displacementBehavior.localBreakoutLongEntry, true);
 
 const first60Report = simulateFirst60TemplateProfile(
   first60Managed,

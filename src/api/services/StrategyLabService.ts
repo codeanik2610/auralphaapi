@@ -505,8 +505,12 @@ export class StrategyLabService {
               ''
           ).trim()
         : '';
-      const symbol = rawSymbol || (assets.length > 1 ? 'Multi-asset' : 'Unknown');
-      const parameterParts = [project.name || 'Strategy Lab', symbol];
+      const assetSymbols = assets
+        .map((asset) => String(asset?.symbol || asset?.label || asset?.id || '').trim())
+        .filter(Boolean);
+      const symbol = assets.length > 1 ? 'Multi-asset' : rawSymbol || assetSymbols[0] || 'Unknown';
+      const parameterAssetLabel = assets.length > 1 ? assetSymbols.join(', ') || symbol : symbol;
+      const parameterParts = [project.name || 'Strategy Lab', parameterAssetLabel];
       if (timeframes.length) {
         parameterParts.push(timeframes.join(', '));
       }
