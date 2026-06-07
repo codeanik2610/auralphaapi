@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { buildDisplacementPullbackContinuationTemplateConfig } from '../src/api/strategies/templates/DisplacementPullbackContinuationTemplate';
+import { buildTwoStageCandleBreakoutFvgConfirmationTemplateConfig } from '../src/api/strategies/templates/TwoStageCandleBreakoutFvgConfirmationTemplate';
 import { buildTwoStageCandleBreakoutTemplateConfig } from '../src/api/strategies/templates/TwoStageCandleBreakoutTemplate';
 import { buildStrategyTemplateAutomationProfile } from '../src/api/utils/strategyTemplateAutomation';
 import {
@@ -473,6 +474,149 @@ assert.match(String(twoStageConfig.codeDefinition || ''), /"structure_guard": "a
 assert.match(String(twoStageConfig.codeDefinition || ''), /"stop_basis": "second_red_low"/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /"stop_basis": "second_green_high"/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /def entry_short_plan\(self, ctx\):/);
+
+const twoStageFvgConfig = buildTwoStageCandleBreakoutFvgConfirmationTemplateConfig();
+const twoStageFvgProfile = buildStrategyTemplateAutomationProfile(twoStageFvgConfig);
+const twoStageFvgParameters = twoStageFvgConfig.parameters as Record<string, unknown>;
+
+assert.equal(twoStageFvgProfile.automationReady, true);
+assert.equal(twoStageFvgProfile.tradePlan.long?.riskRewardRatio, 11);
+assert.equal(twoStageFvgProfile.tradePlan.short?.riskRewardRatio, 11);
+assert.equal(twoStageFvgProfile.tradeManagement?.trailingStop?.mode, 'custom_r_ladder');
+assert.deepEqual(twoStageFvgProfile.tradeManagement?.trailingStop?.rules, [
+  { whenProfitR: 4, moveStopToR: 1 },
+  { whenProfitR: 9, moveStopToR: 4 },
+  { whenProfitR: 11, moveStopToR: 9 },
+]);
+assert.equal(twoStageFvgParameters.requireFvgConfirmation, true);
+assert.equal(twoStageFvgParameters.fvgEntryRequiresContinuationClose, true);
+assert.match(String(twoStageFvgConfig.entryLogic || ''), /bullish FVG/);
+assert.match(String(twoStageFvgConfig.entryShortLogic || ''), /bearish FVG/);
+assert.match(
+  String(twoStageFvgConfig.codeDefinition || ''),
+  /class TwoStageCandleBreakoutFvgConfirmation11Ladder\(Strategy\):/
+);
+assert.match(String(twoStageFvgConfig.codeDefinition || ''), /def _find_bullish_fvg/);
+assert.match(String(twoStageFvgConfig.codeDefinition || ''), /def _find_bearish_fvg/);
+assert.match(String(twoStageFvgConfig.codeDefinition || ''), /def _long_fvg_confirmed/);
+assert.match(String(twoStageFvgConfig.codeDefinition || ''), /def _short_fvg_confirmed/);
+assert.match(String(twoStageFvgConfig.codeDefinition || ''), /"fvg_confirmation":/);
+assert.match(
+  String(twoStageFvgConfig.codeDefinition || ''),
+  /"continuation_rule": "entry_green_closes_above_second_red_high_and_fvg_upper"/
+);
+assert.match(
+  String(twoStageFvgConfig.codeDefinition || ''),
+  /"continuation_rule": "entry_red_closes_below_second_green_low_and_fvg_lower"/
+);
+
+const fvgBehaviorHarness = String.raw`
+import json
+import sys
+import types
+
+auralpha = types.ModuleType("auralpha")
+
+class Strategy:
+    pass
+
+auralpha.Strategy = Strategy
+sys.modules["auralpha"] = auralpha
+
+namespace = {}
+exec(sys.stdin.read(), namespace)
+StrategyClass = namespace["TwoStageCandleBreakoutFvgConfirmation11Ladder"]
+
+class FakeSeries:
+    def __init__(self, values):
+        self.values = values
+        self.iloc = self
+
+    def __getitem__(self, index):
+        return self.values[index]
+
+class FakeFrame:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __contains__(self, key):
+        return key in self.rows[0]
+
+    def __getitem__(self, key):
+        return FakeSeries([row[key] for row in self.rows])
+
+def run(rows):
+    strategy = StrategyClass()
+    df = FakeFrame(rows)
+    strategy.prepare(df)
+    return {
+        "long_signals": strategy._long_signals,
+        "short_signals": strategy._short_signals,
+        "long_plans": strategy._long_plans,
+        "short_plans": strategy._short_plans,
+    }
+
+long_confirmed = run([
+    {"open": 105, "high": 106, "low": 99, "close": 100},
+    {"open": 101, "high": 105, "low": 100, "close": 103},
+    {"open": 108, "high": 112, "low": 107, "close": 111},
+    {"open": 109, "high": 110, "low": 107, "close": 108},
+    {"open": 109, "high": 113, "low": 108, "close": 112},
+])
+
+long_without_fvg = run([
+    {"open": 105, "high": 106, "low": 99, "close": 100},
+    {"open": 101, "high": 105, "low": 100, "close": 103},
+    {"open": 104, "high": 112, "low": 104, "close": 111},
+    {"open": 109, "high": 110, "low": 104, "close": 108},
+    {"open": 109, "high": 113, "low": 108, "close": 112},
+])
+
+short_confirmed = run([
+    {"open": 100, "high": 106, "low": 99, "close": 105},
+    {"open": 104, "high": 105, "low": 100, "close": 102},
+    {"open": 98, "high": 98, "low": 96, "close": 96.5},
+    {"open": 97.2, "high": 98, "low": 97, "close": 97.8},
+    {"open": 97.5, "high": 98, "low": 95, "close": 96},
+])
+
+short_without_fvg = run([
+    {"open": 100, "high": 106, "low": 99, "close": 105},
+    {"open": 104, "high": 105, "low": 100, "close": 102},
+    {"open": 100, "high": 100, "low": 96, "close": 96.5},
+    {"open": 97.2, "high": 98, "low": 97, "close": 97.8},
+    {"open": 97.5, "high": 98, "low": 95, "close": 96},
+])
+
+print(json.dumps({
+    "longConfirmed": long_confirmed["long_signals"][4],
+    "longFvgSide": long_confirmed["long_plans"][4]["metadata"]["fvg_confirmation"]["side"],
+    "longWithoutFvg": any(long_without_fvg["long_signals"]),
+    "shortConfirmed": short_confirmed["short_signals"][4],
+    "shortFvgSide": short_confirmed["short_plans"][4]["metadata"]["fvg_confirmation"]["side"],
+    "shortWithoutFvg": any(short_without_fvg["short_signals"]),
+}))
+`;
+
+const fvgBehaviorResult = spawnSync('python3', ['-c', fvgBehaviorHarness], {
+  input: String(twoStageFvgConfig.codeDefinition || ''),
+  encoding: 'utf8',
+});
+assert.equal(
+  fvgBehaviorResult.status,
+  0,
+  fvgBehaviorResult.stderr || fvgBehaviorResult.stdout || 'FVG Python behavior harness failed'
+);
+const fvgBehavior = JSON.parse(fvgBehaviorResult.stdout) as Record<string, unknown>;
+assert.equal(fvgBehavior.longConfirmed, true);
+assert.equal(fvgBehavior.longFvgSide, 'bullish');
+assert.equal(fvgBehavior.longWithoutFvg, false);
+assert.equal(fvgBehavior.shortConfirmed, true);
+assert.equal(fvgBehavior.shortFvgSide, 'bearish');
+assert.equal(fvgBehavior.shortWithoutFvg, false);
 
 const displacementConfig = buildDisplacementPullbackContinuationTemplateConfig();
 const displacementProfile = buildStrategyTemplateAutomationProfile(displacementConfig);
