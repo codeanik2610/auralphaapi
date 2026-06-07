@@ -488,7 +488,8 @@ assert.deepEqual(twoStageFvgProfile.tradeManagement?.trailingStop?.rules, [
   { whenProfitR: 9, moveStopToR: 4 },
   { whenProfitR: 11, moveStopToR: 9 },
 ]);
-assert.equal(twoStageFvgParameters.requireFvgConfirmation, true);
+assert.equal(twoStageFvgParameters.requireFvgConfirmation, false);
+assert.equal(twoStageFvgParameters.confirmFvgWhenPresent, true);
 assert.equal(twoStageFvgParameters.fvgEntryRequiresContinuationClose, true);
 assert.match(String(twoStageFvgConfig.entryLogic || ''), /bullish FVG/);
 assert.match(String(twoStageFvgConfig.entryShortLogic || ''), /bearish FVG/);
@@ -498,16 +499,16 @@ assert.match(
 );
 assert.match(String(twoStageFvgConfig.codeDefinition || ''), /def _find_bullish_fvg/);
 assert.match(String(twoStageFvgConfig.codeDefinition || ''), /def _find_bearish_fvg/);
-assert.match(String(twoStageFvgConfig.codeDefinition || ''), /def _long_fvg_confirmed/);
-assert.match(String(twoStageFvgConfig.codeDefinition || ''), /def _short_fvg_confirmed/);
+assert.match(String(twoStageFvgConfig.codeDefinition || ''), /def _long_fvg_confirmation_status/);
+assert.match(String(twoStageFvgConfig.codeDefinition || ''), /def _short_fvg_confirmation_status/);
 assert.match(String(twoStageFvgConfig.codeDefinition || ''), /"fvg_confirmation":/);
 assert.match(
   String(twoStageFvgConfig.codeDefinition || ''),
-  /"continuation_rule": "entry_green_closes_above_second_red_high_and_fvg_upper"/
+  /"retest_rule": "when_bullish_fvg_forms_price_must_touch_the_fvg_zone"/
 );
 assert.match(
   String(twoStageFvgConfig.codeDefinition || ''),
-  /"continuation_rule": "entry_red_closes_below_second_green_low_and_fvg_lower"/
+  /"retest_rule": "when_bearish_fvg_forms_price_must_touch_the_fvg_zone"/
 );
 
 const fvgBehaviorHarness = String.raw`
@@ -564,7 +565,7 @@ long_confirmed = run([
     {"open": 101, "high": 105, "low": 100, "close": 103},
     {"open": 108, "high": 112, "low": 107, "close": 111},
     {"open": 109, "high": 110, "low": 107, "close": 108},
-    {"open": 109, "high": 113, "low": 108, "close": 112},
+    {"open": 109, "high": 113, "low": 107, "close": 112},
 ])
 
 long_without_fvg = run([
@@ -572,6 +573,14 @@ long_without_fvg = run([
     {"open": 101, "high": 105, "low": 100, "close": 103},
     {"open": 104, "high": 112, "low": 104, "close": 111},
     {"open": 109, "high": 110, "low": 104, "close": 108},
+    {"open": 109, "high": 113, "low": 108, "close": 112},
+])
+
+long_unconfirmed_fvg = run([
+    {"open": 105, "high": 106, "low": 99, "close": 100},
+    {"open": 101, "high": 105, "low": 100, "close": 103},
+    {"open": 108, "high": 112, "low": 107, "close": 111},
+    {"open": 109, "high": 110, "low": 107, "close": 108.5},
     {"open": 109, "high": 113, "low": 108, "close": 112},
 ])
 
@@ -591,13 +600,25 @@ short_without_fvg = run([
     {"open": 97.5, "high": 98, "low": 95, "close": 96},
 ])
 
+short_unconfirmed_fvg = run([
+    {"open": 100, "high": 106, "low": 99, "close": 105},
+    {"open": 104, "high": 105, "low": 100, "close": 102},
+    {"open": 98, "high": 98, "low": 96, "close": 96.5},
+    {"open": 95.2, "high": 97.8, "low": 95.2, "close": 97.5},
+    {"open": 97.4, "high": 97.6, "low": 94, "close": 94.5},
+])
+
 print(json.dumps({
     "longConfirmed": long_confirmed["long_signals"][4],
     "longFvgSide": long_confirmed["long_plans"][4]["metadata"]["fvg_confirmation"]["side"],
+    "longFvgMode": long_confirmed["long_plans"][4]["metadata"]["fvg_confirmation"]["mode"],
     "longWithoutFvg": any(long_without_fvg["long_signals"]),
+    "longUnconfirmedFvg": any(long_unconfirmed_fvg["long_signals"]),
     "shortConfirmed": short_confirmed["short_signals"][4],
     "shortFvgSide": short_confirmed["short_plans"][4]["metadata"]["fvg_confirmation"]["side"],
+    "shortFvgMode": short_confirmed["short_plans"][4]["metadata"]["fvg_confirmation"]["mode"],
     "shortWithoutFvg": any(short_without_fvg["short_signals"]),
+    "shortUnconfirmedFvg": any(short_unconfirmed_fvg["short_signals"]),
 }))
 `;
 
@@ -613,10 +634,14 @@ assert.equal(
 const fvgBehavior = JSON.parse(fvgBehaviorResult.stdout) as Record<string, unknown>;
 assert.equal(fvgBehavior.longConfirmed, true);
 assert.equal(fvgBehavior.longFvgSide, 'bullish');
-assert.equal(fvgBehavior.longWithoutFvg, false);
+assert.equal(fvgBehavior.longFvgMode, 'conditional_required_when_fvg_forms');
+assert.equal(fvgBehavior.longWithoutFvg, true);
+assert.equal(fvgBehavior.longUnconfirmedFvg, false);
 assert.equal(fvgBehavior.shortConfirmed, true);
 assert.equal(fvgBehavior.shortFvgSide, 'bearish');
-assert.equal(fvgBehavior.shortWithoutFvg, false);
+assert.equal(fvgBehavior.shortFvgMode, 'conditional_required_when_fvg_forms');
+assert.equal(fvgBehavior.shortWithoutFvg, true);
+assert.equal(fvgBehavior.shortUnconfirmedFvg, false);
 
 const displacementConfig = buildDisplacementPullbackContinuationTemplateConfig();
 const displacementProfile = buildStrategyTemplateAutomationProfile(displacementConfig);

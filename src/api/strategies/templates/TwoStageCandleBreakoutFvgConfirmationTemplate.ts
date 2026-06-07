@@ -1,25 +1,29 @@
 import { buildStrategyTemplateAutomationProfile } from '../../utils/strategyTemplateAutomation';
 
 export const TWO_STAGE_CANDLE_BREAKOUT_FVG_CONFIRMATION_TEMPLATE_NAME =
-  'Two-Stage Candle Breakout 1:11 SL Ladder + FVG Confirmation';
+  'Two-Stage Candle Breakout 1:11 SL Ladder + Conditional FVG';
 
-export const TWO_STAGE_CANDLE_BREAKOUT_FVG_CONFIRMATION_TEMPLATE_LEGACY_NAMES = [] as const;
+export const TWO_STAGE_CANDLE_BREAKOUT_FVG_CONFIRMATION_TEMPLATE_LEGACY_NAMES = [
+  'Two-Stage Candle Breakout 1:11 SL Ladder + FVG Confirmation',
+  'Two-Stage Candle Breakout 1:11 SL Ladder + Optional FVG',
+] as const;
 
 export const TWO_STAGE_CANDLE_BREAKOUT_FVG_CONFIRMATION_TEMPLATE_DESCRIPTION =
-  'Two-stage candle breakout with FVG confirmation. The original 1:11 SL ladder flow remains, but entries require a same-direction fair value gap, post-alert retest into that FVG, no FVG invalidation close before entry, and an entry candle continuation close. Stop is buffered beyond the second setup candle, target is 1:11, and SL ladders from 4R to 1R, 9R to 4R, and 11R to 9R.';
+  'Two-stage candle breakout with conditional FVG confirmation. The original 1:11 SL ladder flow remains, FVG is not mandatory, but when a same-side FVG forms between Candle 1 and the planned entry window, entry waits until the FVG confirmation candle closes. Stop is buffered beyond the second setup candle, target is 1:11, and SL ladders from 4R to 1R, 9R to 4R, and 11R to 9R.';
 
 export const TWO_STAGE_CANDLE_BREAKOUT_FVG_CONFIRMATION_PYTHON_CODE = String.raw`from auralpha import Strategy
 
 
 class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
-    name = "Two-Stage Candle Breakout 1:11 SL Ladder + FVG Confirmation"
+    name = "Two-Stage Candle Breakout 1:11 SL Ladder + Conditional FVG"
     market = "crypto-futures"
     timeframe = "automation"
 
     params = {
         "reward_r": 11,
         "stop_buffer_pct": 0.0005,
-        "require_fvg_confirmation": True,
+        "require_fvg_confirmation": False,
+        "confirm_fvg_when_present": True,
         "fvg_min_gap_pct": 0.0,
         "fvg_retest_requires_close_respect": True,
         "fvg_entry_requires_continuation_close": True,
@@ -133,7 +137,10 @@ class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
         return bool(value)
 
     def _require_fvg_confirmation(self):
-        return self._param_bool("require_fvg_confirmation", True)
+        return self._param_bool("require_fvg_confirmation", False)
+
+    def _confirm_fvg_when_present(self):
+        return self._param_bool("confirm_fvg_when_present", True)
 
     def _fvg_min_gap_pct(self):
         value = float(self.params.get("fvg_min_gap_pct", 0.0))
@@ -202,69 +209,136 @@ class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
 
         return None
 
-    def _long_fvg_confirmed(self, df, fvg, second_red_index, entry_index):
-        if not self._require_fvg_confirmation():
-            return True
+    def _base_fvg_status(self, fvg, side):
+        has_fvg = fvg is not None
+        required = self._require_fvg_confirmation() or (
+            has_fvg and self._confirm_fvg_when_present()
+        )
+        mode = "not_present"
+        if self._require_fvg_confirmation():
+            mode = "mandatory"
+        elif has_fvg and self._confirm_fvg_when_present():
+            mode = "conditional_required_when_fvg_forms"
+        elif has_fvg:
+            mode = "optional_context"
 
-        if fvg is None:
-            return False
+        status = {
+            "required": required,
+            "mode": mode,
+            "confirmed": not required,
+            "invalid": False,
+            "side": side if has_fvg else None,
+            "first_index": fvg["first_index"] if has_fvg else None,
+            "middle_index": fvg["middle_index"] if has_fvg else None,
+            "end_index": fvg["end_index"] if has_fvg else None,
+            "lower": fvg["lower"] if has_fvg else None,
+            "upper": fvg["upper"] if has_fvg else None,
+            "gap_pct": fvg["gap_pct"] if has_fvg else None,
+            "retest_index": None,
+            "confirmation_index": None,
+            "failure_reason": None,
+        }
+
+        if required and not has_fvg:
+            status["failure_reason"] = side + "_fvg_not_formed_yet"
+
+        return status
+
+    def _long_fvg_confirmation_status(self, df, fvg, entry_index):
+        status = self._base_fvg_status(fvg, "bullish")
+        if fvg is None or not status["required"]:
+            return status
 
         lower = float(fvg["lower"])
         upper = float(fvg["upper"])
-        touched = self._zone_touched(df, second_red_index, lower, upper) or self._zone_touched(
-            df,
-            entry_index,
-            lower,
-            upper,
-        )
+        scan_index = int(fvg["end_index"]) + 1
 
-        if not touched:
-            return False
+        while scan_index <= entry_index:
+            if self._fvg_retest_requires_close_respect() and self._close(df, scan_index) < lower:
+                status["invalid"] = True
+                status["failure_reason"] = "bullish_fvg_closed_below_lower_before_confirmation"
+                return status
 
-        if self._fvg_retest_requires_close_respect():
-            scan_index = int(fvg["end_index"]) + 1
-            while scan_index <= entry_index:
-                if self._close(df, scan_index) < lower:
-                    return False
-                scan_index += 1
+            if status["retest_index"] is None and self._zone_touched(
+                df,
+                scan_index,
+                lower,
+                upper,
+            ):
+                status["retest_index"] = scan_index
 
-        if self._fvg_entry_requires_continuation_close():
-            if self._close(df, entry_index) <= max(self._high(df, second_red_index), upper):
-                return False
+            retest_index = status["retest_index"]
+            if retest_index is not None and self._is_green(df, scan_index):
+                if not self._fvg_entry_requires_continuation_close():
+                    status["confirmed"] = True
+                    status["confirmation_index"] = scan_index
+                    status["failure_reason"] = None
+                    return status
 
-        return True
+                closes_above_zone = self._close(df, scan_index) > upper
+                closes_above_retest = (
+                    scan_index == retest_index
+                    or self._close(df, scan_index) > self._high(df, retest_index)
+                )
 
-    def _short_fvg_confirmed(self, df, fvg, second_green_index, entry_index):
-        if not self._require_fvg_confirmation():
-            return True
+                if closes_above_zone and closes_above_retest:
+                    status["confirmed"] = True
+                    status["confirmation_index"] = scan_index
+                    status["failure_reason"] = None
+                    return status
 
-        if fvg is None:
-            return False
+            scan_index += 1
+
+        status["failure_reason"] = "bullish_fvg_waiting_for_confirmation"
+        return status
+
+    def _short_fvg_confirmation_status(self, df, fvg, entry_index):
+        status = self._base_fvg_status(fvg, "bearish")
+        if fvg is None or not status["required"]:
+            return status
 
         lower = float(fvg["lower"])
         upper = float(fvg["upper"])
-        touched = self._zone_touched(df, second_green_index, lower, upper) or self._zone_touched(
-            df,
-            entry_index,
-            lower,
-            upper,
-        )
+        scan_index = int(fvg["end_index"]) + 1
 
-        if not touched:
-            return False
+        while scan_index <= entry_index:
+            if self._fvg_retest_requires_close_respect() and self._close(df, scan_index) > upper:
+                status["invalid"] = True
+                status["failure_reason"] = "bearish_fvg_closed_above_upper_before_confirmation"
+                return status
 
-        if self._fvg_retest_requires_close_respect():
-            scan_index = int(fvg["end_index"]) + 1
-            while scan_index <= entry_index:
-                if self._close(df, scan_index) > upper:
-                    return False
-                scan_index += 1
+            if status["retest_index"] is None and self._zone_touched(
+                df,
+                scan_index,
+                lower,
+                upper,
+            ):
+                status["retest_index"] = scan_index
 
-        if self._fvg_entry_requires_continuation_close():
-            if self._close(df, entry_index) >= min(self._low(df, second_green_index), lower):
-                return False
+            retest_index = status["retest_index"]
+            if retest_index is not None and self._is_red(df, scan_index):
+                if not self._fvg_entry_requires_continuation_close():
+                    status["confirmed"] = True
+                    status["confirmation_index"] = scan_index
+                    status["failure_reason"] = None
+                    return status
 
-        return True
+                closes_below_zone = self._close(df, scan_index) < lower
+                closes_below_retest = (
+                    scan_index == retest_index
+                    or self._close(df, scan_index) < self._low(df, retest_index)
+                )
+
+                if closes_below_zone and closes_below_retest:
+                    status["confirmed"] = True
+                    status["confirmation_index"] = scan_index
+                    status["failure_reason"] = None
+                    return status
+
+            scan_index += 1
+
+        status["failure_reason"] = "bearish_fvg_waiting_for_confirmation"
+        return status
 
     def _find_long_alert(self, df, first_red_index):
         first_red_low = self._low(df, first_red_index)
@@ -330,11 +404,6 @@ class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
                 index += 1
                 continue
 
-            fvg = self._find_bullish_fvg(df, first_red_index, alert_index)
-            if self._require_fvg_confirmation() and fvg is None:
-                index += 1
-                continue
-
             alert_low = self._low(df, alert_index)
             second_red_index = None
             scan_index = alert_index + 1
@@ -350,23 +419,32 @@ class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
                     continue
 
                 if second_red_index is not None and self._is_green(df, scan_index):
-                    if (
-                        self._low(df, scan_index) >= self._low(df, second_red_index)
-                        and self._set_long_plan(
+                    if self._low(df, scan_index) < self._low(df, second_red_index):
+                        break
+
+                    fvg = self._find_bullish_fvg(df, first_red_index, scan_index)
+                    fvg_status = self._long_fvg_confirmation_status(df, fvg, scan_index)
+                    if fvg_status["invalid"]:
+                        break
+
+                    if fvg_status["confirmed"]:
+                        if self._set_long_plan(
                             df,
                             scan_index,
                             first_red_index,
                             alert_index,
                             second_red_index,
                             pre_alert_inside_indexes,
-                            fvg,
-                        )
-                    ):
-                        found_entry = True
-                        index = scan_index + 1
+                            fvg_status,
+                        ):
+                            found_entry = True
+                            index = scan_index + 1
+                            break
+
                         break
 
-                    break
+                    scan_index += 1
+                    continue
 
                 scan_index += 1
 
@@ -389,11 +467,6 @@ class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
                 index += 1
                 continue
 
-            fvg = self._find_bearish_fvg(df, first_green_index, alert_index)
-            if self._require_fvg_confirmation() and fvg is None:
-                index += 1
-                continue
-
             alert_high = self._high(df, alert_index)
             second_green_index = None
             scan_index = alert_index + 1
@@ -409,23 +482,32 @@ class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
                     continue
 
                 if second_green_index is not None and self._is_red(df, scan_index):
-                    if (
-                        self._high(df, scan_index) <= self._high(df, second_green_index)
-                        and self._set_short_plan(
+                    if self._high(df, scan_index) > self._high(df, second_green_index):
+                        break
+
+                    fvg = self._find_bearish_fvg(df, first_green_index, scan_index)
+                    fvg_status = self._short_fvg_confirmation_status(df, fvg, scan_index)
+                    if fvg_status["invalid"]:
+                        break
+
+                    if fvg_status["confirmed"]:
+                        if self._set_short_plan(
                             df,
                             scan_index,
                             first_green_index,
                             alert_index,
                             second_green_index,
                             pre_alert_inside_indexes,
-                            fvg,
-                        )
-                    ):
-                        found_entry = True
-                        index = scan_index + 1
+                            fvg_status,
+                        ):
+                            found_entry = True
+                            index = scan_index + 1
+                            break
+
                         break
 
-                    break
+                    scan_index += 1
+                    continue
 
                 scan_index += 1
 
@@ -440,11 +522,8 @@ class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
         alert_index,
         second_red_index,
         pre_alert_inside_indexes,
-        fvg,
+        fvg_status,
     ):
-        if not self._long_fvg_confirmed(df, fvg, second_red_index, entry_index):
-            return False
-
         entry_price = self._mid(df, entry_index)
         stop_loss_price = self._low(df, second_red_index) * (1.0 - self._stop_buffer_pct())
         risk_distance = entry_price - stop_loss_price
@@ -467,23 +546,31 @@ class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
                 "second_red_index": second_red_index,
                 "entry_index": entry_index,
                 "pre_alert_inside_indexes": pre_alert_inside_indexes,
-                "entry_basis": "second_green_midpoint",
+                "entry_basis": "green_midpoint_after_conditional_fvg_check",
+                "entry_timing": (
+                    "after_fvg_confirmation_candle_close"
+                    if fvg_status["required"]
+                    else "normal_two_stage_entry"
+                ),
                 "stop_basis": "second_red_low",
                 "target_basis": "entry_plus_11r",
                 "fvg_confirmation": {
-                    "required": self._require_fvg_confirmation(),
-                    "side": fvg["side"] if fvg is not None else None,
-                    "first_index": fvg["first_index"] if fvg is not None else None,
-                    "middle_index": fvg["middle_index"] if fvg is not None else None,
-                    "end_index": fvg["end_index"] if fvg is not None else None,
-                    "lower": fvg["lower"] if fvg is not None else None,
-                    "upper": fvg["upper"] if fvg is not None else None,
-                    "gap_pct": fvg["gap_pct"] if fvg is not None else None,
-                    "retest_index": second_red_index,
-                    "confirmation_index": entry_index,
-                    "retest_rule": "second_red_or_entry_touches_bullish_fvg",
-                    "respect_rule": "no_close_below_fvg_lower_before_entry",
-                    "continuation_rule": "entry_green_closes_above_second_red_high_and_fvg_upper",
+                    "required": fvg_status["required"],
+                    "mode": fvg_status["mode"],
+                    "confirmed": fvg_status["confirmed"],
+                    "side": fvg_status["side"],
+                    "first_index": fvg_status["first_index"],
+                    "middle_index": fvg_status["middle_index"],
+                    "end_index": fvg_status["end_index"],
+                    "lower": fvg_status["lower"],
+                    "upper": fvg_status["upper"],
+                    "gap_pct": fvg_status["gap_pct"],
+                    "retest_index": fvg_status["retest_index"],
+                    "confirmation_index": fvg_status["confirmation_index"],
+                    "failure_reason": fvg_status["failure_reason"],
+                    "retest_rule": "when_bullish_fvg_forms_price_must_touch_the_fvg_zone",
+                    "respect_rule": "no_close_below_bullish_fvg_lower_before_confirmation",
+                    "continuation_rule": "confirmation_candle_closes_green_above_fvg_zone_or_retest_high",
                 },
                 "candle_1_guard": "pre_alert_candles_stay_inside_candle_1_range",
                 "structure_guard": "alert_low",
@@ -517,11 +604,8 @@ class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
         alert_index,
         second_green_index,
         pre_alert_inside_indexes,
-        fvg,
+        fvg_status,
     ):
-        if not self._short_fvg_confirmed(df, fvg, second_green_index, entry_index):
-            return False
-
         entry_price = self._mid(df, entry_index)
         stop_loss_price = self._high(df, second_green_index) * (1.0 + self._stop_buffer_pct())
         risk_distance = stop_loss_price - entry_price
@@ -544,23 +628,31 @@ class TwoStageCandleBreakoutFvgConfirmation11Ladder(Strategy):
                 "second_green_index": second_green_index,
                 "entry_index": entry_index,
                 "pre_alert_inside_indexes": pre_alert_inside_indexes,
-                "entry_basis": "second_red_midpoint",
+                "entry_basis": "red_midpoint_after_conditional_fvg_check",
+                "entry_timing": (
+                    "after_fvg_confirmation_candle_close"
+                    if fvg_status["required"]
+                    else "normal_two_stage_entry"
+                ),
                 "stop_basis": "second_green_high",
                 "target_basis": "entry_minus_11r",
                 "fvg_confirmation": {
-                    "required": self._require_fvg_confirmation(),
-                    "side": fvg["side"] if fvg is not None else None,
-                    "first_index": fvg["first_index"] if fvg is not None else None,
-                    "middle_index": fvg["middle_index"] if fvg is not None else None,
-                    "end_index": fvg["end_index"] if fvg is not None else None,
-                    "lower": fvg["lower"] if fvg is not None else None,
-                    "upper": fvg["upper"] if fvg is not None else None,
-                    "gap_pct": fvg["gap_pct"] if fvg is not None else None,
-                    "retest_index": second_green_index,
-                    "confirmation_index": entry_index,
-                    "retest_rule": "second_green_or_entry_touches_bearish_fvg",
-                    "respect_rule": "no_close_above_fvg_upper_before_entry",
-                    "continuation_rule": "entry_red_closes_below_second_green_low_and_fvg_lower",
+                    "required": fvg_status["required"],
+                    "mode": fvg_status["mode"],
+                    "confirmed": fvg_status["confirmed"],
+                    "side": fvg_status["side"],
+                    "first_index": fvg_status["first_index"],
+                    "middle_index": fvg_status["middle_index"],
+                    "end_index": fvg_status["end_index"],
+                    "lower": fvg_status["lower"],
+                    "upper": fvg_status["upper"],
+                    "gap_pct": fvg_status["gap_pct"],
+                    "retest_index": fvg_status["retest_index"],
+                    "confirmation_index": fvg_status["confirmation_index"],
+                    "failure_reason": fvg_status["failure_reason"],
+                    "retest_rule": "when_bearish_fvg_forms_price_must_touch_the_fvg_zone",
+                    "respect_rule": "no_close_above_bearish_fvg_upper_before_confirmation",
+                    "continuation_rule": "confirmation_candle_closes_red_below_fvg_zone_or_retest_low",
                 },
                 "candle_1_guard": "pre_alert_candles_stay_inside_candle_1_range",
                 "structure_guard": "alert_high",
@@ -600,11 +692,11 @@ export function buildTwoStageCandleBreakoutFvgConfirmationTemplateConfig(): Reco
     compiledCodeDefinition: TWO_STAGE_CANDLE_BREAKOUT_FVG_CONFIRMATION_PYTHON_CODE,
     market: 'crypto-futures',
     entryLogic:
-      'Buy: red candle 1, then zero or more internal candles that stay inside Candle 1 range. The alert is the first green candle that does not break Candle 1 low and closes above Candle 1 high. Alert displacement must leave a bullish FVG. After the alert, no candle may break the alert low before entry. Any later red pullback may form; the red pullback or entry candle must retest the bullish FVG, no candle may close below the FVG lower bound, and the first green after that red pullback must not break that red low and must close above both the red pullback high and FVG upper bound. Entry is at the green midpoint. Candle 1 freshness is intentionally not used and same-direction continuation before pullback is allowed.',
+      'Buy: red candle 1, then zero or more internal candles that stay inside Candle 1 range. The alert is the first green candle that does not break Candle 1 low and closes above Candle 1 high. After the alert, no candle may break the alert low before entry. Any later red pullback may form; the first green after that red pullback must not break that red low. FVG is not mandatory, but if a bullish FVG forms anywhere from Candle 1 through the planned entry window, price must touch/respect that FVG and a bullish confirmation candle must close before the entry plan is emitted. Candle 1 freshness is intentionally not used and same-direction continuation before pullback is allowed.',
     exitLogic:
       'Long exit is managed by dynamic second-red stop, 1:11 target, and custom SL ladder: 4R locks 1R, 9R locks 4R, 11R locks 9R.',
     entryShortLogic:
-      'Sell: green candle 1, then zero or more internal candles that stay inside Candle 1 range. The alert is the first red candle that does not break Candle 1 high and closes below Candle 1 low. Alert displacement must leave a bearish FVG. After the alert, no candle may break the alert high before entry. Any later green pullback may form; the green pullback or entry candle must retest the bearish FVG, no candle may close above the FVG upper bound, and the first red after that green pullback must not break that green high and must close below both the green pullback low and FVG lower bound. Entry is at the red midpoint. Candle 1 freshness is intentionally not used and same-direction continuation before pullback is allowed.',
+      'Sell: green candle 1, then zero or more internal candles that stay inside Candle 1 range. The alert is the first red candle that does not break Candle 1 high and closes below Candle 1 low. After the alert, no candle may break the alert high before entry. Any later green pullback may form; the first red after that green pullback must not break that green high. FVG is not mandatory, but if a bearish FVG forms anywhere from Candle 1 through the planned entry window, price must touch/respect that FVG and a bearish confirmation candle must close before the entry plan is emitted. Candle 1 freshness is intentionally not used and same-direction continuation before pullback is allowed.',
     exitShortLogic:
       'Short exit is managed by dynamic second-green stop, 1:11 target, and custom SL ladder: 4R locks 1R, 9R locks 4R, 11R locks 9R.',
     shortEnabled: true,
@@ -619,7 +711,7 @@ export function buildTwoStageCandleBreakoutFvgConfirmationTemplateConfig(): Reco
       riskRewardRatio: 11,
       risk_reward_ratio: 11,
       sizingNotes:
-        'Per-trade stop and target are emitted by the Python entry plan: long entry at second green midpoint with stop buffered below second red low, short entry at second red midpoint with stop buffered above second green high, pre-alert internal candles must stay inside Candle 1 range, post-alert candles cannot break the alert low/high before entry, and FVG confirmation must pass touch/respect/continuation rules before entry. Target is 11R. Custom R ladder moves SL to +1R at +4R, +4R at +9R, and +9R at +11R.',
+        'Per-trade stop and target are emitted by the Python entry plan: long entry at the green midpoint after the candle-2 guard and conditional FVG confirmation check, short entry at the red midpoint after the candle-2 guard and conditional FVG confirmation check, pre-alert internal candles must stay inside Candle 1 range, and post-alert candles cannot break the alert low/high before entry. FVG is not mandatory, but when it forms it must confirm before entry. Target is 11R. Custom R ladder moves SL to +1R at +4R, +4R at +9R, and +9R at +11R.',
     },
     parameters: {
       signalThreshold: '0.65',
@@ -628,8 +720,10 @@ export function buildTwoStageCandleBreakoutFvgConfirmationTemplateConfig(): Reco
       reward_r: 11,
       stopBufferPct: 0.0005,
       stop_buffer_pct: 0.0005,
-      requireFvgConfirmation: true,
-      require_fvg_confirmation: true,
+      requireFvgConfirmation: false,
+      require_fvg_confirmation: false,
+      confirmFvgWhenPresent: true,
+      confirm_fvg_when_present: true,
       fvgMinGapPct: 0,
       fvg_min_gap_pct: 0,
       fvgRetestRequiresCloseRespect: true,
@@ -665,7 +759,7 @@ export function buildTwoStageCandleBreakoutFvgConfirmationTemplateConfig(): Reco
       paperTradeFirst: true,
     },
     notes:
-      'Signals require closed candles. Candle 1 and alert do not need to be immediate; any candles between them must stay inside Candle 1 high/low until the alert break-and-close. Candle 1 freshness is intentionally disabled. FVG confirmation is required by default: buy setups need a bullish FVG formed into the alert, a post-alert retest into the zone, no close below the FVG lower bound, and an entry green close above the pullback high plus FVG upper bound; sell setups use the exact opposite bearish FVG rules. After alert, same-direction continuation before pullback is allowed and the alert high/low guard remains active until entry. For buy, any post-alert candle that breaks alert low cancels the setup; for sell, any post-alert candle that breaks alert high cancels the setup. Once a pullback exists, the first opposite-color candidate must pass the candle-2 and FVG continuation guards or the setup is cancelled. Default stop buffer is 0.05% beyond candle 2. SL ladder: at 4R move SL to 1R, at 9R move SL to 4R, and at 11R move SL to 9R.',
+      'Signals require closed candles. Candle 1 and alert do not need to be immediate; any candles between them must stay inside Candle 1 high/low until the alert break-and-close. Candle 1 freshness is intentionally disabled. FVG is not mandatory: if no same-side FVG forms between Candle 1 and the planned entry window, the normal two-stage entry can fire. If a bullish/bearish FVG does form in that window, the setup waits until price touches and respects the FVG zone and a same-side confirmation candle closes; only then is entry planned. After alert, same-direction continuation before pullback is allowed and the alert high/low guard remains active until entry. For buy, any post-alert candle that breaks alert low cancels the setup; for sell, any post-alert candle that breaks alert high cancels the setup. Once a pullback exists, the first opposite-color candidate must pass the candle-2 guard or the setup is cancelled unless it is only waiting for FVG confirmation. Default stop buffer is 0.05% beyond candle 2. SL ladder: at 4R move SL to 1R, at 9R move SL to 4R, and at 11R move SL to 9R.',
     description: TWO_STAGE_CANDLE_BREAKOUT_FVG_CONFIRMATION_TEMPLATE_DESCRIPTION,
   };
 
