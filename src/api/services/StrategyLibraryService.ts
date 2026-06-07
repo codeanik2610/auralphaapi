@@ -44,6 +44,9 @@ import { OperationalEventService } from './OperationalEventService';
 
 @Service()
 export class StrategyLibraryService {
+  private static readonly BACKTEST_PARAMETER_MAX_LENGTH = 255;
+  private static readonly PARAMETER_ASSET_PREVIEW_LIMIT = 5;
+
   @Inject(() => StrategyLibraryRepository)
   private strategyLibraryRepository!: StrategyLibraryRepository;
 
@@ -476,13 +479,13 @@ export class StrategyLibraryService {
       const runAssets = this.normalizeRunAssets(resolvedAssets);
       const symbol =
         resolvedAssets.length > 1 ? 'Multi-asset' : rawSymbol || assetSymbols[0] || 'Unknown';
-      const parameterAssetLabel =
-        resolvedAssets.length > 1 ? assetSymbols.join(', ') || symbol : symbol;
+      const parameterAssetLabel = this.buildRunParameterAssetLabel(assetSymbols, symbol);
       const strategyName = template?.name || record.name;
       const parameterParts = [record.name, parameterAssetLabel];
       if (resolvedTimeframes.length) {
         parameterParts.push(resolvedTimeframes.join(', '));
       }
+      const parameter = this.truncateBacktestParameter(parameterParts.join(' | '));
       const templateSnapshot = template
         ? {
             id: template.id,
@@ -536,7 +539,7 @@ export class StrategyLibraryService {
         name: record.name,
         strategy: strategyName,
         symbol,
-        parameter: parameterParts.join(' | '),
+        parameter,
         status: 'Queued',
         config: {
           source: 'strategy_library',
@@ -640,6 +643,28 @@ export class StrategyLibraryService {
     }
 
     return normalized;
+  }
+
+  private buildRunParameterAssetLabel(assetSymbols: string[], fallbackSymbol: string): string {
+    if (assetSymbols.length <= 1) {
+      return fallbackSymbol;
+    }
+
+    const preview = assetSymbols
+      .slice(0, StrategyLibraryService.PARAMETER_ASSET_PREVIEW_LIMIT)
+      .join(', ');
+    const suffix =
+      assetSymbols.length > StrategyLibraryService.PARAMETER_ASSET_PREVIEW_LIMIT ? ', ...' : '';
+    return `${assetSymbols.length} assets${preview ? `: ${preview}${suffix}` : ''}`;
+  }
+
+  private truncateBacktestParameter(parameter: string): string {
+    const normalized = parameter.trim();
+    if (normalized.length <= StrategyLibraryService.BACKTEST_PARAMETER_MAX_LENGTH) {
+      return normalized;
+    }
+
+    return `${normalized.slice(0, StrategyLibraryService.BACKTEST_PARAMETER_MAX_LENGTH - 3)}...`;
   }
 
   private mapLibrary(

@@ -1187,6 +1187,26 @@ async function runStrategyLibraryBacktestSnapshotAssertions(): Promise<void> {
   assert.deepEqual(config?.overrides, { maxPositions: 5, market: 'crypto-spot' });
   assert.equal(config?.start, '2026-02-01T00:00:00.000Z');
   assert.equal(config?.end, '2026-04-01T23:59:59.999Z');
+
+  await service.runLibraryStrategy('user-1', 'library-1', {
+    assets: Array.from({ length: 60 }, (_unused, index) => ({
+      id: String(index + 1),
+      label: `Long descriptive exchange asset label ${index + 1}`,
+      symbol: `ASSET${index + 1}USDT`,
+      brokerKey: 'paper',
+    })),
+    timeframes: ['1h'],
+    start: '2026-02-01',
+    end: '2026-04-01',
+  });
+
+  assert.equal(queuedPayloads.length, 2);
+  const largeRunPayload = queuedPayloads[1] as Record<string, unknown>;
+  const largeRunConfig = largeRunPayload.config as Record<string, unknown>;
+  assert.equal(String(largeRunPayload.parameter || '').length <= 255, true);
+  assert.match(String(largeRunPayload.parameter || ''), /60 assets: ASSET1USDT/);
+  assert.equal((largeRunConfig.assets as unknown[]).length, 60);
+  assert.equal(largeRunConfig.assetCount, 60);
 }
 
 async function runStrategyLibraryLifecycleGuardAssertions(): Promise<void> {
