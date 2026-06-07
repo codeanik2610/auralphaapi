@@ -192,8 +192,8 @@ assert.equal(twoStageProfile.tradePlan.long?.stopLossMode, 'dynamic_second_stage
 assert.equal(twoStageProfile.tradePlan.short?.stopLossMode, 'dynamic_second_stage_candle');
 assert.equal(twoStageProfile.tradePlan.long?.takeProfitMode, 'dynamic_r_multiple');
 assert.equal(twoStageProfile.tradePlan.short?.takeProfitMode, 'dynamic_r_multiple');
-assert.equal(twoStageProfile.tradePlan.long?.riskRewardRatio, 11);
-assert.equal(twoStageProfile.tradePlan.short?.riskRewardRatio, 11);
+assert.equal(twoStageProfile.tradePlan.long?.riskRewardRatio, 4);
+assert.equal(twoStageProfile.tradePlan.short?.riskRewardRatio, 4);
 assert.deepEqual(twoStageProfile.tradePlan.long?.takeProfitTargetsPct, []);
 assert.equal(twoStageProfile.execution.useClosedCandlesOnly, true);
 assert.equal(twoStageProfile.execution.evaluationTimeframe, 'automation');
@@ -201,12 +201,10 @@ assert.equal(twoStageProfile.tradeManagement?.trailingStop?.mode, 'custom_r_ladd
 assert.equal(twoStageProfile.tradeManagement?.trailingStop?.basis, 'actual_fill');
 assert.equal(twoStageProfile.tradeManagement?.trailingStop?.timeframe, '1m');
 assert.deepEqual(twoStageProfile.tradeManagement?.trailingStop?.rules, [
-  { whenProfitR: 4, moveStopToR: 1 },
-  { whenProfitR: 9, moveStopToR: 4 },
-  { whenProfitR: 11, moveStopToR: 9 },
+  { whenProfitR: 2, moveStopToR: 0 },
 ]);
-assert.equal(twoStageRisk.riskRewardRatio, 11);
-assert.equal(twoStageParameters.rewardR, 11);
+assert.equal(twoStageRisk.riskRewardRatio, 4);
+assert.equal(twoStageParameters.rewardR, 4);
 assert.equal(twoStageParameters.stopBufferPct, 0.0005);
 assert.equal(twoStageParameters.stop_buffer_pct, 0.0005);
 assert.match(String(twoStageConfig.entryLogic || ''), /red candle 1/);
@@ -245,10 +243,10 @@ assert.match(
 );
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
-  /class TwoStageCandleBreakout11Ladder\(Strategy\):/
+  /class TwoStageCandleBreakout4BELadder\(Strategy\):/
 );
-assert.match(String(twoStageConfig.codeDefinition || ''), /"reward_r": 11/);
-assert.match(String(twoStageConfig.codeDefinition || ''), /"risk_reward_ratio": 11/);
+assert.match(String(twoStageConfig.codeDefinition || ''), /"reward_r": 4/);
+assert.match(String(twoStageConfig.codeDefinition || ''), /"risk_reward_ratio": 4/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /"stop_buffer_pct": 0\.0005/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
@@ -298,7 +296,7 @@ sys.modules["auralpha"] = auralpha
 
 namespace = {}
 exec(sys.stdin.read(), namespace)
-StrategyClass = namespace["TwoStageCandleBreakout11Ladder"]
+StrategyClass = namespace["TwoStageCandleBreakout4BELadder"]
 
 class FakeSeries:
     def __init__(self, values):
