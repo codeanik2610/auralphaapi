@@ -2543,7 +2543,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
       blockSameSideDuplicate: true,
       requireFreshSignal: true,
     };
-    const closedOppositePositions: Array<Record<string, unknown>> = [];
+    const closedCloseThenOpenPositions: Array<Record<string, unknown>> = [];
     service.positionReadModelRepository = {
       async listLivePositionsForAccounts() {
         return new Map([
@@ -2575,7 +2575,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
         brokerKey?: string,
         accountId?: string
       ) {
-        closedOppositePositions.push({ positionId, userId, brokerKey, accountId });
+        closedCloseThenOpenPositions.push({ positionId, userId, brokerKey, accountId });
         return { success: true };
       },
     };
@@ -2600,7 +2600,7 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
     );
     assert.equal(oppositeAllowed.outcome, 'working', JSON.stringify(oppositeAllowed));
     assert.equal(oppositeAllowed.orderId, 'live-order-opposite');
-    assert.deepEqual(closedOppositePositions, [
+    assert.deepEqual(closedCloseThenOpenPositions, [
       {
         positionId: 'short-pos-1',
         userId: 'user-1',
@@ -2609,6 +2609,62 @@ async function runSuggestedTradeLiveAutoRolloutAssertions(): Promise<void> {
       },
     ]);
     assert.ok(loggedActivities.includes('Live auto opposite exposure closed: SOLUSDC'));
+
+    service.positionReadModelRepository = {
+      async listLivePositionsForAccounts() {
+        return new Map([
+          [
+            'acc-1',
+            [
+              {
+                externalId: 'long-pos-1',
+                brokerKey: 'mudrex',
+                accountId: 'acc-1',
+                symbol: 'SOLUSDT',
+                sideKey: 'long',
+                quantity: 2,
+              },
+            ],
+          ],
+        ]);
+      },
+    };
+
+    const sameSideRefreshed = await service.attemptAutoLiveExecutionForAutomation(
+      'user-1',
+      'st-live-auto',
+      {
+        async createOrder(assetId: string, body: Record<string, unknown>) {
+          assert.equal(assetId, 'mudrex-asset-1');
+          assert.equal(body.symbol, 'SOLUSDC');
+          assert.equal(body.side, 'long');
+          return {
+            success: true,
+            data: {
+              order_id: 'live-order-same-side-refresh',
+              status: 'OPEN',
+            },
+          };
+        },
+      }
+    );
+    assert.equal(sameSideRefreshed.outcome, 'working', JSON.stringify(sameSideRefreshed));
+    assert.equal(sameSideRefreshed.orderId, 'live-order-same-side-refresh');
+    assert.deepEqual(closedCloseThenOpenPositions, [
+      {
+        positionId: 'short-pos-1',
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+      },
+      {
+        positionId: 'long-pos-1',
+        userId: 'user-1',
+        brokerKey: 'mudrex',
+        accountId: 'acc-1',
+      },
+    ]);
+    assert.ok(loggedActivities.includes('Live auto same-side exposure closed: SOLUSDC'));
     oppositeSignalPolicy = {
       enabled: false,
       mode: 'skip',

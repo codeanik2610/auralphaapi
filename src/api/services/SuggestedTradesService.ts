@@ -2579,6 +2579,16 @@ export class SuggestedTradesService {
       if (!policy.blockSameSideDuplicate) {
         return { action: 'none' };
       }
+      if (policy.enabled && policy.mode === 'close_then_open') {
+        if (!exposure.positionId || !exposure.brokerKey || !exposure.accountId) {
+          return {
+            action: 'skip',
+            message: `Active ${exposure.sideKey} exposure exists for asset ${exposure.assetKey}, but it could not be refreshed automatically because broker/account/position context is incomplete.`,
+            exposure,
+          };
+        }
+        return { action: 'close_then_open', exposure };
+      }
       return {
         action: 'skip',
         message: `Active ${exposure.sideKey} exposure already exists for asset ${exposure.assetKey}; skipping same-side live-auto suggestion.`,
@@ -2608,7 +2618,7 @@ export class SuggestedTradesService {
     return { action: 'none' };
   }
 
-  private async prepareLiveAutoOppositeExposureAction(
+  private async prepareLiveAutoCloseThenOpenExposureAction(
     userId: string,
     trade: SuggestedTrade,
     decision: LiveAutoDuplicateAssetDecision
@@ -2621,16 +2631,21 @@ export class SuggestedTradesService {
     const positionId = this.readStringValue(exposure?.positionId);
     const brokerKey = this.readStringValue(exposure?.brokerKey)?.toLowerCase();
     const accountId = this.readStringValue(exposure?.accountId);
+    const tradeSideKey = this.normalizeTradeSideKey(trade.side);
+    const relation =
+      exposure?.sideKey && tradeSideKey && exposure.sideKey === tradeSideKey
+        ? 'same-side'
+        : 'opposite';
     if (!positionId || !brokerKey || !accountId) {
       return {
         ready: false,
-        message: `Opposite exposure exists for ${trade.symbol}, but broker/account/position context is incomplete.`,
+        message: `${relation === 'same-side' ? 'Same-side' : 'Opposite'} exposure exists for ${trade.symbol}, but broker/account/position context is incomplete.`,
       };
     }
     if (typeof this.brokerPositionsFacadeService?.closePosition !== 'function') {
       return {
         ready: false,
-        message: `Opposite exposure exists for ${trade.symbol}, but automatic close-before-open is unavailable.`,
+        message: `${relation === 'same-side' ? 'Same-side' : 'Opposite'} exposure exists for ${trade.symbol}, but automatic close-before-open is unavailable.`,
       };
     }
 
@@ -2641,10 +2656,10 @@ export class SuggestedTradesService {
         brokerKey,
         accountId
       );
-      const description = `Closed opposite ${exposure?.sideKey ?? 'side'} exposure ${positionId} before routing ${trade.side} live-auto suggestion for ${trade.symbol}.`;
+      const description = `Closed ${relation} ${exposure?.sideKey ?? 'side'} exposure ${positionId} before routing ${trade.side} live-auto suggestion for ${trade.symbol}.`;
       await this.operationalEventService.logActivity(userId, {
         type: 'Suggested Trade',
-        title: `Live auto opposite exposure closed: ${trade.symbol}`,
+        title: `Live auto ${relation} exposure closed: ${trade.symbol}`,
         status: 'Success',
         route: 'Suggested Trades',
         stream: 'Execution',
@@ -2655,10 +2670,10 @@ export class SuggestedTradesService {
       });
       return { ready: true };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to close opposite exposure';
+      const message = error instanceof Error ? error.message : 'Failed to close exposure';
       return {
         ready: false,
-        message: `Failed to close opposite exposure for ${trade.symbol} before live-auto routing: ${message}`,
+        message: `Failed to close ${relation} exposure for ${trade.symbol} before live-auto routing: ${message}`,
       };
     }
   }
@@ -3678,27 +3693,32 @@ export class SuggestedTradesService {
       };
     }
 
-    const oppositeExposureReady = await this.prepareLiveAutoOppositeExposureAction(
+    const closeThenOpenExposureReady = await this.prepareLiveAutoCloseThenOpenExposureAction(
       userId,
       trade,
       duplicateAssetDecision
     );
-    if (!oppositeExposureReady.ready) {
+    if (!closeThenOpenExposureReady.ready) {
+      const duplicateExposureRelation =
+        duplicateAssetDecision.exposure?.sideKey &&
+        this.normalizeTradeSideKey(trade.side) === duplicateAssetDecision.exposure.sideKey
+          ? 'same-side'
+          : 'opposite';
       await this.operationalEventService.logActivity(userId, {
         type: 'Suggested Trade',
-        title: `Live auto opposite exposure blocked: ${trade.symbol}`,
+        title: `Live auto ${duplicateExposureRelation} exposure blocked: ${trade.symbol}`,
         status: 'Warning',
         route: 'Suggested Trades',
         stream: 'Execution',
         related: `${trade.symbol} · ${trade.timeframe}`,
         referenceId: trade.id,
         symbol: trade.symbol,
-        description: oppositeExposureReady.message,
+        description: closeThenOpenExposureReady.message,
       });
 
       return {
         outcome: 'blocked',
-        message: oppositeExposureReady.message,
+        message: closeThenOpenExposureReady.message,
         suggestedTradeId: trade.id,
         brokerKey: rolloutGuard.brokerKey,
         accountId: rolloutGuard.accountId,
