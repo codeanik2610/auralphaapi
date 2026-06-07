@@ -1146,8 +1146,18 @@ async function runStrategyLibraryBacktestSnapshotAssertions(): Promise<void> {
 
   const response = await service.runLibraryStrategy('user-1', 'library-1', {
     assets: [
-      { symbol: 'ETHUSDT', brokerKey: 'paper' },
-      { symbol: 'SOLUSDT', brokerKey: 'paper' },
+      {
+        id: '3136',
+        label: 'Ethereum Perpetual futures, quoted, settled & margined in US Dollar',
+        symbol: 'ETHUSDT',
+        brokerKey: 'paper',
+      },
+      {
+        id: '14823',
+        label: 'Solana perpetual future quoted in USD',
+        symbol: 'SOLUSDT',
+        brokerKey: 'paper',
+      },
     ],
     timeframes: ['4h'],
     overrides: { maxPositions: 5, market: 'crypto-spot' },
@@ -1169,9 +1179,10 @@ async function runStrategyLibraryBacktestSnapshotAssertions(): Promise<void> {
   assert.equal(config?.templateVersion, 8);
   assert.equal(config?.market, 'crypto-spot');
   assert.deepEqual(config?.assets, [
-    { symbol: 'ETHUSDT', brokerKey: 'paper' },
-    { symbol: 'SOLUSDT', brokerKey: 'paper' },
+    { id: '3136', symbol: 'ETHUSDT', brokerKey: 'paper' },
+    { id: '14823', symbol: 'SOLUSDT', brokerKey: 'paper' },
   ]);
+  assert.equal(config?.assetCount, 2);
   assert.deepEqual(config?.timeframes, ['4h']);
   assert.deepEqual(config?.overrides, { maxPositions: 5, market: 'crypto-spot' });
   assert.equal(config?.start, '2026-02-01T00:00:00.000Z');

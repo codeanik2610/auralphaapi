@@ -473,6 +473,7 @@ export class StrategyLibraryService {
       const assetSymbols = resolvedAssets
         .map((asset) => String(asset?.symbol || asset?.label || asset?.id || '').trim())
         .filter(Boolean);
+      const runAssets = this.normalizeRunAssets(resolvedAssets);
       const symbol =
         resolvedAssets.length > 1 ? 'Multi-asset' : rawSymbol || assetSymbols[0] || 'Unknown';
       const parameterAssetLabel =
@@ -520,7 +521,8 @@ export class StrategyLibraryService {
         templateVersion: Number(template?.templateVersion || 1),
         template: templateSnapshot,
         market: resolvedMarket,
-        assets: resolvedAssets,
+        assets: runAssets,
+        assetCount: runAssets.length,
         timeframes: resolvedTimeframes,
         overrides: resolvedOverrides,
         start: resolvedStart ?? null,
@@ -548,7 +550,8 @@ export class StrategyLibraryService {
           templateVersion: Number(template?.templateVersion || 1),
           template: templateSnapshot,
           market: resolvedMarket,
-          assets: resolvedAssets,
+          assets: runAssets,
+          assetCount: runAssets.length,
           timeframes: resolvedTimeframes,
           overrides: resolvedOverrides,
           start: resolvedStart ?? null,
@@ -608,6 +611,35 @@ export class StrategyLibraryService {
       records.map((record) => record.templateId)
     );
     return new Map(templates.map((template) => [template.id, template]));
+  }
+
+  private normalizeRunAssets(assets: StrategyLibraryRunBody['assets']): Record<string, unknown>[] {
+    if (!Array.isArray(assets)) {
+      return [];
+    }
+
+    const normalized: Record<string, unknown>[] = [];
+    for (const asset of assets) {
+      if (!asset || typeof asset !== 'object') {
+        continue;
+      }
+      const record = asset as Record<string, unknown>;
+      const id = String(record.id ?? '').trim();
+      const symbol = String(record.symbol ?? record.label ?? record.id ?? '').trim();
+      const brokerKey = String(record.brokerKey ?? '').trim();
+
+      if (!symbol) {
+        continue;
+      }
+
+      normalized.push({
+        ...(id ? { id } : {}),
+        symbol,
+        ...(brokerKey ? { brokerKey } : {}),
+      });
+    }
+
+    return normalized;
   }
 
   private mapLibrary(

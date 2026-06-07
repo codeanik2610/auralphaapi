@@ -640,7 +640,7 @@ export class BacktestRepository {
 
     await this.backtestResultRepository.save(result);
 
-    return this.getBacktestById(userId, savedBacktest.id) as Promise<Backtest>;
+    return savedBacktest;
   }
 
   async updateBacktestResult(
