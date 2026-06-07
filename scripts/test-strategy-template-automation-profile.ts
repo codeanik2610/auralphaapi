@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { buildDisplacementPullbackContinuationTemplateConfig } from '../src/api/strategies/templates/DisplacementPullbackContinuationTemplate';
+import { buildFvgFakeoutContinuationTemplateConfig } from '../src/api/strategies/templates/FvgFakeoutContinuationTemplate';
 import { buildTwoStageCandleBreakoutFvgConfirmationTemplateConfig } from '../src/api/strategies/templates/TwoStageCandleBreakoutFvgConfirmationTemplate';
 import { buildTwoStageCandleBreakoutTemplateConfig } from '../src/api/strategies/templates/TwoStageCandleBreakoutTemplate';
 import { buildStrategyTemplateAutomationProfile } from '../src/api/utils/strategyTemplateAutomation';
@@ -877,6 +878,161 @@ assert.equal(displacementBehavior.longPattern, 'bullish_visual_trend_pullback_lo
 assert.deepEqual(displacementBehavior.longPullback, [7]);
 assert.equal(displacementBehavior.localBreakoutShortEntry, true);
 assert.equal(displacementBehavior.localBreakoutLongEntry, true);
+
+const fvgFakeoutConfig = buildFvgFakeoutContinuationTemplateConfig();
+const fvgFakeoutProfile = buildStrategyTemplateAutomationProfile(fvgFakeoutConfig);
+const fvgFakeoutRisk = fvgFakeoutConfig.risk as Record<string, unknown>;
+const fvgFakeoutParameters = fvgFakeoutConfig.parameters as Record<string, unknown>;
+
+assert.equal(fvgFakeoutProfile.automationReady, true);
+assert.deepEqual(fvgFakeoutProfile.supports, {
+  long: true,
+  short: true,
+  customPython: true,
+  ruleBased: false,
+});
+assert.equal(fvgFakeoutProfile.tradePlan.long?.stopLossMode, 'dynamic_fvg_fakeout_extreme');
+assert.equal(fvgFakeoutProfile.tradePlan.short?.stopLossMode, 'dynamic_fvg_fakeout_extreme');
+assert.equal(fvgFakeoutProfile.tradePlan.long?.takeProfitMode, 'dynamic_r_multiple');
+assert.equal(fvgFakeoutProfile.tradePlan.short?.takeProfitMode, 'dynamic_r_multiple');
+assert.equal(fvgFakeoutProfile.tradePlan.long?.riskRewardRatio, 4);
+assert.equal(fvgFakeoutProfile.tradePlan.short?.riskRewardRatio, 4);
+assert.equal(fvgFakeoutProfile.execution.useClosedCandlesOnly, true);
+assert.equal(fvgFakeoutProfile.tradeManagement?.trailingStop?.mode, 'custom_r_ladder');
+assert.deepEqual(fvgFakeoutProfile.tradeManagement?.trailingStop?.rules, [
+  { whenProfitR: 2, moveStopToR: 0 },
+]);
+assert.equal(fvgFakeoutRisk.riskRewardRatio, 4);
+assert.equal(fvgFakeoutParameters.rewardR, 4);
+assert.equal(fvgFakeoutParameters.minCompressionBars, 2);
+assert.equal(fvgFakeoutParameters.maxEntryBarsAfterSweep, 4);
+assert.match(String(fvgFakeoutConfig.entryLogic || ''), /fake-break below compression low/);
+assert.match(String(fvgFakeoutConfig.entryShortLogic || ''), /fake-break above compression high/);
+assert.match(
+  String(fvgFakeoutConfig.codeDefinition || ''),
+  /class FvgFakeoutContinuation\(Strategy\):/
+);
+assert.match(String(fvgFakeoutConfig.codeDefinition || ''), /def _bullish_fvg\(self, df, index\):/);
+assert.match(String(fvgFakeoutConfig.codeDefinition || ''), /def _bearish_fvg\(self, df, index\):/);
+assert.match(
+  String(fvgFakeoutConfig.codeDefinition || ''),
+  /def _valid_long_sweep_rejection\(self, df, sweep_index, compression_low, fvg\):/
+);
+assert.match(
+  String(fvgFakeoutConfig.codeDefinition || ''),
+  /def _valid_short_sweep_rejection\(self, df, sweep_index, compression_high, fvg\):/
+);
+
+const fvgFakeoutBehaviorHarness = String.raw`
+import json
+import sys
+import types
+
+auralpha = types.ModuleType("auralpha")
+
+class Strategy:
+    pass
+
+auralpha.Strategy = Strategy
+sys.modules["auralpha"] = auralpha
+
+namespace = {}
+exec(sys.stdin.read(), namespace)
+StrategyClass = namespace["FvgFakeoutContinuation"]
+
+class FakeSeries:
+    def __init__(self, values):
+        self.values = values
+        self.iloc = self
+
+    def __getitem__(self, index):
+        return self.values[index]
+
+class FakeFrame:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __contains__(self, key):
+        return key in self.rows[0]
+
+    def __getitem__(self, key):
+        return FakeSeries([row[key] for row in self.rows])
+
+def run(rows):
+    strategy = StrategyClass()
+    df = FakeFrame(rows)
+    strategy.prepare(df)
+    return {
+        "long_signals": strategy._long_signals,
+        "short_signals": strategy._short_signals,
+        "long_plans": strategy._long_plans,
+        "short_plans": strategy._short_plans,
+    }
+
+long_setup = run([
+    {"open": 98.5, "high": 100.0, "low": 97.0, "close": 99.0},
+    {"open": 99.0, "high": 100.5, "low": 98.5, "close": 99.5},
+    {"open": 101.2, "high": 104.0, "low": 101.0, "close": 103.8},
+    {"open": 103.6, "high": 103.9, "low": 102.8, "close": 103.2},
+    {"open": 103.1, "high": 103.5, "low": 102.6, "close": 103.3},
+    {"open": 103.2, "high": 103.4, "low": 100.5, "close": 102.8},
+    {"open": 102.9, "high": 104.5, "low": 102.7, "close": 104.2},
+])
+
+short_setup = run([
+    {"open": 102.0, "high": 103.0, "low": 101.0, "close": 102.2},
+    {"open": 102.2, "high": 102.5, "low": 101.0, "close": 101.8},
+    {"open": 99.5, "high": 100.0, "low": 96.5, "close": 97.0},
+    {"open": 97.2, "high": 98.2, "low": 96.8, "close": 97.8},
+    {"open": 97.8, "high": 98.4, "low": 97.0, "close": 97.5},
+    {"open": 97.6, "high": 100.5, "low": 97.4, "close": 98.1},
+    {"open": 98.0, "high": 98.2, "low": 96.0, "close": 96.5},
+])
+
+print(json.dumps({
+    "longEntry": long_setup["long_signals"][6],
+    "longPattern": long_setup["long_plans"][6]["metadata"]["pattern"],
+    "longFvgSide": long_setup["long_plans"][6]["metadata"]["fvg"]["side"],
+    "longStopBasis": long_setup["long_plans"][6]["metadata"]["stop_basis"],
+    "shortEntry": short_setup["short_signals"][6],
+    "shortPattern": short_setup["short_plans"][6]["metadata"]["pattern"],
+    "shortFvgSide": short_setup["short_plans"][6]["metadata"]["fvg"]["side"],
+    "shortStopBasis": short_setup["short_plans"][6]["metadata"]["stop_basis"],
+}))
+`;
+
+const fvgFakeoutBehaviorResult = spawnSync('python3', ['-c', fvgFakeoutBehaviorHarness], {
+  input: String(fvgFakeoutConfig.codeDefinition || ''),
+  encoding: 'utf8',
+});
+assert.equal(
+  fvgFakeoutBehaviorResult.status,
+  0,
+  fvgFakeoutBehaviorResult.stderr ||
+    fvgFakeoutBehaviorResult.stdout ||
+    'FVG fakeout continuation Python behavior harness failed'
+);
+const fvgFakeoutBehavior = JSON.parse(fvgFakeoutBehaviorResult.stdout) as Record<
+  string,
+  unknown
+>;
+assert.equal(fvgFakeoutBehavior.longEntry, true);
+assert.equal(
+  fvgFakeoutBehavior.longPattern,
+  'bullish_displacement_compression_fakeout_fvg_rejection_continuation'
+);
+assert.equal(fvgFakeoutBehavior.longFvgSide, 'bullish');
+assert.equal(fvgFakeoutBehavior.longStopBasis, 'fake_breakout_low_buffered');
+assert.equal(fvgFakeoutBehavior.shortEntry, true);
+assert.equal(
+  fvgFakeoutBehavior.shortPattern,
+  'bearish_displacement_compression_fakeout_fvg_rejection_continuation'
+);
+assert.equal(fvgFakeoutBehavior.shortFvgSide, 'bearish');
+assert.equal(fvgFakeoutBehavior.shortStopBasis, 'fake_breakout_high_buffered');
 
 const first60Report = simulateFirst60TemplateProfile(
   first60Managed,
