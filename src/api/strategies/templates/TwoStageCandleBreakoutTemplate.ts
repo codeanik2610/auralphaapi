@@ -9,7 +9,7 @@ export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_LEGACY_NAMES = [
 ] as const;
 
 export const TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION =
-  'Loose red/green or green/red pullback flow. Internal candles are allowed between Candle 1 and alert as long as they stay inside Candle 1 range. Entry is on the pullback confirmation candle midpoint, inside entry candles are allowed, but no candle may break the alert low/high before entry. Stop is buffered beyond the second setup candle, target is 1:4, and the SL ladder moves to cost-to-cost at 2R.';
+  'Loose red/green or green/red pullback flow. Internal candles are allowed between Candle 1 and alert as long as they stay inside Candle 1 range. Entry is on the pullback confirmation candle midpoint, inside entry candles are allowed, but no candle may break the alert low/high before entry. Same-side FVG in the last 3 completed candles blocks the setup. Stop is buffered beyond the second setup candle, target is 1:4, and the SL ladder moves to cost-to-cost at 2R.';
 
 export const TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE = String.raw`from auralpha import Strategy
 
@@ -22,6 +22,8 @@ class TwoStageCandleBreakout4BELadder(Strategy):
     params = {
         "reward_r": 4,
         "stop_buffer_pct": 0.0005,
+        "block_recent_side_fvg": True,
+        "recent_fvg_lookback_candles": 3,
     }
 
     risk = {
@@ -122,6 +124,45 @@ class TwoStageCandleBreakout4BELadder(Strategy):
         if value < 0:
             return 0.0
         return value
+
+    def _block_recent_side_fvg(self):
+        return bool(self.params.get("block_recent_side_fvg", True))
+
+    def _recent_fvg_lookback_candles(self):
+        value = int(float(self.params.get("recent_fvg_lookback_candles", 3)))
+        if value <= 0:
+            return 3
+        return value
+
+    def _bullish_fvg_at(self, df, index):
+        if index < 2:
+            return False
+        return self._high(df, index - 2) < self._low(df, index)
+
+    def _bearish_fvg_at(self, df, index):
+        if index < 2:
+            return False
+        return self._low(df, index - 2) > self._high(df, index)
+
+    def _has_recent_bullish_fvg(self, df, entry_index):
+        if not self._block_recent_side_fvg():
+            return False
+        lookback = self._recent_fvg_lookback_candles()
+        start_index = max(2, entry_index - lookback + 1)
+        for scan_index in range(start_index, entry_index + 1):
+            if self._bullish_fvg_at(df, scan_index):
+                return True
+        return False
+
+    def _has_recent_bearish_fvg(self, df, entry_index):
+        if not self._block_recent_side_fvg():
+            return False
+        lookback = self._recent_fvg_lookback_candles()
+        start_index = max(2, entry_index - lookback + 1)
+        for scan_index in range(start_index, entry_index + 1):
+            if self._bearish_fvg_at(df, scan_index):
+                return True
+        return False
 
     def _find_long_alert(self, df, first_red_index):
         first_red_low = self._low(df, first_red_index)
@@ -286,6 +327,9 @@ class TwoStageCandleBreakout4BELadder(Strategy):
         second_red_index,
         pre_alert_inside_indexes,
     ):
+        if self._has_recent_bullish_fvg(df, entry_index):
+            return False
+
         entry_price = self._mid(df, entry_index)
         stop_loss_price = self._low(df, second_red_index) * (1.0 - self._stop_buffer_pct())
         risk_distance = entry_price - stop_loss_price
@@ -314,6 +358,12 @@ class TwoStageCandleBreakout4BELadder(Strategy):
                 "candle_1_guard": "pre_alert_candles_stay_inside_candle_1_range",
                 "structure_guard": "alert_low",
                 "post_alert_guard": "no_candle_breaks_alert_low_before_entry",
+                "recent_side_fvg_filter": {
+                    "enabled": self._block_recent_side_fvg(),
+                    "side": "bullish",
+                    "lookback_candles": self._recent_fvg_lookback_candles(),
+                    "rule": "reject_buy_when_bullish_fvg_exists_in_recent_completed_candles",
+                },
                 "alert_low": self._low(df, alert_index),
                 "setup_markers": [
                     self._setup_marker(
@@ -344,6 +394,9 @@ class TwoStageCandleBreakout4BELadder(Strategy):
         second_green_index,
         pre_alert_inside_indexes,
     ):
+        if self._has_recent_bearish_fvg(df, entry_index):
+            return False
+
         entry_price = self._mid(df, entry_index)
         stop_loss_price = self._high(df, second_green_index) * (1.0 + self._stop_buffer_pct())
         risk_distance = stop_loss_price - entry_price
@@ -372,6 +425,12 @@ class TwoStageCandleBreakout4BELadder(Strategy):
                 "candle_1_guard": "pre_alert_candles_stay_inside_candle_1_range",
                 "structure_guard": "alert_high",
                 "post_alert_guard": "no_candle_breaks_alert_high_before_entry",
+                "recent_side_fvg_filter": {
+                    "enabled": self._block_recent_side_fvg(),
+                    "side": "bearish",
+                    "lookback_candles": self._recent_fvg_lookback_candles(),
+                    "rule": "reject_sell_when_bearish_fvg_exists_in_recent_completed_candles",
+                },
                 "alert_high": self._high(df, alert_index),
                 "setup_markers": [
                     self._setup_marker(
@@ -404,11 +463,11 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
     compiledCodeDefinition: TWO_STAGE_CANDLE_BREAKOUT_PYTHON_CODE,
     market: 'crypto-futures',
     entryLogic:
-      'Buy: red candle 1, then zero or more internal candles that stay inside Candle 1 range. The alert is the first green candle that does not break Candle 1 low and closes above Candle 1 high. After the alert, no candle may break the alert low before entry. Any later red pullback may form; the first green after that red pullback must not break that red low and triggers entry at the green midpoint. Entry candles may be inside the alert candle. Candle 1 freshness is intentionally not used and same-direction continuation before pullback is allowed.',
+      'Buy: red candle 1, then zero or more internal candles that stay inside Candle 1 range. The alert is the first green candle that does not break Candle 1 low and closes above Candle 1 high. After the alert, no candle may break the alert low before entry. Any later red pullback may form; the first green after that red pullback must not break that red low and triggers entry at the green midpoint. Entry candles may be inside the alert candle. Candle 1 freshness is intentionally not used and same-direction continuation before pullback is allowed. Reject the buy if a bullish FVG exists in the last 3 completed candles up to the entry candle.',
     exitLogic:
       'Long exit is managed by dynamic second-red stop, 1:4 target, and custom SL ladder: 2R moves SL to cost-to-cost.',
     entryShortLogic:
-      'Sell: green candle 1, then zero or more internal candles that stay inside Candle 1 range. The alert is the first red candle that does not break Candle 1 high and closes below Candle 1 low. After the alert, no candle may break the alert high before entry. Any later green pullback may form; the first red after that green pullback must not break that green high and triggers entry at the red midpoint. Entry candles may be inside the alert candle. Candle 1 freshness is intentionally not used and same-direction continuation before pullback is allowed.',
+      'Sell: green candle 1, then zero or more internal candles that stay inside Candle 1 range. The alert is the first red candle that does not break Candle 1 high and closes below Candle 1 low. After the alert, no candle may break the alert high before entry. Any later green pullback may form; the first red after that green pullback must not break that green high and triggers entry at the red midpoint. Entry candles may be inside the alert candle. Candle 1 freshness is intentionally not used and same-direction continuation before pullback is allowed. Reject the sell if a bearish FVG exists in the last 3 completed candles up to the entry candle.',
     exitShortLogic:
       'Short exit is managed by dynamic second-green stop, 1:4 target, and custom SL ladder: 2R moves SL to cost-to-cost.',
     shortEnabled: true,
@@ -423,7 +482,7 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       riskRewardRatio: 4,
       risk_reward_ratio: 4,
       sizingNotes:
-        'Per-trade stop and target are emitted by the Python entry plan: long entry at second green midpoint with stop buffered below second red low, short entry at second red midpoint with stop buffered above second green high, pre-alert internal candles must stay inside Candle 1 range, inside entry candles are allowed, post-alert candles cannot break the alert low/high before entry, target at 4R. Custom R ladder moves SL to cost-to-cost at +2R.',
+        'Per-trade stop and target are emitted by the Python entry plan: long entry at second green midpoint with stop buffered below second red low, short entry at second red midpoint with stop buffered above second green high, pre-alert internal candles must stay inside Candle 1 range, inside entry candles are allowed, post-alert candles cannot break the alert low/high before entry, and same-side FVG in the last 3 completed candles blocks entry. Target at 4R. Custom R ladder moves SL to cost-to-cost at +2R.',
     },
     parameters: {
       signalThreshold: '0.65',
@@ -432,6 +491,10 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       reward_r: 4,
       stopBufferPct: 0.0005,
       stop_buffer_pct: 0.0005,
+      blockRecentSideFvg: true,
+      block_recent_side_fvg: true,
+      recentFvgLookbackCandles: 3,
+      recent_fvg_lookback_candles: 3,
     },
     tradeManagement: {
       trailingStop: {
@@ -440,9 +503,7 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
         basis: 'actual_fill',
         timeframe: '1m',
         updateOnlyInProfitDirection: true,
-        rules: [
-          { whenProfitR: 2, moveStopToR: 0 },
-        ],
+        rules: [{ whenProfitR: 2, moveStopToR: 0 }],
       },
     },
     automation: {
@@ -459,7 +520,7 @@ export function buildTwoStageCandleBreakoutTemplateConfig(): Record<string, unkn
       paperTradeFirst: true,
     },
     notes:
-      'Signals require closed candles. Candle 1 and alert do not need to be immediate; any candles between them must stay inside Candle 1 high/low until the alert break-and-close. Candle 1 freshness is intentionally disabled. After alert, same-direction continuation before pullback is allowed, inside entry candles are allowed, and the alert high/low guard remains active until entry. For buy, any post-alert candle that breaks alert low cancels the setup; for sell, any post-alert candle that breaks alert high cancels the setup. Once a pullback exists, the first opposite-color candidate must pass the candle-2 guard or the setup is cancelled. The old four-candle setup remains valid as the fastest case. Default stop buffer is 0.05% beyond candle 2. Target is 1:4. SL ladder: at 2R move SL to cost-to-cost.',
+      'Signals require closed candles. Candle 1 and alert do not need to be immediate; any candles between them must stay inside Candle 1 high/low until the alert break-and-close. Candle 1 freshness is intentionally disabled. After alert, same-direction continuation before pullback is allowed, inside entry candles are allowed, and the alert high/low guard remains active until entry. For buy, any post-alert candle that breaks alert low cancels the setup; for sell, any post-alert candle that breaks alert high cancels the setup. Once a pullback exists, the first opposite-color candidate must pass the candle-2 guard or the setup is cancelled. Same-side FVG in the last 3 completed candles up to entry blocks the signal: bullish FVG blocks buy, bearish FVG blocks sell. The old four-candle setup remains valid as the fastest case when it passes that FVG filter. Default stop buffer is 0.05% beyond candle 2. Target is 1:4. SL ladder: at 2R move SL to cost-to-cost.',
     description: TWO_STAGE_CANDLE_BREAKOUT_TEMPLATE_DESCRIPTION,
   };
 

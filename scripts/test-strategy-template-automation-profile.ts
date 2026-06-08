@@ -249,6 +249,8 @@ assert.match(
 assert.match(String(twoStageConfig.codeDefinition || ''), /"reward_r": 4/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /"risk_reward_ratio": 4/);
 assert.match(String(twoStageConfig.codeDefinition || ''), /"stop_buffer_pct": 0\.0005/);
+assert.match(String(twoStageConfig.codeDefinition || ''), /"block_recent_side_fvg": True/);
+assert.match(String(twoStageConfig.codeDefinition || ''), /"recent_fvg_lookback_candles": 3/);
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /def _find_long_alert\(self, df, first_red_index\):/
@@ -272,6 +274,14 @@ assert.match(
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /"candle_1_guard": "pre_alert_candles_stay_inside_candle_1_range"/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /def _has_recent_bullish_fvg\(self, df, entry_index\):/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /def _has_recent_bearish_fvg\(self, df, entry_index\):/
 );
 assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
@@ -363,6 +373,20 @@ short_immediate = run([
     {"open": 101, "high": 102, "low": 97, "close": 98},
 ])
 
+long_recent_bullish_fvg = run([
+    {"open": 99, "high": 100, "low": 90, "close": 95},
+    {"open": 96, "high": 105, "low": 94, "close": 104},
+    {"open": 107, "high": 108, "low": 105.5, "close": 106},
+    {"open": 106.2, "high": 109, "low": 106.1, "close": 108},
+])
+
+short_recent_bearish_fvg = run([
+    {"open": 101, "high": 110, "low": 100, "close": 108},
+    {"open": 104, "high": 109, "low": 95, "close": 96},
+    {"open": 91, "high": 94.5, "low": 90, "close": 93},
+    {"open": 93, "high": 94, "low": 88, "close": 89},
+])
+
 print(json.dumps({
     "longInsideEntry": long_with_inside["long_signals"][5],
     "longInsidePreAlert": long_with_inside["long_plans"][5]["metadata"]["pre_alert_inside_indexes"],
@@ -370,6 +394,10 @@ print(json.dumps({
     "shortInsidePreAlert": short_with_inside["short_plans"][5]["metadata"]["pre_alert_inside_indexes"],
     "longImmediateEntry": long_immediate["long_signals"][3],
     "shortImmediateEntry": short_immediate["short_signals"][3],
+    "longImmediateFvgLookback": long_immediate["long_plans"][3]["metadata"]["recent_side_fvg_filter"]["lookback_candles"],
+    "shortImmediateFvgLookback": short_immediate["short_plans"][3]["metadata"]["recent_side_fvg_filter"]["lookback_candles"],
+    "longRecentBullishFvgBlocked": any(long_recent_bullish_fvg["long_signals"]),
+    "shortRecentBearishFvgBlocked": any(short_recent_bearish_fvg["short_signals"]),
 }))
 `;
 
@@ -389,6 +417,10 @@ assert.equal(behavior.shortInsideEntry, true);
 assert.deepEqual(behavior.shortInsidePreAlert, [1, 2]);
 assert.equal(behavior.longImmediateEntry, true);
 assert.equal(behavior.shortImmediateEntry, true);
+assert.equal(behavior.longImmediateFvgLookback, 3);
+assert.equal(behavior.shortImmediateFvgLookback, 3);
+assert.equal(behavior.longRecentBullishFvgBlocked, false);
+assert.equal(behavior.shortRecentBearishFvgBlocked, false);
 assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
   /if first_green_index > 0 and self\._is_green\(df, first_green_index - 1\):/
@@ -455,6 +487,14 @@ assert.match(
 assert.match(
   String(twoStageConfig.codeDefinition || ''),
   /"post_alert_guard": "no_candle_breaks_alert_high_before_entry"/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /"rule": "reject_buy_when_bullish_fvg_exists_in_recent_completed_candles"/
+);
+assert.match(
+  String(twoStageConfig.codeDefinition || ''),
+  /"rule": "reject_sell_when_bearish_fvg_exists_in_recent_completed_candles"/
 );
 assert.doesNotMatch(
   String(twoStageConfig.codeDefinition || ''),
@@ -1015,10 +1055,7 @@ assert.equal(
     fvgFakeoutBehaviorResult.stdout ||
     'FVG fakeout continuation Python behavior harness failed'
 );
-const fvgFakeoutBehavior = JSON.parse(fvgFakeoutBehaviorResult.stdout) as Record<
-  string,
-  unknown
->;
+const fvgFakeoutBehavior = JSON.parse(fvgFakeoutBehaviorResult.stdout) as Record<string, unknown>;
 assert.equal(fvgFakeoutBehavior.longEntry, true);
 assert.equal(
   fvgFakeoutBehavior.longPattern,
