@@ -52,6 +52,7 @@ import {
   SuggestedTradeRepository,
 } from '../../database';
 import { coreDataSource } from '../../database/data-source';
+import { strategyDataSource } from '../../database/pg-data-source';
 import { SuggestedTrade } from '../../database';
 import { BrokerRuntimeRegistry } from '../../brokers/core/BrokerRuntimeRegistry';
 import { env } from '../../env';
@@ -504,6 +505,24 @@ interface LivePositionSnapshot {
   firstSeenAt: Date | string | null;
   lastSeenAt: Date | string | null;
   payload: Record<string, unknown> | null;
+}
+
+interface LiveTrailingStopMarketExtreme {
+  source: 'market_candles_1m';
+  symbol: string;
+  price: number;
+  openTime: string | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  from: string;
+  to: string;
+}
+
+interface LiveTrailingStopEvaluationPrice {
+  price: number;
+  source: 'broker_position_snapshot' | 'market_candle_extreme';
+  marketExtreme: LiveTrailingStopMarketExtreme | null;
 }
 
 type MudrexTrailingStopRiskOrderVerificationResult =
@@ -10339,12 +10358,26 @@ export class SuggestedTradesService {
       return execution;
     }
 
+    const marketExtreme = await this.resolveLiveTrailingStopMarketExtreme({
+      trade,
+      execution,
+      position,
+      payload,
+      side,
+      brokerKey,
+    });
+    const evaluationPrice = this.resolveLiveTrailingStopEvaluationPrice({
+      side,
+      brokerCurrentPrice: currentPrice,
+      marketExtreme,
+    });
+
     const move = evaluateCustomRLadderTrailingStopMove({
       side,
       config,
       entryPrice,
       originalStopLossPrice,
-      currentPrice,
+      currentPrice: evaluationPrice.price,
       currentStopLossPrice,
       peakProfitR,
       lastAppliedWhenProfitR,
@@ -10358,7 +10391,7 @@ export class SuggestedTradesService {
         nowIso,
         move.reason,
         move.profitR,
-        currentPrice,
+        evaluationPrice.price,
         currentStopLossPrice,
         brokerKey === 'mudrex'
           ? this.buildMudrexTrailingStopAudit({
@@ -10374,7 +10407,10 @@ export class SuggestedTradesService {
               originalStopLossPrice,
               currentStopLossPrice,
               takeProfitPrice,
-              currentPrice,
+              currentPrice: evaluationPrice.price,
+              brokerCurrentPrice: currentPrice,
+              evaluationPriceSource: evaluationPrice.source,
+              marketExtreme: evaluationPrice.marketExtreme,
               profitR: move.profitR,
               peakProfitR:
                 typeof peakProfitR === 'number' && Number.isFinite(peakProfitR)
@@ -10404,7 +10440,10 @@ export class SuggestedTradesService {
             originalStopLossPrice,
             currentStopLossPrice,
             takeProfitPrice,
-            currentPrice,
+            currentPrice: evaluationPrice.price,
+            brokerCurrentPrice: currentPrice,
+            evaluationPriceSource: evaluationPrice.source,
+            marketExtreme: evaluationPrice.marketExtreme,
             profitR: move.profitR,
             peakProfitR: move.peakProfitR,
             targetStopLossPrice: move.targetStopLossPrice,
@@ -10438,7 +10477,10 @@ export class SuggestedTradesService {
               originalStopLossPrice,
               currentStopLossPrice,
               takeProfitPrice,
-              currentPrice,
+              currentPrice: evaluationPrice.price,
+              brokerCurrentPrice: currentPrice,
+              evaluationPriceSource: evaluationPrice.source,
+              marketExtreme: evaluationPrice.marketExtreme,
               profitR: move.profitR,
               peakProfitR: move.peakProfitR,
               targetStopLossPrice: move.targetStopLossPrice,
@@ -10481,7 +10523,10 @@ export class SuggestedTradesService {
               originalStopLossPrice,
               currentStopLossPrice,
               takeProfitPrice,
-              currentPrice,
+              currentPrice: evaluationPrice.price,
+              brokerCurrentPrice: currentPrice,
+              evaluationPriceSource: evaluationPrice.source,
+              marketExtreme: evaluationPrice.marketExtreme,
               profitR: move.profitR,
               peakProfitR: move.peakProfitR,
               targetStopLossPrice: move.targetStopLossPrice,
@@ -10518,7 +10563,10 @@ export class SuggestedTradesService {
               originalStopLossPrice,
               currentStopLossPrice,
               takeProfitPrice,
-              currentPrice,
+              currentPrice: evaluationPrice.price,
+              brokerCurrentPrice: currentPrice,
+              evaluationPriceSource: evaluationPrice.source,
+              marketExtreme: evaluationPrice.marketExtreme,
               profitR: move.profitR,
               peakProfitR: move.peakProfitR,
               targetStopLossPrice: move.targetStopLossPrice,
@@ -10551,7 +10599,10 @@ export class SuggestedTradesService {
               originalStopLossPrice,
               currentStopLossPrice,
               takeProfitPrice,
-              currentPrice,
+              currentPrice: evaluationPrice.price,
+              brokerCurrentPrice: currentPrice,
+              evaluationPriceSource: evaluationPrice.source,
+              marketExtreme: evaluationPrice.marketExtreme,
               profitR: move.profitR,
               peakProfitR: move.peakProfitR,
               targetStopLossPrice: move.targetStopLossPrice,
@@ -10655,7 +10706,7 @@ export class SuggestedTradesService {
           config,
           nowIso,
           move.profitR,
-          currentPrice,
+          evaluationPrice.price,
           currentStopLossPrice
         );
       }
@@ -10693,7 +10744,10 @@ export class SuggestedTradesService {
               originalStopLossPrice,
               currentStopLossPrice: verification.stopLossPrice ?? currentStopLossPrice,
               takeProfitPrice: verification.takeProfitPrice ?? takeProfitPrice,
-              currentPrice,
+              currentPrice: evaluationPrice.price,
+              brokerCurrentPrice: currentPrice,
+              evaluationPriceSource: evaluationPrice.source,
+              marketExtreme: evaluationPrice.marketExtreme,
               profitR: move.profitR,
               peakProfitR: move.peakProfitR,
               targetStopLossPrice: move.targetStopLossPrice,
@@ -10757,7 +10811,10 @@ export class SuggestedTradesService {
             originalStopLossPrice,
             currentStopLossPrice: verification.stopLossPrice ?? currentStopLossPrice,
             takeProfitPrice: verification.takeProfitPrice ?? takeProfitPrice,
-            currentPrice,
+            currentPrice: evaluationPrice.price,
+            brokerCurrentPrice: currentPrice,
+            evaluationPriceSource: evaluationPrice.source,
+            marketExtreme: evaluationPrice.marketExtreme,
             profitR: move.profitR,
             peakProfitR: move.peakProfitR,
             targetStopLossPrice: move.targetStopLossPrice,
@@ -10825,7 +10882,10 @@ export class SuggestedTradesService {
             originalStopLossPrice,
             currentStopLossPrice,
             takeProfitPrice,
-            currentPrice,
+            currentPrice: evaluationPrice.price,
+            brokerCurrentPrice: currentPrice,
+            evaluationPriceSource: evaluationPrice.source,
+            marketExtreme: evaluationPrice.marketExtreme,
             profitR: move.profitR,
             peakProfitR: move.peakProfitR,
             targetStopLossPrice: move.targetStopLossPrice,
@@ -10843,7 +10903,10 @@ export class SuggestedTradesService {
       lastAppliedWhenProfitR: move.rule.whenProfitR,
       lastMoveStopToR: move.lockedProfitR,
       lastStopLossPrice: appliedStopLossPrice,
-      lastCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
+      lastCurrentPrice: this.formatNumericString(evaluationPrice.price) ?? evaluationPrice.price,
+      lastBrokerCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
+      lastEvaluationPriceSource: evaluationPrice.source,
+      lastMarketExtreme: evaluationPrice.marketExtreme,
       lastProfitR: Number(move.profitR.toFixed(6)),
       peakProfitR: Number(move.peakProfitR.toFixed(6)),
       lastCheckedAt: nowIso,
@@ -10871,7 +10934,10 @@ export class SuggestedTradesService {
               }
             : {}),
           stopLossPrice: appliedStopLossPrice,
-          currentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
+          currentPrice: this.formatNumericString(evaluationPrice.price) ?? evaluationPrice.price,
+          brokerCurrentPrice: this.formatNumericString(currentPrice) ?? currentPrice,
+          evaluationPriceSource: evaluationPrice.source,
+          marketExtreme: evaluationPrice.marketExtreme,
           profitR: Number(move.profitR.toFixed(6)),
           positionId: riskOrderPositionId,
           stopLossOrderId: appliedStopLossOrderId,
@@ -12180,6 +12246,182 @@ export class SuggestedTradesService {
       : move.targetStopLossPrice < currentPrice;
   }
 
+  private resolveLiveTrailingStopEvaluationPrice(input: {
+    side: 'long' | 'short';
+    brokerCurrentPrice: number;
+    marketExtreme: LiveTrailingStopMarketExtreme | null;
+  }): LiveTrailingStopEvaluationPrice {
+    const marketPrice = input.marketExtreme?.price;
+    if (
+      typeof marketPrice === 'number' &&
+      Number.isFinite(marketPrice) &&
+      ((input.side === 'short' && marketPrice < input.brokerCurrentPrice) ||
+        (input.side === 'long' && marketPrice > input.brokerCurrentPrice))
+    ) {
+      return {
+        price: marketPrice,
+        source: 'market_candle_extreme',
+        marketExtreme: input.marketExtreme,
+      };
+    }
+
+    return {
+      price: input.brokerCurrentPrice,
+      source: 'broker_position_snapshot',
+      marketExtreme: input.marketExtreme,
+    };
+  }
+
+  private async resolveLiveTrailingStopMarketExtreme(input: {
+    trade: SuggestedTrade;
+    execution: SuggestedTradeExecutionLink;
+    position: LivePositionSnapshot;
+    payload: Record<string, unknown>;
+    side: 'long' | 'short';
+    brokerKey: string | null;
+  }): Promise<LiveTrailingStopMarketExtreme | null> {
+    if (!env.pg.enabled) {
+      return null;
+    }
+
+    const startTime = this.resolveLiveTrailingStopMarketWindowStart(
+      input.trade,
+      input.execution,
+      input.position,
+      input.payload
+    );
+    if (!startTime) {
+      return null;
+    }
+
+    const endTime = new Date();
+    if (startTime.getTime() > endTime.getTime()) {
+      return null;
+    }
+
+    const rawSymbol =
+      this.readStringValue(input.trade.symbol) ??
+      this.extractBrokerRecordSymbol(input.payload) ??
+      this.readStringValue(input.payload.symbol);
+    const symbols = this.buildLiveTrailingStopMarketSymbolCandidates(rawSymbol, input.brokerKey);
+    if (!symbols.length) {
+      return null;
+    }
+
+    try {
+      if (!strategyDataSource.isInitialized) {
+        await strategyDataSource.initialize();
+      }
+      const orderBy = input.side === 'short' ? 'low ASC' : 'high DESC';
+      const rows = (await strategyDataSource.query(
+        `SELECT symbol,
+                open_time AS "openTime",
+                high,
+                low,
+                close
+           FROM market_candles_1m
+          WHERE symbol = ANY($1::text[])
+            AND open_time BETWEEN $2 AND $3
+          ORDER BY ${orderBy}, open_time ASC
+          LIMIT 1`,
+        [symbols, startTime, endTime]
+      )) as Array<Record<string, unknown>>;
+      const row = rows[0];
+      if (!row) {
+        return null;
+      }
+
+      const high = this.readNumberValue(row.high);
+      const low = this.readNumberValue(row.low);
+      const close = this.readNumberValue(row.close);
+      const price = input.side === 'short' ? low : high;
+      if (!(price && price > 0)) {
+        return null;
+      }
+
+      return {
+        source: 'market_candles_1m',
+        symbol:
+          this.readStringValue(row.symbol)?.toUpperCase() ??
+          symbols[0],
+        price,
+        openTime: this.toIsoString(row.openTime ?? row.open_time),
+        high,
+        low,
+        close,
+        from: startTime.toISOString(),
+        to: endTime.toISOString(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveLiveTrailingStopMarketWindowStart(
+    trade: SuggestedTrade,
+    execution: SuggestedTradeExecutionLink,
+    position: LivePositionSnapshot,
+    payload: Record<string, unknown>
+  ): Date | null {
+    const timestamps = [
+      this.toTimestamp(execution.positionOpenedAt),
+      this.toTimestamp(execution.filledAt),
+      this.toTimestamp(payload.position_opened_at),
+      this.toTimestamp(payload.positionOpenedAt),
+      this.toTimestamp(payload.opened_at),
+      this.toTimestamp(payload.openedAt),
+      this.toTimestamp(payload.open_time),
+      this.toTimestamp(payload.openTime),
+      this.toTimestamp(payload.created_at),
+      this.toTimestamp(payload.createdAt),
+      this.toTimestamp(position.firstSeenAt),
+      this.toTimestamp(trade.signalTime),
+    ];
+    const timestamp = timestamps.find((value) => value > 0) ?? 0;
+    if (!timestamp) {
+      return null;
+    }
+
+    return new Date(Math.floor(timestamp / 60_000) * 60_000);
+  }
+
+  private buildLiveTrailingStopMarketSymbolCandidates(
+    value: unknown,
+    brokerKey: string | null
+  ): string[] {
+    const normalized = String(value || '')
+      .trim()
+      .toUpperCase();
+    if (!normalized) {
+      return [];
+    }
+
+    const candidates = new Set<string>([
+      ...this.buildEquivalentLiveAutoSymbols(normalized, brokerKey ?? undefined),
+      normalized,
+    ]);
+    if (normalized.endsWith('USD') && !normalized.endsWith('USDT')) {
+      candidates.add(`${normalized.slice(0, -3)}USDT`);
+    }
+    if (
+      normalized.endsWith('USDC') ||
+      normalized.endsWith('BUSD') ||
+      normalized.endsWith('FDUSD')
+    ) {
+      candidates.add(`${normalized.replace(/(USDC|BUSD|FDUSD)$/u, '')}USDT`);
+    }
+    if (
+      /^[A-Z0-9]{2,20}$/u.test(normalized) &&
+      !['USDT', 'USDC', 'BUSD', 'FDUSD', 'USD', 'INR', 'BTC', 'ETH'].some((quote) =>
+        normalized.endsWith(quote)
+      )
+    ) {
+      candidates.add(`${normalized}USDT`);
+    }
+
+    return Array.from(candidates);
+  }
+
   private buildMudrexTrailingStopAudit(input: {
     nowIso: string;
     trade: SuggestedTrade;
@@ -12194,6 +12436,9 @@ export class SuggestedTradesService {
     currentStopLossPrice?: number | null;
     takeProfitPrice?: number | null;
     currentPrice?: number | null;
+    brokerCurrentPrice?: number | null;
+    evaluationPriceSource?: LiveTrailingStopEvaluationPrice['source'] | null;
+    marketExtreme?: LiveTrailingStopMarketExtreme | null;
     profitR?: number | null;
     peakProfitR?: number | null;
     targetStopLossPrice?: number | null;
@@ -12245,6 +12490,17 @@ export class SuggestedTradesService {
         currentBrokerStopLossPrice: this.formatTrailingStopAuditNumber(input.currentStopLossPrice),
         takeProfitPrice: this.formatTrailingStopAuditNumber(input.takeProfitPrice),
         currentPrice: this.formatTrailingStopAuditNumber(input.currentPrice),
+        brokerCurrentPrice: this.formatTrailingStopAuditNumber(input.brokerCurrentPrice),
+        evaluationPriceSource: input.evaluationPriceSource ?? null,
+        marketExtreme: input.marketExtreme
+          ? {
+              ...input.marketExtreme,
+              price: this.formatTrailingStopAuditNumber(input.marketExtreme.price),
+              high: this.formatTrailingStopAuditNumber(input.marketExtreme.high),
+              low: this.formatTrailingStopAuditNumber(input.marketExtreme.low),
+              close: this.formatTrailingStopAuditNumber(input.marketExtreme.close),
+            }
+          : null,
         profitR: this.roundTrailingStopAuditRatio(input.profitR),
         peakProfitR: this.roundTrailingStopAuditRatio(input.peakProfitR),
       },

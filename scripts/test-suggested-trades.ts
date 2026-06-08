@@ -14149,6 +14149,158 @@ async function runCustomRLadderTrailingStopAssertions(): Promise<void> {
     templateOnlyLadderConfig.rules
   );
 
+  const deltaCandleExtremeService = new SuggestedTradesService() as any;
+  deltaCandleExtremeService.strategyTemplateRepository = service.strategyTemplateRepository;
+  deltaCandleExtremeService.isProtectionRepairEnabledForBroker = () => true;
+  deltaCandleExtremeService.waitForLiveAutoLifecycleMonitorPoll = async () => undefined;
+  deltaCandleExtremeService.resolveLiveTrailingStopMarketExtreme = async (
+    input: Record<string, unknown>
+  ) => {
+    assert.equal(input.side, 'short');
+    return {
+      source: 'market_candles_1m',
+      symbol: 'TONUSDT',
+      price: 89.5,
+      openTime: '2026-05-19T07:04:00.000Z',
+      high: 100.2,
+      low: 89.5,
+      close: 90,
+      from: '2026-05-19T07:00:00.000Z',
+      to: '2026-05-19T07:05:00.000Z',
+    };
+  };
+  deltaCandleExtremeService.resolveLiveProtectionOrderContext = async () => ({
+    stopLossOrderId: 'delta-sl-candle-extreme',
+    takeProfitOrderId: 'delta-tp-candle-extreme',
+    stopLossStatus: 'OPEN',
+    takeProfitStatus: 'OPEN',
+    activeOrderIds: ['delta-sl-candle-extreme', 'delta-tp-candle-extreme'],
+    orderDetails: {
+      'delta-sl-candle-extreme': {
+        status: 'OPEN',
+        quantity: 10,
+        remainingQuantity: 10,
+        stopPrice: 105,
+        stopOrderType: 'stop_loss_order',
+      },
+      'delta-tp-candle-extreme': {
+        status: 'OPEN',
+        quantity: 10,
+        remainingQuantity: 10,
+        stopPrice: 70,
+        stopOrderType: 'take_profit_order',
+      },
+    },
+  });
+  deltaCandleExtremeService.resolveLiveAutoAssetRoute = async () => ({
+    assetId: 'delta-asset-candle-extreme',
+    brokerSymbol: 'TONUSD',
+    candidateSymbols: ['TONUSDT'],
+  });
+  deltaCandleExtremeService.operationalEventService = {
+    async logActivity() {
+      return undefined;
+    },
+  };
+  deltaCandleExtremeService.ordersSnapshotSourceRepository = {
+    async upsertOrderSnapshots() {
+      return { inserted: 0, updated: 0, skipped: 0, orderIds: [] };
+    },
+  };
+  let deltaCandleExtremeRiskOrder: Record<string, unknown> | null = null;
+  deltaCandleExtremeService.brokerRuntimeRegistry = {
+    getPositionsAdapter() {
+      return {
+        async updateRiskOrder(
+          positionId: string,
+          body: Record<string, unknown>,
+          context?: Record<string, unknown>
+        ) {
+          deltaCandleExtremeRiskOrder = { positionId, body, context };
+          return {
+            status: 'updated',
+            stop_loss_order_id: 'delta-sl-candle-extreme-replacement',
+            take_profit_order_id: 'delta-tp-candle-extreme',
+            stoploss_price: '99',
+            takeprofit_price: '70',
+          };
+        },
+      };
+    },
+  };
+  const deltaCandleExtremeExecution =
+    await deltaCandleExtremeService.maybeApplyLiveTrailingStop(
+      'user-1',
+      {
+        id: 'trade-delta-candle-extreme-1',
+        sourceTemplateId: 'template-ema5',
+        symbol: 'TONUSDT',
+        side: 'SELL',
+        timeframe: '15m',
+        stopLossPrice: '105',
+        takeProfitTargets: ['70'],
+        signalTime: new Date('2026-05-19T07:00:00.000Z'),
+        meta: {},
+      },
+      {
+        executionMode: 'live',
+        brokerKey: 'delta_exchange',
+        accountId: 'delta-account-candle-extreme',
+        orderId: 'delta-entry-candle-extreme',
+        orderStatus: 'FILLED',
+        executionState: 'filled',
+        protectionState: 'attached',
+        entryPrice: '100',
+        stopLossPrice: '105',
+        takeProfitPrice: '70',
+        quantity: 10,
+        filledAt: '2026-05-19T07:00:30.000Z',
+        protectionPlan: {
+          protectionMode: 'native_bracket',
+          stopLossOrderId: 'delta-sl-candle-extreme',
+          takeProfitOrderId: 'delta-tp-candle-extreme',
+          stopLossPrice: '105',
+          attachedStopLossPrice: '105',
+          attachedTakeProfitPrice: '70',
+        },
+      },
+      [
+        {
+          externalId: 'delta-position-candle-extreme',
+          status: 'OPEN',
+          statusRank: 1,
+          firstSeenAt: '2026-05-19T07:00:30.000Z',
+          lastSeenAt: '2026-05-19T07:05:00.000Z',
+          payload: {
+            id: 'delta-position-candle-extreme',
+            symbol: 'TONUSD',
+            side: 'short',
+            status: 'open',
+            entry_price: '100',
+            current_price: '98.9',
+            stoploss_price: '105',
+            takeprofit_price: '70',
+            quantity: '10',
+            created_at: '2026-05-19T07:00:30.000Z',
+            updated_at: '2026-05-19T07:05:00.000Z',
+          },
+        },
+      ]
+    );
+  assert.ok(
+    deltaCandleExtremeRiskOrder,
+    'Delta trailing ladder should update from favorable candle extreme even when broker price has snapped back.'
+  );
+  const deltaCandleExtremeBody = (deltaCandleExtremeRiskOrder as { body: Record<string, unknown> })
+    .body;
+  assert.equal(deltaCandleExtremeBody.stoploss_price, 99);
+  const deltaCandleExtremeTrailing = (
+    deltaCandleExtremeExecution.protectionPlan as Record<string, any>
+  ).trailingStop;
+  assert.equal(deltaCandleExtremeTrailing.lastEvaluationPriceSource, 'market_candle_extreme');
+  assert.equal(deltaCandleExtremeTrailing.lastBrokerCurrentPrice, '98.9');
+  assert.equal(deltaCandleExtremeTrailing.lastMarketExtreme.price, 89.5);
+
   const deltaPartialProtectionService = new SuggestedTradesService() as any;
   deltaPartialProtectionService.strategyTemplateRepository = service.strategyTemplateRepository;
   deltaPartialProtectionService.isProtectionRepairEnabledForBroker = () => true;
