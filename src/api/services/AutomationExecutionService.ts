@@ -896,8 +896,6 @@ export class AutomationExecutionService {
           TRADE_SUGGESTION_EXECUTION_LIMIT_RULES.maxOrdersPerRun.fallback
       )
     );
-    const autoExecutionBatchSlots = new Set<string>();
-
     const candleSettings = this.resolveTradeSuggestionCandleSettings(config);
     const signalSelectionMode = this.resolveTradeSuggestionSignalSelectionMode(config);
     const cursorReplayCandles = this.resolveTradeSuggestionCursorReplayCandles(
@@ -1215,37 +1213,16 @@ export class AutomationExecutionService {
         }
 
         if (!created.duplicate && created.item && autoPaperEnabled) {
-          const batchSlot = this.checkTradeSuggestionAutoExecutionBatchSlot(
-            autoExecutionBatchSlots,
-            {
-              timeframe,
-              side,
-              signalTime,
-            }
-          );
-          const autoExecution = batchSlot.allowed
-            ? await this.suggestedTradesService.attemptAutoPaperExecutionForAutomation(
-                automation.userId,
-                created.item.id,
-                {
-                  placedInRun: autoPaperPlaced,
-                }
-              )
-            : await this.suggestedTradesService.blockAutoExecutionForAutomation(
-                automation.userId,
-                created.item.id,
-                {
-                  executionMode: 'paper',
-                  reason: batchSlot.message,
-                }
-              );
+          const autoExecution =
+            await this.suggestedTradesService.attemptAutoPaperExecutionForAutomation(
+              automation.userId,
+              created.item.id,
+              {
+                placedInRun: autoPaperPlaced,
+              }
+            );
 
           if (autoExecution.outcome === 'placed') {
-            this.commitTradeSuggestionAutoExecutionBatchSlot(autoExecutionBatchSlots, {
-              timeframe,
-              side,
-              signalTime,
-            });
             autoPaperPlaced += 1;
           } else if (autoExecution.outcome === 'blocked') {
             autoPaperBlocked += 1;
@@ -1285,52 +1262,26 @@ export class AutomationExecutionService {
         }
 
         if (!created.duplicate && created.item && autoLiveEnabled) {
-          const batchSlot = this.checkTradeSuggestionAutoExecutionBatchSlot(
-            autoExecutionBatchSlots,
-            {
-              timeframe,
-              side,
-              signalTime,
-            }
-          );
-          const liveRollout = batchSlot.allowed
-            ? await this.suggestedTradesService.attemptAutoLiveExecutionForAutomation(
-                automation.userId,
-                created.item.id,
-                {
-                  createOrder: async (assetId, body, context) =>
-                    this.ordersService.createFuturesOrder(automation.userId, assetId, body, {
-                      suggestedTradeId: context?.suggestedTradeId ?? null,
-                    }),
-                },
-                {
-                  placedInRun: autoLivePlaced,
-                  freshnessEvaluatedAt: new Date(),
-                  currentRunFreshnessFloorSeconds: resolveDefaultFreshnessGraceSeconds(timeframe),
-                }
-              )
-            : await this.suggestedTradesService.blockAutoExecutionForAutomation(
-                automation.userId,
-                created.item.id,
-                {
-                  executionMode: 'live',
-                  reason: batchSlot.message,
-                }
-              );
+          const liveRollout =
+            await this.suggestedTradesService.attemptAutoLiveExecutionForAutomation(
+              automation.userId,
+              created.item.id,
+              {
+                createOrder: async (assetId, body, context) =>
+                  this.ordersService.createFuturesOrder(automation.userId, assetId, body, {
+                    suggestedTradeId: context?.suggestedTradeId ?? null,
+                  }),
+              },
+              {
+                placedInRun: autoLivePlaced,
+                freshnessEvaluatedAt: new Date(),
+                currentRunFreshnessFloorSeconds: resolveDefaultFreshnessGraceSeconds(timeframe),
+              }
+            );
 
           if (liveRollout.outcome === 'placed' || liveRollout.outcome === 'working') {
-            this.commitTradeSuggestionAutoExecutionBatchSlot(autoExecutionBatchSlots, {
-              timeframe,
-              side,
-              signalTime,
-            });
             autoLivePlaced += 1;
           } else if (liveRollout.outcome === 'ready') {
-            this.commitTradeSuggestionAutoExecutionBatchSlot(autoExecutionBatchSlots, {
-              timeframe,
-              side,
-              signalTime,
-            });
             autoLiveReady += 1;
           } else if (liveRollout.outcome === 'blocked') {
             autoLiveBlocked += 1;
@@ -1513,64 +1464,6 @@ export class AutomationExecutionService {
       autoLiveDisabled,
       autoLiveFailed,
     };
-  }
-
-  private buildTradeSuggestionAutoExecutionBatchSlotKey(input: {
-    timeframe: string;
-    side: string;
-    signalTime: Date;
-  }): { key: string; timeframe: string; side: string; signalTime: string } {
-    const timeframe = String(input.timeframe || '').trim() || 'unknown';
-    const side =
-      String(input.side || '')
-        .trim()
-        .toUpperCase() === 'SELL'
-        ? 'SELL'
-        : 'BUY';
-    const signalTime =
-      input.signalTime instanceof Date && !Number.isNaN(input.signalTime.getTime())
-        ? input.signalTime.toISOString()
-        : 'unknown';
-    const key = `${timeframe.toLowerCase()}:${side}:${signalTime}`;
-    return { key, timeframe, side, signalTime };
-  }
-
-  private checkTradeSuggestionAutoExecutionBatchSlot(
-    slots: Set<string>,
-    input: {
-      timeframe: string;
-      side: string;
-      signalTime: Date;
-    }
-  ):
-    | {
-        allowed: true;
-      }
-    | {
-        allowed: false;
-        message: string;
-      } {
-    const slot = this.buildTradeSuggestionAutoExecutionBatchSlotKey(input);
-
-    if (!slots.has(slot.key)) {
-      return { allowed: true };
-    }
-
-    return {
-      allowed: false,
-      message: `Auto execution blocked by batch cap: only one ${slot.side} order per ${slot.timeframe} signal batch can proceed. Another ${slot.side} suggestion already used the ${slot.signalTime} slot.`,
-    };
-  }
-
-  private commitTradeSuggestionAutoExecutionBatchSlot(
-    slots: Set<string>,
-    input: {
-      timeframe: string;
-      side: string;
-      signalTime: Date;
-    }
-  ): void {
-    slots.add(this.buildTradeSuggestionAutoExecutionBatchSlotKey(input).key);
   }
 
   private async tryQueueLiveTradeSuggestionWhatsappNotification(payload: {

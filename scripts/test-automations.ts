@@ -2386,22 +2386,22 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       );
 
       assert.equal(result.inserted, 5);
-      assert.equal(result.autoLivePlaced, 2);
-      assert.equal(result.autoLiveBlocked, 3);
-      assert.deepEqual(attemptedLiveIds, ['st-BTCUSDT-BUY', 'st-BTCUSDT-SELL']);
-      assert.deepEqual(
-        blockedLive.map((entry) => entry.suggestedTradeId),
-        ['st-ETHUSDT-BUY', 'st-ETHUSDT-SELL', 'st-SOLUSDT-BUY']
-      );
-      assert.ok(String(blockedLive[0]?.reason || '').includes('one BUY order per 5m'));
-      assert.ok(String(blockedLive[1]?.reason || '').includes('one SELL order per 5m'));
-      assert.ok(blockedLive.every((entry) => entry.executionMode === 'live'));
+      assert.equal(result.autoLivePlaced, 5);
+      assert.equal(result.autoLiveBlocked, 0);
+      assert.deepEqual(attemptedLiveIds, [
+        'st-BTCUSDT-BUY',
+        'st-BTCUSDT-SELL',
+        'st-ETHUSDT-BUY',
+        'st-ETHUSDT-SELL',
+        'st-SOLUSDT-BUY',
+      ]);
+      assert.deepEqual(blockedLive, []);
       const liveOutputs = outputs.filter(
         (output) => output.outputType === 'trade-suggestion.live-auto'
       );
       assert.equal(liveOutputs.length, 5);
-      assert.equal(liveOutputs.filter((output) => output.status === 'Created').length, 2);
-      assert.equal(liveOutputs.filter((output) => output.status === 'Blocked').length, 3);
+      assert.equal(liveOutputs.filter((output) => output.status === 'Created').length, 5);
+      assert.equal(liveOutputs.filter((output) => output.status === 'Blocked').length, 0);
     }
 
     {
@@ -2578,11 +2578,7 @@ async function runAutomationExecutionHardeningAssertions(): Promise<void> {
       assert.equal(result.autoLivePlaced, 1);
       assert.equal(result.autoLiveBlocked, 1);
       assert.equal(result.autoLiveSkipped, 1);
-      assert.deepEqual(attemptedLiveIds, [
-        'st-BTCUSDT-BUY',
-        'st-ETHUSDT-BUY',
-        'st-SOLUSDT-BUY',
-      ]);
+      assert.deepEqual(attemptedLiveIds, ['st-BTCUSDT-BUY', 'st-ETHUSDT-BUY', 'st-SOLUSDT-BUY']);
       assert.deepEqual(blockedLive, []);
       const liveOutputs = outputs.filter(
         (output) => output.outputType === 'trade-suggestion.live-auto'
