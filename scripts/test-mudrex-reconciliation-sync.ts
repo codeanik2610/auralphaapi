@@ -238,8 +238,8 @@ async function runMudrexSyncServiceAssertions(): Promise<void> {
   const result = await service.syncAccount({
     userId: 'user-1',
     accountId: 'acct-1',
-    startDate: '2026-06-08',
-    endDate: '2026-06-09',
+    startDate: '2026-06-08T10:00:00.000Z',
+    endDate: '2026-06-09T10:00:00.000Z',
     feeLimit: 2,
     maxFeePages: 2,
     orderLimit: 3,

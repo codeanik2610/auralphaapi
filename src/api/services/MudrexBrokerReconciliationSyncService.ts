@@ -198,8 +198,8 @@ export class MudrexBrokerReconciliationSyncService {
     const response = await this.ordersService.getFuturesOrderHistory(
       {
         limit: String(input.limit),
-        ...(input.startDate ? { startDate: input.startDate } : {}),
-        ...(input.endDate ? { endDate: input.endDate } : {}),
+        ...(input.startDate ? { startDate: this.toDateOnly(input.startDate) } : {}),
+        ...(input.endDate ? { endDate: this.toDateOnly(input.endDate) } : {}),
       },
       input.userId,
       input.accountId
@@ -217,8 +217,8 @@ export class MudrexBrokerReconciliationSyncService {
     const response = await this.positionsService.getPositionHistory(
       {
         limit: String(input.limit),
-        ...(input.startDate ? { startDate: input.startDate } : {}),
-        ...(input.endDate ? { endDate: input.endDate } : {}),
+        ...(input.startDate ? { startDate: this.toDateOnly(input.startDate) } : {}),
+        ...(input.endDate ? { endDate: this.toDateOnly(input.endDate) } : {}),
       },
       input.userId,
       input.accountId
@@ -447,6 +447,18 @@ export class MudrexBrokerReconciliationSyncService {
     }
     const date = new Date(text);
     return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  private toDateOnly(value: unknown): string {
+    const text = this.readString(value);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+      return text;
+    }
+    const date = new Date(text);
+    if (Number.isNaN(date.getTime())) {
+      return text;
+    }
+    return date.toISOString().slice(0, 10);
   }
 
   private requiredString(value: unknown, fieldName: string): string {
