@@ -136,13 +136,22 @@ async function runSchedulerSuccessAssertions(): Promise<void> {
   const result: BrokerReconciliationScheduledRunResponse = await service.runScheduledBatch({
     startDate: '2026-06-08T10:00:00.000Z',
     endDate: '2026-06-09T10:00:00.000Z',
-    trigger: 'scheduled',
+    trigger: 'phase9_manual_dry_run_after_date_fix',
   });
 
   assert.equal(result.status, 'completed');
   assert.equal(result.locked, true);
   assert.equal(result.runLogId, 'sched-run-1');
   assert.equal(result.batch?.summary.completedAccounts, 2);
+  const createRunPayload = calls.find((call) => call.method === 'createRun')?.args[0] as Record<
+    string,
+    unknown
+  >;
+  assert.equal(createRunPayload.initiatedByType, 'manual');
+  assert.equal(
+    (createRunPayload.meta as Record<string, unknown>).trigger,
+    'phase9_manual_dry_run_after_date_fix'
+  );
   assert.deepEqual(calls.find((call) => call.method === 'runBatch')?.args[0], {
     targetUserIds: ['system'],
     brokerKeys: ['mudrex'],

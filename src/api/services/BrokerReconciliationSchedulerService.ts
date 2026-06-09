@@ -297,7 +297,7 @@ export class BrokerReconciliationSchedulerService {
       skippedAssets: 0,
       errorMessage: input.errorMessage ?? null,
       actorUserId: env.scheduler.systemUserId,
-      initiatedByType: this.readString(input.body.trigger) || 'scheduler',
+      initiatedByType: this.resolveInitiatedByType(input.body.trigger),
       initiatedByUserId: env.scheduler.systemUserId,
       initiatedByLabel: 'Broker reconciliation scheduler',
       executionContext: 'system',
@@ -469,6 +469,21 @@ export class BrokerReconciliationSchedulerService {
       return secondary;
     }
     return fallback;
+  }
+
+  private resolveInitiatedByType(value: unknown): string {
+    const trigger = this.readString(value)?.toLowerCase() || '';
+    if (!trigger) {
+      return 'scheduler';
+    }
+    if (trigger.includes('manual') || trigger.includes('dry_run')) {
+      return 'manual';
+    }
+    if (trigger.includes('cron') || trigger.includes('scheduled') || trigger === 'worker') {
+      return 'cron';
+    }
+    const normalized = trigger.replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+    return normalized.slice(0, 32) || 'scheduler';
   }
 
   private readString(value: unknown): string | null {
