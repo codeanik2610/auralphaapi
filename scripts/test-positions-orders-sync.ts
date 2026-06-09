@@ -4866,6 +4866,126 @@ async function main(): Promise<void> {
   await main();
 }
 
+async function positions_orders_syncGuard10(): Promise<void> {
+  const { InternalPositionsSyncService } = await import("../src/api/services/InternalPositionsSyncService");
+
+async function runMudrexPartialCloseAggregationAssertions(): Promise<void> {
+  const service = new InternalPositionsSyncService() as any;
+  const capturedPreparedRows: Array<Record<string, unknown>> = [];
+  let capturedReadModelRows: Array<Record<string, unknown>> = [];
+
+  service.positionReadModelRepository = {
+    async upsertReadModels(rows: Array<Record<string, unknown>>) {
+      capturedReadModelRows = rows;
+    },
+  };
+  service.upsertPositionSnapshotBatch = async (rows: Array<Record<string, unknown>>) => {
+    capturedPreparedRows.push(...rows);
+    return {
+      inserted: rows.length,
+      updated: 0,
+      skipped: 0,
+      symbols: rows.map((row) => String(row.symbol || '')).filter(Boolean),
+    };
+  };
+  service.listMudrexOrderSnapshotRowsForAggregation = async (
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    symbols: string[]
+  ) => {
+    assert.equal(userId, 'user-1');
+    assert.equal(accountId, 'acct-mudrex');
+    assert.equal(brokerKey, 'mudrex');
+    assert.deepEqual(symbols, ['BTCUSDT']);
+    return [
+      orderPayload('entry-1', 'LONG', 0.023, 62890.7, '2026-06-09T03:16:19Z'),
+      orderPayload('entry-2', 'LONG', 0.015, 62788.4, '2026-06-09T03:26:44Z'),
+      orderPayload('close-1', 'SHORT', 0.02, 63244.4, '2026-06-09T04:35:36Z'),
+      orderPayload('close-2', 'SHORT', 0.009, 63231.4, '2026-06-09T04:38:32Z'),
+      orderPayload('close-3', 'SHORT', 0.009, 63220.2, '2026-06-09T04:42:08Z'),
+    ];
+  };
+
+  const result = await service.upsertPositionSnapshotsFromItems(
+    'user-1',
+    'acct-mudrex',
+    'mudrex',
+    [
+      {
+        id: 'latest-close-slice',
+        asset_uuid: 'asset-btc',
+        symbol: 'BTCUSDT',
+        status: 'CLOSED',
+        position_type: 'LONG',
+        quantity: '0.009',
+        entry_price: '62850.31842105263',
+        closed_price: '63220.2',
+        pnl: '3.32893421',
+        created_at: '2026-06-09T03:16:19Z',
+        updated_at: '2026-06-09T04:42:08Z',
+      },
+    ]
+  );
+
+  assert.equal(result.inserted, 1);
+  assert.equal(capturedPreparedRows.length, 1);
+  assert.equal(capturedReadModelRows.length, 1);
+
+  const payload = JSON.parse(String(capturedPreparedRows[0].payloadJson || '{}'));
+  assert.equal(payload.aggregate_source, 'scheduler_orders_snapshots');
+  assert.equal(payload.aggregate_future_position_uuid, 'future-btc-1');
+  assert.equal(payload.aggregate_entry_order_count, 2);
+  assert.equal(payload.aggregate_close_order_count, 3);
+  assert.equal(payload.quantity, '0.038');
+  assert.equal(Number(payload.entry_price).toFixed(8), '62850.31842105');
+  assert.equal(Number(payload.closed_price).toFixed(8), '63235.58947368');
+  assert.equal(Number(payload.realized_pnl).toFixed(8), '14.64030000');
+
+  assert.equal(capturedReadModelRows[0].externalId, 'mudrex:asset-btc:2026-06-09T03:16:19Z:LONG');
+  assert.equal(capturedReadModelRows[0].quantity, 0.038);
+  assert.equal(Number(capturedReadModelRows[0].closedPrice).toFixed(8), '63235.58947368');
+  assert.equal(Number(capturedReadModelRows[0].realizedPnl).toFixed(8), '14.64030000');
+}
+
+function orderPayload(
+  id: string,
+  orderType: string,
+  quantity: number,
+  filledPrice: number,
+  createdAt: string
+): Record<string, unknown> {
+  return {
+    externalId: id,
+    symbol: 'BTCUSDT',
+    orderStatus: 'FILLED',
+    payloadJson: {
+      id,
+      symbol: 'BTCUSDT',
+      asset_uuid: 'asset-btc',
+      status: 'FILLED',
+      order_type: orderType,
+      quantity: String(quantity),
+      filled_quantity: String(quantity),
+      filled_price: String(filledPrice),
+      actual_amount: String(quantity * filledPrice),
+      future_position_uuid: 'future-btc-1',
+      created_at: createdAt,
+      updated_at: createdAt,
+    },
+    firstSeenAt: createdAt,
+    lastSeenAt: createdAt,
+  };
+}
+
+async function main(): Promise<void> {
+  await runMudrexPartialCloseAggregationAssertions();
+  console.log('Positions/orders sync Phase 10 guard passed.');
+}
+
+  await main();
+}
+
 const suiteSteps = {
   "01": positions_orders_syncGuard01,
   "02": positions_orders_syncGuard02,
@@ -4876,10 +4996,11 @@ const suiteSteps = {
   "07": positions_orders_syncGuard07,
   "08": positions_orders_syncGuard08,
   "09": positions_orders_syncGuard09,
+  "10": positions_orders_syncGuard10,
 } as const;
 
 export async function runPositionsOrdersSyncSuite(): Promise<void> {
-  await runSuiteSteps("Positions/orders sync module", "scripts/test-positions-orders-sync.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09"]);
+  await runSuiteSteps("Positions/orders sync module", "scripts/test-positions-orders-sync.ts", ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]);
   console.log("Positions/orders sync module assertions passed.");
 }
 

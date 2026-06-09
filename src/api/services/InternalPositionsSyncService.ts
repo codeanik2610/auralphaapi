@@ -52,6 +52,52 @@ interface DeltaClosedLifecycleCleanupResult {
   symbols: string[];
 }
 
+interface MudrexClosedPositionAggregationCandidate {
+  item: Record<string, unknown>;
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  assetUuid: string | null;
+  createdAtMs: number;
+  directFuturePositionUuid: string | null;
+}
+
+interface MudrexOrderSnapshotAggregationRow {
+  externalId?: string | null;
+  symbol?: string | null;
+  orderStatus?: string | null;
+  payloadJson?: unknown;
+  firstSeenAt?: Date | string | null;
+  lastSeenAt?: Date | string | null;
+}
+
+interface MudrexOrderAggregationRecord {
+  externalId: string | null;
+  symbol: string;
+  futurePositionUuid: string;
+  orderType: string;
+  side: 'LONG' | 'SHORT' | null;
+  status: string | null;
+  quantity: number;
+  price: number;
+  notional: number;
+  createdAtMs: number | null;
+  updatedAtMs: number | null;
+  assetUuid: string | null;
+  isProtectionExit: boolean;
+}
+
+interface MudrexClosedPositionOrderAggregate {
+  futurePositionUuid: string;
+  entryQuantity: number;
+  closedQuantity: number;
+  entryPrice: number;
+  closedPrice: number;
+  realizedPnl: number;
+  entryOrderCount: number;
+  closeOrderCount: number;
+  closedAtIso: string | null;
+}
+
 @Service()
 export class InternalPositionsSyncService {
   @Inject(() => BrokerRuntimeRegistry)
@@ -466,6 +512,451 @@ export class InternalPositionsSyncService {
               ? 'confirmed_order_submission'
               : 'requested_order_submission';
     }
+  }
+
+  private async enrichMudrexClosedPositionsFromOrderSnapshots(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    items: unknown[]
+  ): Promise<void> {
+    const normalizedBrokerKey = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (normalizedBrokerKey !== 'mudrex') {
+      return;
+    }
+
+    const candidates = items
+      .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+      .map((item) =>
+        this.buildMudrexClosedPositionAggregationCandidate(item as Record<string, unknown>)
+      )
+      .filter(
+        (candidate): candidate is MudrexClosedPositionAggregationCandidate => candidate !== null
+      );
+    if (!candidates.length) {
+      return;
+    }
+
+    const symbols = Array.from(new Set(candidates.map((candidate) => candidate.symbol)));
+    const earliestCreatedAt = Math.min(...candidates.map((candidate) => candidate.createdAtMs));
+    const earliestOrderSeenAt = new Date(earliestCreatedAt - 24 * 60 * 60 * 1000);
+    const rows = await this.listMudrexOrderSnapshotRowsForAggregation(
+      userId,
+      accountId,
+      normalizedBrokerKey,
+      symbols,
+      earliestOrderSeenAt
+    );
+    if (!rows.length) {
+      return;
+    }
+
+    const orders = rows
+      .map((row) => this.buildMudrexOrderAggregationRecord(row))
+      .filter((order): order is MudrexOrderAggregationRecord => order !== null);
+    if (!orders.length) {
+      return;
+    }
+
+    const ordersByFuturePositionUuid = new Map<string, MudrexOrderAggregationRecord[]>();
+    for (const order of orders) {
+      const list = ordersByFuturePositionUuid.get(order.futurePositionUuid) || [];
+      list.push(order);
+      ordersByFuturePositionUuid.set(order.futurePositionUuid, list);
+    }
+
+    for (const candidate of candidates) {
+      const futurePositionUuid =
+        candidate.directFuturePositionUuid &&
+        ordersByFuturePositionUuid.has(candidate.directFuturePositionUuid)
+          ? candidate.directFuturePositionUuid
+          : this.resolveMudrexFuturePositionUuidForCandidate(candidate, orders);
+      if (!futurePositionUuid) {
+        continue;
+      }
+
+      const aggregate = this.buildMudrexClosedPositionOrderAggregate(
+        futurePositionUuid,
+        candidate,
+        ordersByFuturePositionUuid.get(futurePositionUuid) || []
+      );
+      if (!aggregate) {
+        continue;
+      }
+
+      this.applyMudrexClosedPositionOrderAggregate(candidate.item, aggregate);
+    }
+  }
+
+  private buildMudrexClosedPositionAggregationCandidate(
+    item: Record<string, unknown>
+  ): MudrexClosedPositionAggregationCandidate | null {
+    const status = this.normalizePositionStatus(String(item.status || '').trim() || null);
+    if (status !== 'CLOSED' && status !== 'LIQUIDATED') {
+      return null;
+    }
+
+    const side = this.normalizeMudrexDirectionalSide(
+      item.position_type ?? item.order_type ?? item.side
+    );
+    if (!side) {
+      return null;
+    }
+
+    const symbol = this.normalizeMarketSymbol(item.symbol ?? item.product_symbol);
+    const createdAtMs = this.readTimestampMs(item.created_at ?? item.createdAt);
+    if (!symbol || createdAtMs === null) {
+      return null;
+    }
+
+    const assetUuid =
+      String(item.asset_uuid || item.assetUuid || item.asset_id || item.assetId || '').trim() ||
+      null;
+    const directFuturePositionUuid =
+      String(item.future_position_uuid || item.futurePositionUuid || '').trim() || null;
+
+    return {
+      item,
+      symbol,
+      side,
+      assetUuid,
+      createdAtMs,
+      directFuturePositionUuid,
+    };
+  }
+
+  private async listMudrexOrderSnapshotRowsForAggregation(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    symbols: string[],
+    earliestOrderSeenAt: Date
+  ): Promise<MudrexOrderSnapshotAggregationRow[]> {
+    const normalizedSymbols = Array.from(
+      new Set(
+        symbols
+          .map((symbol) =>
+            String(symbol || '')
+              .trim()
+              .toUpperCase()
+          )
+          .filter(Boolean)
+      )
+    );
+    if (!normalizedSymbols.length) {
+      return [];
+    }
+
+    const earliestIso = earliestOrderSeenAt.toISOString();
+    const rows = (await coreDataSource.query(
+      `SELECT external_id AS externalId,
+              symbol,
+              order_status AS orderStatus,
+              payload_json AS payloadJson,
+              first_seen_at AS firstSeenAt,
+              last_seen_at AS lastSeenAt
+         FROM scheduler_orders_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND UPPER(symbol) IN (${normalizedSymbols.map(() => '?').join(', ')})
+          AND NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.future_position_uuid')), '') IS NOT NULL
+          AND (
+            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.created_at')), '') >= ?
+            OR NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.updated_at')), '') >= ?
+            OR last_seen_at >= ?
+          )`,
+      [
+        userId,
+        accountId,
+        brokerKey,
+        ...normalizedSymbols,
+        earliestIso,
+        earliestIso,
+        earliestOrderSeenAt,
+      ]
+    )) as MudrexOrderSnapshotAggregationRow[];
+    return rows;
+  }
+
+  private buildMudrexOrderAggregationRecord(
+    row: MudrexOrderSnapshotAggregationRow
+  ): MudrexOrderAggregationRecord | null {
+    const payload = this.parsePayloadJson(row.payloadJson);
+    if (!payload) {
+      return null;
+    }
+
+    const futurePositionUuid = String(
+      payload.future_position_uuid || payload.futurePositionUuid || ''
+    ).trim();
+    if (!futurePositionUuid) {
+      return null;
+    }
+
+    const status = this.normalizeMudrexOrderStatus(payload.status ?? row.orderStatus);
+    if (!this.isMudrexFilledOrderStatus(status)) {
+      return null;
+    }
+
+    const quantity =
+      this.toPositiveFiniteNumber(payload.filled_quantity) ??
+      this.toPositiveFiniteNumber(payload.filledQuantity) ??
+      this.toPositiveFiniteNumber(payload.executed_quantity) ??
+      this.toPositiveFiniteNumber(payload.executedQuantity) ??
+      this.toPositiveFiniteNumber(payload.quantity) ??
+      this.toPositiveFiniteNumber(payload.qty) ??
+      null;
+    if (quantity === null) {
+      return null;
+    }
+
+    const explicitPrice =
+      this.toPositiveFiniteNumber(payload.filled_price) ??
+      this.toPositiveFiniteNumber(payload.filledPrice) ??
+      this.toPositiveFiniteNumber(payload.average_fill_price) ??
+      this.toPositiveFiniteNumber(payload.averageFillPrice) ??
+      this.toPositiveFiniteNumber(payload.price) ??
+      this.toPositiveFiniteNumber(payload.order_price) ??
+      null;
+    const actualAmount =
+      this.toPositiveFiniteNumber(payload.actual_amount) ??
+      this.toPositiveFiniteNumber(payload.actualAmount) ??
+      null;
+    const price = explicitPrice ?? (actualAmount !== null ? actualAmount / quantity : null);
+    if (price === null || !Number.isFinite(price) || price <= 0) {
+      return null;
+    }
+
+    const orderType = String(payload.order_type ?? payload.orderType ?? payload.side ?? '')
+      .trim()
+      .toUpperCase();
+    const side = this.normalizeMudrexDirectionalSide(orderType);
+    const isProtectionExit = this.isMudrexProtectionExitOrderType(orderType);
+    const symbol = this.normalizeMarketSymbol(payload.symbol ?? row.symbol);
+    if (!symbol) {
+      return null;
+    }
+
+    const notional = actualAmount !== null ? actualAmount : quantity * price;
+    const createdAtMs = this.readTimestampMs(
+      payload.created_at ?? payload.createdAt ?? row.firstSeenAt
+    );
+    const updatedAtMs = this.readTimestampMs(
+      payload.filled_at ??
+        payload.filledAt ??
+        payload.updated_at ??
+        payload.updatedAt ??
+        payload.created_at ??
+        payload.createdAt ??
+        row.lastSeenAt
+    );
+    const assetUuid =
+      String(
+        payload.asset_uuid || payload.assetUuid || payload.asset_id || payload.assetId || ''
+      ).trim() || null;
+
+    return {
+      externalId: String(row.externalId || payload.id || '').trim() || null,
+      symbol,
+      futurePositionUuid,
+      orderType,
+      side,
+      status,
+      quantity,
+      price,
+      notional,
+      createdAtMs,
+      updatedAtMs,
+      assetUuid,
+      isProtectionExit,
+    };
+  }
+
+  private resolveMudrexFuturePositionUuidForCandidate(
+    candidate: MudrexClosedPositionAggregationCandidate,
+    orders: MudrexOrderAggregationRecord[]
+  ): string | null {
+    const matchingEntries = orders
+      .filter((order) => {
+        if (order.symbol !== candidate.symbol) {
+          return false;
+        }
+        if (order.side !== candidate.side || order.isProtectionExit) {
+          return false;
+        }
+        if (candidate.assetUuid && order.assetUuid && candidate.assetUuid !== order.assetUuid) {
+          return false;
+        }
+        if (order.createdAtMs === null) {
+          return false;
+        }
+        return Math.abs(order.createdAtMs - candidate.createdAtMs) <= 2 * 60 * 1000;
+      })
+      .sort((left, right) => {
+        const leftDistance = Math.abs((left.createdAtMs || 0) - candidate.createdAtMs);
+        const rightDistance = Math.abs((right.createdAtMs || 0) - candidate.createdAtMs);
+        return leftDistance - rightDistance;
+      });
+
+    return matchingEntries[0]?.futurePositionUuid || null;
+  }
+
+  private buildMudrexClosedPositionOrderAggregate(
+    futurePositionUuid: string,
+    candidate: MudrexClosedPositionAggregationCandidate,
+    orders: MudrexOrderAggregationRecord[]
+  ): MudrexClosedPositionOrderAggregate | null {
+    const entryOrders = orders.filter(
+      (order) => order.side === candidate.side && !order.isProtectionExit
+    );
+    const closeOrders = orders.filter((order) =>
+      this.isMudrexCloseOrderForPositionSide(order, candidate.side)
+    );
+    if (!entryOrders.length || !closeOrders.length) {
+      return null;
+    }
+
+    const entryQuantity = entryOrders.reduce((total, order) => total + order.quantity, 0);
+    const closedQuantity = closeOrders.reduce((total, order) => total + order.quantity, 0);
+    if (entryQuantity <= 0 || closedQuantity <= 0) {
+      return null;
+    }
+
+    const quantityTolerance = Math.max(1e-9, entryQuantity * 1e-8);
+    if (closedQuantity + quantityTolerance < entryQuantity) {
+      return null;
+    }
+
+    const entryNotional = entryOrders.reduce((total, order) => total + order.notional, 0);
+    const closedNotional = closeOrders.reduce((total, order) => total + order.notional, 0);
+    const entryPrice = entryNotional / entryQuantity;
+    const closedPrice = closedNotional / closedQuantity;
+    if (
+      !Number.isFinite(entryPrice) ||
+      !Number.isFinite(closedPrice) ||
+      entryPrice <= 0 ||
+      closedPrice <= 0
+    ) {
+      return null;
+    }
+
+    const direction = candidate.side === 'SHORT' ? -1 : 1;
+    const realizedPnl = closeOrders.reduce(
+      (total, order) => total + direction * (order.price - entryPrice) * order.quantity,
+      0
+    );
+    const closedAtMs = Math.max(
+      ...closeOrders
+        .map((order) => order.updatedAtMs ?? order.createdAtMs ?? 0)
+        .filter((value) => Number.isFinite(value) && value > 0)
+    );
+
+    return {
+      futurePositionUuid,
+      entryQuantity,
+      closedQuantity,
+      entryPrice,
+      closedPrice,
+      realizedPnl,
+      entryOrderCount: entryOrders.length,
+      closeOrderCount: closeOrders.length,
+      closedAtIso:
+        Number.isFinite(closedAtMs) && closedAtMs > 0 ? new Date(closedAtMs).toISOString() : null,
+    };
+  }
+
+  private applyMudrexClosedPositionOrderAggregate(
+    item: Record<string, unknown>,
+    aggregate: MudrexClosedPositionOrderAggregate
+  ): void {
+    const entryQuantity = this.formatMudrexAggregateNumber(aggregate.entryQuantity);
+    const closedQuantity = this.formatMudrexAggregateNumber(aggregate.closedQuantity);
+    const entryPrice = this.formatMudrexAggregateNumber(aggregate.entryPrice);
+    const closedPrice = this.formatMudrexAggregateNumber(aggregate.closedPrice);
+    const realizedPnl = this.formatMudrexAggregateNumber(aggregate.realizedPnl);
+
+    item.status = 'CLOSED';
+    item.quantity = entryQuantity;
+    item.entry_price = entryPrice;
+    item.closed_price = closedPrice;
+    item.pnl = realizedPnl;
+    item.realized = realizedPnl;
+    item.realized_pnl = realizedPnl;
+    item.aggregate_source = 'scheduler_orders_snapshots';
+    item.aggregate_future_position_uuid = aggregate.futurePositionUuid;
+    item.aggregate_entry_quantity = entryQuantity;
+    item.aggregate_closed_quantity = closedQuantity;
+    item.aggregate_entry_order_count = aggregate.entryOrderCount;
+    item.aggregate_close_order_count = aggregate.closeOrderCount;
+    if (aggregate.closedAtIso) {
+      item.closed_at = aggregate.closedAtIso;
+      item.updated_at = aggregate.closedAtIso;
+    }
+  }
+
+  private isMudrexCloseOrderForPositionSide(
+    order: MudrexOrderAggregationRecord,
+    positionSide: 'LONG' | 'SHORT'
+  ): boolean {
+    if (order.isProtectionExit) {
+      return true;
+    }
+    if (positionSide === 'LONG') {
+      return order.side === 'SHORT';
+    }
+    return order.side === 'LONG';
+  }
+
+  private normalizeMudrexDirectionalSide(value: unknown): 'LONG' | 'SHORT' | null {
+    const raw = String(value ?? '')
+      .trim()
+      .toUpperCase();
+    if (raw === 'LONG' || raw === 'BUY') {
+      return 'LONG';
+    }
+    if (raw === 'SHORT' || raw === 'SELL') {
+      return 'SHORT';
+    }
+    return null;
+  }
+
+  private normalizeMudrexOrderStatus(value: unknown): string | null {
+    const raw = String(value ?? '')
+      .trim()
+      .toUpperCase()
+      .replace(/[\s-]+/g, '_');
+    return raw || null;
+  }
+
+  private isMudrexFilledOrderStatus(status: string | null): boolean {
+    return ['FILLED', 'CLOSED', 'COMPLETED'].includes(String(status || '').toUpperCase());
+  }
+
+  private isMudrexProtectionExitOrderType(orderType: string): boolean {
+    return ['STOPLOSS', 'STOP_LOSS', 'TAKEPROFIT', 'TAKE_PROFIT'].includes(
+      String(orderType || '')
+        .trim()
+        .toUpperCase()
+    );
+  }
+
+  private readTimestampMs(value: unknown): number | null {
+    if (!value) {
+      return null;
+    }
+    const date = value instanceof Date ? value : new Date(String(value));
+    const timestamp = date.getTime();
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  private formatMudrexAggregateNumber(value: number): string {
+    if (!Number.isFinite(value)) {
+      return '0';
+    }
+    return value.toFixed(12).replace(/\.?0+$/, '');
   }
 
   private async listLatestDeltaSubmissionLeverageContextByAssetId(
@@ -994,6 +1485,7 @@ export class InternalPositionsSyncService {
       brokerKey,
       items
     );
+    await this.enrichMudrexClosedPositionsFromOrderSnapshots(userId, accountId, brokerKey, items);
 
     const prepared: Array<{
       userId: string;
@@ -1795,12 +2287,13 @@ export class InternalPositionsSyncService {
       normalizedBrokerKey,
       schedulerDuplicates.rowIds
     );
-    const deletedReadModelRows = await this.positionReadModelRepository.deleteReadModelsByExternalIds(
-      userId,
-      accountId,
-      normalizedBrokerKey,
-      readModelDuplicates.externalIds
-    );
+    const deletedReadModelRows =
+      await this.positionReadModelRepository.deleteReadModelsByExternalIds(
+        userId,
+        accountId,
+        normalizedBrokerKey,
+        readModelDuplicates.externalIds
+      );
     const symbols = Array.from(
       new Set([...schedulerDuplicates.symbols, ...readModelDuplicates.symbols])
     );
@@ -1895,8 +2388,7 @@ export class InternalPositionsSyncService {
         continue;
       }
 
-      const group =
-        groups.get(matchKey) || { canonicalRows: [], duplicateRows: [] };
+      const group = groups.get(matchKey) || { canonicalRows: [], duplicateRows: [] };
       if (row.externalId === lifecycleId || this.isDeltaClosedLifecycleExternalId(row.externalId)) {
         group.canonicalRows.push(row);
       } else {
@@ -2032,9 +2524,7 @@ export class InternalPositionsSyncService {
     return new Date(Math.round(date.getTime() / 1000) * 1000).toISOString();
   }
 
-  private buildDeltaClosedLifecyclePayload(
-    row: DeltaClosedLifecycleRow
-  ): Record<string, unknown> {
+  private buildDeltaClosedLifecyclePayload(row: DeltaClosedLifecycleRow): Record<string, unknown> {
     const payload = { ...(this.parsePayloadJson(row.payloadJson) || {}) };
     if (payload.status === undefined && row.status) payload.status = row.status;
     if (payload.side === undefined && row.side) payload.side = row.side;
@@ -2153,13 +2643,7 @@ export class InternalPositionsSyncService {
                 last_seen_at = IF(last_seen_at IS NULL OR ? > last_seen_at, ?, last_seen_at),
                 updated_at = NOW()
           WHERE id = ?`,
-        [
-          input.statusRank,
-          input.statusRank,
-          input.observedAt,
-          input.observedAt,
-          existingId,
-        ]
+        [input.statusRank, input.statusRank, input.observedAt, input.observedAt, existingId]
       );
       await coreDataSource.query(
         `DELETE FROM scheduler_positions_snapshots
