@@ -391,9 +391,38 @@ const schedulerConfigs: Array<Partial<SchedulerConfig> & Pick<SchedulerConfig, '
       retentionDays: 30,
     },
   },
+  {
+    key: 'broker-reconciliation-sync',
+    name: 'Broker Reconciliation Sync',
+    description:
+      'Admin-owned scheduler for read-only Mudrex/Delta evidence sync and app-vs-broker reconciliation matching.',
+    enabled: false,
+    cronExpression: '*/15 * * * *',
+    timezone: DEFAULT_TIMEZONE,
+    runAt: '01:00',
+    intervalDays: 1,
+    batchSize: 200,
+    schedulerType: 'user',
+    config: {
+      sources: ['mudrex', 'delta_exchange'],
+      brokerKeys: ['mudrex', 'delta_exchange'],
+      retentionDays: 30,
+      lookbackHours: 24,
+      lockMinutes: 30,
+      fallbackWindowMinutes: 45,
+      sync: true,
+      match: true,
+    },
+  },
 ];
 
-const userSchedulerKeys = ['risk-recompute-sync', 'positions-sync', 'orders-sync', 'funds-sync'];
+const userSchedulerKeys = [
+  'risk-recompute-sync',
+  'positions-sync',
+  'orders-sync',
+  'funds-sync',
+  'broker-reconciliation-sync',
+];
 
 const ensureAdminUser = async (): Promise<User> => {
   const admin = readAdminSeed();

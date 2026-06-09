@@ -24,6 +24,13 @@ const SUITE_ROLES: Record<string, SuiteRole> = {
   assets: 'baseline',
   wallets: 'baseline',
   'funds-snapshots': 'baseline',
+  'broker-reconciliation-storage': 'baseline',
+  'mudrex-reconciliation-sync': 'baseline',
+  'delta-reconciliation-sync': 'baseline',
+  'broker-reconciliation-match': 'baseline',
+  'broker-reconciliation-read': 'baseline',
+  'broker-reconciliation-batch': 'baseline',
+  'broker-reconciliation-scheduler': 'baseline',
   orders: 'baseline',
   automations: 'baseline',
   backtests: 'baseline',
@@ -62,10 +69,7 @@ const SUITES: Record<string, SuiteEntry[]> = {
     'test:risk-center-contract',
   ],
   'coverage-audit': ['test:coverage-audit'],
-  'aggregate-catchall': [
-    'test:services',
-    'test:controllers',
-  ],
+  'aggregate-catchall': ['test:services', 'test:controllers'],
   'release-baseline': [
     'test:core-contracts',
     'test:coverage-audit',
@@ -75,6 +79,13 @@ const SUITES: Record<string, SuiteEntry[]> = {
     'test:assets',
     'test:wallets',
     'test:funds-snapshots',
+    'test:broker-reconciliation-storage',
+    'test:mudrex-reconciliation-sync',
+    'test:delta-reconciliation-sync',
+    'test:broker-reconciliation-match',
+    'test:broker-reconciliation-read',
+    'test:broker-reconciliation-batch',
+    'test:broker-reconciliation-scheduler',
     'test:automations',
     'test:backtests',
     'test:broker-accounts',
@@ -95,16 +106,20 @@ const SUITES: Record<string, SuiteEntry[]> = {
     'test:global-system-schedulers',
     'test:runtime-recovery',
   ],
-  'module-only': [
-    'test:signals',
-    'test:broker-assets',
-  ],
+  'module-only': ['test:signals', 'test:broker-assets'],
   activity: ['test:activity'],
   alerts: ['test:alerts'],
   markets: ['test:markets'],
   assets: ['test:assets'],
   wallets: ['test:wallets'],
   'funds-snapshots': ['test:funds-snapshots'],
+  'broker-reconciliation-storage': ['test:broker-reconciliation-storage'],
+  'mudrex-reconciliation-sync': ['test:mudrex-reconciliation-sync'],
+  'delta-reconciliation-sync': ['test:delta-reconciliation-sync'],
+  'broker-reconciliation-match': ['test:broker-reconciliation-match'],
+  'broker-reconciliation-read': ['test:broker-reconciliation-read'],
+  'broker-reconciliation-batch': ['test:broker-reconciliation-batch'],
+  'broker-reconciliation-scheduler': ['test:broker-reconciliation-scheduler'],
   orders: ['test:orders'],
   automations: ['test:automations'],
   backtests: ['test:backtests'],
@@ -147,8 +162,7 @@ const SUITES: Record<string, SuiteEntry[]> = {
 
 function runEntry(entry: SuiteEntry): Promise<void> {
   return new Promise((resolve, reject) => {
-    const command =
-      typeof entry === 'string' ? resolveTestCommand(entry) : entry;
+    const command = typeof entry === 'string' ? resolveTestCommand(entry) : entry;
     const child = spawn(command[0], command.slice(1), {
       stdio: 'inherit',
       env: process.env,
@@ -157,9 +171,7 @@ function runEntry(entry: SuiteEntry): Promise<void> {
     child.on('error', reject);
     child.on('exit', (code, signal) => {
       if (signal) {
-        reject(
-          new Error(`${command.join(' ')} terminated by signal ${signal}`)
-        );
+        reject(new Error(`${command.join(' ')} terminated by signal ${signal}`));
         return;
       }
       if (code && code !== 0) {
@@ -181,7 +193,10 @@ async function main(): Promise<void> {
     console.log(
       JSON.stringify(
         Object.fromEntries(
-          Object.entries(SUITE_ROLES).map(([name, role]) => [name, { role, entries: SUITES[name] || [] }])
+          Object.entries(SUITE_ROLES).map(([name, role]) => [
+            name,
+            { role, entries: SUITES[name] || [] },
+          ])
         ),
         null,
         2
@@ -192,7 +207,9 @@ async function main(): Promise<void> {
 
   const entries = SUITES[suiteName];
   if (!entries) {
-    throw new Error(`Unknown suite "${suiteName}". Expected one of: ${Object.keys(SUITES).join(', ')}`);
+    throw new Error(
+      `Unknown suite "${suiteName}". Expected one of: ${Object.keys(SUITES).join(', ')}`
+    );
   }
 
   for (const entry of entries) {

@@ -9,6 +9,12 @@ import { AssetPrice } from './entities/AssetPrice';
 import { Asset } from './entities/Asset';
 import { BrokerAccount } from './entities/BrokerAccount';
 import { Broker } from './entities/Broker';
+import { BrokerBalanceSnapshot } from './entities/BrokerBalanceSnapshot';
+import { BrokerFeeEntry } from './entities/BrokerFeeEntry';
+import { BrokerFill } from './entities/BrokerFill';
+import { BrokerFundingEntry } from './entities/BrokerFundingEntry';
+import { BrokerReconciliationRun } from './entities/BrokerReconciliationRun';
+import { BrokerWalletTransaction } from './entities/BrokerWalletTransaction';
 import { Exchange } from './entities/Exchange';
 import { EmailDelivery } from './entities/EmailDelivery';
 import { WhatsappDelivery } from './entities/WhatsappDelivery';
@@ -99,6 +105,12 @@ export const coreDataSource = new DataSource({
     Connection,
     BrokerAccount,
     Broker,
+    BrokerBalanceSnapshot,
+    BrokerFeeEntry,
+    BrokerFill,
+    BrokerFundingEntry,
+    BrokerReconciliationRun,
+    BrokerWalletTransaction,
     Exchange,
     EmailDelivery,
     WhatsappDelivery,

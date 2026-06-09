@@ -5,6 +5,7 @@ import {
   MudrexAssetDetail,
   MudrexCancelOrderResult,
   MudrexCreateOrderResult,
+  MudrexFeeHistoryItem,
   MudrexFuturesFunds,
   MudrexLeveragePayload,
   MudrexOrder,
@@ -184,6 +185,22 @@ const isMudrexFuturesFunds = (value: unknown): value is MudrexFuturesFunds => {
     typeof funds.balance === 'string' &&
     typeof funds.locked_amount === 'string' &&
     typeof funds.first_time_user === 'boolean'
+  );
+};
+
+const isMudrexFeeHistoryItem = (value: unknown): value is MudrexFeeHistoryItem => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.symbol === 'string' &&
+    typeof item.fee_amount === 'string' &&
+    typeof item.fee_perc === 'string' &&
+    typeof item.fee_type === 'string' &&
+    typeof item.created_at === 'string' &&
+    typeof item.transaction_amount === 'string'
   );
 };
 
@@ -429,6 +446,11 @@ const routeValidationRules: RouteValidationRule[] = [
     matches: (path) => path === '/fapi/v1/futures/funds',
     isValid: (value) => isMudrexFuturesFunds(value),
     message: 'Mudrex returned an invalid futures funds payload',
+  },
+  {
+    matches: (path) => path === '/fapi/v1/futures/fee/history',
+    isValid: (value) => Array.isArray(value) && value.every(isMudrexFeeHistoryItem),
+    message: 'Mudrex returned an invalid fee history payload',
   },
   {
     matches: (path) => path === '/fapi/v1/futures/orders',

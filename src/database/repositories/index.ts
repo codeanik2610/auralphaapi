@@ -12,6 +12,7 @@ export * from './AutomationRunOutputRepository';
 export * from './BacktestRepository';
 export * from './BacktestTradeRepository';
 export * from './BrokerAccountRepository';
+export * from './BrokerReconciliationRepository';
 export * from './BrokerRepository';
 export * from './ConnectionRepository';
 export * from './EmailDeliveryRepository';

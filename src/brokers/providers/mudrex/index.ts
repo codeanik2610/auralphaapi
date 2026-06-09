@@ -1,3 +1,4 @@
+export * from './FeesService';
 export * from './LeverageService';
 export * from './MudrexBrokerModule';
 export * from './MudrexErrorMapper';

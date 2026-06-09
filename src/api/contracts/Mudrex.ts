@@ -47,6 +47,15 @@ export interface MudrexFuturesFunds {
   first_time_user: boolean;
 }
 
+export interface MudrexFeeHistoryItem {
+  symbol: string;
+  fee_amount: string;
+  fee_perc: string;
+  fee_type: 'TRANSACTION' | 'FUNDING' | string;
+  created_at: string;
+  transaction_amount: string;
+}
+
 export interface MudrexLeverage {
   Leverage: string;
   MarginType: string;
