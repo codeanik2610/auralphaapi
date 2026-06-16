@@ -1399,6 +1399,63 @@ async function testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolat
   }
 }
 
+async function testPositionsBackfillCanCorrectStaleClosedSnapshotToBrokerPartial(): Promise<void> {
+  const service = new InternalPositionsSyncService() as any;
+  const originalQuery = (coreDataSource as any).query;
+  const row = {
+    userId: 'user-1',
+    accountId: 'acct-mudrex',
+    brokerKey: 'mudrex',
+    externalId: 'mudrex:asset-1:2026-06-09T00:00:00.000Z:LONG:PARTIAL:event-1',
+    symbol: 'BTCUSDT',
+    status: 'PARTIAL',
+    statusRank: 2,
+    payloadJson: '{"status":"partial","symbol":"BTCUSDT"}',
+    payloadHash: 'new-partial-hash',
+  };
+
+  service.exchangeAssetUpdateLogRepository = {
+    async createMany() {
+      return [];
+    },
+  };
+
+  (coreDataSource as any).query = async (sql: string) => {
+    const statement = String(sql || '');
+    if (statement.includes('UPDATE scheduler_positions_snapshots')) {
+      return [{ affectedRows: 0 }];
+    }
+    if (statement.includes('SELECT external_id, status, payload_hash, status_rank')) {
+      return [
+        {
+          external_id: row.externalId,
+          status: 'CLOSED',
+          payload_hash: 'old-closed-hash',
+          status_rank: 3,
+        },
+      ];
+    }
+    if (statement.includes('INSERT INTO scheduler_positions_snapshots')) {
+      return [{ affectedRows: 2 }];
+    }
+    throw new Error(`Unexpected SQL in positions backfill downgrade test: ${statement}`);
+  };
+
+  try {
+    const normalSyncResult = await service.upsertPositionSnapshotBatch([row]);
+    assert.equal(normalSyncResult.updated, 0);
+    assert.equal(normalSyncResult.skipped, 1);
+
+    const backfillResult = await service.upsertPositionSnapshotBatch([row], undefined, {
+      allowStatusDowngrade: true,
+    });
+    assert.equal(backfillResult.updated, 1);
+    assert.equal(backfillResult.skipped, 0);
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
 async function testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation(): Promise<void> {
   const service = new InternalOrdersSyncService() as any;
   const originalQuery = (coreDataSource as any).query;
@@ -2116,6 +2173,7 @@ async function run(): Promise<void> {
   testPhase4Markers();
   await testOrdersSchedulerRuntimeMigratesToUserScope();
   await testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
+  await testPositionsBackfillCanCorrectStaleClosedSnapshotToBrokerPartial();
   await testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById();
   testOrdersSyncStaleCutoffFloorsToSqlSecond();

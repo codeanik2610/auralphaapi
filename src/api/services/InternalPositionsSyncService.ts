@@ -1343,13 +1343,18 @@ export class InternalPositionsSyncService {
       payloadJson: string;
       payloadHash: string;
     }>,
-    runLogId?: string
+    runLogId?: string,
+    options: { allowStatusDowngrade?: boolean } = {}
   ): Promise<{ inserted: number; updated: number; skipped: number; symbols: string[] }> {
     if (rows.length === 0) return { inserted: 0, updated: 0, skipped: 0, symbols: [] };
 
     let inserted = 0;
     let updated = 0;
     let skipped = 0;
+    const allowStatusDowngrade = Boolean(options.allowStatusDowngrade);
+    const statusUpdateCondition = allowStatusDowngrade
+      ? 'TRUE'
+      : "VALUES(status_rank) >= status_rank OR VALUES(status) = 'OPEN'";
 
     for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
       const chunk = rows.slice(i, i + CHUNK_SIZE);
@@ -1419,10 +1424,10 @@ export class InternalPositionsSyncService {
            last_seen_at = NOW(),
            broker_key = VALUES(broker_key),
            symbol = COALESCE(VALUES(symbol), symbol),
-           status = IF(VALUES(status_rank) >= status_rank OR VALUES(status) = 'OPEN', VALUES(status), status),
-           status_rank = IF(VALUES(status_rank) >= status_rank OR VALUES(status) = 'OPEN', VALUES(status_rank), status_rank),
-           payload_json = IF(VALUES(status_rank) >= status_rank OR VALUES(status) = 'OPEN', VALUES(payload_json), payload_json),
-           payload_hash = IF(VALUES(status_rank) >= status_rank OR VALUES(status) = 'OPEN', VALUES(payload_hash), payload_hash),
+           status = IF(${statusUpdateCondition}, VALUES(status), status),
+           status_rank = IF(${statusUpdateCondition}, VALUES(status_rank), status_rank),
+           payload_json = IF(${statusUpdateCondition}, VALUES(payload_json), payload_json),
+           payload_hash = IF(${statusUpdateCondition}, VALUES(payload_hash), payload_hash),
            updated_at = NOW()`,
         params
       );
@@ -1434,7 +1439,11 @@ export class InternalPositionsSyncService {
           inserted += 1;
         } else if (row.payloadHash === existing.payloadHash) {
           skipped += 1;
-        } else if (row.statusRank < existing.statusRank && row.status !== 'OPEN') {
+        } else if (
+          !allowStatusDowngrade &&
+          row.statusRank < existing.statusRank &&
+          row.status !== 'OPEN'
+        ) {
           skipped += 1;
         } else {
           updated += 1;
@@ -1457,7 +1466,11 @@ export class InternalPositionsSyncService {
           } else if (row.payloadHash === existing.payloadHash) {
             actionType = 'skipped';
             message = 'payload unchanged';
-          } else if (row.statusRank < existing.statusRank && row.status !== 'OPEN') {
+          } else if (
+            !allowStatusDowngrade &&
+            row.statusRank < existing.statusRank &&
+            row.status !== 'OPEN'
+          ) {
             actionType = 'skipped';
             const existingStatusLabel = existing.status || 'UNKNOWN';
             const incomingStatusLabel = row.status || 'UNKNOWN';
@@ -1507,7 +1520,8 @@ export class InternalPositionsSyncService {
     accountId: string,
     brokerKey: string,
     items: unknown[],
-    runLogId?: string
+    runLogId?: string,
+    options: { allowStatusDowngrade?: boolean } = {}
   ): Promise<{ inserted: number; updated: number; skipped: number; symbols: string[] }> {
     if (items.length === 0) return { inserted: 0, updated: 0, skipped: 0, symbols: [] };
 
@@ -1559,7 +1573,7 @@ export class InternalPositionsSyncService {
       }
     }
 
-    const delta = await this.upsertPositionSnapshotBatch(prepared, runLogId);
+    const delta = await this.upsertPositionSnapshotBatch(prepared, runLogId, options);
     if (readModelRows.length) {
       await this.positionReadModelRepository.upsertReadModels(readModelRows);
       await this.positionReadModelRepository.refreshOpenDeltaProtectionFromOrderSnapshots?.({
@@ -1907,7 +1921,8 @@ export class InternalPositionsSyncService {
               resolvedAccountId,
               resolvedBrokerKey.toLowerCase(),
               deduped,
-              request.runLogId
+              request.runLogId,
+              { allowStatusDowngrade: forceBackfill }
             );
 
             insertedRecords += delta.inserted;
