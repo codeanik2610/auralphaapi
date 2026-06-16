@@ -205,6 +205,32 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     ],
   },
   {
+    key: 'broker-reconciliation',
+    label: 'Broker Reconciliation',
+    lane: 'baseline',
+    controllers: ['BrokerReconciliationController.ts', 'InternalBrokerReconciliationController.ts'],
+    services: [
+      'BrokerReconciliationBatchService.ts',
+      'BrokerReconciliationMatchService.ts',
+      'BrokerReconciliationReadService.ts',
+      'BrokerReconciliationSchedulerService.ts',
+      'DeltaBrokerReconciliationSyncService.ts',
+      'MudrexBrokerReconciliationSyncService.ts',
+    ],
+    tests: [
+      script('test:broker-reconciliation-storage', 'scripts/test-broker-reconciliation-storage.ts'),
+      script('test:mudrex-reconciliation-sync', 'scripts/test-mudrex-reconciliation-sync.ts'),
+      script('test:delta-reconciliation-sync', 'scripts/test-delta-reconciliation-sync.ts'),
+      script('test:broker-reconciliation-match', 'scripts/test-broker-reconciliation-match.ts'),
+      script('test:broker-reconciliation-read', 'scripts/test-broker-reconciliation-read.ts'),
+      script('test:broker-reconciliation-batch', 'scripts/test-broker-reconciliation-batch.ts'),
+      script(
+        'test:broker-reconciliation-scheduler',
+        'scripts/test-broker-reconciliation-scheduler.ts'
+      ),
+    ],
+  },
+  {
     key: 'connections',
     label: 'Connections',
     lane: 'baseline',
@@ -460,8 +486,22 @@ export const COVERAGE_MODULES: CoverageModule[] = [
     lane: 'cross-cutting',
     controllers: ['PositionsController.ts'],
     services: ['BrokerPositionsFacadeService.ts', 'PaperTradingWorkspaceService.ts'],
-    tests: [script('test:positions', 'scripts/test-positions.ts')],
-    checks: [script('check:positions-health', 'scripts/checks/check-positions-health.ts')],
+    tests: [
+      script('test:positions', 'scripts/test-positions.ts'),
+      script(
+        'test:positions-reconciliation-repair',
+        'scripts/test-positions-reconciliation-repair.ts'
+      ),
+      fileOnly('scripts/test-positions-mudrex-partial.ts'),
+      fileOnly('scripts/test-positions-delta-aggregation.ts'),
+      fileOnly('scripts/test-positions-mudrex-history-window.ts'),
+      fileOnly('scripts/test-positions-history-backfill-script.ts'),
+      fileOnly('scripts/test-positions-reconciliation-check.ts'),
+    ],
+    checks: [
+      script('check:positions-health', 'scripts/checks/check-positions-health.ts'),
+      script('check:positions-reconciliation', 'scripts/checks/check-positions-reconciliation.ts'),
+    ],
     releaseGates: [
       script('release-gate:positions', 'scripts/release-gates/release-gate-positions.ts'),
     ],
@@ -882,6 +922,10 @@ export const SYSTEM_SCRIPT_SURFACE = {
     script('db:encrypt-broker-secrets', 'scripts/db/db-encrypt-broker-account-secrets.ts'),
   ],
   rebuildScripts: [
+    script(
+      'rebuild:positions-history',
+      'scripts/rebuild/backfill-positions-history-and-rebuild.ts'
+    ),
     script('rebuild:positions-read-model', 'scripts/rebuild/rebuild-positions-read-model.ts'),
     script('rebuild:risk-normalized-storage', 'scripts/rebuild/rebuild-risk-normalized-storage.ts'),
   ],

@@ -942,11 +942,211 @@ export class DeltaExchangePositionsAdapter implements BrokerPositionsAdapter {
       }
     }
 
-    // Most recent first.
-    output.sort(
-      (a, b) => toTimestamp(String(b.updated_at || '')) - toTimestamp(String(a.updated_at || ''))
+    return this.aggregateClosedPositionFillBatches(output);
+  }
+
+  private aggregateClosedPositionFillBatches(
+    rows: Array<Record<string, unknown>>
+  ): Array<Record<string, unknown>> {
+    if (rows.length <= 1) {
+      return this.sortClosedPositionRows(rows);
+    }
+
+    const sorted = this.sortClosedPositionRows(rows);
+    const grouped = new Map<string, Array<Record<string, unknown>>>();
+    const order: string[] = [];
+
+    for (const row of sorted) {
+      const key = this.buildClosedPositionFillBatchKey(row);
+      if (!key) {
+        const passthroughKey = `passthrough:${order.length}`;
+        grouped.set(passthroughKey, [row]);
+        order.push(passthroughKey);
+        continue;
+      }
+      if (!grouped.has(key)) {
+        grouped.set(key, []);
+        order.push(key);
+      }
+      grouped.get(key)?.push(row);
+    }
+
+    const aggregated = order.flatMap((key) => {
+      const group = grouped.get(key) ?? [];
+      if (group.length <= 1) {
+        return group;
+      }
+      return [this.mergeClosedPositionFillBatch(group)];
+    });
+
+    return this.sortClosedPositionRows(aggregated);
+  }
+
+  private buildClosedPositionFillBatchKey(row: Record<string, unknown>): string | null {
+    const productId = String(row.asset_uuid ?? row.product_id ?? '')
+      .trim()
+      .toUpperCase();
+    const symbol = String(row.symbol ?? '')
+      .trim()
+      .toUpperCase();
+    const side = String(row.position_type ?? row.side ?? '')
+      .trim()
+      .toLowerCase();
+    const status = String(row.status ?? '')
+      .trim()
+      .toLowerCase();
+    const openedAtSecond = this.toTimestampSecondKey(row.created_at);
+    const closedAtSecond = this.toTimestampSecondKey(row.closed_at ?? row.updated_at);
+    const entryPrice = this.normalizeBatchNumber(row.entry_price);
+    const closeOrderId = String(row.close_order_id ?? '').trim();
+    const closeBatch = closeOrderId ? `order:${closeOrderId}` : `second:${closedAtSecond}`;
+
+    if (!(productId || symbol) || !side || !status || !openedAtSecond || !closedAtSecond) {
+      return null;
+    }
+
+    return [
+      productId || symbol,
+      side,
+      status,
+      openedAtSecond,
+      entryPrice || 'NA',
+      closeBatch,
+      closedAtSecond,
+    ].join('|');
+  }
+
+  private mergeClosedPositionFillBatch(
+    rows: Array<Record<string, unknown>>
+  ): Record<string, unknown> {
+    const primary = rows[0] ?? {};
+    const quantity = this.sumRowNumber(rows, 'quantity');
+    const quantityContracts = this.sumRowNumber(rows, 'quantity_contracts');
+    const baseQuantity = this.sumNullableRowNumber(rows, 'base_quantity');
+    const realized = this.sumRowNumber(rows, 'realized');
+    const pnl = this.sumRowNumber(rows, 'pnl');
+    const commission = this.sumNullableRowNumber(rows, 'commission');
+    const closeFillIds = this.collectDistinctStrings(rows, 'close_fill_id');
+    const closeOrderIds = this.collectDistinctStrings(rows, 'close_order_id');
+    const weightedClosedPrice = this.calculateWeightedClosePrice(rows);
+    const closedAt = primary.closed_at ?? primary.updated_at;
+    const productId = String(primary.asset_uuid ?? primary.product_id ?? '').trim();
+    const lifecycleId = buildDeltaClosedPositionLifecycleId({
+      productId,
+      side: primary.position_type ?? primary.side ?? primary.order_type,
+      status: primary.status ?? 'closed',
+      quantity,
+      entryPrice: primary.entry_price ?? primary.entryPrice,
+      closePrice: primary.closed_price ?? primary.closedPrice,
+      closedAt,
+    });
+
+    return {
+      ...primary,
+      id: lifecycleId ?? primary.id,
+      quantity: this.toHistoryNumberString(quantity),
+      quantity_contracts: this.toHistoryNumberString(quantityContracts),
+      base_quantity:
+        baseQuantity === null
+          ? (primary.base_quantity ?? null)
+          : this.toHistoryNumberString(baseQuantity),
+      pnl: this.toHistoryNumberValue(pnl),
+      realized: this.toHistoryNumberValue(realized),
+      commission:
+        commission === null ? (primary.commission ?? null) : this.toHistoryNumberValue(commission),
+      close_state: rows.some((row) => String(row.close_state || '').toUpperCase() === 'CLOSED')
+        ? 'CLOSED'
+        : 'PARTIAL',
+      split_fill_count: rows.length,
+      close_fill_ids: closeFillIds,
+      close_order_ids: closeOrderIds,
+      weighted_closed_price:
+        weightedClosedPrice === null ? null : this.toHistoryNumberString(weightedClosedPrice),
+    };
+  }
+
+  private sortClosedPositionRows(
+    rows: Array<Record<string, unknown>>
+  ): Array<Record<string, unknown>> {
+    return [...rows].sort(
+      (a, b) => this.toTimestampMs(b.updated_at) - this.toTimestampMs(a.updated_at)
     );
-    return output;
+  }
+
+  private toTimestampMs(value: unknown): number {
+    if (!value) return 0;
+    const date = new Date(String(value));
+    const time = date.getTime();
+    return Number.isNaN(time) ? 0 : time;
+  }
+
+  private toTimestampSecondKey(value: unknown): string | null {
+    const time = this.toTimestampMs(value);
+    if (!time) return null;
+    return new Date(Math.round(time / 1000) * 1000).toISOString();
+  }
+
+  private normalizeBatchNumber(value: unknown): string | null {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return numeric.toFixed(8);
+  }
+
+  private sumRowNumber(rows: Array<Record<string, unknown>>, key: string): number {
+    return rows.reduce((sum, row) => sum + this.toUnknownNumber(row[key]), 0);
+  }
+
+  private sumNullableRowNumber(rows: Array<Record<string, unknown>>, key: string): number | null {
+    let hasValue = false;
+    const sum = rows.reduce((total, row) => {
+      const rawValue = row[key];
+      if (rawValue === undefined || rawValue === null || String(rawValue).trim() === '') {
+        return total;
+      }
+      const value = this.toUnknownNumber(rawValue);
+      if (Number.isFinite(value)) {
+        hasValue = true;
+        return total + value;
+      }
+      return total;
+    }, 0);
+    return hasValue ? sum : null;
+  }
+
+  private collectDistinctStrings(rows: Array<Record<string, unknown>>, key: string): string[] {
+    return Array.from(
+      new Set(rows.map((row) => String(row[key] ?? '').trim()).filter((value) => value.length > 0))
+    );
+  }
+
+  private calculateWeightedClosePrice(rows: Array<Record<string, unknown>>): number | null {
+    let notional = 0;
+    let quantity = 0;
+    for (const row of rows) {
+      const rowQuantity = this.toUnknownNumber(row.quantity);
+      const closePrice = this.toUnknownNumber(row.closed_price ?? row.closedPrice);
+      if (rowQuantity > 0 && closePrice > 0) {
+        notional += rowQuantity * closePrice;
+        quantity += rowQuantity;
+      }
+    }
+    return quantity > 0 ? notional / quantity : null;
+  }
+
+  private toHistoryNumberValue(value: number): number {
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+    return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
+  }
+
+  private toHistoryNumberString(value: number): string {
+    return String(this.toHistoryNumberValue(value));
+  }
+
+  private toUnknownNumber(value: unknown): number {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 
   private resolveProductForFill(

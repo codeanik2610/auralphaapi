@@ -389,6 +389,59 @@ export class PositionsService {
       throw new BadGatewayAppError('Mudrex returned an invalid position history payload');
     }
 
-    return payload;
+    return this.filterPositionHistoryByDateWindow(payload, startDate, endDate).slice(0, limit);
+  }
+
+  private filterPositionHistoryByDateWindow(
+    items: MudrexPositionHistoryItem[],
+    startDate?: string,
+    endDate?: string
+  ): MudrexPositionHistoryItem[] {
+    const startMs = startDate ? Date.parse(`${startDate}T00:00:00.000Z`) : null;
+    const endMs = endDate ? Date.parse(`${endDate}T23:59:59.999Z`) : null;
+    if (startMs === null && endMs === null) {
+      return items;
+    }
+
+    return items.filter((item) => {
+      const positionMs = this.readPositionHistoryTimestampMs(item);
+      if (!Number.isFinite(positionMs)) {
+        return false;
+      }
+      if (startMs !== null && positionMs < startMs) {
+        return false;
+      }
+      if (endMs !== null && positionMs > endMs) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  private readPositionHistoryTimestampMs(item: MudrexPositionHistoryItem): number {
+    const payload = item as MudrexPositionHistoryItem & {
+      closed_at?: string;
+      closedAt?: string;
+      updatedAt?: string;
+      createdAt?: string;
+    };
+    for (const value of [
+      payload.closed_at,
+      payload.closedAt,
+      payload.updated_at,
+      payload.updatedAt,
+      payload.created_at,
+      payload.createdAt,
+    ]) {
+      const raw = String(value ?? '').trim();
+      if (!raw) {
+        continue;
+      }
+      const timestamp = Date.parse(raw);
+      if (Number.isFinite(timestamp)) {
+        return timestamp;
+      }
+    }
+    return Number.NaN;
   }
 }

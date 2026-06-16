@@ -73,6 +73,7 @@
     "test:scheduler-account-scope": "node --import tsx scripts/test-scheduler-account-scope.ts",
     "test:positions-orders-sync": "node --import tsx scripts/test-positions-orders-sync.ts",
     "test:positions-scheduler": "node --import tsx scripts/test-positions-scheduler.ts",
+    "test:positions-reconciliation-repair": "node --import tsx scripts/test-positions-reconciliation-repair.ts",
     "test:funds-scheduler": "node --import tsx scripts/test-funds-scheduler.ts",
     "test:risk-scheduler": "node --import tsx scripts/test-risk-scheduler.ts",
     "test:schedulers": "node --import tsx scripts/test-schedulers.ts",
@@ -134,6 +135,7 @@
     "check:orders-scheduler-health": "node --import tsx scripts/checks/check-orders-scheduler-health.ts",
     "check:portfolio-health": "node --import tsx scripts/checks/check-portfolio-health.ts",
     "check:positions-health": "node --import tsx scripts/checks/check-positions-health.ts",
+    "check:positions-reconciliation": "node --import tsx scripts/checks/check-positions-reconciliation.ts",
     "check:positions-scheduler-health": "node --import tsx scripts/checks/check-positions-scheduler-health.ts",
     "check:activity-health": "node --import tsx scripts/checks/check-activity-health.ts",
     "check:alerts-health": "node --import tsx scripts/checks/check-alerts-health.ts",
@@ -259,6 +261,7 @@
     "repair:suggested-trades-mudrex-protection": "node --import tsx scripts/maintenance/repair-suggested-trades-mudrex-protection.ts",
     "repair:suggested-trades-delta-protection": "node --import tsx scripts/maintenance/repair-suggested-trades-delta-protection.ts",
     "cleanup:stale-mudrex-open-executions": "node --import tsx scripts/maintenance/cleanup-stale-mudrex-open-executions.ts",
+    "rebuild:positions-history": "node --import tsx scripts/rebuild/backfill-positions-history-and-rebuild.ts",
     "rebuild:positions-read-model": "node --import tsx scripts/rebuild/rebuild-positions-read-model.ts",
     "rebuild:risk-normalized-storage": "node --import tsx scripts/rebuild/rebuild-risk-normalized-storage.ts"
   },

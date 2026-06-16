@@ -1293,7 +1293,39 @@ export class InternalPositionsSyncService {
     if (!assetUuid || !createdAt) {
       return null;
     }
-    return `mudrex:${assetUuid}:${createdAt}:${side || 'NA'}`;
+    const status = this.normalizePositionStatus(String(item.status || '').trim() || null);
+    const lifecycleSuffix = this.buildMudrexPositionLifecycleExternalIdSuffix(item, status);
+    return ['mudrex', assetUuid, createdAt, side || 'NA', ...lifecycleSuffix].join(':');
+  }
+
+  private buildMudrexPositionLifecycleExternalIdSuffix(
+    item: Record<string, unknown>,
+    status: string | null
+  ): string[] {
+    if (status !== 'PARTIAL') {
+      return [];
+    }
+
+    const rawEventId = String(
+      item.id ?? item.position_id ?? item.positionId ?? item.future_position_uuid ?? ''
+    ).trim();
+    if (rawEventId && rawEventId.length <= 64) {
+      return ['PARTIAL', rawEventId];
+    }
+
+    const fingerprint = [
+      item.closed_at ?? item.closedAt ?? item.updated_at ?? item.updatedAt ?? '',
+      item.quantity ?? item.size ?? '',
+      item.closed_price ?? item.closedPrice ?? '',
+      item.pnl ?? item.realized ?? item.realized_pnl ?? '',
+    ]
+      .map((value) => String(value ?? '').trim())
+      .join('|');
+    const digest = createHash('sha256')
+      .update(fingerprint || JSON.stringify(item))
+      .digest('hex')
+      .slice(0, 16);
+    return ['PARTIAL', digest];
   }
 
   // ── Single forward-only upsert ───────────────────────────────
