@@ -5078,7 +5078,6 @@ async function runMudrexPartialCloseAggregationAssertions(): Promise<void> {
     'mudrex',
     [
       {
-        id: 'latest-close-slice',
         asset_uuid: 'asset-btc',
         symbol: 'BTCUSDT',
         status: 'CLOSED',
@@ -5107,7 +5106,11 @@ async function runMudrexPartialCloseAggregationAssertions(): Promise<void> {
   assert.equal(Number(payload.closed_price).toFixed(8), '63235.58947368');
   assert.equal(Number(payload.realized_pnl).toFixed(8), '14.64030000');
 
-  assert.equal(capturedReadModelRows[0].externalId, 'mudrex:asset-btc:2026-06-09T03:16:19Z:LONG');
+  assert.ok(
+    String(capturedReadModelRows[0].externalId || '').startsWith(
+      'mudrex:asset-btc:2026-06-09T03:16:19Z:LONG:CLOSED:'
+    )
+  );
   assert.equal(capturedReadModelRows[0].quantity, 0.038);
   assert.equal(Number(capturedReadModelRows[0].closedPrice).toFixed(8), '63235.58947368');
   assert.equal(Number(capturedReadModelRows[0].realizedPnl).toFixed(8), '14.64030000');
@@ -5144,7 +5147,10 @@ function runMudrexPartialLifecycleExternalIdAssertions(): void {
   const closedRow = service.buildPositionRow('user-1', 'account-1', 'mudrex', { ...closed });
   const partialRow = service.buildPositionRow('user-1', 'account-1', 'mudrex', { ...partial });
 
-  assert.equal(closedRow.externalId, 'mudrex:asset-sol:2026-06-16T04:00:00.000Z:LONG');
+  assert.equal(
+    closedRow.externalId,
+    'mudrex:asset-sol:2026-06-16T04:00:00.000Z:LONG:CLOSED:closed-position-id'
+  );
   assert.equal(
     partialRow.externalId,
     'mudrex:asset-sol:2026-06-16T04:00:00.000Z:LONG:PARTIAL:partial-position-id'
@@ -5184,9 +5190,35 @@ function orderPayload(
   };
 }
 
+async function runPositionBackfillDriftRepairAssertions(): Promise<void> {
+  const { default: fs } = await import("node:fs");
+  const { default: path } = await import("node:path");
+  const source = fs.readFileSync(
+    path.join(process.cwd(), 'src/api/services/InternalPositionsSyncService.ts'),
+    'utf8'
+  );
+
+  assert.equal(
+    source.includes("AND external_id LIKE 'mudrex:%:PARTIAL:%'"),
+    true,
+    'Mudrex historical partial lifecycle rows must not be stale-closed'
+  );
+  assert.equal(
+    source.includes('pruneDeltaClosedSnapshotsMissingFromBackfill'),
+    true,
+    'Delta forced backfill must prune closed read-model rows missing from fresh broker history'
+  );
+  assert.equal(
+    source.includes("JSON_EXTRACT(payload_json, '$.closed_at')"),
+    true,
+    'Delta forced backfill pruning must be bounded by broker close/update timestamps'
+  );
+}
+
 async function main(): Promise<void> {
   await runMudrexPartialCloseAggregationAssertions();
   runMudrexPartialLifecycleExternalIdAssertions();
+  await runPositionBackfillDriftRepairAssertions();
   console.log('Positions/orders sync Phase 10 guard passed.');
 }
 

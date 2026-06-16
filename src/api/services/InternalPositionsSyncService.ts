@@ -1601,8 +1601,16 @@ export class InternalPositionsSyncService {
     items: unknown[],
     runLogId?: string,
     options: { allowStatusDowngrade?: boolean } = {}
-  ): Promise<{ inserted: number; updated: number; skipped: number; symbols: string[] }> {
-    if (items.length === 0) return { inserted: 0, updated: 0, skipped: 0, symbols: [] };
+  ): Promise<{
+    inserted: number;
+    updated: number;
+    skipped: number;
+    symbols: string[];
+    externalIds: string[];
+  }> {
+    if (items.length === 0) {
+      return { inserted: 0, updated: 0, skipped: 0, symbols: [], externalIds: [] };
+    }
 
     await this.enrichDeltaOpenPositionLeverageFromConfirmedOrders(
       userId,
@@ -1661,7 +1669,10 @@ export class InternalPositionsSyncService {
         brokerKey,
       });
     }
-    return delta;
+    return {
+      ...delta,
+      externalIds: Array.from(new Set(prepared.map((row) => row.externalId).filter(Boolean))),
+    };
   }
 
   // ── Table DDL ────────────────────────────────────────────────
@@ -2024,7 +2035,12 @@ export class InternalPositionsSyncService {
                    AND account_id = ?
                    AND LOWER(broker_key) = ?
                    AND status_rank < ?
-                   AND last_seen_at < ?`,
+                   AND last_seen_at < ?
+                   AND NOT (
+                     LOWER(broker_key) = 'mudrex'
+                     AND UPPER(COALESCE(status, '')) = 'PARTIAL'
+                     AND external_id LIKE 'mudrex:%:PARTIAL:%'
+                   )`,
                 [
                   userId,
                   resolvedAccountId,
@@ -2241,6 +2257,23 @@ export class InternalPositionsSyncService {
               affectedSymbols.add(symbol);
             }
 
+            const deltaBackfillCleanup =
+              forceBackfill && !historyError
+                ? await this.pruneDeltaClosedSnapshotsMissingFromBackfill({
+                    userId,
+                    accountId: resolvedAccountId,
+                    brokerKey: resolvedBrokerKey.toLowerCase(),
+                    startDate: startDateStr,
+                    endDate: endDateStr,
+                    syncedExternalIds: delta.externalIds,
+                  })
+                : { deletedSchedulerRows: 0, deletedReadModelRows: 0, symbols: [] };
+            updatedRecords +=
+              deltaBackfillCleanup.deletedSchedulerRows + deltaBackfillCleanup.deletedReadModelRows;
+            for (const symbol of deltaBackfillCleanup.symbols) {
+              affectedSymbols.add(symbol);
+            }
+
             if (affectedSymbols.size > 0) {
               try {
                 await this.suggestedTradesService.syncExecutionForPositionUpdates(
@@ -2372,6 +2405,90 @@ export class InternalPositionsSyncService {
       closePrice,
       closedAt,
     });
+  }
+
+  private async pruneDeltaClosedSnapshotsMissingFromBackfill(input: {
+    userId: string;
+    accountId: string;
+    brokerKey: string;
+    startDate: string;
+    endDate: string;
+    syncedExternalIds: string[];
+  }): Promise<DeltaClosedLifecycleCleanupResult> {
+    const normalizedBrokerKey = String(input.brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (normalizedBrokerKey !== 'delta_exchange') {
+      return { deletedSchedulerRows: 0, deletedReadModelRows: 0, symbols: [] };
+    }
+
+    const syncedExternalIds = Array.from(
+      new Set(input.syncedExternalIds.map((item) => String(item || '').trim()).filter(Boolean))
+    );
+    const closeRank = this.computePositionStatusRank('CLOSED');
+    const windowStart = `${input.startDate} 00:00:00`;
+    const windowEnd = `${input.endDate} 23:59:59`;
+    const positionTimeExpression = `
+      COALESCE(
+        CAST(REPLACE(SUBSTRING(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.closed_at')), ''), 1, 19), 'T', ' ') AS DATETIME),
+        CAST(REPLACE(SUBSTRING(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.updated_at')), ''), 1, 19), 'T', ' ') AS DATETIME),
+        updated_at
+      )
+    `;
+    const notInClause = syncedExternalIds.length
+      ? `AND external_id NOT IN (${syncedExternalIds.map(() => '?').join(', ')})`
+      : '';
+    const rows = (await coreDataSource.query(
+      `SELECT id,
+              external_id AS externalId,
+              symbol
+         FROM scheduler_positions_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND status_rank >= ?
+          AND ${positionTimeExpression} BETWEEN ? AND ?
+          ${notInClause}`,
+      [
+        input.userId,
+        input.accountId,
+        normalizedBrokerKey,
+        closeRank,
+        windowStart,
+        windowEnd,
+        ...syncedExternalIds,
+      ]
+    )) as DeltaClosedLifecycleRow[];
+
+    const rowIds = rows.map((row) => String(row.id || '').trim()).filter(Boolean);
+    const externalIds = rows.map((row) => String(row.externalId || '').trim()).filter(Boolean);
+    const symbols = Array.from(
+      new Set(
+        rows
+          .map((row) =>
+            String(row.symbol || '')
+              .trim()
+              .toUpperCase()
+          )
+          .filter(Boolean)
+      )
+    );
+
+    const deletedSchedulerRows = await this.deleteDeltaClosedSchedulerLifecycleDuplicates(
+      input.userId,
+      input.accountId,
+      normalizedBrokerKey,
+      rowIds
+    );
+    const deletedReadModelRows =
+      await this.positionReadModelRepository.deleteReadModelsByExternalIds(
+        input.userId,
+        input.accountId,
+        normalizedBrokerKey,
+        externalIds
+      );
+
+    return { deletedSchedulerRows, deletedReadModelRows, symbols };
   }
 
   private async pruneDeltaClosedPositionLifecycleDuplicates(
