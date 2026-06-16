@@ -2274,6 +2274,24 @@ export class InternalPositionsSyncService {
               affectedSymbols.add(symbol);
             }
 
+            const mudrexBackfillCleanup =
+              forceBackfill && !historyError
+                ? await this.pruneMudrexLegacyTerminalSnapshotsMissingFromBackfill({
+                    userId,
+                    accountId: resolvedAccountId,
+                    brokerKey: resolvedBrokerKey.toLowerCase(),
+                    startDate: startDateStr,
+                    endDate: endDateStr,
+                    syncedExternalIds: delta.externalIds,
+                  })
+                : { deletedSchedulerRows: 0, deletedReadModelRows: 0, symbols: [] };
+            updatedRecords +=
+              mudrexBackfillCleanup.deletedSchedulerRows +
+              mudrexBackfillCleanup.deletedReadModelRows;
+            for (const symbol of mudrexBackfillCleanup.symbols) {
+              affectedSymbols.add(symbol);
+            }
+
             if (affectedSymbols.size > 0) {
               try {
                 await this.suggestedTradesService.syncExecutionForPositionUpdates(
@@ -2475,6 +2493,94 @@ export class InternalPositionsSyncService {
     );
 
     const deletedSchedulerRows = await this.deleteDeltaClosedSchedulerLifecycleDuplicates(
+      input.userId,
+      input.accountId,
+      normalizedBrokerKey,
+      rowIds
+    );
+    const deletedReadModelRows =
+      await this.positionReadModelRepository.deleteReadModelsByExternalIds(
+        input.userId,
+        input.accountId,
+        normalizedBrokerKey,
+        externalIds
+      );
+
+    return { deletedSchedulerRows, deletedReadModelRows, symbols };
+  }
+
+  private async pruneMudrexLegacyTerminalSnapshotsMissingFromBackfill(input: {
+    userId: string;
+    accountId: string;
+    brokerKey: string;
+    startDate: string;
+    endDate: string;
+    syncedExternalIds: string[];
+  }): Promise<DeltaClosedLifecycleCleanupResult> {
+    const normalizedBrokerKey = String(input.brokerKey || '')
+      .trim()
+      .toLowerCase();
+    if (normalizedBrokerKey !== 'mudrex') {
+      return { deletedSchedulerRows: 0, deletedReadModelRows: 0, symbols: [] };
+    }
+
+    const syncedExternalIds = Array.from(
+      new Set(input.syncedExternalIds.map((item) => String(item || '').trim()).filter(Boolean))
+    );
+    const closeRank = this.computePositionStatusRank('CLOSED');
+    const windowStart = `${input.startDate} 00:00:00`;
+    const windowEnd = `${input.endDate} 23:59:59`;
+    const positionTimeExpression = `
+      COALESCE(
+        CAST(REPLACE(SUBSTRING(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.closed_at')), ''), 1, 19), 'T', ' ') AS DATETIME),
+        CAST(REPLACE(SUBSTRING(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.updated_at')), ''), 1, 19), 'T', ' ') AS DATETIME),
+        updated_at
+      )
+    `;
+    const notInClause = syncedExternalIds.length
+      ? `AND external_id NOT IN (${syncedExternalIds.map(() => '?').join(', ')})`
+      : '';
+    const rows = (await coreDataSource.query(
+      `SELECT id,
+              external_id AS externalId,
+              symbol
+         FROM scheduler_positions_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND status_rank >= ?
+          AND external_id LIKE 'mudrex:%'
+          AND external_id NOT LIKE 'mudrex:%:CLOSED:%'
+          AND external_id NOT LIKE 'mudrex:%:LIQUIDATED:%'
+          AND external_id NOT LIKE 'mudrex:%:PARTIAL:%'
+          AND ${positionTimeExpression} BETWEEN ? AND ?
+          ${notInClause}`,
+      [
+        input.userId,
+        input.accountId,
+        normalizedBrokerKey,
+        closeRank,
+        windowStart,
+        windowEnd,
+        ...syncedExternalIds,
+      ]
+    )) as DeltaClosedLifecycleRow[];
+
+    const rowIds = rows.map((row) => String(row.id || '').trim()).filter(Boolean);
+    const externalIds = rows.map((row) => String(row.externalId || '').trim()).filter(Boolean);
+    const symbols = Array.from(
+      new Set(
+        rows
+          .map((row) =>
+            String(row.symbol || '')
+              .trim()
+              .toUpperCase()
+          )
+          .filter(Boolean)
+      )
+    );
+
+    const deletedSchedulerRows = await this.deleteSchedulerPositionRowsByIds(
       input.userId,
       input.accountId,
       normalizedBrokerKey,
@@ -2809,6 +2915,30 @@ export class InternalPositionsSyncService {
   }
 
   private async deleteDeltaClosedSchedulerLifecycleDuplicates(
+    userId: string,
+    accountId: string,
+    brokerKey: string,
+    rowIds: string[]
+  ): Promise<number> {
+    const normalizedRowIds = Array.from(
+      new Set(rowIds.map((value) => String(value || '').trim()).filter(Boolean))
+    );
+    if (!normalizedRowIds.length) {
+      return 0;
+    }
+
+    const result = await coreDataSource.query(
+      `DELETE FROM scheduler_positions_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND id IN (${normalizedRowIds.map(() => '?').join(', ')})`,
+      [userId, accountId, brokerKey, ...normalizedRowIds]
+    );
+    return this.readAffectedRows(result);
+  }
+
+  private async deleteSchedulerPositionRowsByIds(
     userId: string,
     accountId: string,
     brokerKey: string,
