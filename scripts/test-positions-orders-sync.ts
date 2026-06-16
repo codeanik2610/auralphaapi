@@ -1338,6 +1338,8 @@ async function testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolat
       executionScope: 'system_scheduler',
       requestUserId: 'admin-user-1',
       targetUserIds: ['user-overridden'],
+      brokerKeys: ['mudrex', 'delta_exchange'],
+      accountIds: ['acct-mudrex', 'acct-delta'],
       startDate: '2026-04-10',
       endDate: '2026-04-10',
     });
@@ -1536,6 +1538,8 @@ async function testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation
       executionScope: 'system_scheduler',
       requestUserId: 'admin-user-1',
       targetUserIds: ['user-overridden'],
+      brokerKeys: ['mudrex', 'delta_exchange'],
+      accountIds: ['acct-mudrex', 'acct-delta'],
       startDate: '2026-04-10',
       endDate: '2026-04-10',
     });

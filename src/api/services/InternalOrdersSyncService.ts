@@ -1190,16 +1190,11 @@ export class InternalOrdersSyncService {
     const isInfraSystemAccountsRequest =
       userIds.length === 1 && userIds[0] === env.scheduler.systemUserId;
     const accountGroups = isInfraSystemAccountsRequest
-      ? [
-          {
-            userId: String(env.scheduler.systemUserId || '').trim(),
-            accounts: this.filterScopedAccounts(
-              await this.brokerAccountRepository.getActiveSystemBrokerAccounts(),
-              brokerKeyFilter,
-              accountIdFilter
-            ),
-          },
-        ]
+      ? this.groupInfraAccountsByOwner(
+          await this.brokerAccountRepository.getAllActiveBrokerAccounts(),
+          brokerKeyFilter,
+          accountIdFilter
+        )
       : await Promise.all(
           userIds.map(async (userId) => {
             const isSystemUser = userId === env.scheduler.systemUserId;
