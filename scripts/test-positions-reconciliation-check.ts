@@ -24,6 +24,8 @@ function runPositionsReconciliationCheckAssertions(): void {
   assert.match(checkSource, /POSITIONS_RECONCILIATION_MAX_OUTSIDE_WINDOW_ROWS/);
   assert.match(checkSource, /POSITIONS_RECONCILIATION_MAX_EXTERNAL_MISSING/);
   assert.match(checkSource, /positions-reconciliation-check:/);
+  assert.match(checkSource, /mudrexCanonicalExternalIdOf/);
+  assert.match(checkSource, /createHash\('sha256'\)/);
   assert.match(checkSource, /state: failedChecks\.length \? 'failed' : 'passed'/);
   assert.match(checkSource, /process\.exitCode = 1/);
   assert.ok(

@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { Container } from 'typedi';
 import { BrokerRuntimeRegistry } from '../../src/brokers/core/BrokerRuntimeRegistry';
 import { coreDataSource } from '../../src/database/data-source';
@@ -133,7 +134,9 @@ function symbolOf(record: Record<string, unknown>): string {
   ).toUpperCase();
 }
 
-function externalIdOf(record: Record<string, unknown>): string {
+function externalIdOf(record: Record<string, unknown>, brokerKey?: string): string {
+  const mudrexExternalId = mudrexCanonicalExternalIdOf(record, brokerKey);
+  if (mudrexExternalId) return mudrexExternalId;
   return String(
     pick(record, [
       'external_id',
@@ -146,6 +149,52 @@ function externalIdOf(record: Record<string, unknown>): string {
       'product_id',
     ]) || ''
   );
+}
+
+function mudrexCanonicalExternalIdOf(
+  record: Record<string, unknown>,
+  brokerKey?: string
+): string | null {
+  if (String(brokerKey || '').trim().toLowerCase() !== 'mudrex') {
+    return null;
+  }
+
+  const assetUuid = String(pick(record, ['asset_uuid', 'assetUuid', 'asset_id', 'assetId']) || '')
+    .trim();
+  const createdAt = String(pick(record, ['created_at', 'createdAt']) || '').trim();
+  const side = String(pick(record, ['position_type', 'order_type', 'side']) || '')
+    .trim()
+    .toUpperCase();
+  if (!assetUuid || !createdAt) {
+    return null;
+  }
+
+  const base = ['mudrex', assetUuid, createdAt, side || 'NA'];
+  const status = normalizeStatus(record).toUpperCase();
+  if (!['PARTIAL', 'CLOSED', 'LIQUIDATED'].includes(status)) {
+    return base.join(':');
+  }
+
+  const rawEventId = String(
+    pick(record, ['id', 'position_id', 'positionId', 'future_position_uuid']) || ''
+  ).trim();
+  if (rawEventId && rawEventId.length <= 64) {
+    return [...base, status, rawEventId].join(':');
+  }
+
+  const fingerprint = [
+    pick(record, ['closed_at', 'closedAt', 'updated_at', 'updatedAt']),
+    pick(record, ['quantity', 'size']),
+    pick(record, ['closed_price', 'closedPrice']),
+    pick(record, ['pnl', 'realized', 'realized_pnl']),
+  ]
+    .map((value) => String(value ?? '').trim())
+    .join('|');
+  const digest = createHash('sha256')
+    .update(fingerprint || JSON.stringify(record))
+    .digest('hex')
+    .slice(0, 16);
+  return [...base, status, digest].join(':');
 }
 
 function quantityOf(record: Record<string, unknown>): number {
@@ -187,7 +236,7 @@ function normalizePosition(
     source,
     brokerKey,
     accountId,
-    externalId: externalIdOf(record),
+    externalId: externalIdOf(record, brokerKey),
     symbol: symbolOf(record),
     side: normalizeSide(record),
     status: normalizeStatus(record),

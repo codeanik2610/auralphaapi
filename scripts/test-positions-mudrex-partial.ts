@@ -34,12 +34,15 @@ async function runMudrexPartialLifecycleAssertions(): Promise<void> {
   const closedRow = service.buildPositionRow('user-1', 'account-1', 'mudrex', { ...closed });
   const partialRow = service.buildPositionRow('user-1', 'account-1', 'mudrex', { ...partial });
 
-  assert.equal(closedRow.externalId, 'mudrex:asset-sol:2026-06-16T04:00:00.000Z:LONG');
+  assert.equal(
+    closedRow.externalId,
+    'mudrex:asset-sol:2026-06-16T04:00:00.000Z:LONG:CLOSED:closed-position-id'
+  );
   assert.equal(
     partialRow.externalId,
     'mudrex:asset-sol:2026-06-16T04:00:00.000Z:LONG:PARTIAL:partial-position-id'
   );
-  assert.equal(partialRow.legacyExternalId, 'partial-position-id');
+  assert.equal(partialRow.legacyExternalId, 'mudrex:asset-sol:2026-06-16T04:00:00.000Z:LONG');
 
   const deduped = service.deduplicateByExternalId([{ ...closed }, { ...partial }], 'mudrex');
   assert.equal(deduped.length, 2);
