@@ -1402,6 +1402,7 @@ async function testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolat
 async function testPositionsBackfillCanCorrectStaleClosedSnapshotToBrokerPartial(): Promise<void> {
   const service = new InternalPositionsSyncService() as any;
   const originalQuery = (coreDataSource as any).query;
+  let stalePartialDeleted = false;
   const row = {
     userId: 'user-1',
     accountId: 'acct-mudrex',
@@ -1420,12 +1421,20 @@ async function testPositionsBackfillCanCorrectStaleClosedSnapshotToBrokerPartial
     },
   };
 
-  (coreDataSource as any).query = async (sql: string) => {
+  (coreDataSource as any).query = async (sql: string, params?: unknown[]) => {
     const statement = String(sql || '');
+    if (statement.includes('DELETE FROM scheduler_positions_snapshots')) {
+      assert.equal(params?.[2], row.externalId);
+      stalePartialDeleted = true;
+      return [{ affectedRows: 1 }];
+    }
     if (statement.includes('UPDATE scheduler_positions_snapshots')) {
       return [{ affectedRows: 0 }];
     }
     if (statement.includes('SELECT external_id, status, payload_hash, status_rank')) {
+      if (stalePartialDeleted) {
+        return [];
+      }
       return [
         {
           external_id: row.externalId,
@@ -1449,7 +1458,8 @@ async function testPositionsBackfillCanCorrectStaleClosedSnapshotToBrokerPartial
     const backfillResult = await service.upsertPositionSnapshotBatch([row], undefined, {
       allowStatusDowngrade: true,
     });
-    assert.equal(backfillResult.updated, 1);
+    assert.equal(backfillResult.inserted, 1);
+    assert.equal(backfillResult.updated, 0);
     assert.equal(backfillResult.skipped, 0);
   } finally {
     (coreDataSource as any).query = originalQuery;

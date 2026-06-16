@@ -1410,6 +1410,16 @@ export class InternalPositionsSyncService {
       const chunk = rows.slice(i, i + CHUNK_SIZE);
 
       for (const row of chunk) {
+        if (allowStatusDowngrade && row.status === 'PARTIAL') {
+          await coreDataSource.query(
+            `DELETE FROM scheduler_positions_snapshots
+              WHERE user_id = ?
+                AND account_id = ?
+                AND external_id = ?
+                AND COALESCE(status, '') <> 'PARTIAL'`,
+            [row.userId, row.accountId, row.externalId]
+          );
+        }
         if (row.legacyExternalId && row.legacyExternalId !== row.externalId) {
           const existingTargetRows = (await coreDataSource.query(
             `SELECT id
