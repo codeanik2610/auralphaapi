@@ -1456,6 +1456,38 @@ async function testPositionsBackfillCanCorrectStaleClosedSnapshotToBrokerPartial
   }
 }
 
+function testMudrexClosedLifecycleRowsKeepBrokerEventIdentityAndPnl(): void {
+  const service = new InternalPositionsSyncService() as any;
+  const base = {
+    asset_uuid: 'asset-sol',
+    symbol: 'SOLUSDT',
+    created_at: '2026-05-30T07:21:19Z',
+    position_type: 'SHORT',
+    status: 'CLOSED',
+    quantity: '12.1',
+    entry_price: '82.31',
+    closed_price: '82.95',
+    pnl: '-7.744',
+    closed_at: '2026-05-30T19:46:05Z',
+  };
+  const first = { ...base, id: 'mudrex-close-event-1' };
+  const second = { ...base, id: 'mudrex-close-event-2' };
+
+  const firstId = service.buildMudrexPositionExternalId('mudrex', first);
+  const secondId = service.buildMudrexPositionExternalId('mudrex', second);
+
+  assert.notEqual(firstId, secondId);
+  assert.equal(
+    firstId,
+    'mudrex:asset-sol:2026-05-30T07:21:19Z:SHORT:CLOSED:mudrex-close-event-1'
+  );
+  assert.equal(
+    service.buildMudrexPositionLegacyExternalId('mudrex', first),
+    'mudrex:asset-sol:2026-05-30T07:21:19Z:SHORT'
+  );
+  assert.equal(service.buildMudrexClosedPositionAggregationCandidate(first), null);
+}
+
 async function testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation(): Promise<void> {
   const service = new InternalOrdersSyncService() as any;
   const originalQuery = (coreDataSource as any).query;
@@ -2174,6 +2206,7 @@ async function run(): Promise<void> {
   await testOrdersSchedulerRuntimeMigratesToUserScope();
   await testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testPositionsBackfillCanCorrectStaleClosedSnapshotToBrokerPartial();
+  testMudrexClosedLifecycleRowsKeepBrokerEventIdentityAndPnl();
   await testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById();
   testOrdersSyncStaleCutoffFloorsToSqlSecond();

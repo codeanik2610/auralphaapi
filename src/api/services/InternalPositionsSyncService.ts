@@ -597,6 +597,9 @@ export class InternalPositionsSyncService {
     if (status !== 'CLOSED' && status !== 'LIQUIDATED') {
       return null;
     }
+    if (this.hasMudrexBrokerTerminalLifecycleEvent(item)) {
+      return null;
+    }
 
     const side = this.normalizeMudrexDirectionalSide(
       item.position_type ?? item.order_type ?? item.side
@@ -625,6 +628,30 @@ export class InternalPositionsSyncService {
       createdAtMs,
       directFuturePositionUuid,
     };
+  }
+
+  private hasMudrexBrokerTerminalLifecycleEvent(item: Record<string, unknown>): boolean {
+    const rawEventId = String(
+      item.id ?? item.position_id ?? item.positionId ?? item.future_position_uuid ?? ''
+    ).trim();
+    if (!rawEventId) {
+      return false;
+    }
+    const closedAtMs = this.readTimestampMs(
+      item.closed_at ?? item.closedAt ?? item.updated_at ?? item.updatedAt
+    );
+    const quantity =
+      this.toPositiveFiniteNumber(item.quantity) ?? this.toPositiveFiniteNumber(item.size);
+    const closedPrice =
+      this.toPositiveFiniteNumber(item.closed_price) ??
+      this.toPositiveFiniteNumber(item.closedPrice);
+    const realizedPnl = Number(item.pnl ?? item.realized ?? item.realized_pnl);
+    return (
+      closedAtMs !== null &&
+      quantity !== null &&
+      closedPrice !== null &&
+      Number.isFinite(realizedPnl)
+    );
   }
 
   private async listMudrexOrderSnapshotRowsForAggregation(
@@ -1223,6 +1250,7 @@ export class InternalPositionsSyncService {
   } | null {
     const rawExternalId = String(item.id || '').trim();
     const mudrexExternalId = this.buildMudrexPositionExternalId(brokerKey, item);
+    const mudrexLegacyExternalId = this.buildMudrexPositionLegacyExternalId(brokerKey, item);
     const externalId = mudrexExternalId || rawExternalId || this.buildPositionSyntheticId(item);
     if (!externalId) return null;
     const symbol = String(item.symbol || '').trim() || null;
@@ -1237,9 +1265,11 @@ export class InternalPositionsSyncService {
       brokerKey,
       externalId,
       legacyExternalId:
-        mudrexExternalId && rawExternalId && mudrexExternalId !== rawExternalId
-          ? rawExternalId
-          : null,
+        mudrexExternalId && mudrexLegacyExternalId && mudrexLegacyExternalId !== mudrexExternalId
+          ? mudrexLegacyExternalId
+          : mudrexExternalId && rawExternalId && mudrexExternalId !== rawExternalId
+            ? rawExternalId
+            : null,
       symbol,
       status,
       statusRank,
@@ -1278,6 +1308,27 @@ export class InternalPositionsSyncService {
     brokerKey: string,
     item: Record<string, unknown>
   ): string | null {
+    const base = this.buildMudrexPositionBaseExternalId(brokerKey, item);
+    if (!base) {
+      return null;
+    }
+    const status = this.normalizePositionStatus(String(item.status || '').trim() || null);
+    const lifecycleSuffix = this.buildMudrexPositionLifecycleExternalIdSuffix(item, status);
+    return [...base, ...lifecycleSuffix].join(':');
+  }
+
+  private buildMudrexPositionLegacyExternalId(
+    brokerKey: string,
+    item: Record<string, unknown>
+  ): string | null {
+    const base = this.buildMudrexPositionBaseExternalId(brokerKey, item);
+    return base ? base.join(':') : null;
+  }
+
+  private buildMudrexPositionBaseExternalId(
+    brokerKey: string,
+    item: Record<string, unknown>
+  ): string[] | null {
     if (
       String(brokerKey || '')
         .trim()
@@ -1293,24 +1344,23 @@ export class InternalPositionsSyncService {
     if (!assetUuid || !createdAt) {
       return null;
     }
-    const status = this.normalizePositionStatus(String(item.status || '').trim() || null);
-    const lifecycleSuffix = this.buildMudrexPositionLifecycleExternalIdSuffix(item, status);
-    return ['mudrex', assetUuid, createdAt, side || 'NA', ...lifecycleSuffix].join(':');
+    return ['mudrex', assetUuid, createdAt, side || 'NA'];
   }
 
   private buildMudrexPositionLifecycleExternalIdSuffix(
     item: Record<string, unknown>,
     status: string | null
   ): string[] {
-    if (status !== 'PARTIAL') {
+    if (!['PARTIAL', 'CLOSED', 'LIQUIDATED'].includes(String(status || ''))) {
       return [];
     }
+    const lifecycleLabel = String(status || 'PARTIAL');
 
     const rawEventId = String(
       item.id ?? item.position_id ?? item.positionId ?? item.future_position_uuid ?? ''
     ).trim();
     if (rawEventId && rawEventId.length <= 64) {
-      return ['PARTIAL', rawEventId];
+      return [lifecycleLabel, rawEventId];
     }
 
     const fingerprint = [
@@ -1325,7 +1375,7 @@ export class InternalPositionsSyncService {
       .update(fingerprint || JSON.stringify(item))
       .digest('hex')
       .slice(0, 16);
-    return ['PARTIAL', digest];
+    return [lifecycleLabel, digest];
   }
 
   // ── Single forward-only upsert ───────────────────────────────
