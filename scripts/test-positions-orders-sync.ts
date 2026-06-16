@@ -1456,6 +1456,65 @@ async function testPositionsBackfillCanCorrectStaleClosedSnapshotToBrokerPartial
   }
 }
 
+async function testPositionsUpsertDropsLegacySnapshotWhenLifecycleTargetExists(): Promise<void> {
+  const service = new InternalPositionsSyncService() as any;
+  const originalQuery = (coreDataSource as any).query;
+  const deletedLegacyIds: string[] = [];
+  const row = {
+    userId: 'user-1',
+    accountId: 'acct-mudrex',
+    brokerKey: 'mudrex',
+    externalId: 'mudrex:asset-1:2026-05-30T07:21:19Z:SHORT:CLOSED:event-1',
+    legacyExternalId: 'mudrex:asset-1:2026-05-30T07:21:19Z:SHORT',
+    symbol: 'SOLUSDT',
+    status: 'CLOSED',
+    statusRank: 3,
+    payloadJson: '{"status":"closed","symbol":"SOLUSDT"}',
+    payloadHash: 'new-closed-hash',
+  };
+
+  service.exchangeAssetUpdateLogRepository = {
+    async createMany() {
+      return [];
+    },
+  };
+
+  (coreDataSource as any).query = async (sql: string, params?: unknown[]) => {
+    const statement = String(sql || '');
+    if (statement.includes('SELECT id') && statement.includes('FROM scheduler_positions_snapshots')) {
+      return [{ id: 'existing-target-row' }];
+    }
+    if (statement.includes('DELETE FROM scheduler_positions_snapshots')) {
+      deletedLegacyIds.push(String(params?.[2] || ''));
+      return [{ affectedRows: 1 }];
+    }
+    if (statement.includes('SELECT external_id, status, payload_hash, status_rank')) {
+      return [
+        {
+          external_id: row.externalId,
+          status: 'CLOSED',
+          payload_hash: 'old-closed-hash',
+          status_rank: 3,
+        },
+      ];
+    }
+    if (statement.includes('INSERT INTO scheduler_positions_snapshots')) {
+      return [{ affectedRows: 2 }];
+    }
+    throw new Error(`Unexpected SQL in positions legacy lifecycle merge test: ${statement}`);
+  };
+
+  try {
+    const result = await service.upsertPositionSnapshotBatch([row], undefined, {
+      allowStatusDowngrade: true,
+    });
+    assert.deepEqual(deletedLegacyIds, [row.legacyExternalId]);
+    assert.equal(result.updated, 1);
+  } finally {
+    (coreDataSource as any).query = originalQuery;
+  }
+}
+
 function testMudrexClosedLifecycleRowsKeepBrokerEventIdentityAndPnl(): void {
   const service = new InternalPositionsSyncService() as any;
   const base = {
@@ -2206,6 +2265,7 @@ async function run(): Promise<void> {
   await testOrdersSchedulerRuntimeMigratesToUserScope();
   await testPositionsSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testPositionsBackfillCanCorrectStaleClosedSnapshotToBrokerPartial();
+  await testPositionsUpsertDropsLegacySnapshotWhenLifecycleTargetExists();
   testMudrexClosedLifecycleRowsKeepBrokerEventIdentityAndPnl();
   await testOrdersSystemSchedulerCoversMudrexAndDeltaWithFailureIsolation();
   await testOrdersSyncBackfillsTrackedDeltaProtectiveOrdersById();

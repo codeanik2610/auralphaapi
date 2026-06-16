@@ -1411,12 +1411,31 @@ export class InternalPositionsSyncService {
 
       for (const row of chunk) {
         if (row.legacyExternalId && row.legacyExternalId !== row.externalId) {
-          await coreDataSource.query(
-            `UPDATE scheduler_positions_snapshots
-             SET external_id = ?
-             WHERE user_id = ? AND account_id = ? AND external_id = ?`,
-            [row.externalId, row.userId, row.accountId, row.legacyExternalId]
-          );
+          const existingTargetRows = (await coreDataSource.query(
+            `SELECT id
+               FROM scheduler_positions_snapshots
+              WHERE user_id = ?
+                AND account_id = ?
+                AND external_id = ?
+              LIMIT 1`,
+            [row.userId, row.accountId, row.externalId]
+          )) as Array<{ id?: string }>;
+          if (existingTargetRows.length > 0) {
+            await coreDataSource.query(
+              `DELETE FROM scheduler_positions_snapshots
+                WHERE user_id = ?
+                  AND account_id = ?
+                  AND external_id = ?`,
+              [row.userId, row.accountId, row.legacyExternalId]
+            );
+          } else {
+            await coreDataSource.query(
+              `UPDATE scheduler_positions_snapshots
+               SET external_id = ?
+               WHERE user_id = ? AND account_id = ? AND external_id = ?`,
+              [row.externalId, row.userId, row.accountId, row.legacyExternalId]
+            );
+          }
         }
       }
 
