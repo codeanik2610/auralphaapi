@@ -2276,7 +2276,7 @@ export class InternalPositionsSyncService {
 
             const mudrexBackfillCleanup =
               forceBackfill && !historyError
-                ? await this.pruneMudrexLegacyTerminalSnapshotsMissingFromBackfill({
+                ? await this.pruneMudrexTerminalSnapshotsMissingFromBackfill({
                     userId,
                     accountId: resolvedAccountId,
                     brokerKey: resolvedBrokerKey.toLowerCase(),
@@ -2509,7 +2509,7 @@ export class InternalPositionsSyncService {
     return { deletedSchedulerRows, deletedReadModelRows, symbols };
   }
 
-  private async pruneMudrexLegacyTerminalSnapshotsMissingFromBackfill(input: {
+  private async pruneMudrexTerminalSnapshotsMissingFromBackfill(input: {
     userId: string;
     accountId: string;
     brokerKey: string;
@@ -2550,8 +2550,6 @@ export class InternalPositionsSyncService {
           AND LOWER(broker_key) = ?
           AND status_rank >= ?
           AND external_id LIKE 'mudrex:%'
-          AND external_id NOT LIKE 'mudrex:%:CLOSED:%'
-          AND external_id NOT LIKE 'mudrex:%:LIQUIDATED:%'
           AND external_id NOT LIKE 'mudrex:%:PARTIAL:%'
           AND ${positionTimeExpression} BETWEEN ? AND ?
           ${notInClause}`,

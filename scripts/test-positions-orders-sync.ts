@@ -5209,9 +5209,14 @@ async function runPositionBackfillDriftRepairAssertions(): Promise<void> {
     'Delta forced backfill must prune closed read-model rows missing from fresh broker history'
   );
   assert.equal(
-    source.includes('pruneMudrexLegacyTerminalSnapshotsMissingFromBackfill'),
+    source.includes('pruneMudrexTerminalSnapshotsMissingFromBackfill'),
     true,
-    'Mudrex forced backfill must prune stale legacy terminal rows missing from fresh broker history'
+    'Mudrex forced backfill must prune stale terminal rows missing from fresh broker history'
+  );
+  assert.equal(
+    source.includes("AND external_id NOT LIKE 'mudrex:%:CLOSED:%'"),
+    false,
+    'Mudrex forced backfill must also prune stale canonical closed lifecycle rows'
   );
   assert.equal(
     source.includes("JSON_EXTRACT(payload_json, '$.closed_at')"),
