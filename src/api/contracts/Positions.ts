@@ -27,6 +27,9 @@ export interface PositionSummary {
   closedPrice: number | null;
   unrealizedPnl: number | null;
   realizedPnl: number | null;
+  feesTotal?: number | null;
+  feesCurrency?: string | null;
+  feeEntriesCount?: number | null;
   leverage: number | null;
   requestedLeverage?: number | null;
   confirmedOrderLeverage?: number | null;
@@ -137,6 +140,12 @@ export interface PositionRecord extends Record<string, unknown> {
   unrealized_pnl?: number | null;
   realized_pnl?: number | null;
   realized?: number | null;
+  fees_total?: number | null;
+  feesTotal?: number | null;
+  fees_currency?: string | null;
+  feesCurrency?: string | null;
+  fee_entries_count?: number | null;
+  feeEntriesCount?: number | null;
   leverage?: number | null;
   requested_leverage?: number | null;
   confirmed_order_leverage?: number | null;

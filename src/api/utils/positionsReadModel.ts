@@ -56,6 +56,9 @@ export interface PositionReadModelRow {
   closedPrice?: unknown;
   unrealizedPnl?: unknown;
   realizedPnl?: unknown;
+  feesTotal?: unknown;
+  feesCurrency?: unknown;
+  feeEntriesCount?: unknown;
   leverage?: unknown;
   liquidationPrice?: unknown;
   exposure?: unknown;
@@ -449,6 +452,9 @@ export function buildPositionRecordFromReadModelRow(
     closedPrice: toNumber(row.closedPrice),
     unrealizedPnl: toNumber(row.unrealizedPnl),
     realizedPnl: toNumber(row.realizedPnl),
+    feesTotal: toNumber(row.feesTotal),
+    feesCurrency: String(row.feesCurrency || '').trim() || null,
+    feeEntriesCount: toNumber(row.feeEntriesCount),
     leverage: toNumber(row.leverage),
     requestedLeverage: toNumber(
       pickFirst(rawPayload ?? {}, ['requested_leverage', 'requestedLeverage'])
@@ -491,6 +497,12 @@ export function buildPositionRecordFromReadModelRow(
     unrealized_pnl: summary.unrealizedPnl,
     realized_pnl: summary.realizedPnl,
     realized: summary.realizedPnl,
+    fees_total: summary.feesTotal ?? null,
+    feesTotal: summary.feesTotal ?? null,
+    fees_currency: summary.feesCurrency ?? null,
+    feesCurrency: summary.feesCurrency ?? null,
+    fee_entries_count: summary.feeEntriesCount ?? null,
+    feeEntriesCount: summary.feeEntriesCount ?? null,
     leverage: summary.leverage,
     requested_leverage: summary.requestedLeverage,
     confirmed_order_leverage: summary.confirmedOrderLeverage,

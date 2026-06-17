@@ -67,6 +67,16 @@ type PositionSuggestedTradeContextRow = {
   traceMethod?: PositionAutomationTradeContext['traceMethod'];
 };
 
+type PositionBrokerFeeAggregateRow = {
+  brokerKey?: string | null;
+  accountId?: string | null;
+  positionId?: string | null;
+  suggestedTradeId?: string | null;
+  feeEntriesCount?: number | string | null;
+  feesTotal?: number | string | null;
+  feesCurrency?: string | null;
+};
+
 export interface PositionAccountFreshnessRow {
   accountId: string;
   observedAt: Date | null;
@@ -916,6 +926,7 @@ export class PositionReadModelRepository {
       })
     );
     await this.enrichLivePositionsWithSuggestedTradeContext(userId, records);
+    await this.enrichPositionsWithBrokerFees(userId, records);
     return records;
   }
 
@@ -956,6 +967,7 @@ export class PositionReadModelRepository {
       brokerKey: String(row.brokerKey || brokerKey || '').trim() || undefined,
     });
     await this.enrichLivePositionsWithSuggestedTradeContext(userId, [record]);
+    await this.enrichPositionsWithBrokerFees(userId, [record]);
     return record;
   }
 
@@ -994,6 +1006,7 @@ export class PositionReadModelRepository {
 
     const grouped = this.groupRowsByAccount(rows);
     await this.enrichGroupedLivePositionsWithSuggestedTradeContext(userId, grouped);
+    await this.enrichPositionsWithBrokerFees(userId, Array.from(grouped.values()).flat());
     return grouped;
   }
 
@@ -1163,6 +1176,7 @@ export class PositionReadModelRepository {
         })
       );
       await this.enrichLivePositionsWithSuggestedTradeContext(userId, items);
+      await this.enrichPositionsWithBrokerFees(userId, items);
       const aggregate = overviewRows[0] || {};
 
       return {
@@ -1224,12 +1238,14 @@ export class PositionReadModelRepository {
       [...params, safeLimit]
     )) as PositionReadModelRow[];
 
-    return rows.map((row) =>
+    const records = rows.map((row) =>
       buildPositionRecordFromReadModelRow(row, {
         accountId: normalizedAccountId,
         brokerKey: String(row.brokerKey || brokerKey || '').trim() || undefined,
       })
     );
+    await this.enrichPositionsWithBrokerFees(userId, records);
+    return records;
   }
 
   async listHistoryForAccounts(
@@ -1279,7 +1295,9 @@ export class PositionReadModelRepository {
       [...params, safeLimit]
     )) as PositionReadModelRow[];
 
-    return this.groupRowsByAccount(rows);
+    const grouped = this.groupRowsByAccount(rows);
+    await this.enrichPositionsWithBrokerFees(userId, Array.from(grouped.values()).flat());
+    return grouped;
   }
 
   async getAccountOpenPositionSummary(
@@ -1582,6 +1600,186 @@ export class PositionReadModelRepository {
         ? undefined
         : this.pickFallbackSuggestedTradeContext(record, fallbackBySymbol);
       this.applySuggestedTradeContext(record, exact || fallback || null);
+    }
+  }
+
+  private async enrichPositionsWithBrokerFees(
+    userId: string,
+    records: PositionRecord[]
+  ): Promise<void> {
+    if (!records.length) {
+      return;
+    }
+
+    for (const record of records) {
+      this.applyBrokerFeeAggregate(record, 0, null, 0);
+    }
+
+    const accountIds = Array.from(
+      new Set(records.map((record) => String(record.accountId || '').trim()).filter(Boolean))
+    );
+    const positionIds = Array.from(
+      new Set(records.flatMap((record) => this.getPositionContextIdentifiers(record)))
+    );
+    const suggestedTradeIds = Array.from(
+      new Set(
+        records
+          .map((record) => String(record.suggestedTradeId || record.suggested_trade_id || '').trim())
+          .filter(Boolean)
+      )
+    );
+    if (!accountIds.length || (!positionIds.length && !suggestedTradeIds.length)) {
+      return;
+    }
+
+    const predicates: string[] = [];
+    const lookupParams: unknown[] = [];
+    if (positionIds.length) {
+      predicates.push(
+        `COALESCE(position_id, '') IN (${positionIds.map(() => '?').join(', ')})`
+      );
+      lookupParams.push(...positionIds);
+    }
+    if (suggestedTradeIds.length) {
+      predicates.push(
+        `suggested_trade_id IN (${suggestedTradeIds.map(() => '?').join(', ')})`
+      );
+      lookupParams.push(...suggestedTradeIds);
+    }
+
+    let rows: PositionBrokerFeeAggregateRow[];
+    try {
+      rows = (await coreDataSource.query(
+        `SELECT LOWER(broker_key) AS brokerKey,
+                account_id AS accountId,
+                COALESCE(position_id, '') AS positionId,
+                COALESCE(suggested_trade_id, '') AS suggestedTradeId,
+                COUNT(*) AS feeEntriesCount,
+                COALESCE(SUM(COALESCE(amount, 0)), 0) AS feesTotal,
+                CASE
+                  WHEN COUNT(DISTINCT COALESCE(NULLIF(currency, ''), 'UNKNOWN')) = 1
+                    THEN MAX(COALESCE(NULLIF(currency, ''), 'UNKNOWN'))
+                  ELSE 'MIXED'
+                END AS feesCurrency
+           FROM broker_fee_entries
+          WHERE user_id = ?
+            AND account_id IN (${accountIds.map(() => '?').join(', ')})
+            AND (${predicates.join(' OR ')})
+          GROUP BY LOWER(broker_key), account_id, COALESCE(position_id, ''), COALESCE(suggested_trade_id, '')`,
+        [userId, ...accountIds, ...lookupParams]
+      )) as PositionBrokerFeeAggregateRow[];
+    } catch (error) {
+      if (this.isMissingTableError(error, 'broker_fee_entries')) {
+        return;
+      }
+      throw error;
+    }
+
+    const byPosition = new Map<string, PositionBrokerFeeAggregateRow[]>();
+    const bySuggestedTrade = new Map<string, PositionBrokerFeeAggregateRow[]>();
+    for (const row of rows) {
+      const positionKey = this.buildPositionContextKey(row.brokerKey, row.accountId, row.positionId);
+      if (positionKey) {
+        const bucket = byPosition.get(positionKey) || [];
+        bucket.push(row);
+        byPosition.set(positionKey, bucket);
+      }
+      const suggestedTradeKey = this.buildPositionContextKey(
+        row.brokerKey,
+        row.accountId,
+        row.suggestedTradeId
+      );
+      if (suggestedTradeKey) {
+        const bucket = bySuggestedTrade.get(suggestedTradeKey) || [];
+        bucket.push(row);
+        bySuggestedTrade.set(suggestedTradeKey, bucket);
+      }
+    }
+
+    for (const record of records) {
+      const matchedRows: PositionBrokerFeeAggregateRow[] = [];
+      const seen = new Set<string>();
+      for (const positionId of this.getPositionContextIdentifiers(record)) {
+        const key = this.buildPositionContextKey(record.brokerKey, record.accountId, positionId);
+        for (const row of (key && byPosition.get(key)) || []) {
+          const rowKey = this.buildBrokerFeeAggregateDedupKey(row);
+          if (seen.has(rowKey)) {
+            continue;
+          }
+          seen.add(rowKey);
+          matchedRows.push(row);
+        }
+      }
+
+      const suggestedTradeId = String(record.suggestedTradeId || record.suggested_trade_id || '').trim();
+      const suggestedKey = this.buildPositionContextKey(
+        record.brokerKey,
+        record.accountId,
+        suggestedTradeId
+      );
+      for (const row of (suggestedKey && bySuggestedTrade.get(suggestedKey)) || []) {
+        const rowKey = this.buildBrokerFeeAggregateDedupKey(row);
+        if (seen.has(rowKey)) {
+          continue;
+        }
+        seen.add(rowKey);
+        matchedRows.push(row);
+      }
+
+      if (!matchedRows.length) {
+        continue;
+      }
+
+      const feesTotal = matchedRows.reduce(
+        (sum, row) => sum + (this.toNumberValue(row.feesTotal) ?? 0),
+        0
+      );
+      const feeEntriesCount = matchedRows.reduce(
+        (sum, row) => sum + Math.max(0, Math.floor(this.toNumberValue(row.feeEntriesCount) ?? 0)),
+        0
+      );
+      const currencies = Array.from(
+        new Set(
+          matchedRows
+            .map((row) => String(row.feesCurrency || '').trim())
+            .filter((currency) => currency && currency !== 'UNKNOWN')
+        )
+      );
+      this.applyBrokerFeeAggregate(
+        record,
+        Number(feesTotal.toFixed(12)),
+        currencies.length === 1 ? currencies[0] : currencies.length > 1 ? 'MIXED' : null,
+        feeEntriesCount
+      );
+    }
+  }
+
+  private buildBrokerFeeAggregateDedupKey(row: PositionBrokerFeeAggregateRow): string {
+    return [
+      String(row.brokerKey || '').trim().toLowerCase(),
+      String(row.accountId || '').trim(),
+      String(row.positionId || '').trim(),
+      String(row.suggestedTradeId || '').trim(),
+    ].join('::');
+  }
+
+  private applyBrokerFeeAggregate(
+    record: PositionRecord,
+    feesTotal: number,
+    feesCurrency: string | null,
+    feeEntriesCount: number
+  ): void {
+    record.fees_total = feesTotal;
+    record.feesTotal = feesTotal;
+    record.fees_currency = feesCurrency;
+    record.feesCurrency = feesCurrency;
+    record.fee_entries_count = feeEntriesCount;
+    record.feeEntriesCount = feeEntriesCount;
+
+    if (record.positionSummary) {
+      record.positionSummary.feesTotal = feesTotal;
+      record.positionSummary.feesCurrency = feesCurrency;
+      record.positionSummary.feeEntriesCount = feeEntriesCount;
     }
   }
 

@@ -1875,6 +1875,29 @@ async function positionsGuard09(): Promise<void> {
         ];
       }
 
+      if (sql.includes('FROM broker_fee_entries')) {
+        return [
+          {
+            brokerKey: 'mudrex',
+            accountId: 'acc-1',
+            positionId: 'pos-2',
+            suggestedTradeId: '',
+            feeEntriesCount: '1',
+            feesTotal: '-0.25',
+            feesCurrency: 'USDT',
+          },
+          {
+            brokerKey: 'mudrex',
+            accountId: 'acc-1',
+            positionId: '',
+            suggestedTradeId: 'trade-btc-exact',
+            feeEntriesCount: '2',
+            feesTotal: '-0.40',
+            feesCurrency: 'USDT',
+          },
+        ];
+      }
+
       throw new Error(`Unexpected positions read-model query: ${sql}`);
     };
 
@@ -1927,6 +1950,10 @@ async function positionsGuard09(): Promise<void> {
       assert.equal(overview.items[0].entryOrderType, 'limit');
       assert.equal(overview.items[0].automationTrade?.traceMethod, 'position_id');
       assert.equal(overview.items[0].positionSummary?.entryFilledAt, '2026-04-09T10:00:00.000Z');
+      assert.equal(overview.items[0].fees_total, -0.25);
+      assert.equal(overview.items[0].feesCurrency, 'USDT');
+      assert.equal(overview.items[0].feeEntriesCount, 1);
+      assert.equal(overview.items[0].positionSummary?.feesTotal, -0.25);
       assert.equal(overview.items[0].executionProtection?.state, 'attached');
       assert.equal(overview.items[0].executionProtection?.plannedStopLossPrice, 3234);
       assert.equal(overview.items[0].executionProtection?.stopLossPrice, 3234.5);
@@ -1989,6 +2016,9 @@ async function positionsGuard09(): Promise<void> {
       assert.equal(overview.items[1].timeframe, '5m');
       assert.equal(overview.items[1].tradeContextSource, 'position_id');
       assert.equal(overview.items[1].suggestedTradeId, 'trade-btc-exact');
+      assert.equal(overview.items[1].feesTotal, -0.4);
+      assert.equal(overview.items[1].fee_entries_count, 2);
+      assert.equal(overview.items[1].positionSummary?.feesCurrency, 'USDT');
       assert.equal(overview.items[1].automationTrade?.positionStatus, 'OPEN');
       assert.equal(overview.items[1].executionProtection?.state, 'attached');
       assert.equal(overview.items[1].executionProtection?.stopLossPrice, 68650);
@@ -2033,6 +2063,19 @@ async function positionsGuard09(): Promise<void> {
         'pos-2',
         'pos-1',
         'raw-btc-position',
+      ]);
+
+      const feeAggregateCall = capturedCalls.find((call) =>
+        call.sql.includes('FROM broker_fee_entries')
+      );
+      assert.deepEqual(feeAggregateCall?.params, [
+        'user-1',
+        'acc-1',
+        'pos-2',
+        'pos-1',
+        'raw-btc-position',
+        'trade-eth',
+        'trade-btc-exact',
       ]);
 
       console.log('Positions phase 9 assertions passed.');
