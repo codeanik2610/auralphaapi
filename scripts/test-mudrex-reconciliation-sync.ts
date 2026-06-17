@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { InternalBrokerReconciliationController } from '../src/api/controllers/InternalBrokerReconciliationController';
 import {
+  MudrexAsset,
   MudrexFeeHistoryItem,
   MudrexFuturesFunds,
   MudrexOrder,
@@ -382,6 +383,135 @@ async function runMudrexSyncFailureAssertions(): Promise<void> {
   assert.equal(finishPayloads.at(-1)?.errorMessage, 'Mudrex fee history unavailable');
 }
 
+async function runMudrexEstimatedFeeFallbackAssertions(): Promise<void> {
+  const service: any = new MudrexBrokerReconciliationSyncService();
+  const repositoryCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  service.walletService = {
+    async getWalletFunds() {
+      return createSuccess({
+        total: 100,
+        rewards: 0,
+        invested: 0,
+        withdrawable: 95,
+        coin_investable: 0,
+        coinset_investable: 0,
+        vault_investable: 0,
+      } satisfies MudrexWalletFunds);
+    },
+    async getFuturesFunds() {
+      return createSuccess({
+        balance: '40',
+        locked_amount: '5',
+        first_time_user: false,
+      } satisfies MudrexFuturesFunds);
+    },
+  };
+
+  service.ordersService = {
+    async getFuturesOrderHistory() {
+      return createSuccess([
+        {
+          ...createFilledMudrexOrder({
+            id: 'mudrex-estimated-fee-order-1',
+            actual_amount: 1000,
+            symbol: 'BTCUSDT',
+          }),
+          future_position_uuid: 'future-position-1',
+        } as MudrexOrder,
+        {
+          ...createFilledMudrexOrder({
+            id: 'mudrex-estimated-fee-order-2',
+            actual_amount: 500,
+            symbol: 'SOLUSDT',
+          }),
+          future_position_uuid: 'future-position-2',
+        } as MudrexOrder,
+      ]);
+    },
+  };
+
+  service.positionsService = {
+    async getPositionHistory() {
+      return createSuccess([createPositionHistoryItem({ pnl: '2' })]);
+    },
+  };
+
+  service.feesService = {
+    async fetchFuturesFeeHistory() {
+      return [];
+    },
+  };
+
+  service.mudrexService = {
+    async fetchAllRemoteFuturesForUserOrThrow(pageSize: number, userId: string) {
+      assert.equal(pageSize, 500);
+      assert.equal(userId, 'user-1');
+      return [
+        {
+          symbol: 'BTCUSDT',
+          trading_fee_perc: '0.04',
+        },
+        {
+          symbol: 'SOLUSDT',
+          trading_fee_perc: '0.04',
+        },
+      ] as MudrexAsset[];
+    },
+  };
+
+  service.brokerReconciliationRepository = {
+    async createReconciliationRun(...args: unknown[]) {
+      repositoryCalls.push({ method: 'createReconciliationRun', args });
+      return 'estimated-run-1';
+    },
+    async upsertBalanceSnapshot(...args: unknown[]) {
+      repositoryCalls.push({ method: 'upsertBalanceSnapshot', args });
+      return { inserted: true, updated: false };
+    },
+    async upsertFill(...args: unknown[]) {
+      repositoryCalls.push({ method: 'upsertFill', args });
+      return { inserted: true, updated: false };
+    },
+    async upsertFeeEntry(...args: unknown[]) {
+      repositoryCalls.push({ method: 'upsertFeeEntry', args });
+      return { inserted: true, updated: false };
+    },
+    async finishReconciliationRun(...args: unknown[]) {
+      repositoryCalls.push({ method: 'finishReconciliationRun', args });
+      return 1;
+    },
+  };
+
+  const result = await service.syncAccount({ userId: 'user-1', accountId: 'acct-1' });
+  assert.equal(result.feeRowsFetched, 0);
+  assert.equal(result.feeEntriesUpserted, 2);
+  assert.equal(result.estimatedFeeEntriesUpserted, 2);
+  assert.equal(result.feeTotal, -0.6);
+  assert.equal(result.estimatedFeeTotal, -0.6);
+
+  const feeRows = repositoryCalls
+    .filter((call) => call.method === 'upsertFeeEntry')
+    .map((call) => call.args[0] as Record<string, unknown>);
+  assert.equal(feeRows.length, 2);
+  assert.equal(feeRows[0].externalId, 'mudrex:estimated-order-fee:mudrex-estimated-fee-order-1');
+  assert.equal(feeRows[0].positionId, 'future-position-1');
+  assert.equal(feeRows[0].feeType, 'TRANSACTION_ESTIMATE');
+  assert.equal(feeRows[0].amount, -0.4);
+  assert.equal(feeRows[0].feeRatePct, 0.04);
+  assert.equal(feeRows[0].source, 'mudrex_order_fee_estimate');
+  assert.equal(feeRows[1].amount, -0.2);
+
+  const finishPayload = repositoryCalls
+    .filter((call) => call.method === 'finishReconciliationRun')
+    .at(-1)?.args[1] as Record<string, unknown>;
+  assert.equal(finishPayload.feeEntriesCount, 2);
+  assert.equal(finishPayload.feesTotal, -0.6);
+  const summary = finishPayload.summaryPayload as Record<string, unknown>;
+  assert.equal(summary.feeRowsSource, 'mudrex_order_fee_estimate');
+  assert.equal(summary.estimatedFeeEntriesUpserted, 2);
+}
+
 async function runInternalControllerAssertions(): Promise<void> {
   const controller: any = new InternalBrokerReconciliationController();
   const input = { userId: 'user-1', accountId: 'acct-1' };
@@ -444,6 +574,7 @@ function runScriptAndSourceWiringAssertions(): void {
 async function main(): Promise<void> {
   await runFeesServiceAssertions();
   await runMudrexSyncServiceAssertions();
+  await runMudrexEstimatedFeeFallbackAssertions();
   await runMudrexSyncFailureAssertions();
   await runInternalControllerAssertions();
   runScriptAndSourceWiringAssertions();

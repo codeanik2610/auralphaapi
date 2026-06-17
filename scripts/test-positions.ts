@@ -2032,6 +2032,10 @@ async function positionsGuard09(): Promise<void> {
       const overviewAggregateCall = capturedCalls.find((call) =>
         call.sql.includes('COUNT(*) AS total')
       );
+      assert.match(
+        String(overviewAggregateCall?.sql || ''),
+        /external_id LIKE 'mudrex:%:PARTIAL:%'/
+      );
       assert.deepEqual(overviewAggregateCall?.params, [
         'user-1',
         'acc-1',
@@ -2045,6 +2049,7 @@ async function positionsGuard09(): Promise<void> {
           'ORDER BY COALESCE(last_seen_at, position_updated_at, position_created_at) DESC'
         )
       );
+      assert.match(String(overviewRowsCall?.sql || ''), /external_id LIKE 'mudrex:%:PARTIAL:%'/);
       assert.deepEqual(overviewRowsCall?.params, [
         'user-1',
         'acc-1',

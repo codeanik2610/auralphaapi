@@ -169,6 +169,42 @@ export interface PositionLiveOverviewResult {
 export class PositionReadModelRepository {
   private static readonly UPSERT_CHUNK_SIZE = 250;
 
+  private livePositionPredicates(alias = ''): string[] {
+    const prefix = alias ? `${alias}.` : '';
+    return [
+      `${prefix}status_rank > 0`,
+      `${prefix}status_rank <= 2`,
+      this.excludeMudrexPartialLifecyclePredicate(prefix),
+    ];
+  }
+
+  private livePositionPredicateSql(alias = ''): string {
+    return this.livePositionPredicates(alias).join(' AND ');
+  }
+
+  private livePositionCountExpression(alias = ''): string {
+    return `CASE WHEN ${this.livePositionPredicateSql(alias)} THEN 1 ELSE 0 END`;
+  }
+
+  private excludeMudrexPartialLifecyclePredicate(prefix: string): string {
+    return `NOT (
+      LOWER(COALESCE(${prefix}broker_key, '')) = 'mudrex'
+      AND ${prefix}status_rank = 2
+      AND (
+        LOWER(COALESCE(${prefix}status_key, ${prefix}status, ${prefix}status_raw, '')) LIKE '%partial%'
+        OR ${prefix}external_id LIKE 'mudrex:%:PARTIAL:%'
+      )
+      AND (
+        ${prefix}external_id LIKE 'mudrex:%:PARTIAL:%'
+        OR ${prefix}closed_price IS NOT NULL
+        OR ${prefix}realized_pnl IS NOT NULL
+        OR ${prefix}position_closed_at IS NOT NULL
+        OR JSON_EXTRACT(${prefix}payload_json, '$.closed_price') IS NOT NULL
+        OR JSON_EXTRACT(${prefix}payload_json, '$.pnl') IS NOT NULL
+      )
+    )`;
+  }
+
   async ensureHydratedFromSnapshots(userId: string, accountIds: string[]): Promise<void> {
     const normalizedAccountIds = this.normalizeAccountIds(accountIds);
     if (!normalizedAccountIds.length) {
@@ -902,7 +938,7 @@ export class PositionReadModelRepository {
       return [];
     }
 
-    const where = ['user_id = ?', 'account_id = ?', 'status_rank > 0', 'status_rank <= 2'];
+    const where = ['user_id = ?', 'account_id = ?', ...this.livePositionPredicates()];
     const params: Array<unknown> = [userId, normalizedAccountId];
     if (brokerKey) {
       where.push('LOWER(broker_key) = ?');
@@ -986,8 +1022,7 @@ export class PositionReadModelRepository {
     const where = [
       'user_id = ?',
       `account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})`,
-      'status_rank > 0',
-      'status_rank <= 2',
+      ...this.livePositionPredicates(),
     ];
     const params: Array<unknown> = [userId, ...normalizedAccountIds];
 
@@ -1042,8 +1077,7 @@ export class PositionReadModelRepository {
            FROM position_read_models
           WHERE user_id = ?
             AND account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})
-            AND status_rank > 0
-            AND status_rank <= 2
+            AND ${this.livePositionPredicateSql()}
           GROUP BY account_id`,
         [userId, ...normalizedAccountIds]
       )) as Array<{
@@ -1120,8 +1154,7 @@ export class PositionReadModelRepository {
     const where = [
       'user_id = ?',
       `account_id IN (${normalizedAccountIds.map(() => '?').join(', ')})`,
-      'status_rank > 0',
-      'status_rank <= 2',
+      ...this.livePositionPredicates(),
     ];
     const params: Array<unknown> = [userId, ...normalizedAccountIds];
 
@@ -1321,7 +1354,7 @@ export class PositionReadModelRepository {
 
     const rows = (await coreDataSource.query(
       `SELECT account_id AS accountId,
-              SUM(CASE WHEN status_rank > 0 AND status_rank <= 2 THEN 1 ELSE 0 END) AS openPositions,
+              SUM(${this.livePositionCountExpression()}) AS openPositions,
               MAX(last_seen_at) AS observedAt,
               COUNT(*) AS totalRows
          FROM position_read_models
@@ -1383,7 +1416,7 @@ export class PositionReadModelRepository {
       const rows = (await coreDataSource.query(
         `SELECT account_id AS accountId,
                 MAX(last_seen_at) AS observedAt,
-                SUM(CASE WHEN status_rank > 0 AND status_rank <= 2 THEN 1 ELSE 0 END) AS openPositions,
+                SUM(${this.livePositionCountExpression()}) AS openPositions,
                 COUNT(*) AS totalRows
            FROM position_read_models
           WHERE user_id = ?

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Inject, Service } from 'typedi';
 import {
   MudrexFeeHistoryItem,
+  MudrexAsset,
   MudrexFuturesFunds,
   MudrexOrder,
   MudrexPositionHistoryItem,
@@ -11,7 +12,7 @@ import {
   BrokerReconciliationRepository,
   BrokerReconciliationRunFinish,
 } from '../../database/repositories/BrokerReconciliationRepository';
-import { FeesService, OrdersService, PositionsService, WalletService } from '../../brokers';
+import { FeesService, MudrexService, OrdersService, PositionsService, WalletService } from '../../brokers';
 
 export interface MudrexBrokerReconciliationSyncInput {
   userId: string;
@@ -33,6 +34,7 @@ export interface MudrexBrokerReconciliationSyncResult {
   finishedAt: string;
   feeRowsFetched: number;
   feeEntriesUpserted: number;
+  estimatedFeeEntriesUpserted?: number;
   fundingEntriesUpserted: number;
   fillRowsFetched: number;
   fillsUpserted: number;
@@ -40,6 +42,7 @@ export interface MudrexBrokerReconciliationSyncResult {
   balanceSnapshotsUpserted: number;
   grossPnl: number;
   feeTotal: number;
+  estimatedFeeTotal?: number;
   fundingTotal: number;
 }
 
@@ -56,6 +59,9 @@ export class MudrexBrokerReconciliationSyncService {
 
   @Inject(() => WalletService)
   private walletService!: WalletService;
+
+  @Inject(() => MudrexService)
+  private mudrexService!: MudrexService;
 
   @Inject(() => BrokerReconciliationRepository)
   private brokerReconciliationRepository!: BrokerReconciliationRepository;
@@ -120,23 +126,43 @@ export class MudrexBrokerReconciliationSyncService {
         windowEnd,
       });
       const feeStorage = await this.storeFeeHistory({ userId, accountId, feeHistory });
+      const estimatedFeeStorage =
+        feeHistory.length === 0
+          ? await this.storeEstimatedOrderFees({
+              userId,
+              accountId,
+              orders,
+            })
+          : { feeEntriesUpserted: 0, feeTotal: 0, symbolsWithoutRates: [] as string[] };
+      const feeEntriesUpserted =
+        feeStorage.feeEntriesUpserted + estimatedFeeStorage.feeEntriesUpserted;
+      const feeTotal = feeStorage.feeTotal + estimatedFeeStorage.feeTotal;
 
       const finishedAt = new Date();
       const finishPayload: BrokerReconciliationRunFinish = {
         status: 'completed',
         finishedAt,
         fillsCount: fillsUpserted,
-        feeEntriesCount: feeStorage.feeEntriesUpserted,
+        feeEntriesCount: feeEntriesUpserted,
         fundingEntriesCount: feeStorage.fundingEntriesUpserted,
         balanceSnapshotsCount: balanceSnapshotsUpserted,
         grossPnl,
-        feesTotal: feeStorage.feeTotal,
+        feesTotal: feeTotal,
         fundingTotal: feeStorage.fundingTotal,
-        netPnl: grossPnl + feeStorage.feeTotal + feeStorage.fundingTotal,
+        netPnl: grossPnl + feeTotal + feeStorage.fundingTotal,
         summaryPayload: {
           phase: 3,
           brokerKey: 'mudrex',
           feeRowsFetched: feeHistory.length,
+          feeRowsSource:
+            feeHistory.length > 0
+              ? 'mudrex_fee_history'
+              : estimatedFeeStorage.feeEntriesUpserted > 0
+                ? 'mudrex_order_fee_estimate'
+                : 'none',
+          estimatedFeeEntriesUpserted: estimatedFeeStorage.feeEntriesUpserted,
+          estimatedFeeTotal: estimatedFeeStorage.feeTotal,
+          estimatedFeeSymbolsWithoutRates: estimatedFeeStorage.symbolsWithoutRates,
           fillRowsFetched: orders.length,
           positionRowsFetched: positionHistory.length,
           balanceSnapshotsUpserted,
@@ -151,14 +177,16 @@ export class MudrexBrokerReconciliationSyncService {
         startedAt: startedAt.toISOString(),
         finishedAt: finishedAt.toISOString(),
         feeRowsFetched: feeHistory.length,
-        feeEntriesUpserted: feeStorage.feeEntriesUpserted,
+        feeEntriesUpserted,
+        estimatedFeeEntriesUpserted: estimatedFeeStorage.feeEntriesUpserted,
         fundingEntriesUpserted: feeStorage.fundingEntriesUpserted,
         fillRowsFetched: orders.length,
         fillsUpserted,
         positionRowsFetched: positionHistory.length,
         balanceSnapshotsUpserted,
         grossPnl,
-        feeTotal: feeStorage.feeTotal,
+        feeTotal,
+        estimatedFeeTotal: estimatedFeeStorage.feeTotal,
         fundingTotal: feeStorage.fundingTotal,
       };
     } catch (error) {
@@ -383,6 +411,146 @@ export class MudrexBrokerReconciliationSyncService {
     }
 
     return { feeEntriesUpserted, fundingEntriesUpserted, feeTotal, fundingTotal };
+  }
+
+  private async storeEstimatedOrderFees(input: {
+    userId: string;
+    accountId: string;
+    orders: MudrexOrder[];
+  }): Promise<{
+    feeEntriesUpserted: number;
+    feeTotal: number;
+    symbolsWithoutRates: string[];
+  }> {
+    const filledOrders = input.orders.filter((order) => this.toNumber(order.filled_quantity) > 0);
+    if (!filledOrders.length) {
+      return { feeEntriesUpserted: 0, feeTotal: 0, symbolsWithoutRates: [] };
+    }
+
+    const feeRatesBySymbol = await this.resolveTradingFeeRates(input.userId, filledOrders);
+    const symbolsWithoutRates = new Set<string>();
+    let feeEntriesUpserted = 0;
+    let feeTotal = 0;
+
+    for (const order of filledOrders) {
+      const symbol = this.readString(order.symbol).toUpperCase();
+      if (!symbol) {
+        continue;
+      }
+
+      const feeRatePct = feeRatesBySymbol.get(symbol);
+      if (feeRatePct === undefined || feeRatePct === null || !Number.isFinite(feeRatePct)) {
+        symbolsWithoutRates.add(symbol);
+        continue;
+      }
+
+      const transactionAmount = this.resolveOrderNotional(order);
+      if (!Number.isFinite(transactionAmount) || transactionAmount <= 0) {
+        continue;
+      }
+
+      const estimatedFee = -Math.abs((transactionAmount * feeRatePct) / 100);
+      if (!Number.isFinite(estimatedFee) || estimatedFee === 0) {
+        continue;
+      }
+
+      await this.brokerReconciliationRepository.upsertFeeEntry({
+        userId: input.userId,
+        brokerKey: 'mudrex',
+        accountId: input.accountId,
+        externalId: `mudrex:estimated-order-fee:${order.id}`,
+        symbol,
+        orderId: order.id,
+        positionId: this.readString(
+          (order as unknown as Record<string, unknown>).future_position_uuid
+        ),
+        feeType: 'TRANSACTION_ESTIMATE',
+        amount: estimatedFee,
+        currency: order.trade_currency || 'USDT',
+        transactionAmount,
+        feeRatePct,
+        occurredAt: order.updated_at || order.created_at,
+        rawPayload: {
+          order,
+          estimate: {
+            source: 'mudrex_order_fee_estimate',
+            reason: 'mudrex_fee_history_empty',
+            transactionAmount,
+            feeRatePct,
+          },
+        },
+        matchState: 'unmatched',
+        matchConfidence: 'low',
+        source: 'mudrex_order_fee_estimate',
+      });
+      feeEntriesUpserted += 1;
+      feeTotal += estimatedFee;
+    }
+
+    return {
+      feeEntriesUpserted,
+      feeTotal: Number(feeTotal.toFixed(12)),
+      symbolsWithoutRates: Array.from(symbolsWithoutRates).sort(),
+    };
+  }
+
+  private async resolveTradingFeeRates(
+    userId: string,
+    orders: MudrexOrder[]
+  ): Promise<Map<string, number>> {
+    const requestedSymbols = new Set(
+      orders
+        .map((order) => this.readString(order.symbol).toUpperCase())
+        .filter(Boolean)
+    );
+    const ratesBySymbol = new Map<string, number>();
+    if (!requestedSymbols.size || !this.mudrexService) {
+      return ratesBySymbol;
+    }
+
+    try {
+      const assets = await this.mudrexService.fetchAllRemoteFuturesForUserOrThrow(500, userId);
+      for (const asset of assets) {
+        this.addTradingFeeRate(ratesBySymbol, requestedSymbols, asset);
+      }
+    } catch {
+      return ratesBySymbol;
+    }
+
+    return ratesBySymbol;
+  }
+
+  private addTradingFeeRate(
+    ratesBySymbol: Map<string, number>,
+    requestedSymbols: Set<string>,
+    asset: MudrexAsset
+  ): void {
+    const symbol = this.readString(asset.symbol).toUpperCase();
+    if (!symbol || !requestedSymbols.has(symbol) || ratesBySymbol.has(symbol)) {
+      return;
+    }
+    const feeRatePct = this.toNumber(asset.trading_fee_perc);
+    if (!Number.isFinite(feeRatePct) || feeRatePct <= 0) {
+      return;
+    }
+    ratesBySymbol.set(symbol, feeRatePct);
+  }
+
+  private resolveOrderNotional(order: MudrexOrder): number {
+    const actualAmount = this.toNumber(order.actual_amount);
+    if (actualAmount > 0) {
+      return actualAmount;
+    }
+
+    const filledQuantity = this.toNumber(order.filled_quantity);
+    const filledPrice = this.toNumber(order.filled_price);
+    if (filledQuantity > 0 && filledPrice > 0) {
+      return filledQuantity * filledPrice;
+    }
+
+    const quantity = this.toNumber(order.quantity);
+    const price = this.toNumber(order.price);
+    return quantity > 0 && price > 0 ? quantity * price : 0;
   }
 
   private buildFeeExternalId(item: MudrexFeeHistoryItem): string {
