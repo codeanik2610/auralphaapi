@@ -52,6 +52,14 @@ interface DeltaClosedLifecycleCleanupResult {
   symbols: string[];
 }
 
+interface StalePositionSnapshotRow {
+  id: string;
+  external_id: string;
+  symbol: string | null;
+  status: string | null;
+  payload_json: unknown;
+}
+
 interface MudrexClosedPositionAggregationCandidate {
   item: Record<string, unknown>;
   symbol: string;
@@ -1229,6 +1237,59 @@ export class InternalPositionsSyncService {
     return Array.from(map.values()).map((e) => e.item);
   }
 
+  private buildPositionExternalIdForItem(brokerKey: string, item: unknown): string | null {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return null;
+    }
+    const rec = item as Record<string, unknown>;
+    const brokerKeyLower = String(brokerKey || '')
+      .trim()
+      .toLowerCase();
+    const mudrexExternalId =
+      brokerKeyLower === 'mudrex'
+        ? this.buildMudrexPositionExternalId(brokerKeyLower, rec)
+        : null;
+    return mudrexExternalId || String(rec.id || '').trim() || this.buildPositionSyntheticId(rec);
+  }
+
+  private buildOpenPositionExternalIds(openPositions: unknown[], brokerKey: string): Set<string> {
+    return new Set(
+      openPositions
+        .map((item) => this.buildPositionExternalIdForItem(brokerKey, item))
+        .filter((item): item is string => Boolean(item))
+    );
+  }
+
+  private async listStalePositionCandidates(input: {
+    userId: string;
+    accountId: string;
+    brokerKey: string;
+    closeRank: number;
+    observedBefore: Date;
+  }): Promise<StalePositionSnapshotRow[]> {
+    return (await coreDataSource.query(
+      `SELECT id, external_id, symbol, status, payload_json
+         FROM scheduler_positions_snapshots
+        WHERE user_id = ?
+          AND account_id = ?
+          AND LOWER(broker_key) = ?
+          AND status_rank < ?
+          AND last_seen_at < ?
+          AND NOT (
+            LOWER(broker_key) = 'mudrex'
+            AND UPPER(COALESCE(status, '')) = 'PARTIAL'
+            AND external_id LIKE 'mudrex:%:PARTIAL:%'
+          )`,
+      [
+        input.userId,
+        input.accountId,
+        input.brokerKey.toLowerCase(),
+        input.closeRank,
+        input.observedBefore,
+      ]
+    )) as StalePositionSnapshotRow[];
+  }
+
   // ── Row building ─────────────────────────────────────────────
 
   private buildPositionRow(
@@ -1932,15 +1993,30 @@ export class InternalPositionsSyncService {
             let openError: string | null = null;
             let historyPositions: unknown[] = [];
             let historyError: string | null = null;
+            let openPositionExternalIds = new Set<string>();
+            let stalePositionCandidates: StalePositionSnapshotRow[] = [];
 
             const adapter = this.brokerRuntimeRegistry.getPositionsAdapter(resolvedBrokerKey);
             const historyOverlapDays = this.resolveHistoryOverlapDays(adapter);
+            const closeRank = this.computePositionStatusRank('CLOSED');
 
             // Step 1: Always fetch open positions (lightweight, catches status changes fast)
             try {
               const openRaw = await adapter.getPositions({ limit: SYNC_LIMIT }, route);
               openPositions = this.extractList(openRaw);
               await this.enrichOpenPositionsWithMarketPnl(openPositions);
+              openPositionExternalIds = this.buildOpenPositionExternalIds(
+                openPositions,
+                resolvedBrokerKey
+              );
+              // Capture stale candidates before historical backfill can refresh last_seen_at.
+              stalePositionCandidates = await this.listStalePositionCandidates({
+                userId,
+                accountId: resolvedAccountId,
+                brokerKey: resolvedBrokerKey,
+                closeRank,
+                observedBefore: accountSyncStartedAt,
+              });
             } catch (error) {
               openError = error instanceof Error ? error.message : String(error);
             }
@@ -2025,36 +2101,10 @@ export class InternalPositionsSyncService {
 
             // Step 6: Close stale open positions not seen in this run
             if (!openError) {
-              const closeRank = this.computePositionStatusRank('CLOSED');
-
-              // Query stale positions before closing (for logging and PnL computation)
-              const stalePositions = (await coreDataSource.query(
-                `SELECT id, external_id, symbol, status, payload_json
-                 FROM scheduler_positions_snapshots
-                 WHERE user_id = ?
-                   AND account_id = ?
-                   AND LOWER(broker_key) = ?
-                   AND status_rank < ?
-                   AND last_seen_at < ?
-                   AND NOT (
-                     LOWER(broker_key) = 'mudrex'
-                     AND UPPER(COALESCE(status, '')) = 'PARTIAL'
-                     AND external_id LIKE 'mudrex:%:PARTIAL:%'
-                   )`,
-                [
-                  userId,
-                  resolvedAccountId,
-                  resolvedBrokerKey.toLowerCase(),
-                  closeRank,
-                  accountSyncStartedAt,
-                ]
-              )) as Array<{
-                id: string;
-                external_id: string;
-                symbol: string | null;
-                status: string | null;
-                payload_json: unknown;
-              }>;
+              // Use the pre-history candidate list so history snapshots cannot keep stale opens alive.
+              const stalePositions = stalePositionCandidates.filter(
+                (candidate) => !openPositionExternalIds.has(candidate.external_id)
+              );
 
               // Fetch closing fills from broker if adapter supports it
               let closingFills:

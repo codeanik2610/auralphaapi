@@ -5204,6 +5204,16 @@ async function runPositionBackfillDriftRepairAssertions(): Promise<void> {
     'Mudrex historical partial lifecycle rows must not be stale-closed'
   );
   assert.equal(
+    source.includes('listStalePositionCandidates({'),
+    true,
+    'Positions sync must capture stale candidates before historical rows refresh last_seen_at'
+  );
+  assert.equal(
+    source.includes('!openPositionExternalIds.has(candidate.external_id)'),
+    true,
+    'Positions sync must preserve broker-read open positions while closing only missing candidates'
+  );
+  assert.equal(
     source.includes('pruneDeltaClosedSnapshotsMissingFromBackfill'),
     true,
     'Delta forced backfill must prune closed read-model rows missing from fresh broker history'
