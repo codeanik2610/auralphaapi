@@ -12,6 +12,7 @@ import {
   BrokerReconciliationRepository,
   BrokerReconciliationRunFinish,
 } from '../../database/repositories/BrokerReconciliationRepository';
+import { env } from '../../env';
 import { FeesService, MudrexService, OrdersService, PositionsService, WalletService } from '../../brokers';
 
 export interface MudrexBrokerReconciliationSyncInput {
@@ -44,6 +45,13 @@ export interface MudrexBrokerReconciliationSyncResult {
   feeTotal: number;
   estimatedFeeTotal?: number;
   fundingTotal: number;
+}
+
+type MudrexEstimatedFeeRateSource = 'asset_trading_fee_perc' | 'configured_default';
+
+interface MudrexEstimatedFeeRate {
+  feeRatePct: number;
+  source: MudrexEstimatedFeeRateSource;
 }
 
 @Service()
@@ -438,8 +446,13 @@ export class MudrexBrokerReconciliationSyncService {
         continue;
       }
 
-      const feeRatePct = feeRatesBySymbol.get(symbol);
-      if (feeRatePct === undefined || feeRatePct === null || !Number.isFinite(feeRatePct)) {
+      const feeRate = feeRatesBySymbol.get(symbol);
+      if (
+        !feeRate ||
+        feeRate.feeRatePct === undefined ||
+        feeRate.feeRatePct === null ||
+        !Number.isFinite(feeRate.feeRatePct)
+      ) {
         symbolsWithoutRates.add(symbol);
         continue;
       }
@@ -449,7 +462,7 @@ export class MudrexBrokerReconciliationSyncService {
         continue;
       }
 
-      const estimatedFee = -Math.abs((transactionAmount * feeRatePct) / 100);
+      const estimatedFee = -Math.abs((transactionAmount * feeRate.feeRatePct) / 100);
       if (!Number.isFinite(estimatedFee) || estimatedFee === 0) {
         continue;
       }
@@ -468,15 +481,16 @@ export class MudrexBrokerReconciliationSyncService {
         amount: estimatedFee,
         currency: order.trade_currency || 'USDT',
         transactionAmount,
-        feeRatePct,
+        feeRatePct: feeRate.feeRatePct,
         occurredAt: order.updated_at || order.created_at,
         rawPayload: {
           order,
           estimate: {
             source: 'mudrex_order_fee_estimate',
+            rateSource: feeRate.source,
             reason: 'mudrex_fee_history_empty',
             transactionAmount,
-            feeRatePct,
+            feeRatePct: feeRate.feeRatePct,
           },
         },
         matchState: 'unmatched',
@@ -497,16 +511,17 @@ export class MudrexBrokerReconciliationSyncService {
   private async resolveTradingFeeRates(
     userId: string,
     orders: MudrexOrder[]
-  ): Promise<Map<string, number>> {
+  ): Promise<Map<string, MudrexEstimatedFeeRate>> {
     const requestedSymbols = new Set(
       orders
         .map((order) => this.readString(order.symbol).toUpperCase())
         .filter(Boolean)
     );
-    const ratesBySymbol = new Map<string, number>();
+    const ratesBySymbol = new Map<string, MudrexEstimatedFeeRate>();
     if (!requestedSymbols.size || !this.mudrexService) {
       return ratesBySymbol;
     }
+    const configuredDefaultRatePct = this.resolveConfiguredMudrexTradingFeePct();
 
     try {
       const assets = await this.mudrexService.fetchAllRemoteFuturesForUserOrThrow(500, userId);
@@ -514,14 +529,24 @@ export class MudrexBrokerReconciliationSyncService {
         this.addTradingFeeRate(ratesBySymbol, requestedSymbols, asset);
       }
     } catch {
+      this.addConfiguredDefaultTradingFeeRates(
+        ratesBySymbol,
+        requestedSymbols,
+        configuredDefaultRatePct
+      );
       return ratesBySymbol;
     }
 
+    this.addConfiguredDefaultTradingFeeRates(
+      ratesBySymbol,
+      requestedSymbols,
+      configuredDefaultRatePct
+    );
     return ratesBySymbol;
   }
 
   private addTradingFeeRate(
-    ratesBySymbol: Map<string, number>,
+    ratesBySymbol: Map<string, MudrexEstimatedFeeRate>,
     requestedSymbols: Set<string>,
     asset: MudrexAsset
   ): void {
@@ -533,7 +558,37 @@ export class MudrexBrokerReconciliationSyncService {
     if (!Number.isFinite(feeRatePct) || feeRatePct <= 0) {
       return;
     }
-    ratesBySymbol.set(symbol, feeRatePct);
+    ratesBySymbol.set(symbol, {
+      feeRatePct,
+      source: 'asset_trading_fee_perc',
+    });
+  }
+
+  private addConfiguredDefaultTradingFeeRates(
+    ratesBySymbol: Map<string, MudrexEstimatedFeeRate>,
+    requestedSymbols: Set<string>,
+    configuredDefaultRatePct: number | null
+  ): void {
+    if (configuredDefaultRatePct === null) {
+      return;
+    }
+    for (const symbol of requestedSymbols) {
+      if (ratesBySymbol.has(symbol)) {
+        continue;
+      }
+      ratesBySymbol.set(symbol, {
+        feeRatePct: configuredDefaultRatePct,
+        source: 'configured_default',
+      });
+    }
+  }
+
+  private resolveConfiguredMudrexTradingFeePct(): number | null {
+    const value = env.brokerReconciliation.mudrexEstimatedTradingFeePct;
+    if (!Number.isFinite(value) || value <= 0) {
+      return null;
+    }
+    return value;
   }
 
   private resolveOrderNotional(order: MudrexOrder): number {

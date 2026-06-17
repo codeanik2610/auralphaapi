@@ -37,6 +37,17 @@ const getNumber = (key: string, fallback: number): number => {
   return parsed;
 };
 
+const getNumberWithEnvFallback = (
+  key: string,
+  fallbackKey: string,
+  fallback: number
+): number => {
+  if (process.env[key] !== undefined) {
+    return getNumber(key, fallback);
+  }
+  return getNumber(fallbackKey, fallback);
+};
+
 const getBool = (key: string, fallback: boolean): boolean => {
   const value = process.env[key];
   if (value === undefined) {
@@ -597,6 +608,16 @@ export const env = {
     ),
     autoFreezeOnCritical: getBool('BROKER_CANARY_MONITOR_AUTO_FREEZE_ON_CRITICAL', false),
     includeSuggestedTrades: getBool('BROKER_CANARY_MONITOR_INCLUDE_SUGGESTED_TRADES', false),
+  },
+  brokerReconciliation: {
+    mudrexEstimatedTradingFeePct: Math.max(
+      0,
+      getNumberWithEnvFallback(
+        'BROKER_RECONCILIATION_MUDREX_ESTIMATED_TRADING_FEE_PCT',
+        'MUDREX_ESTIMATED_TRADING_FEE_PCT',
+        0
+      )
+    ),
   },
   suggestedTradesProtectionGuardrails: {
     enabled: getBool('SUGGESTED_TRADES_PROTECTION_GUARDRAIL_ENABLED', true),
