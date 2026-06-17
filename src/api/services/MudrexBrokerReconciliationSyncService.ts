@@ -140,6 +140,7 @@ export class MudrexBrokerReconciliationSyncService {
               userId,
               accountId,
               orders,
+              positionHistory,
             })
           : { feeEntriesUpserted: 0, feeTotal: 0, symbolsWithoutRates: [] as string[] };
       const feeEntriesUpserted =
@@ -425,6 +426,7 @@ export class MudrexBrokerReconciliationSyncService {
     userId: string;
     accountId: string;
     orders: MudrexOrder[];
+    positionHistory: MudrexPositionHistoryItem[];
   }): Promise<{
     feeEntriesUpserted: number;
     feeTotal: number;
@@ -466,6 +468,7 @@ export class MudrexBrokerReconciliationSyncService {
       if (!Number.isFinite(estimatedFee) || estimatedFee === 0) {
         continue;
       }
+      const positionMatch = this.resolveEstimatedFeePositionMatch(order, input.positionHistory);
 
       await this.brokerReconciliationRepository.upsertFeeEntry({
         userId: input.userId,
@@ -474,9 +477,7 @@ export class MudrexBrokerReconciliationSyncService {
         externalId: `mudrex:estimated-order-fee:${order.id}`,
         symbol,
         orderId: order.id,
-        positionId: this.readString(
-          (order as unknown as Record<string, unknown>).future_position_uuid
-        ),
+        positionId: positionMatch.positionId,
         feeType: 'TRANSACTION_ESTIMATE',
         amount: estimatedFee,
         currency: order.trade_currency || 'USDT',
@@ -491,6 +492,11 @@ export class MudrexBrokerReconciliationSyncService {
             reason: 'mudrex_fee_history_empty',
             transactionAmount,
             feeRatePct: feeRate.feeRatePct,
+            futurePositionUuid: this.readString(
+              (order as unknown as Record<string, unknown>).future_position_uuid
+            ),
+            positionIdSource: positionMatch.source,
+            matchedPositionHistoryId: positionMatch.positionHistoryId,
           },
         },
         matchState: 'unmatched',
@@ -506,6 +512,155 @@ export class MudrexBrokerReconciliationSyncService {
       feeTotal: Number(feeTotal.toFixed(12)),
       symbolsWithoutRates: Array.from(symbolsWithoutRates).sort(),
     };
+  }
+
+  private resolveEstimatedFeePositionMatch(
+    order: MudrexOrder,
+    positionHistory: MudrexPositionHistoryItem[]
+  ): {
+    positionId: string | null;
+    source: 'position_history_exact' | 'position_history_time_window' | 'future_position_uuid' | null;
+    positionHistoryId: string | null;
+  } {
+    const futurePositionUuid = this.readString(
+      (order as unknown as Record<string, unknown>).future_position_uuid
+    );
+    const exact = positionHistory.find(
+      (item) =>
+        futurePositionUuid &&
+        this.readString(item.id) === futurePositionUuid &&
+        this.readString(item.symbol).toUpperCase() === this.readString(order.symbol).toUpperCase()
+    );
+    if (exact) {
+      return {
+        positionId: this.buildMudrexPositionHistoryExternalId(exact) || futurePositionUuid,
+        source: 'position_history_exact',
+        positionHistoryId: this.readString(exact.id) || null,
+      };
+    }
+
+    const timed = this.findMudrexPositionHistoryForOrder(order, positionHistory);
+    if (timed) {
+      return {
+        positionId: this.buildMudrexPositionHistoryExternalId(timed) || futurePositionUuid || null,
+        source: 'position_history_time_window',
+        positionHistoryId: this.readString(timed.id) || null,
+      };
+    }
+
+    return {
+      positionId: futurePositionUuid || null,
+      source: futurePositionUuid ? 'future_position_uuid' : null,
+      positionHistoryId: null,
+    };
+  }
+
+  private findMudrexPositionHistoryForOrder(
+    order: MudrexOrder,
+    positionHistory: MudrexPositionHistoryItem[]
+  ): MudrexPositionHistoryItem | null {
+    const symbol = this.readString(order.symbol).toUpperCase();
+    const orderTime = this.timestamp(order.updated_at || order.created_at);
+    if (!symbol || orderTime === null) {
+      return null;
+    }
+
+    const candidates = positionHistory
+      .filter((item) => this.readString(item.symbol).toUpperCase() === symbol)
+      .map((item) => ({
+        item,
+        score: this.scoreMudrexPositionHistoryOrderMatch(order, item, orderTime),
+      }))
+      .filter((candidate) => candidate.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    return candidates[0]?.item ?? null;
+  }
+
+  private scoreMudrexPositionHistoryOrderMatch(
+    order: MudrexOrder,
+    item: MudrexPositionHistoryItem,
+    orderTime: number
+  ): number {
+    const createdAt = this.timestamp(item.created_at);
+    const updatedAt = this.timestamp(item.updated_at);
+    if (createdAt === null && updatedAt === null) {
+      return 0;
+    }
+
+    const start = createdAt ?? updatedAt ?? orderTime;
+    const end = updatedAt ?? createdAt ?? orderTime;
+    const toleranceMs = 5 * 60 * 1000;
+    const insideWindow = orderTime >= start - toleranceMs && orderTime <= end + toleranceMs;
+    if (!insideWindow) {
+      return 0;
+    }
+
+    const orderSide = this.normalizeMudrexDirectionalSide(order.order_type);
+    const positionSide = this.normalizeMudrexDirectionalSide(item.position_type);
+    const isProtectionExit = this.isMudrexProtectionExitOrderType(order.order_type);
+    const entryDistance = createdAt === null ? Number.MAX_SAFE_INTEGER : Math.abs(orderTime - createdAt);
+    const exitDistance = updatedAt === null ? Number.MAX_SAFE_INTEGER : Math.abs(orderTime - updatedAt);
+
+    let score = 100;
+    if (orderSide && positionSide && orderSide === positionSide) {
+      score += entryDistance <= toleranceMs ? 45 : 10;
+    }
+    if (
+      isProtectionExit ||
+      (orderSide && positionSide && orderSide !== positionSide)
+    ) {
+      score += exitDistance <= toleranceMs ? 50 : 20;
+    }
+    score -= Math.min(entryDistance, exitDistance) / 100_000_000;
+    return score;
+  }
+
+  private buildMudrexPositionHistoryExternalId(item: MudrexPositionHistoryItem): string | null {
+    const assetUuid = this.readString(item.asset_uuid);
+    const createdAt = this.readString(item.created_at);
+    const side = this.readString(item.position_type).toUpperCase() || 'NA';
+    if (!assetUuid || !createdAt) {
+      return null;
+    }
+    const base = ['mudrex', assetUuid, createdAt, side];
+    const status = this.readString(item.status).toUpperCase();
+    if (!['PARTIAL', 'CLOSED', 'LIQUIDATED'].includes(status)) {
+      return base.join(':');
+    }
+    const rawEventId = this.readString(item.id);
+    if (rawEventId && rawEventId.length <= 64) {
+      return [...base, status, rawEventId].join(':');
+    }
+    const fingerprint = [
+      item.updated_at,
+      item.quantity,
+      item.closed_price,
+      item.pnl,
+    ]
+      .map((value) => this.readString(value))
+      .join('|');
+    const digest = createHash('sha256')
+      .update(fingerprint || JSON.stringify(item))
+      .digest('hex')
+      .slice(0, 16);
+    return [...base, status, digest].join(':');
+  }
+
+  private normalizeMudrexDirectionalSide(value: unknown): 'LONG' | 'SHORT' | null {
+    const normalized = this.readString(value).toUpperCase();
+    if (normalized === 'LONG' || normalized === 'BUY') {
+      return 'LONG';
+    }
+    if (normalized === 'SHORT' || normalized === 'SELL') {
+      return 'SHORT';
+    }
+    return null;
+  }
+
+  private isMudrexProtectionExitOrderType(value: unknown): boolean {
+    const normalized = this.readString(value).toUpperCase();
+    return normalized === 'STOPLOSS' || normalized === 'TAKEPROFIT';
   }
 
   private async resolveTradingFeeRates(
@@ -653,6 +808,15 @@ export class MudrexBrokerReconciliationSyncService {
       return false;
     }
     return true;
+  }
+
+  private timestamp(value: unknown): number | null {
+    const text = this.readString(value);
+    if (!text) {
+      return null;
+    }
+    const timestamp = new Date(text).getTime();
+    return Number.isFinite(timestamp) ? timestamp : null;
   }
 
   private limit(value: unknown, fallback: number, max: number): number {

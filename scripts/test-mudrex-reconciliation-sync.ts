@@ -496,16 +496,24 @@ async function runMudrexEstimatedFeeFallbackAssertions(): Promise<void> {
     .map((call) => call.args[0] as Record<string, unknown>);
   assert.equal(feeRows.length, 2);
   assert.equal(feeRows[0].externalId, 'mudrex:estimated-order-fee:mudrex-estimated-fee-order-1');
-  assert.equal(feeRows[0].positionId, 'future-position-1');
+  assert.equal(
+    feeRows[0].positionId,
+    'mudrex:btc-asset:2026-06-08T10:00:00.000Z:LONG:CLOSED:mudrex-position-history-1'
+  );
   assert.equal(feeRows[0].feeType, 'TRANSACTION_ESTIMATE');
   assert.equal(feeRows[0].amount, -0.4);
   assert.equal(feeRows[0].feeRatePct, 0.04);
   assert.equal(feeRows[0].source, 'mudrex_order_fee_estimate');
+  const firstEstimate = (feeRows[0].rawPayload as Record<string, unknown>)
+    .estimate as Record<string, unknown>;
+  assert.equal(firstEstimate.futurePositionUuid, 'future-position-1');
+  assert.equal(firstEstimate.positionIdSource, 'position_history_time_window');
+  assert.equal(firstEstimate.matchedPositionHistoryId, 'mudrex-position-history-1');
   assert.equal(
-    ((feeRows[0].rawPayload as Record<string, unknown>).estimate as Record<string, unknown>)
-      .rateSource,
+    firstEstimate.rateSource,
     'asset_trading_fee_perc'
   );
+  assert.equal(feeRows[1].positionId, 'future-position-2');
   assert.equal(feeRows[1].amount, -0.2);
 
   const finishPayload = repositoryCalls
@@ -625,6 +633,10 @@ async function runMudrexEstimatedFeeConfiguredDefaultAssertions(): Promise<void>
       .filter((call) => call.method === 'upsertFeeEntry')
       .map((call) => call.args[0] as Record<string, unknown>);
     assert.equal(feeRows.length, 2);
+    assert.equal(
+      feeRows[0].positionId,
+      'mudrex:btc-asset:2026-06-08T10:00:00.000Z:LONG:CLOSED:mudrex-position-history-1'
+    );
     assert.equal(feeRows[0].feeRatePct, 0.05);
     assert.equal(feeRows[0].amount, -0.5);
     assert.equal(feeRows[1].amount, -0.25);
