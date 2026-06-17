@@ -387,10 +387,6 @@ async function run(): Promise<void> {
     process.env.POSITIONS_RECONCILIATION_MAX_FETCH_ERRORS || '',
     0
   );
-  const maxOutsideWindowRows = readPositiveNumber(
-    process.env.POSITIONS_RECONCILIATION_MAX_OUTSIDE_WINDOW_ROWS || '',
-    0
-  );
   const maxStatusDiffs = readPositiveNumber(
     process.env.POSITIONS_RECONCILIATION_MAX_STATUS_DIFFS || '',
     0
@@ -553,12 +549,6 @@ async function run(): Promise<void> {
         passed: fetchErrors.length <= maxFetchErrors,
       },
       {
-        key: 'outside_window_broker_rows',
-        observed: outsideWindowBrokerRows.length,
-        limit: maxOutsideWindowRows,
-        passed: outsideWindowBrokerRows.length <= maxOutsideWindowRows,
-      },
-      {
         key: 'status_summary_diffs',
         observed: statusDiffs.length,
         limit: maxStatusDiffs,
@@ -595,7 +585,6 @@ async function run(): Promise<void> {
       },
       thresholds: {
         maxFetchErrors,
-        maxOutsideWindowRows,
         maxStatusDiffs,
         maxTotalPnlDiff,
         maxExternalMissing,

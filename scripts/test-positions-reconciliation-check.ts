@@ -21,13 +21,17 @@ function runPositionsReconciliationCheckAssertions(): void {
   assert.match(checkSource, /POSITIONS_RECONCILIATION_USER_ID/);
   assert.match(checkSource, /POSITIONS_RECONCILIATION_START_DATE/);
   assert.match(checkSource, /POSITIONS_RECONCILIATION_END_DATE/);
-  assert.match(checkSource, /POSITIONS_RECONCILIATION_MAX_OUTSIDE_WINDOW_ROWS/);
   assert.match(checkSource, /POSITIONS_RECONCILIATION_MAX_EXTERNAL_MISSING/);
   assert.match(checkSource, /positions-reconciliation-check:/);
   assert.match(checkSource, /mudrexCanonicalExternalIdOf/);
   assert.match(checkSource, /createHash\('sha256'\)/);
   assert.match(checkSource, /state: failedChecks\.length \? 'failed' : 'passed'/);
   assert.match(checkSource, /process\.exitCode = 1/);
+  assert.equal(
+    checkSource.includes("key: 'outside_window_broker_rows'"),
+    false,
+    'broker rows outside the requested window are reported after filtering, not treated as drift'
+  );
   assert.ok(
     checkSource.includes("await adapter.getPositionHistory({ startDate, endDate, limit: '50000' }"),
     'verification must compare requested broker history window'
